@@ -1,1 +1,1 @@
-# home-assistant-rce
+# home-assistant-smart-rce
