@@ -10,7 +10,6 @@ from typing import Any, Final
 from homeassistant.components.weather import DOMAIN as WEATHER, WeatherEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    EVENT_COMPONENT_LOADED,
     EVENT_HOMEASSISTANT_STARTED,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
@@ -30,7 +29,6 @@ from homeassistant.helpers.event import (
     async_track_time_change,
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.setup import EventComponentLoaded
 from homeassistant.util.dt import now as now_local
 from homeassistant.util.json import JsonValueType
 
@@ -172,24 +170,6 @@ class WeatherListenerCoordinator:
             self._register_for_weather_updates()
 
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _hass_started)
-
-        @callback
-        def _component_loaded(event: Event[EventComponentLoaded]) -> None:
-            if (
-                not self._shutdown_requested
-                and event.data["component"] == "wetteronline"
-            ):
-                if self._hass_started:
-                    self._register_for_weather_updates()
-
-        # TODO - it is not needed to listen for EVENT_COMPONENT_LOADED because it not emitted
-        # on: reload, disable -> enable, delete -> add again (without HA restart)
-        entry.async_on_unload(
-            hass.bus.async_listen(
-                EVENT_COMPONENT_LOADED,
-                _component_loaded,
-            )
-        )
 
         @callback
         def weather_state_changed(
