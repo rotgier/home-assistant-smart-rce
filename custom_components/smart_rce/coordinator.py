@@ -160,30 +160,27 @@ class WeatherListenerCoordinator:
 
         entry.async_on_unload(self._shutdown)
 
+        @callback
+        def hass_started(_=Event) -> None:
+            self._hass_started = True
+            self._register_for_weather_updates()
+
         if hass.state == CoreState.running:
-            self._hass_started = True
-            self._register_for_weather_updates()
+            hass_started()
+
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
 
         @callback
-        def _hass_started(_=Event) -> None:
-            self._hass_started = True
-            self._register_for_weather_updates()
-
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _hass_started)
-
-        @callback
-        def weather_state_changed(
-            event: Event[EventStateChangedData],
-        ) -> None:
+        def weather_state_changed(event: Event[EventStateChangedData]) -> None:
             old_state = event.data["old_state"]
             new_state = event.data["new_state"]
             if (
                 (not old_state or old_state.state in UNAVAILABLE_STATES)
                 and new_state
                 and new_state.state not in UNAVAILABLE_STATES
+                and self._hass_started
             ):
-                if self._hass_started:
-                    self._register_for_weather_updates()
+                self._register_for_weather_updates()
 
         entry.async_on_unload(
             async_track_state_change_event(
@@ -195,8 +192,10 @@ class WeatherListenerCoordinator:
 
     @callback
     def _register_for_weather_updates(self):
-        entity: WeatherEntity = self._get_weather_entity()
+        component: EntityComponent[WeatherEntity] = self.hass.data[WEATHER]
+        entity: WeatherEntity = component.get_entity(WEATHER_ENTITY)
         if entity:
+            self._unregister_weather_updates()
 
             @callback
             def forecast_listener(forecast: list[JsonValueType] | None) -> None:
@@ -205,7 +204,6 @@ class WeatherListenerCoordinator:
                         self.forecast_hourly = forecast
                         self._async_update_listeners()
 
-            self._unregister_weather_updates()
             weather_updates_unsubscribe = entity.async_subscribe_forecast(
                 "hourly", forecast_listener
             )
@@ -219,10 +217,6 @@ class WeatherListenerCoordinator:
             self._weather_updates_unsubscribe = unsubscribe_callback
             entity.async_on_remove(unsubscribe_callback)
             self.hass.loop.create_task(entity.async_update_listeners(["hourly"]))
-
-    def _get_weather_entity(self) -> WeatherEntity | None:
-        component: EntityComponent[WeatherEntity] = self.hass.data[WEATHER]
-        return component.get_entity(WEATHER_ENTITY)
 
     @callback
     def _unregister_weather_updates(self):
