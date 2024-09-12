@@ -1,0 +1,12 @@
+{
+  "domain": "smart_rce",
+  "name": "Smart RCE",
+  "codeowners": ["@rotgier"],
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "loggers": ["smart_rce"],
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "1.0.0"
+}
