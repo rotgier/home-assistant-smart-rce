@@ -45,7 +45,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
         self._cancel_track_time_change_cb: CALLBACK_TYPE = None
 
         self.device_info = DeviceInfo(
-            name=entry.title,
+            name=DOMAIN,
             identifiers={(DOMAIN, entry.entry_id)},
             entry_type=DeviceEntryType.SERVICE,
         )

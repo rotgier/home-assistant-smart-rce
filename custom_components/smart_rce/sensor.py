@@ -25,10 +25,12 @@ from homeassistant.util.dt import now as now_local
 from homeassistant.util.json import JsonValueType
 
 from . import SmartRceConfigEntry
+from .const import DOMAIN
 from .coordinator import RceData, SmartRceDataUpdateCoordinator
 from .rce_api import RceDayPrices
 
 CURRENCY_PLN: Final = "zł"
+UNIQUE_ID_PREFIX = DOMAIN
 
 PARALLEL_UPDATES = 1
 
@@ -99,7 +101,7 @@ class SmartRceStartChargeHourSensor(
         super().__init__(coordinator)
 
         self._sensor_data: RceData = coordinator.data
-        self._attr_unique_id = f"{coordinator.name}-start-charge-hour".lower()
+        self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_start_charge_hour".lower()
         self._attr_device_info = coordinator.device_info
         self._start_charge_hour: int = None
 
@@ -146,7 +148,7 @@ class SmartRceCurrentPriceSensor(
         super().__init__(coordinator)
 
         self._sensor_data: RceData = coordinator.data
-        self._attr_unique_id = f"{coordinator.name}-current-price".lower()
+        self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_current_price".lower()
         self._attr_device_info = coordinator.device_info
         self._current_price: float = None
 
