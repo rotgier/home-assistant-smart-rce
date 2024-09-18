@@ -39,7 +39,12 @@ RCE_TOMORROW_PUBLICATION_HOUR: Final[int] = 14
 TIME_CHANGE_MINUTES_PATTERN: Final[str] = "/1"
 MINIMUM_TIME_BETWEEN_FETCHES_SECONDS: Final[int] = 14 * 60
 WEATHER_ENTITY: Final[str] = "weather.wetteronline"
-UNAVAILABLE_STATES: Final[list[str]] = (STATE_UNKNOWN, STATE_UNAVAILABLE, "")
+UNAVAILABLE_STATES: Final[tuple[str | None]] = (
+    STATE_UNKNOWN,
+    STATE_UNAVAILABLE,
+    "",
+    None,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,7 +95,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
             tomorrow=await self._fetch_prices_for_day(now + timedelta(days=1)),
         )
 
-    async def _async_update_data(self) -> dict[str, Any]:
+    async def _async_update_data(self) -> RceData:
         """Update data via library."""
         now = now_local()
         if not self.data or not self.data.today:
@@ -177,19 +182,18 @@ class WeatherListenerCoordinator:
         def weather_state_changed(event: Event[EventStateChangedData]) -> None:
             old_state = event.data["old_state"]
             new_state = event.data["new_state"]
-            old_state = old_state.state if old_state else ""
-            new_state = new_state.state if new_state else ""
+            old_state = old_state.state if old_state else None
+            new_state = new_state.state if new_state else None
+            if (old_state in UNAVAILABLE_STATES) != (new_state in UNAVAILABLE_STATES):
+                msg = "weather entity %s availability changed from: '%s' to: '%s'"
+                _LOGGER.debug(msg, WEATHER_ENTITY, old_state, new_state)
+
             if (
                 old_state in UNAVAILABLE_STATES
                 and new_state not in UNAVAILABLE_STATES
                 and self._hass_started
             ):
-                _LOGGER.debug(
-                    "weather entity %s changed from unavailable: '%s' to: '%s'",
-                    WEATHER_ENTITY,
-                    old_state,
-                    new_state,
-                )
+                _LOGGER.debug("weather entity appeared -> register_for_weather_updates")
                 self._register_for_weather_updates()
 
         entry.async_on_unload(
@@ -206,7 +210,7 @@ class WeatherListenerCoordinator:
         component: EntityComponent[WeatherEntity] = self.hass.data[WEATHER]
         entity: WeatherEntity = component.get_entity(WEATHER_ENTITY)
         if entity:
-            _LOGGER.debug("weather entity is present")
+            _LOGGER.debug("weather entity is available")
             self._unregister_weather_updates()
 
             @callback
@@ -241,8 +245,8 @@ class WeatherListenerCoordinator:
 
     @callback
     def _unregister_weather_updates(self):
+        _LOGGER.debug("_unregister_weather_updates cb: %s", self._unsubscribe_callback)
         if self._unsubscribe_callback:
-            _LOGGER.debug("_unregister_weather_updates when callback is set")
             self._unsubscribe_callback()
 
     @callback
@@ -271,7 +275,7 @@ class WeatherListenerCoordinator:
 
     @callback
     def _shutdown(self) -> None:
-        """Cancel any scheduled call, and ignore new runs."""
+        """Unregister from weather updates and ignore any incoming updates."""
         _LOGGER.debug("_shutdown")
         self._shutdown_requested = True
         self._unregister_weather_updates()
