@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util.dt import now as now_local
 
 from .const import DOMAIN
-from .rce_api import RceApi, RceDayPrices
+from .infrastructure.rce_api import RceApi, RceDayPrices
 
 RCE_TOMORROW_PUBLICATION_HOUR: Final[int] = 14
 TIME_CHANGE_MINUTES_PATTERN: Final[str] = "/1"
@@ -62,7 +62,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
         if self.data.tomorrow:
             return self.data
         if now.hour >= RCE_TOMORROW_PUBLICATION_HOUR:
-            elapsed_seconds = (now - self.data.fetched_at).total_seconds
+            elapsed_seconds = (now - self.data.fetched_at).total_seconds()
             if elapsed_seconds > MINIMUM_TIME_BETWEEN_FETCHES_SECONDS:
                 return RceData(
                     fetched_at=now,

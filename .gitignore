@@ -1,3 +1,5 @@
 custom_components/smart_rce/__pycache__/**
-custom_components/smart_rce/example/**
-custom_components/smart_rce/scaffold/**
+example/**
+scaffold/**
+homeassistant/**
+homeassistant

@@ -1,12 +1,12 @@
 """API for fetching RCE prices."""
 
-from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
-from typing import Final
-from zoneinfo import ZoneInfo
+from typing import Any,Final
 
 from aiohttp import ClientSession
+
+from ..domain.rce import RceDayPrices
 
 HTTP_HEADERS: dict[str, str] = {
     "Accept-Encoding": "gzip",
@@ -15,15 +15,6 @@ HTTP_HEADERS: dict[str, str] = {
 ENDPOINT: Final[str] = (
     "https://api.raporty.pse.pl/api/rce-pln?$select=udtczas,source_datetime,rce_pln&$filter=doba eq '{}'"
 )
-TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
-
-
-@dataclass
-class RceDayPrices:
-    """RCE prices of given day."""
-
-    published_at: datetime
-    prices: list[dict[str, float | datetime]]
 
 
 class ApiError(Exception):
@@ -42,6 +33,9 @@ class RceApi:
         self._session = session
 
     async def async_get_prices(self, day: datetime) -> RceDayPrices:
+        data = await self._async_get_prices_raw(day)
+        return RceDayPrices.create_from_json(data)
+    async def _async_get_prices_raw(self, day: datetime) -> dict[Any, Any]:
         """Fetch RCE prices for given day."""
         url = ENDPOINT.format(day.strftime("%Y-%m-%d"))
         async with self._session.get(
@@ -50,20 +44,5 @@ class RceApi:
             if resp.status != HTTPStatus.OK.value:
                 text = await resp.text()
                 raise ApiError(f"Invalid response from RCE API: {resp.status} {text}")
+            return await resp.json()
 
-            data = await resp.json()
-            prices = []
-            published_at = None
-            for price in data["value"]:
-                published_at = price["source_datetime"]
-                date_hour = datetime.fromisoformat(price["udtczas"])
-                date_hour = date_hour.replace(tzinfo=TIMEZONE)
-                if date_hour.minute == 15:
-                    prices.append(
-                        {
-                            "datetime": date_hour.replace(minute=0),
-                            "price": price["rce_pln"],
-                        }
-                    )
-
-            return RceDayPrices(published_at, prices) if published_at else None

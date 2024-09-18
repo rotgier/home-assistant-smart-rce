@@ -10,8 +10,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .coordinator import SmartRceDataUpdateCoordinator, WeatherListenerCoordinator
-from .rce_api import RceApi
+from .coordinator import SmartRceDataUpdateCoordinator
+from .weather_listener import WeatherListenerCoordinator
+from .infrastructure.rce_api import RceApi
 
 _LOGGER = logging.getLogger(__name__)
 

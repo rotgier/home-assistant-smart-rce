@@ -27,7 +27,7 @@ from homeassistant.util.json import JsonValueType
 from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .coordinator import RceData, SmartRceDataUpdateCoordinator
-from .rce_api import RceDayPrices
+from .infrastructure.rce_api import RceDayPrices
 
 CURRENCY_PLN: Final = "zł"
 UNIQUE_ID_PREFIX = DOMAIN
@@ -229,6 +229,3 @@ class SmartRceCurrentPriceSensor(
     def native_value(self) -> str | int | float | None:
         """Return the state."""
         return self._current_price
-
-
-
