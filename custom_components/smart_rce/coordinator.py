@@ -78,23 +78,6 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
 
         super().__init__(hass, _LOGGER, name=entry.title, always_update=False)
 
-    async def _fetch_prices_for_day(self, day: datetime) -> RceDayPrices:
-        try:
-            async with timeout(10):
-                result = await self._rce_api.async_get_prices(day)
-        except Exception as error:
-            _LOGGER.exception("Update failed")
-            raise UpdateFailed(error) from error
-
-        return result
-
-    async def _full_update(self, now: datetime) -> RceData:
-        return RceData(
-            fetched_at=now,
-            today=await self._fetch_prices_for_day(now),
-            tomorrow=await self._fetch_prices_for_day(now + timedelta(days=1)),
-        )
-
     async def _async_update_data(self) -> RceData:
         """Update data via library."""
         now = now_local()
@@ -114,14 +97,40 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
                 )
         return self.data
 
+    async def _full_update(self, now: datetime) -> RceData:
+        return RceData(
+            fetched_at=now,
+            today=await self._fetch_prices_for_day(now),
+            tomorrow=await self._fetch_prices_for_day(now + timedelta(days=1)),
+        )
+
+    async def _fetch_prices_for_day(self, day: datetime) -> RceDayPrices:
+        try:
+            async with timeout(10):
+                result = await self._rce_api.async_get_prices(day)
+        except Exception as error:
+            _LOGGER.exception("Update failed")
+            raise UpdateFailed(error) from error
+
+        return result
+
+    async def async_shutdown(self) -> None:
+        """Add track time change cancelation."""
+        await super().async_shutdown()
+        self._cancel_track_time_change()
+
     @callback
     def _schedule_refresh(self) -> None:
         """Subscribe to time changes when first listener is added."""
         super()._schedule_refresh()
+
+        async def async_refresh_with_datetime(now: datetime) -> None:
+            await self.async_refresh()
+
         if not self._shutdown_requested and not self._cancel_track_time_change_cb:
             self._cancel_track_time_change_cb = async_track_time_change(
                 self.hass,
-                self._async_refresh_with_datetime,
+                async_refresh_with_datetime,
                 second=0,
                 minute=TIME_CHANGE_MINUTES_PATTERN,
             )
@@ -133,18 +142,10 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
         if not self._listeners:
             self._cancel_track_time_change()
 
-    async def async_shutdown(self) -> None:
-        """Add track time change cancelation."""
-        await super().async_shutdown()
-        self._cancel_track_time_change()
-
     def _cancel_track_time_change(self) -> None:
         if self._cancel_track_time_change_cb:
             self._cancel_track_time_change_cb()
         self._cancel_track_time_change_cb = None
-
-    async def _async_refresh_with_datetime(self, now: datetime) -> None:
-        await self.async_refresh()
 
 
 class WeatherListenerCoordinator:
