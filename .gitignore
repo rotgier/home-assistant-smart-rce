@@ -3,3 +3,4 @@ example/**
 scaffold/**
 homeassistant/**
 homeassistant
+venv/**
