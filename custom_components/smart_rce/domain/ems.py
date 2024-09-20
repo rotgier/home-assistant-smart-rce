@@ -25,13 +25,19 @@ class EmsDayPrices:
         self._start_charge_hours: dict[int, int] = start_charge_hours
         self.best_consecutive_hours: int = best_consecutive_hours
 
-    def first_hour_of_charge(self, consecutive_hours: int):
+    def first_hour_of_charge(self, consecutive_hours: int) -> int:
         assert 1 <= consecutive_hours <= MAX_CONSECUTIVE_HOURS
         return self._start_charge_hours[consecutive_hours]
 
-    def last_hour_of_charge(self, consecutive_hours: int):
+    def last_hour_of_charge(self, consecutive_hours: int) -> int:
         assert 1 <= consecutive_hours <= MAX_CONSECUTIVE_HOURS
         return self._start_charge_hours[consecutive_hours] + consecutive_hours - 1
+
+    def best_start_charge_hour(self) -> float:
+        best_hour = self._start_charge_hours[self.best_consecutive_hours]
+        if self.best_consecutive_hours == INITIAL_BEST_CONSECUTIVE_HOURS:
+            return best_hour - 0.5
+        return best_hour
 
 
 class CsvTextBuilder:
@@ -116,6 +122,11 @@ def create_csv(rce_prices: RceDayPrices):
             if first_hour <= hour <= last_hour:
                 mark = f"H{consecutive_hours}"
                 if consecutive_hours == ems_prices.best_consecutive_hours:
+                    # TODO this should be moved to a test
+                    if consecutive_hours == 3:
+                        assert ems_prices.best_start_charge_hour() == first_hour - 0.5
+                    else:
+                        assert ems_prices.best_start_charge_hour() == first_hour
                     mark += "*"
             row.append(mark)
 
