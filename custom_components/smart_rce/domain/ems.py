@@ -1,7 +1,6 @@
 """Energy Management System logic."""
 
 import csv
-from dataclasses import dataclass, field
 from datetime import date
 from statistics import mean
 from typing import Final
@@ -9,6 +8,8 @@ from typing import Final
 from custom_components.smart_rce.domain.rce import RceDayPrices
 
 MAX_CONSECUTIVE_HOURS: Final[int] = 8
+INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
+POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
 
 
 class EmsDayPrices:
@@ -33,15 +34,6 @@ class EmsDayPrices:
         return self._start_charge_hours[consecutive_hours] + consecutive_hours - 1
 
 
-@dataclass(kw_only=True, frozen=False)
-class HourPrices:
-    hour: int
-    price: float
-    mean_price_consecutive_hours: list[float] = field(
-        default_factory=lambda: [float("inf")] * MAX_CONSECUTIVE_HOURS
-    )
-
-
 class CsvTextBuilder:
     def __init__(self) -> None:
         self.csv_string: list[str] = []
@@ -50,63 +42,58 @@ class CsvTextBuilder:
         self.csv_string.append(row.replace("\r\n", ""))
 
 
-def find_charge_hours(day_prices: RceDayPrices) -> EmsDayPrices:
+def find_charge_hours(rce_prices: RceDayPrices) -> EmsDayPrices:
     """Find start charge hour."""
-    prices: list[float] = [item["price"] for item in day_prices.prices]
-    consecutive_prices: list[HourPrices] = calculate_consecutive_prices(prices)
-    min_consecutive_prices: list[HourPrices] = [None] * MAX_CONSECUTIVE_HOURS
-
-    start_charge_hours: dict[int, int] = {}
-    for consecutive_hours in range(MAX_CONSECUTIVE_HOURS):
-        min_consecutive_prices[consecutive_hours] = min(
-            consecutive_prices,
-            key=lambda x: x.mean_price_consecutive_hours[consecutive_hours],
-        )
-        start_charge_hours[consecutive_hours + 1] = min_consecutive_prices[
-            consecutive_hours
-        ].hour
-
-    best_consecutive_hours = find_best_consecutive_hours(prices, min_consecutive_prices)
-
+    prices: list[float] = [item["price"] for item in rce_prices.prices]
+    start_charge_hours: dict[int, int] = calculate_start_charge_hours(prices)
+    best_consecutive_hours = find_best_consecutive_hours(prices, start_charge_hours)
     return EmsDayPrices(
-        day=day_prices.prices[0]["datetime"].date(),
+        day=rce_prices.prices[0]["datetime"].date(),
         hour_price=prices,
         start_charge_hours=start_charge_hours,
-        best_consecutive_hours=best_consecutive_hours + 1,
+        best_consecutive_hours=best_consecutive_hours,
     )
 
 
+def calculate_start_charge_hours(prices: list[float]) -> dict[int, int]:
+    start_charge_hours: dict[int, int] = {}
+    for consecutive_hours in POSSIBLE_CONSECUTIVE_HOURS:
+        min_avg = float("inf")
+        best_hour = 0
+        for hour in range(6, 16):
+            avg = mean(prices[hour : hour + consecutive_hours])
+            if avg < min_avg:
+                min_avg = avg
+                best_hour = hour
+        start_charge_hours[consecutive_hours] = best_hour
+    return start_charge_hours
+
+
 def find_best_consecutive_hours(
-    prices: list[float], min_consecutive_prices: list[HourPrices]
+    prices: list[float], start_charge_hours: dict[int, int]
 ) -> int:
-    winner: HourPrices = min_consecutive_prices[2]
-    winner_3_consecutive_hours_max_price = max(prices[winner.hour : winner.hour + 3])
-    best_consecutive_hours: int = 2
-    for consecutive_hours in range(3, MAX_CONSECUTIVE_HOURS):
-        candidate: HourPrices = min_consecutive_prices[consecutive_hours]
-        if candidate.hour == winner.hour:
-            winner = min_consecutive_prices[consecutive_hours]
+    best_consecutive_hours = INITIAL_BEST_CONSECUTIVE_HOURS
+    best_hour: int = start_charge_hours[best_consecutive_hours]
+
+    initial_consecutive_hours_max_price = max(
+        prices[best_hour : best_hour + best_consecutive_hours]
+    )
+    hours_to_check = filter(
+        lambda x: x > INITIAL_BEST_CONSECUTIVE_HOURS, POSSIBLE_CONSECUTIVE_HOURS
+    )
+    for consecutive_hours in hours_to_check:
+        candidate: int = start_charge_hours[consecutive_hours]
+        if (
+            candidate == best_hour
+            or candidate < best_hour
+            and (
+                prices[candidate] < 100
+                or prices[candidate] - initial_consecutive_hours_max_price < 40
+            )
+        ):
             best_consecutive_hours = consecutive_hours
-        elif candidate.hour < winner.hour:
-            if (
-                candidate.price < 100
-                or candidate.price - winner_3_consecutive_hours_max_price < 40
-            ):
-                winner = min_consecutive_prices[consecutive_hours]
-                best_consecutive_hours = consecutive_hours
 
     return best_consecutive_hours
-
-
-def calculate_consecutive_prices(prices: list[float]) -> list[HourPrices]:
-    result: list[HourPrices] = [
-        HourPrices(hour=hour, price=price) for hour, price in enumerate(prices)
-    ]
-    for hour in range(6, 16):
-        for consecutive_hours in range(MAX_CONSECUTIVE_HOURS):
-            avg = mean(prices[hour : hour + consecutive_hours + 1])
-            result[hour].mean_price_consecutive_hours[consecutive_hours] = avg
-    return result
 
 
 def create_csv(rce_prices: RceDayPrices):
@@ -121,7 +108,7 @@ def create_csv(rce_prices: RceDayPrices):
         row = [ems_prices.day] if hour == 0 else [""]
         row.extend([hour, str(current_price).replace(".", ",")])
 
-        for consecutive_hours in range(MAX_CONSECUTIVE_HOURS, 2, -1):
+        for consecutive_hours in reversed(POSSIBLE_CONSECUTIVE_HOURS):
             first_hour = ems_prices.first_hour_of_charge(consecutive_hours)
             last_hour = ems_prices.last_hour_of_charge(consecutive_hours)
             mark = ""
