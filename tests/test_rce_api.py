@@ -44,11 +44,12 @@ async def test_collect_raw_prices() -> None:
 
     rce_api = RceApi(session)
 
-    for day in range(1, 32):
-        day_date = datetime(year=2024, month=8, day=day)
+    month = 9
+    for day in range(1, 21):
+        day_date = datetime(year=2024, month=month, day=day)
         raw_data = await rce_api._async_get_prices_raw(day_date)
         raw_json = orjson.dumps(raw_data, option=orjson.OPT_INDENT_2)
-        path = f"tests/fixtures/raw/rce_2024_08_{day:02}.json"
+        path = f"tests/fixtures/raw/rce_2024_{month:02}_{day:02}.json"
         async with aiofiles.open(path, mode="x", encoding="utf-8") as file:
             await file.write(raw_json.decode("utf-8"))
 
