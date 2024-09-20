@@ -3,4 +3,5 @@ example/**
 scaffold/**
 homeassistant/**
 homeassistant
-/venv/
+/test_api.py
+/.idea/**
