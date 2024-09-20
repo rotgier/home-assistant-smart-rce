@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from http import HTTPStatus
-from typing import Any,Final
+from typing import Any, Final
 
 from aiohttp import ClientSession
 
@@ -35,6 +35,7 @@ class RceApi:
     async def async_get_prices(self, day: datetime) -> RceDayPrices:
         data = await self._async_get_prices_raw(day)
         return RceDayPrices.create_from_json(data)
+
     async def _async_get_prices_raw(self, day: datetime) -> dict[Any, Any]:
         """Fetch RCE prices for given day."""
         url = ENDPOINT.format(day.strftime("%Y-%m-%d"))
@@ -45,4 +46,3 @@ class RceApi:
                 text = await resp.text()
                 raise ApiError(f"Invalid response from RCE API: {resp.status} {text}")
             return await resp.json()
-
