@@ -106,7 +106,8 @@ def create_csv(rce_prices: RceDayPrices):
         current_price = ems_prices.hour_price[hour]
 
         row = [ems_prices.day] if hour == 0 else [""]
-        row.extend([hour, str(current_price).replace(".", ",")])
+        row.append(hour)
+        row.append(str(current_price).replace(".", ","))
 
         for consecutive_hours in reversed(POSSIBLE_CONSECUTIVE_HOURS):
             first_hour = ems_prices.first_hour_of_charge(consecutive_hours)
