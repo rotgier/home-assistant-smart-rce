@@ -38,8 +38,10 @@ async def async_setup_entry(
     async_add_entities(
         [
             SmartRceStartChargeHourSensor(coordinator),
+            SmartRceStartChargeHourTimeSensor(coordinator),
             SmartRceEndChargeHourSensor(coordinator),
             SmartRceCurrentPriceSensor(coordinator),
+            SmartRceEndChargeHourTimeSensor(coordinator),
         ]
     )
 
@@ -83,6 +85,58 @@ class SmartRceStartChargeHourSensor(
         return self._start_charge_hour
 
 
+class SmartRceStartChargeHourTimeSensor(
+    CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEntity
+):
+    _attr_has_entity_name = True
+    _attr_name = "Start Charge Hour Today Time"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(
+        self,
+        coordinator: SmartRceDataUpdateCoordinator,
+    ) -> None:
+        super().__init__(coordinator)
+        self._sensor_data: RceData = coordinator.data
+        self._attr_unique_id = (
+            f"{UNIQUE_ID_PREFIX}_start_charge_hour_today_time".lower()
+        )
+        self._attr_device_info = coordinator.device_info
+        self._start_charge_hour_timestamp: datetime = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._handle_coordinator_update()
+        _LOGGER.debug(
+            "Setup of Smart RCE sensor %s (%s, unique_id: %s)",
+            self.name,
+            self.entity_id,
+            self._attr_unique_id,
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        if self.coordinator.data and self.coordinator.data.today:
+            ems_prices: EmsDayPrices = find_charge_hours(self.coordinator.data.today)
+            start_charge_hour = ems_prices.best_start_charge_hour()
+
+            hour = int(start_charge_hour)
+            minute = int(start_charge_hour * 60 % 60)
+
+            now: datetime = now_local()
+            self._start_charge_hour_timestamp = now.replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+
+            _LOGGER.debug(
+                "Updated %s: %s", self._attr_name, self._start_charge_hour_timestamp
+            )
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self._start_charge_hour_timestamp
+
+
 class SmartRceEndChargeHourSensor(
     CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEntity
 ):
@@ -122,13 +176,63 @@ class SmartRceEndChargeHourSensor(
         return self._end_charge_hour
 
 
+class SmartRceEndChargeHourTimeSensor(
+    CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEntity
+):
+    _attr_has_entity_name = True
+    _attr_name = "End Charge Hour Today Time"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(
+        self,
+        coordinator: SmartRceDataUpdateCoordinator,
+    ) -> None:
+        super().__init__(coordinator)
+        self._sensor_data: RceData = coordinator.data
+        self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_end_charge_hour_today_time".lower()
+        self._attr_device_info = coordinator.device_info
+        self._end_charge_hour_timestamp: datetime = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._handle_coordinator_update()
+        _LOGGER.debug(
+            "Setup of Smart RCE sensor %s (%s, unique_id: %s)",
+            self.name,
+            self.entity_id,
+            self._attr_unique_id,
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        if self.coordinator.data and self.coordinator.data.today:
+            ems_prices: EmsDayPrices = find_charge_hours(self.coordinator.data.today)
+            end_charge_hour = ems_prices.end_start_charge_hour()
+
+            hour = int(end_charge_hour)
+            minute = int(end_charge_hour * 60 % 60)
+
+            now: datetime = now_local()
+            self._end_charge_hour_timestamp = now.replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+
+            _LOGGER.debug(
+                "Updated %s: %s", self._attr_name, self._end_charge_hour_timestamp
+            )
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self._end_charge_hour_timestamp
+
+
 class SmartRceCurrentPriceSensor(
     CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEntity
 ):
-    _attr_device_class = SensorDeviceClass.MONETARY
     _attr_has_entity_name = True
     _attr_name = "Current Price"
     _attr_native_unit_of_measurement = f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}"
+    _attr_device_class = SensorDeviceClass.MONETARY
 
     def __init__(
         self,
