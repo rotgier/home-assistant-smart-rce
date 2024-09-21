@@ -45,7 +45,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
         self._cancel_track_time_change_cb: CALLBACK_TYPE = None
 
         self.device_info = DeviceInfo(
-            name=DOMAIN,
+            name="RCE",
             identifiers={(DOMAIN, entry.entry_id)},
             entry_type=DeviceEntryType.SERVICE,
         )
@@ -89,7 +89,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
         return result
 
     async def async_shutdown(self) -> None:
-        """Add track time change cancelation."""
+        """Add track time change cancellation."""
         await super().async_shutdown()
         self._cancel_track_time_change()
 

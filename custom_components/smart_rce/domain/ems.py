@@ -39,6 +39,10 @@ class EmsDayPrices:
             return best_hour - 0.5
         return best_hour
 
+    def end_start_charge_hour(self) -> float:
+        best_consecutive = self.best_consecutive_hours
+        return self._start_charge_hours[best_consecutive] + best_consecutive
+
 
 class CsvTextBuilder:
     def __init__(self) -> None:
