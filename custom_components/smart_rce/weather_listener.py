@@ -6,6 +6,7 @@ import logging
 from typing import Final
 
 import aiofiles
+from aiofiles.os import getcwd
 import orjson
 
 from homeassistant.components.weather import (
@@ -182,6 +183,7 @@ class WeatherListenerCoordinator:
         self._unregister_weather_updates()
 
     def _has_hourly_forecast_changed(self, forecast: list[Forecast]) -> bool:
+        forecast = self._remove_last_hour_if_noon(forecast)
         now = now_local()
 
         first_hour_raw = forecast[0][ATTR_FORECAST_TIME]
@@ -231,6 +233,13 @@ class WeatherListenerCoordinator:
         self._save_forecast_to_file(now, forecast, forecast_day)
         return True
 
+    def _remove_last_hour_if_noon(self, forecast: list[Forecast]) -> list[Forecast]:
+        if forecast:
+            last_hour = datetime.fromisoformat(forecast[-1][ATTR_FORECAST_TIME])
+            if last_hour.hour == 0:
+                forecast = forecast[:-1]
+        return forecast
+
     def _save_forecast_to_file(
         self, now: datetime, forecast: list[Forecast], forecast_day: date
     ) -> None:
@@ -244,6 +253,8 @@ class WeatherListenerCoordinator:
     ) -> None:
         _LOGGER.debug("_async_save_forecast_to_file")
         raw_json = orjson.dumps(forecast, option=orjson.OPT_INDENT_2)
-        path = f"/config/smart_rce/hourly_forecast_{now.isoformat()}.json"
+        cwd = await getcwd()
+        _LOGGER.debug("cwd: %s", cwd)
+        path = f"config/smart_rce/hourly_forecast_{now.isoformat()}.json"
         async with aiofiles.open(path, mode="w+", encoding="utf-8") as file:
             await file.write(raw_json.decode("utf-8"))
