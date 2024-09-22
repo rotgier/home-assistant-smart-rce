@@ -78,6 +78,7 @@ class SmartRceStartChargeHourSensor(
         if self.coordinator.data and self.coordinator.data.today:
             ems_prices: EmsDayPrices = find_charge_hours(self.coordinator.data.today)
             self._start_charge_hour = ems_prices.best_start_charge_hour()
+            self.async_write_ha_state()
             _LOGGER.debug("Updated %s: %s", self._attr_name, self._start_charge_hour)
 
     @property
@@ -127,6 +128,7 @@ class SmartRceStartChargeHourTimeSensor(
             self._start_charge_hour_timestamp = now.replace(
                 hour=hour, minute=minute, second=0, microsecond=0
             )
+            self.async_write_ha_state()
 
             _LOGGER.debug(
                 "Updated %s: %s", self._attr_name, self._start_charge_hour_timestamp
@@ -169,6 +171,7 @@ class SmartRceEndChargeHourSensor(
         if self.coordinator.data and self.coordinator.data.today:
             ems_prices: EmsDayPrices = find_charge_hours(self.coordinator.data.today)
             self._end_charge_hour = ems_prices.end_start_charge_hour()
+            self.async_write_ha_state()
             _LOGGER.debug("Updated %s: %s", self._attr_name, self._end_charge_hour)
 
     @property
@@ -216,6 +219,7 @@ class SmartRceEndChargeHourTimeSensor(
             self._end_charge_hour_timestamp = now.replace(
                 hour=hour, minute=minute, second=0, microsecond=0
             )
+            self.async_write_ha_state()
 
             _LOGGER.debug(
                 "Updated %s: %s", self._attr_name, self._end_charge_hour_timestamp
@@ -249,7 +253,7 @@ class SmartRceCurrentPriceSensor(
         # Update 'state' value in hour changes
         self.async_on_remove(
             async_track_time_change(
-                self.hass, self.update_current_price, minute="*", second=0
+                self.hass, self.update_current_price, minute=0, second=0
             )
         )
         self._handle_coordinator_update()

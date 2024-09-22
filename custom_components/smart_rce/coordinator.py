@@ -17,7 +17,7 @@ from .const import DOMAIN
 from .infrastructure.rce_api import RceApi, RceDayPrices
 
 RCE_TOMORROW_PUBLICATION_HOUR: Final[int] = 14
-TIME_CHANGE_MINUTES_PATTERN: Final[str] = "/1"
+TIME_CHANGE_MINUTES_PATTERN: Final[str] = "/15"
 MINIMUM_TIME_BETWEEN_FETCHES_SECONDS: Final[int] = 14 * 60
 
 
@@ -55,20 +55,44 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
     async def _async_update_data(self) -> RceData:
         """Update data via library."""
         now = now_local()
+        _LOGGER.debug("_async_update_data start")
         if not self.data or not self.data.today:
+            _LOGGER.debug(
+                "_async_update_data doing full_update because data is: %s", self.data
+            )
             return await self._full_update(now)
         if self.data.fetched_at.date() != now.date():
+            _LOGGER.debug(
+                "_async_update_data doing full_update because no data for current day"
+            )
             return await self._full_update(now)
         if self.data.tomorrow:
+            _LOGGER.debug(
+                "_async_update_data skipping update because data for tomorrow is already present"
+            )
             return self.data
         if now.hour >= RCE_TOMORROW_PUBLICATION_HOUR:
             elapsed_seconds = (now - self.data.fetched_at).total_seconds()
             if elapsed_seconds > MINIMUM_TIME_BETWEEN_FETCHES_SECONDS:
+                _LOGGER.debug(
+                    "_async_update_data doing update for tomorrow because elapsed_seconds %d > %d",
+                    elapsed_seconds,
+                    MINIMUM_TIME_BETWEEN_FETCHES_SECONDS,
+                )
                 return RceData(
                     fetched_at=now,
                     today=self.data.today,
                     tomorrow=await self._fetch_prices_for_day(now + timedelta(days=1)),
                 )
+            _LOGGER.debug(
+                "_async_update_data skipping update for tomorrow because elapsed_seconds %d <= %d",
+                elapsed_seconds,
+                MINIMUM_TIME_BETWEEN_FETCHES_SECONDS,
+            )
+        else:
+            _LOGGER.debug(
+                "_async_update_data skipping update because tomorrow data is not available before RCE_TOMORROW_PUBLICATION_HOUR"
+            )
         return self.data
 
     async def _full_update(self, now: datetime) -> RceData:
