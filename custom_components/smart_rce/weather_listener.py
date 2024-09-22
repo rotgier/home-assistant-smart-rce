@@ -214,14 +214,16 @@ class WeatherListenerCoordinator:
             _LOGGER.debug("NO Save forecast SAME size because it is the same")
             return False
         if len_difference > 0:
-            assert (
+            if (
                 last_hourly_forecast[len_difference][ATTR_FORECAST_TIME]
-                == forecast[0][ATTR_FORECAST_TIME]
-            )
-            assert (
+                != forecast[0][ATTR_FORECAST_TIME]
+            ):
+                _LOGGER.warning("First element datetime does not match!")
+            if (
                 last_hourly_forecast[len_difference + 1][ATTR_FORECAST_TIME]
-                == forecast[1][ATTR_FORECAST_TIME]
-            )
+                != forecast[1][ATTR_FORECAST_TIME]
+            ):
+                _LOGGER.warning("Second element datetime does not match!")
             if forecast != last_hourly_forecast[len_difference:]:
                 _LOGGER.warning("Save forecast BIGGER size because it differs")
                 self._save_forecast_to_file(now, forecast)
