@@ -189,10 +189,8 @@ class WeatherListenerCoordinator:
         forecast_day: date = forecast_first_hour.date()
 
         if not self._last_hourly_forecast:
-            self._last_hourly_forecast = forecast
-            self._last_hourly_forecast_day = forecast_day
             _LOGGER.debug("Save forecast because no last forecast")
-            self._save_forecast_to_file(now, forecast)
+            self._save_forecast_to_file(now, forecast, forecast_day)
             return True
 
         last_hourly_forecast = self._last_hourly_forecast
@@ -200,16 +198,14 @@ class WeatherListenerCoordinator:
 
         assert self._last_hourly_forecast_day
         if forecast_day != self._last_hourly_forecast_day:
-            self._last_hourly_forecast = forecast
-            self._last_hourly_forecast_day = forecast_day
             _LOGGER.debug("Save forecast because day differs")
-            self._save_forecast_to_file(now, forecast)
+            self._save_forecast_to_file(now, forecast, forecast_day)
             return True
 
         if len_difference == 0:
             if forecast != last_hourly_forecast:
                 _LOGGER.debug("Save forecast SAME size because it differs")
-                self._save_forecast_to_file(now, forecast)
+                self._save_forecast_to_file(now, forecast, forecast_day)
                 return True
             _LOGGER.debug("NO Save forecast SAME size because it is the same")
             return False
@@ -225,17 +221,21 @@ class WeatherListenerCoordinator:
             ):
                 _LOGGER.warning("Second element datetime does not match!")
             if forecast != last_hourly_forecast[len_difference:]:
-                _LOGGER.warning("Save forecast BIGGER size because it differs")
-                self._save_forecast_to_file(now, forecast)
+                _LOGGER.warning("Save forecast SMALLER size because it differs")
+                self._save_forecast_to_file(now, forecast, forecast_day)
             else:
-                _LOGGER.warning("New smaller hourly_forecast is the same")
+                _LOGGER.warning("New SMALLER hourly_forecast is the same")
             return True
-        _LOGGER.warning("Save forecast SMALLER size!!! SMALLER means sth is wrong")
-        _LOGGER.warning("SMALLER len_difference: %d", len_difference)
-        self._save_forecast_to_file(now, forecast)
+        _LOGGER.warning("Save forecast BIGGER size!!! BIGGER means sth is wrong")
+        _LOGGER.warning("BIGGER len_difference: %d", len_difference)
+        self._save_forecast_to_file(now, forecast, forecast_day)
         return True
 
-    def _save_forecast_to_file(self, now: datetime, forecast: list[Forecast]) -> None:
+    def _save_forecast_to_file(
+        self, now: datetime, forecast: list[Forecast], forecast_day: date
+    ) -> None:
+        self._last_hourly_forecast = forecast
+        self._last_hourly_forecast_day = forecast_day
         _LOGGER.debug("_save_forecast_to_file")
         self.hass.loop.create_task(self._async_save_forecast_to_file(now, forecast))
 
