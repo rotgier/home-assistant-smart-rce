@@ -98,7 +98,7 @@ def find_best_consecutive_hours(
             or candidate < best_hour
             and (
                 prices[candidate] < 100
-                or prices[candidate] - initial_consecutive_hours_max_price < 40
+                or prices[candidate] - initial_consecutive_hours_max_price < 45
             )
         ):
             best_consecutive_hours = consecutive_hours

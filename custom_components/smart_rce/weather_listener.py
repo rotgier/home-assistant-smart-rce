@@ -6,7 +6,6 @@ import logging
 from typing import Final
 
 import aiofiles
-from aiofiles.os import getcwd
 import orjson
 
 from homeassistant.components.weather import (
@@ -253,8 +252,7 @@ class WeatherListenerCoordinator:
     ) -> None:
         _LOGGER.debug("_async_save_forecast_to_file")
         raw_json = orjson.dumps(forecast, option=orjson.OPT_INDENT_2)
-        cwd = await getcwd()
-        _LOGGER.debug("cwd: %s", cwd)
-        path = f"config/smart_rce/hourly_forecast_{now.isoformat()}.json"
+        config_dir = self.hass.config.config_dir
+        path = f"{config_dir}/smart_rce/hourly_forecast_{now.isoformat()}.json"
         async with aiofiles.open(path, mode="w+", encoding="utf-8") as file:
             await file.write(raw_json.decode("utf-8"))
