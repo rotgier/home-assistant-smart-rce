@@ -1,15 +1,59 @@
 """Energy Management System logic."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
 import csv
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime, time
 from statistics import mean
 from typing import Final
 
-from custom_components.smart_rce.domain.rce import RceDayPrices
+from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
+
+type CALLBACK_TYPE = Callable[[], None]
 
 MAX_CONSECUTIVE_HOURS: Final[int] = 8
 INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
 POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
+
+
+class Ems:
+    def __init__(self) -> None:
+        self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
+        self.today: EmsDayData = EmsDayData.empty()
+        self.tomorrow: EmsDayData = EmsDayData.empty()
+        self.rce_data: RceData = None
+        self.current_price: float = None
+
+    def update_now(self, now: datetime) -> None:
+        if self.today.hour_price:
+            self.current_price = self.today.hour_price[now.hour]
+            self._async_update_listeners()
+
+    def update_rce(self, now: datetime, data: RceData) -> None:
+        if data:
+            self.rce_data = data
+            if data.today:
+                self.today = EmsDayData.create(find_charge_hours(data.today))
+
+            if data.tomorrow:
+                self.tomorrow = EmsDayData.create(find_charge_hours(data.tomorrow))
+            else:
+                self.tomorrow = EmsDayData.empty()
+
+            self.update_now(now)
+
+    def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
+        def remove_listener() -> None:
+            self._listeners.pop(remove_listener)
+
+        self._listeners[remove_listener] = update_callback
+        return remove_listener
+
+    def _async_update_listeners(self) -> None:
+        for update_callback, _ in list(self._listeners.values()):
+            update_callback()
 
 
 class EmsDayPrices:
@@ -39,9 +83,38 @@ class EmsDayPrices:
             return best_hour - 0.5
         return best_hour
 
-    def end_start_charge_hour(self) -> float:
+    def best_end_charge_hour(self) -> float:
         best_consecutive = self.best_consecutive_hours
         return self._start_charge_hours[best_consecutive] + best_consecutive
+
+    def hour_to_timestamp(self, hour: int) -> datetime:
+        minute = int(hour * 60 % 60)
+        return datetime.combine(self.day, time(hour, minute, 0), TIMEZONE)
+
+
+@dataclass
+class EmsDayData:
+    hour_price: tuple[float] | None
+    start_charge_hour: datetime | None
+    start_charge_hour_datetime: datetime | None
+    end_charge_hour: datetime | None
+    end_charge_hour_datetime: datetime | None
+
+    @classmethod
+    def create(cls, prices: EmsDayPrices) -> EmsDayData:
+        start_charge_hour = prices.best_start_charge_hour()
+        end_charge_hour = prices.best_end_charge_hour()
+        return cls(
+            start_charge_hour=start_charge_hour,
+            start_charge_hour_datetime=prices.hour_to_timestamp(start_charge_hour),
+            end_charge_hour=end_charge_hour,
+            end_charge_hour_datetime=prices.hour_to_timestamp(end_charge_hour),
+            hour_price=prices.hour_price,
+        )
+
+    @classmethod
+    def empty(cls) -> EmsDayData:
+        return EmsDayData(None, None, None, None, None)
 
 
 class CsvTextBuilder:

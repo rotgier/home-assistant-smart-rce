@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
+
 from zoneinfo import ZoneInfo
 
 TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
@@ -36,3 +37,12 @@ class RceDayPrices:
                 )
 
         return cls(published_at, prices) if published_at else None
+
+
+@dataclass(frozen=True, kw_only=True)
+class RceData:
+    """RCE prices data."""
+
+    fetched_at: datetime
+    today: RceDayPrices
+    tomorrow: RceDayPrices
