@@ -44,6 +44,15 @@ class SmartRceSensorDescription(SensorEntityDescription):
 
 SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
+        name="Current Price",
+        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
+        device_class=SensorDeviceClass.MONETARY,
+        value_fn=lambda ems: ems.current_price,
+    ),
+    ####
+    #### TODAY
+    ####
+    SmartRceSensorDescription(
         name="Start Charge Hour Today",
         native_unit_of_measurement=UnitOfTime.HOURS,
         value_fn=lambda ems: ems.today.start_charge_hour,
@@ -63,11 +72,28 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=lambda ems: ems.today.end_charge_hour_datetime,
     ),
+    ####
+    #### TOMORROW
+    ####
     SmartRceSensorDescription(
-        name="Current Price",
-        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
-        device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda ems: ems.current_price,
+        name="Start Charge Hour Tomorrow",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        value_fn=lambda ems: ems.tomorrow.start_charge_hour,
+    ),
+    SmartRceSensorDescription(
+        name="Start Charge Hour Tomorrow Time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda ems: ems.tomorrow.start_charge_hour_datetime,
+    ),
+    SmartRceSensorDescription(
+        name="End Charge Hour Tomorrow",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        value_fn=lambda ems: ems.tomorrow.end_charge_hour,
+    ),
+    SmartRceSensorDescription(
+        name="End Charge Hour Tomorrow Time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda ems: ems.tomorrow.end_charge_hour_datetime,
     ),
 )
 
