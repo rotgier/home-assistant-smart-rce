@@ -12,6 +12,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.const import UnitOfEnergy, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
@@ -46,7 +47,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
         name="Current Price",
         native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
-        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.current_price,
     ),
     ####
@@ -55,6 +56,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
         name="Start Charge Hour Today",
         native_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.today.start_charge_hour,
     ),
     SmartRceSensorDescription(
@@ -65,6 +67,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
         name="End Charge Hour Today",
         native_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.today.end_charge_hour,
     ),
     SmartRceSensorDescription(
@@ -78,6 +81,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
         name="Start Charge Hour Tomorrow",
         native_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.tomorrow.start_charge_hour,
     ),
     SmartRceSensorDescription(
@@ -88,6 +92,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
         name="End Charge Hour Tomorrow",
         native_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.tomorrow.end_charge_hour,
     ),
     SmartRceSensorDescription(
