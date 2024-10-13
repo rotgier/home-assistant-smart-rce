@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import importlib
 import logging
 
+# import custom_components.smart_rce
+# import custom_components.smart_rce.domain
+# import custom_components.smart_rce.domain.ems
+# import custom_components.smart_rce.sensor
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.loader import DATA_CUSTOM_COMPONENTS, async_get_custom_components
 from homeassistant.util.dt import now as now_local
 
 from .coordinator import SmartRceDataUpdateCoordinator
@@ -70,4 +76,34 @@ def create_ems(hass: HomeAssistant, entry: SmartRceConfigEntry) -> Ems:
 
 async def async_unload_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    mod = importlib.import_module("custom_components.smart_rce")
+    importlib.reload(mod)
+    mod = importlib.import_module("custom_components.smart_rce.sensor")
+    importlib.reload(mod)
+    mod = importlib.import_module("custom_components.smart_rce.domain")
+    importlib.reload(mod)
+    mod = importlib.import_module("custom_components.smart_rce.domain.ems")
+    importlib.reload(mod)
+
+    # importlib.reload(custom_components.smart_rce.sensor)
+    # importlib.reload(custom_components.smart_rce.domain)
+    # importlib.reload(custom_components.smart_rce.domain.ems)
+    # exec("import custom_components.smart_rce")
+
+    smart_rce_integration = hass.data[DATA_CUSTOM_COMPONENTS]["smart_rce"]
+    smart_rce_integration._cache.pop("smart_rce")  # noqa: SLF001
+    smart_rce_integration._cache.pop("smart_rce.config_flow")  # noqa: SLF001
+    smart_rce_integration._cache.pop("smart_rce.sensor")  # noqa: SLF001
+    smart_rce_integration._cache.pop("sensor")  # noqa: SLF001
+    smart_rce_integration = hass.data[DATA_CUSTOM_COMPONENTS]["smart_rce"]
+
+    result = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    hass.data.pop(DATA_CUSTOM_COMPONENTS)
+    await async_get_custom_components(hass)
+    smart_rce_integration = hass.data[DATA_CUSTOM_COMPONENTS]["smart_rce"]
+    # smart_rce_integration._cache.pop("smart_rce")
+    # smart_rce_integration._cache.pop("smart_rce.config_flow")
+    # smart_rce_integration._cache.pop("smart_rce.sensor")
+    smart_rce_integration._cache.pop("sensor")  # noqa: SLF001
+    smart_rce_integration = hass.data[DATA_CUSTOM_COMPONENTS]["smart_rce"]
+    return result
