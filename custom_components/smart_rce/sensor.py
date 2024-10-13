@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 import logging
-from typing import Final
+from typing import Any, Final
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
 from homeassistant.const import UnitOfEnergy, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -26,6 +32,46 @@ PARALLEL_UPDATES = 1
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=False, kw_only=True)
+class SmartRceSensorDescription(SensorEntityDescription):
+    key: str = field(init=False)
+    value_fn: Callable[[Ems], str | int | float | datetime | None]
+    attr_fn: Callable[[dict[str, Any]], dict[str, Any]] = lambda _: {}
+
+    def __post_init__(self):
+        self.key = self.name.lower().replace(" ", "_")
+
+
+SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
+    SmartRceSensorDescription(
+        name="Start Charge Hour Today",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        value_fn=lambda ems: ems.today.start_charge_hour,
+    ),
+    SmartRceSensorDescription(
+        name="Start Charge Hour Today Time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda ems: ems.today.start_charge_hour_datetime,
+    ),
+    SmartRceSensorDescription(
+        name="End Charge Hour Today",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        value_fn=lambda ems: ems.today.end_charge_hour,
+    ),
+    SmartRceSensorDescription(
+        name="End Charge Hour Today Time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda ems: ems.today.end_charge_hour_datetime,
+    ),
+    SmartRceSensorDescription(
+        name="Current Price",
+        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
+        device_class=SensorDeviceClass.MONETARY,
+        value_fn=lambda ems: ems.current_price,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: SmartRceConfigEntry,
@@ -34,26 +80,30 @@ async def async_setup_entry(
     """Add Smart RCE sensors."""
     coordinator = entry.runtime_data.rce_coordinator
     ems = entry.runtime_data.ems
-    async_add_entities(
-        [
-            SmartRceStartChargeHourSensor(coordinator, ems),
-            SmartRceStartChargeHourTimeSensor(coordinator, ems),
-            SmartRceEndChargeHourSensor(coordinator, ems),
-            SmartRceEndChargeHourTimeSensor(coordinator, ems),
-            SmartRceCurrentPriceSensor(coordinator, ems),
-        ]
-    )
+
+    sensors: list[SmartRceSensorDescription] = [
+        SmartRceSensor(coordinator, ems, description)
+        for description in SENSOR_DESCRIPTIONS
+    ]
+
+    async_add_entities(sensors)
 
 
 class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEntity):
     _attr_has_entity_name = True
+    entity_description: SmartRceSensorDescription
 
-    def __init__(self, coordinator: SmartRceDataUpdateCoordinator, ems: Ems) -> None:
+    def __init__(
+        self,
+        coordinator: SmartRceDataUpdateCoordinator,
+        ems: Ems,
+        description: SmartRceSensorDescription,
+    ) -> None:
         super().__init__(coordinator)
-        name_as_id = self._attr_name.lower().replace(" ", "_")
-        self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_{name_as_id}"
-        self._attr_device_info = coordinator.device_info
         self.ems: Ems = ems
+        self.entity_description = description
+        self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_{description.key}"
+        self._attr_device_info = coordinator.device_info
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -63,12 +113,8 @@ class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEnt
             self.async_write_ha_state()
 
         remove_listener = self.ems.async_add_listener(listener)
-
-        @callback
-        def remove_listener_as_callback() -> None:
-            remove_listener()
-
-        self.async_on_remove(remove_listener_as_callback)
+        setattr(remove_listener, "_hass_callback", True)
+        self.async_on_remove(remove_listener)
 
         self._handle_coordinator_update()
         _LOGGER.debug(
@@ -78,48 +124,6 @@ class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEnt
             self._attr_unique_id,
         )
 
-
-class SmartRceStartChargeHourSensor(SmartRceSensor):
-    _attr_name = "Start Charge Hour Today"
-    _attr_native_unit_of_measurement = UnitOfTime.HOURS
-
     @property
-    def native_value(self) -> str | int | float | None:
-        return self.ems.today.start_charge_hour
-
-
-class SmartRceStartChargeHourTimeSensor(SmartRceSensor):
-    _attr_name = "Start Charge Hour Today Time"
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-
-    @property
-    def native_value(self) -> datetime | None:
-        return self.ems.today.start_charge_hour_datetime
-
-
-class SmartRceEndChargeHourSensor(SmartRceSensor):
-    _attr_name = "End Charge Hour Today"
-    _attr_native_unit_of_measurement = UnitOfTime.HOURS
-
-    @property
-    def native_value(self) -> str | int | float | None:
-        return self.ems.today.end_charge_hour
-
-
-class SmartRceEndChargeHourTimeSensor(SmartRceSensor):
-    _attr_name = "End Charge Hour Today Time"
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-
-    @property
-    def native_value(self) -> datetime | None:
-        return self.ems.today.end_charge_hour_datetime
-
-
-class SmartRceCurrentPriceSensor(SmartRceSensor):
-    _attr_name = "Current Price"
-    _attr_native_unit_of_measurement = f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}"
-    _attr_device_class = SensorDeviceClass.MONETARY
-
-    @property
-    def native_value(self) -> str | int | float | None:
-        return self.ems.current_price
+    def native_value(self) -> str | int | float | datetime | None:
+        return self.entity_description.value_fn(self.ems)

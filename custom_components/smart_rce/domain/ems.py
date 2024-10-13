@@ -52,7 +52,7 @@ class Ems:
         return remove_listener
 
     def _async_update_listeners(self) -> None:
-        for update_callback, _ in list(self._listeners.values()):
+        for update_callback in self._listeners.values():
             update_callback()
 
 
