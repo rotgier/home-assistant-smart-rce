@@ -25,45 +25,27 @@ from .domain.ems import Ems, InputState
 _LOGGER = logging.getLogger(__name__)
 
 
-# # TODO Does this class need to be @dataclass ?
-# @dataclass
-# class InputStateMapper(InputState):
-#     def set_water_heater_is_on(self, state: str) -> None:
-#         # TODO this string is probably "on" / "off" so this mapping is WRONG! :|
-#         self.water_heater_is_on = map_bool(state)
-
-#     def set_battery_soc(self, state: str) -> None:
-#         self.battery_soc = map_float(state)
-
-#     def set_battery_power_2_minutes(self, state: str) -> None:
-#         self.battery_power_2_minutes = map_float(state)
-
-#     def set_consumption_minus_pv_2_minutes(self, state: str) -> None:
-#         self.consumption_minus_pv_2_minutes = map_float(state)
-
-#     def set_exported_energy_hourly(self, state: str) -> None:
-#         self.exported_energy_hourly = map_float(state)
-
-
-def map_bool(entity: str, value: str) -> bool | None:
-    try:
-        return bool(value)
-    except (ValueError, TypeError):
-        _LOGGER.error("State %s with value %s cannot be mapped to bool", entity, value)
-        return None
+def map_on_off(entity: str, value: str) -> bool | None:
+    match value:
+        case "on":
+            return True
+        case "off":
+            return False
+        case _:
+            _LOGGER.error("State %s being %s cannot be mapped to bool", entity, value)
+            return None
 
 
 def map_float(entity: str, value: str) -> bool | None:
     try:
         return float(value)
     except (ValueError, TypeError):
-        _LOGGER.error("State %s with value %s cannot be mapped to float", entity, value)
+        _LOGGER.error("State %s being %s cannot be mapped to float", entity, value)
         return None
 
 
 def set_water_heater_is_on(entity: str, i: InputState, state: str) -> None:
-    # TODO this string is probably "on" / "off" so this mapping is WRONG! :|
-    i.water_heater_is_on = map_bool(entity, state)
+    i.water_heater_is_on = map_on_off(entity, state)
 
 
 def set_battery_soc(entity: str, i: InputState, state: str) -> None:
