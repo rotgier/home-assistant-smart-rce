@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from importlib import import_module, reload
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_change
-from homeassistant.util.dt import now as now_local
 
+from .adapter import create_ems
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.ems import Ems
 from .infrastructure.rce_api import RceApi
@@ -53,20 +51,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
-
-
-def create_ems(hass: HomeAssistant, entry: SmartRceConfigEntry) -> Ems:
-    ems: Ems = Ems()
-
-    @callback
-    def update_current_price(now: datetime) -> None:
-        ems.update_now(now)
-
-    update_current_price(now_local())
-    entry.async_on_unload(
-        async_track_time_change(hass, update_current_price, minute=0, second=0)
-    )
-    return ems
 
 
 def live_reload():
