@@ -18,15 +18,111 @@ INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
 POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
 
 
+@dataclass
+class InputState:
+    water_heater_is_on: bool | None = None
+
+    battery_soc: float | None = None
+    battery_power_2_minutes: float | None = None
+    consumption_minus_pv_2_minutes: float | None = None
+    exported_energy_hourly: float | None = None
+
+
+class WaterHeaterManager:
+    HEATER_POWER: int = 3000
+
+    def __init__(self) -> None:
+        self.should_turn_on: bool = False
+        self.should_turn_off: bool = False
+
+    def update(self, input: InputState):
+        self.should_turn_on, self.should_turn_off = self._update(input)
+
+    def _none_present(self, state: InputState) -> bool:
+        return (
+            state.water_heater_is_on is None
+            or state.battery_soc is None
+            or state.battery_power_2_minutes is None
+            or state.consumption_minus_pv_2_minutes is None
+            or state.exported_energy_hourly is None
+        )
+
+    def _update(self, state: InputState) -> tuple[bool, bool]:
+        turn_on: bool = False
+        turn_off: bool = False
+
+        if self._none_present(state):
+            return (turn_on, turn_off)
+
+        water_heater_is_on = state.water_heater_is_on
+        pv_available = -state.consumption_minus_pv_2_minutes
+        battery_soc = state.battery_soc
+        battery_power = state.battery_power_2_minutes
+        battery_power_expected = pv_available - self.HEATER_POWER
+        exported_energy = state.exported_energy_hourly
+
+        if battery_soc <= 89:
+            # more pv than battery can charge
+            turn_on = pv_available > 5200
+            assert turn_on == battery_power_expected > 2200
+
+            # battery could charge faster
+            turn_off = battery_power < 1900
+
+        if battery_soc <= 96:
+            turn_on = pv_available > 4500
+            assert turn_on == battery_power_expected > 1500
+
+            turn_off = battery_power < 1000
+
+        elif battery_soc in [97, 98]:
+            turn_on = pv_available > 3500
+            assert turn_on == battery_power_expected > 500
+
+            turn_off = battery_power < 400
+
+        elif battery_soc == 99:
+            turn_on = pv_available > 3300
+            assert turn_on == battery_power_expected > 300
+
+            turn_off = battery_power < 290
+
+        elif battery_soc == 100:
+            turn_on = pv_available > self.HEATER_POWER
+            turn_off = not turn_on
+
+        if battery_soc >= 90:
+            if exported_energy > 300 and pv_available > 0:
+                turn_on = True
+                turn_off = False
+
+            if exported_energy > 80 and water_heater_is_on:
+                # could check if pv would be available after heater is turned off
+                # pv_available + self.HEATER_POWER > 0
+                # then water_heater could be turned off because accumulated exported_energy
+                # should be used for regular house consumption => without water_heater
+                # (but in fact it depends on the consumption speed of the accumulated exported_energy)
+
+                turn_off = False
+
+        return (turn_on, turn_off)
+
+
 class Ems:
     def __init__(self) -> None:
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
+        self._ha: InputState = None
         self.today: EmsDayData = EmsDayData.empty()
         self.tomorrow: EmsDayData = EmsDayData.empty()
         self.rce_data: RceData = None
         self.current_price: float = None
+        self.water_heater: WaterHeaterManager = WaterHeaterManager()
 
-    def update_now(self, now: datetime) -> None:
+    def update_state(self, state: InputState) -> None:
+        self.water_heater.update(state)
+        self._async_update_listeners()
+
+    def update_hourly(self, now: datetime) -> None:
         if self.today.hour_price:
             self.current_price = self.today.hour_price[now.hour]
             self._async_update_listeners()
@@ -42,7 +138,7 @@ class Ems:
             else:
                 self.tomorrow = EmsDayData.empty()
 
-            self.update_now(now)
+            self.update_hourly(now)
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         def remove_listener() -> None:
