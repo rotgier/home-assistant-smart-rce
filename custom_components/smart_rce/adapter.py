@@ -65,7 +65,7 @@ def set_exported_energy_hourly(entity: str, i: InputState, state: str) -> None:
 
 
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
-    "switch.grzalka_wody_local": set_water_heater_is_on,
+    "switch.water_heater_big": set_water_heater_is_on,
     "sensor.battery_state_of_charge": set_battery_soc,
     "sensor.battery_power_avg_2_minutes": set_battery_power_2_minutes,
     "sensor.house_consumption_minus_pv_avg_2_minutes": set_consumption_minus_pv_2_minutes,
