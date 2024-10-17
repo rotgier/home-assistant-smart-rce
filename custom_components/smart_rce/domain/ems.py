@@ -6,12 +6,15 @@ from collections.abc import Callable
 import csv
 from dataclasses import dataclass
 from datetime import date, datetime, time
+import logging
 from statistics import mean
 from typing import Final
 
 from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
 
 type CALLBACK_TYPE = Callable[[], None]
+
+_LOGGER = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_HOURS: Final[int] = 8
 INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
@@ -35,6 +38,9 @@ class WaterHeaterManager:
         self.should_turn_on: bool = False
         self.should_turn_off: bool = False
 
+        self.should_turn_on_small: bool = False
+        self.should_turn_off_small: bool = False
+
     def update(self, input: InputState):
         self.should_turn_on, self.should_turn_off = self._update(input)
 
@@ -51,45 +57,52 @@ class WaterHeaterManager:
         turn_on: bool = False
         turn_off: bool = False
 
+        # turn_on_small: bool = False
+        # turn_off_small: bool = False
+
         if self._none_present(state):
             return (turn_on, turn_off)
 
         water_heater_is_on = state.water_heater_is_on
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
-        battery_power = state.battery_power_2_minutes
-        battery_power_expected = pv_available - self.HEATER_POWER
-        exported_energy = state.exported_energy_hourly
+        battery_power = -state.battery_power_2_minutes
+        # battery_power_expected = pv_available - self.HEATER_POWER
+        exported_energy = state.exported_energy_hourly * 1000
+
+        # _LOGGER.debug(
+        #     f"water_heater_is_on: {water_heater_is_on} pv_available: {pv_available} battery_soc: {battery_soc} battery_power: {battery_power} battery_power_expected: {battery_power_expected} exported_energy:{exported_energy}"
+        # )
 
         if battery_soc <= 89:
             # more pv than battery can charge
-            turn_on = pv_available > 5200
-            assert turn_on == battery_power_expected > 2200
+            turn_on = pv_available > 5200 - 1500
+            # assert turn_on == (battery_power_expected > 2200)
 
             # battery could charge faster
-            turn_off = battery_power < 1900
+            turn_off = battery_power < 1900 - 1000
 
-        if battery_soc <= 96:
-            turn_on = pv_available > 4500
-            assert turn_on == battery_power_expected > 1500
+        elif battery_soc <= 96:
+            turn_on = pv_available > 4500 - 1500
+            # assert turn_on == (battery_power_expected > 1500)
 
-            turn_off = battery_power < 1000
+            turn_off = battery_power < 1000 - 900
 
         elif battery_soc in [97, 98]:
             turn_on = pv_available > 3500
-            assert turn_on == battery_power_expected > 500
+            # assert turn_on == (battery_power_expected > 500)
 
-            turn_off = battery_power < 400
+            turn_off = battery_power < 400 - 300
 
         elif battery_soc == 99:
             turn_on = pv_available > 3300
-            assert turn_on == battery_power_expected > 300
+            # assert turn_on == (battery_power_expected > 300)
 
-            turn_off = battery_power < 290
+            turn_off = battery_power < 290 - 200
 
         elif battery_soc == 100:
             turn_on = pv_available > self.HEATER_POWER
-            turn_off = not turn_on
+            turn_off = pv_available < 0
 
         if battery_soc >= 90:
             if exported_energy > 300 and pv_available > 0:
