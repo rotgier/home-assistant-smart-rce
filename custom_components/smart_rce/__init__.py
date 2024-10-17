@@ -56,6 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
 def live_reload():
     reload(import_module("custom_components.smart_rce.domain.ems"))
     reload(import_module("custom_components.smart_rce.domain"))
+    reload(import_module("custom_components.smart_rce.adapter"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce"))
 
