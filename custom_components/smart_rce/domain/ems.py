@@ -23,7 +23,8 @@ POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
 
 @dataclass
 class InputState:
-    water_heater_is_on: bool | None = None
+    water_heater_big_is_on: bool | None = None
+    water_heater_small_is_on: bool | None = None
 
     battery_soc: float | None = None
     battery_power_2_minutes: float | None = None
@@ -33,6 +34,10 @@ class InputState:
 
 class WaterHeaterManager:
     HEATER_POWER: int = 3000
+    BOTH_ARE_ON: str = "both_are_on"
+    BIG_IS_ON: str = "big_is_on"
+    SMALL_IS_ON: str = "small_is_on"
+    BOTH_ARE_OFF: str = "both_are_off"
 
     def __init__(self) -> None:
         self.should_turn_on: bool = False
@@ -44,16 +49,7 @@ class WaterHeaterManager:
     def update(self, input: InputState):
         self.should_turn_on, self.should_turn_off = self._update(input)
 
-    def _none_present(self, state: InputState) -> bool:
-        return (
-            state.water_heater_is_on is None
-            or state.battery_soc is None
-            or state.battery_power_2_minutes is None
-            or state.consumption_minus_pv_2_minutes is None
-            or state.exported_energy_hourly is None
-        )
-
-    def _update(self, state: InputState) -> tuple[bool, bool]:
+    def _update_new(self, state: InputState) -> tuple[bool, bool]:
         turn_on: bool = False
         turn_off: bool = False
 
@@ -63,7 +59,24 @@ class WaterHeaterManager:
         if self._none_present(state):
             return (turn_on, turn_off)
 
-        water_heater_is_on = state.water_heater_is_on
+        water_heater_big_is_on = state.water_heater_big_is_on
+        water_heater_small_is_on = state.water_heater_small_is_on
+
+        new_state = ""  # noqa: F841
+
+        if water_heater_big_is_on and water_heater_small_is_on:
+            both_are_on = True
+            current_state = self.BOTH_ARE_ON
+        elif water_heater_big_is_on:
+            big_is_on = True
+            current_state = self.BIG_IS_ON
+        elif water_heater_small_is_on:
+            small_is_on = True
+            current_state = self.SMALL_IS_ON
+        else:
+            both_are_off = True  # noqa: F841
+            current_state = self.BOTH_ARE_OFF  # noqa: F841
+
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
         battery_power = -state.battery_power_2_minutes
@@ -71,11 +84,54 @@ class WaterHeaterManager:
         exported_energy = state.exported_energy_hourly * 1000
 
         # _LOGGER.debug(
-        #     f"water_heater_is_on: {water_heater_is_on} pv_available: {pv_available} battery_soc: {battery_soc} battery_power: {battery_power} battery_power_expected: {battery_power_expected} exported_energy:{exported_energy}"
+        #     f"water_heater_big_is_on: {water_heater_big_is_on} pv_available: {pv_available} battery_soc: {battery_soc} battery_power: {battery_power} battery_power_expected: {battery_power_expected} exported_energy:{exported_energy}"
         # )
 
         if battery_soc <= 89:
             # more pv than battery can charge
+
+            ###
+            ### MAX BATTERY CHARGE
+            ###
+            if pv_available > 5000 + 4500:
+                if (pv_available > 5000 + 4500 + 500) or both_are_on:
+                    result = self.BOTH_ARE_ON
+                else:
+                    result = self.BIG_IS_ON
+            elif pv_available > 5000 + 3000:
+                if (pv_available > 5000 + 3000 + 500) or big_is_on:
+                    result = self.BIG_IS_ON
+                else:
+                    result = self.SMALL_IS_ON
+            elif pv_available > 5000 + 1500:
+                if (pv_available > 5000 + 1500 + 500) or small_is_on:
+                    result = self.SMALL_IS_ON
+                else:
+                    result = self.BOTH_ARE_OFF
+            else:
+                result = self.BOTH_ARE_OFF
+
+            ###
+            ### MAX WATER HEATING
+            ###
+            if pv_available > 4500:
+                if (pv_available > 4500 + 500) or both_are_on:
+                    result = self.BOTH_ARE_ON
+                else:
+                    result = self.BIG_IS_ON
+            elif pv_available > 3000:
+                if (pv_available > 3000 + 500) or big_is_on:
+                    result = self.BIG_IS_ON
+                else:
+                    result = self.SMALL_IS_ON
+            elif pv_available > 1500:
+                if (pv_available > 1500 + 500) or small_is_on:
+                    result = self.SMALL_IS_ON
+                else:
+                    result = self.BOTH_ARE_OFF
+            else:
+                result = self.BOTH_ARE_OFF
+
             turn_on = pv_available > 5200 - 1500
             # assert turn_on == (battery_power_expected > 2200)
 
@@ -109,7 +165,152 @@ class WaterHeaterManager:
                 turn_on = True
                 turn_off = False
 
-            if exported_energy > 80 and water_heater_is_on:
+            if exported_energy > 80 and water_heater_big_is_on:
+                # could check if pv would be available after heater is turned off
+                # pv_available + self.HEATER_POWER > 0
+                # then water_heater could be turned off because accumulated exported_energy
+                # should be used for regular house consumption => without water_heater
+                # (but in fact it depends on the consumption speed of the accumulated exported_energy)
+
+                turn_off = False
+
+        # return (turn_on, turn_off)
+
+        return result
+
+    def _none_present(self, state: InputState) -> bool:
+        return (
+            state.water_heater_big_is_on is None
+            or state.water_heater_small_is_on is None
+            or state.battery_soc is None
+            or state.battery_power_2_minutes is None
+            or state.consumption_minus_pv_2_minutes is None
+            or state.exported_energy_hourly is None
+        )
+
+    def _update(self, state: InputState) -> tuple[bool, bool]:
+        turn_on: bool = False
+        turn_off: bool = False
+
+        # turn_on_small: bool = False
+        # turn_off_small: bool = False
+
+        if self._none_present(state):
+            return (turn_on, turn_off)
+
+        water_heater_big_is_on = state.water_heater_big_is_on
+        water_heater_small_is_on = state.water_heater_small_is_on  # noqa: F841
+        pv_available = -state.consumption_minus_pv_2_minutes
+        battery_soc = state.battery_soc
+        battery_power = -state.battery_power_2_minutes
+        # battery_power_expected = pv_available - self.HEATER_POWER
+        exported_energy = state.exported_energy_hourly * 1000
+
+        # _LOGGER.debug(
+        #     f"water_heater_big_is_on: {water_heater_big_is_on} pv_available: {pv_available} battery_soc: {battery_soc} battery_power: {battery_power} battery_power_expected: {battery_power_expected} exported_energy:{exported_energy}"
+        # )
+
+        mode = "TURN_BIG_HEATER_ASAP_WHEN_ENOUGH_PV"
+
+        if mode == "LEAVE_POWER_FOR_SMALL_HEATER":
+            if battery_soc <= 89:
+                # more pv than battery can charge
+                turn_on = pv_available > 5200 - 1500
+                # assert turn_on == (battery_power_expected > 2200)
+
+                # battery could charge faster
+                turn_off = battery_power < 1900 - 1000
+
+            elif battery_soc <= 96:
+                turn_on = pv_available > 4500 - 1500
+                # assert turn_on == (battery_power_expected > 1500)
+
+                turn_off = battery_power < 1000 - 900
+
+            elif battery_soc in [97, 98]:
+                turn_on = pv_available > 3500
+                # assert turn_on == (battery_power_expected > 500)
+
+                turn_off = battery_power < 400 - 300
+
+            elif battery_soc == 99:
+                turn_on = pv_available > 3300
+                # assert turn_on == (battery_power_expected > 300)
+
+                turn_off = battery_power < 290 - 200
+
+            elif battery_soc == 100:
+                turn_on = pv_available > self.HEATER_POWER
+                turn_off = pv_available < 0
+
+        if mode == "TURN_BIG_HEATER_ASAP_WHEN_ENOUGH_PV":
+            if battery_soc <= 89:
+                # more pv than battery can charge
+                turn_on = pv_available > 3300
+                # assert turn_on == (battery_power_expected > 2200)
+
+                # battery could charge faster
+                turn_off = battery_power < 100
+
+            elif battery_soc <= 96:
+                turn_on = pv_available > 3300
+                # assert turn_on == (battery_power_expected > 1500)
+
+                turn_off = battery_power < 100
+
+            elif battery_soc in [97, 98]:
+                turn_on = pv_available > 3300
+                # assert turn_on == (battery_power_expected > 500)
+
+                turn_off = battery_power < 100
+
+            elif battery_soc == 99:
+                turn_on = pv_available > 3300
+                # assert turn_on == (battery_power_expected > 300)
+
+                turn_off = battery_power < 100
+
+            elif battery_soc == 100:
+                turn_on = pv_available > self.HEATER_POWER
+                turn_off = pv_available < 0
+
+        if mode == "TURN_BIG_HEATER_ONLY_WHEN_PV_IS_WASTED":
+            if battery_soc <= 89:
+                # more pv than battery can charge
+                turn_on = pv_available > 5200
+                # assert turn_on == (battery_power_expected > 2200)
+
+                # battery could charge faster
+                turn_off = battery_power < 1900
+
+            elif battery_soc <= 96:
+                turn_on = pv_available > 4500
+                # assert turn_on == (battery_power_expected > 1500)
+
+                turn_off = battery_power < 1000
+
+            elif battery_soc in [97, 98]:
+                turn_on = pv_available > 3500
+                # assert turn_on == (battery_power_expected > 500)
+
+                turn_off = battery_power < 400
+
+            elif battery_soc == 99:
+                turn_on = pv_available > 3300
+                # assert turn_on == (battery_power_expected > 300)
+
+                turn_off = battery_power < 290
+
+            elif battery_soc == 100:
+                turn_on = pv_available > self.HEATER_POWER
+                turn_off = pv_available < 0
+
+        if battery_soc >= 90:
+            if exported_energy > 300 and pv_available > 0:
+                turn_on = True
+                turn_off = False
+
+            if exported_energy > 80 and water_heater_big_is_on:
                 # could check if pv would be available after heater is turned off
                 # pv_available + self.HEATER_POWER > 0
                 # then water_heater could be turned off because accumulated exported_energy
@@ -198,7 +399,7 @@ class EmsDayPrices:
 
     def hour_to_timestamp(self, hour: int) -> datetime:
         minute = int(hour * 60 % 60)
-        return datetime.combine(self.day, time(hour, minute, 0), TIMEZONE)
+        return datetime.combine(self.day, time(int(hour), minute, 0), TIMEZONE)
 
 
 @dataclass
