@@ -26,9 +26,11 @@ class RceDayPrices:
         published_at = None
         for price in data["value"]:
             published_at = price["source_datetime"]
-            date_hour = datetime.fromisoformat(price["udtczas"])
+            date = price["doba"]
+            hour = price["udtczas_oreb"][:5]
+            date_hour = datetime.fromisoformat(f"{date} {hour}")
             date_hour = date_hour.replace(tzinfo=TIMEZONE)
-            if date_hour.minute == 15:
+            if date_hour.minute == 0:
                 prices.append(
                     {
                         "datetime": date_hour.replace(minute=0),
