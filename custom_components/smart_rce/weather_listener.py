@@ -171,7 +171,7 @@ class WeatherListenerCoordinator:
     def _async_update_listeners(self) -> None:
         """Update all registered listeners."""
         _LOGGER.debug("_async_update_listeners")
-        for update_callback, _ in list(self._listeners.values()):
+        for update_callback in list(self._listeners.values()):
             update_callback()
 
     @callback

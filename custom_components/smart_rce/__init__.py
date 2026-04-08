@@ -15,6 +15,7 @@ from .adapter import create_ems
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.ems import Ems
 from .infrastructure.rce_api import RceApi
+from .pv_forecast_coordinator import PvForecastCoordinator
 from .weather_listener import WeatherListenerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class SmartRceData:
     ems: Ems
     rce_coordinator: SmartRceDataUpdateCoordinator
     weather_coordinator: WeatherListenerCoordinator
+    pv_forecast_coordinator: PvForecastCoordinator
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -44,11 +46,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     rce_coordinator = SmartRceDataUpdateCoordinator(hass, rceApi, ems, entry)
     weather_coordinator = WeatherListenerCoordinator(hass, entry)
 
+    pv_forecast_coordinator = PvForecastCoordinator(hass, weather_coordinator)
+
     await rce_coordinator.async_config_entry_first_refresh()
 
-    entry.runtime_data = SmartRceData(ems, rce_coordinator, weather_coordinator)
+    entry.runtime_data = SmartRceData(
+        ems, rce_coordinator, weather_coordinator, pv_forecast_coordinator
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    await pv_forecast_coordinator.async_start()
 
     return True
 
@@ -60,6 +68,8 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.ems"))
     reload(import_module("custom_components.smart_rce.domain"))
     reload(import_module("custom_components.smart_rce.adapter"))
+    reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
+    reload(import_module("custom_components.smart_rce.pv_forecast_coordinator"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce"))

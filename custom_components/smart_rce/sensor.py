@@ -23,6 +23,7 @@ from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.ems import Ems
+from .pv_forecast_coordinator import PvForecastCoordinator
 
 CURRENCY_PLN: Final = "zł"
 UNIQUE_ID_PREFIX = DOMAIN
@@ -154,13 +155,55 @@ async def async_setup_entry(
     """Add Smart RCE sensors."""
     coordinator = entry.runtime_data.rce_coordinator
     ems = entry.runtime_data.ems
+    pv_forecast = entry.runtime_data.pv_forecast_coordinator
 
-    sensors: list[SmartRceSensorDescription] = [
+    sensors: list[SensorEntity] = [
         SmartRceSensor(coordinator, ems, description)
         for description in SENSOR_DESCRIPTIONS
     ]
 
+    sensors.extend(
+        [
+            PvForecastSensor(
+                pv_forecast,
+                coordinator,
+                "Weather Adjusted PV At 6",
+                lambda pv: pv.adjusted_at_6.total_kwh if pv.adjusted_at_6 else None,
+                lambda pv: _pv_forecast_attrs(pv.adjusted_at_6),
+            ),
+            PvForecastSensor(
+                pv_forecast,
+                coordinator,
+                "Weather Adjusted PV Live",
+                lambda pv: pv.adjusted_live.total_kwh if pv.adjusted_live else None,
+                lambda pv: _pv_forecast_attrs(pv.adjusted_live),
+            ),
+            PvForecastSensor(
+                pv_forecast,
+                coordinator,
+                "Target Battery SOC",
+                lambda pv: pv.target_soc,
+                lambda _pv: {},
+                unit="%",
+            ),
+        ]
+    )
+
     async_add_entities(sensors)
+
+
+def _pv_forecast_attrs(forecast) -> dict[str, Any]:
+    if not forecast:
+        return {}
+    return {
+        "forecast": [
+            {
+                "period_start": p.period_start,
+                "pv_estimate_adjusted": p.pv_estimate_adjusted,
+            }
+            for p in forecast.forecast
+        ]
+    }
 
 
 class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEntity):
@@ -205,3 +248,57 @@ class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEnt
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return self.entity_description.attr_fn(self.ems)
+
+
+class PvForecastSensor(SensorEntity):
+    """Sensor for weather-adjusted PV forecast data."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        pv_forecast: PvForecastCoordinator,
+        rce_coordinator: SmartRceDataUpdateCoordinator,
+        name: str,
+        value_fn: Callable[[PvForecastCoordinator], float | int | None],
+        attr_fn: Callable[[PvForecastCoordinator], dict[str, Any]],
+        unit: str | None = None,
+    ) -> None:
+        self._pv_forecast = pv_forecast
+        self._value_fn = value_fn
+        self._attr_fn = attr_fn
+        self._attr_name = name
+        key = name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_{key}"
+        self._attr_device_info = rce_coordinator.device_info
+        if unit:
+            self._attr_native_unit_of_measurement = unit
+        else:
+            self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        @callback
+        def listener() -> None:
+            self.async_write_ha_state()
+
+        remove_listener = self._pv_forecast.async_add_listener(listener)
+        setattr(remove_listener, "_hass_callback", True)
+        self.async_on_remove(remove_listener)
+
+        _LOGGER.debug(
+            "Setup of PV Forecast sensor %s (%s, unique_id: %s)",
+            self.name,
+            self.entity_id,
+            self._attr_unique_id,
+        )
+
+    @property
+    def native_value(self) -> float | int | None:
+        return self._value_fn(self._pv_forecast)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._attr_fn(self._pv_forecast)
