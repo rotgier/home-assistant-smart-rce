@@ -25,18 +25,33 @@ from .domain.ems import Ems, InputState
 _LOGGER = logging.getLogger(__name__)
 
 
+_UNAVAILABLE_WARNED: set[str] = set()
+
+
 def map_on_off(entity: str, value: str) -> bool | None:
     match value:
         case "on":
+            _UNAVAILABLE_WARNED.discard(entity)
             return True
         case "off":
+            _UNAVAILABLE_WARNED.discard(entity)
             return False
+        case "unavailable" | "unknown":
+            if entity not in _UNAVAILABLE_WARNED:
+                _LOGGER.warning("State %s is %s — treating as None", entity, value)
+                _UNAVAILABLE_WARNED.add(entity)
+            return None
         case _:
             _LOGGER.error("State %s being %s cannot be mapped to bool", entity, value)
             return None
 
 
-def map_float(entity: str, value: str) -> bool | None:
+def map_float(entity: str, value: str) -> float | None:
+    if value in ("unavailable", "unknown"):
+        if entity not in _UNAVAILABLE_WARNED:
+            _LOGGER.warning("State %s is %s — treating as None", entity, value)
+            _UNAVAILABLE_WARNED.add(entity)
+        return None
     try:
         return float(value)
     except (ValueError, TypeError):
@@ -69,8 +84,8 @@ def set_exported_energy_hourly(entity: str, i: InputState, state: str) -> None:
 
 
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
-    "switch.water_heater_big": set_water_heater_big_is_on,
-    "switch.water_heater_small": set_water_heater_small_is_on,
+    # "switch.water_heater_big": set_water_heater_big_is_on,  # disabled: plug disconnected after overheating 2026-03-21
+    # "switch.water_heater_small": set_water_heater_small_is_on,
     "sensor.battery_state_of_charge": set_battery_soc,
     "sensor.battery_power_avg_2_minutes": set_battery_power_2_minutes,
     "sensor.house_consumption_minus_pv_avg_2_minutes": set_consumption_minus_pv_2_minutes,

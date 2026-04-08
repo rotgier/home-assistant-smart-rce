@@ -44,7 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     rce_coordinator = SmartRceDataUpdateCoordinator(hass, rceApi, ems, entry)
     weather_coordinator = WeatherListenerCoordinator(hass, entry)
 
-    await rce_coordinator.async_config_entry_first_refresh()
+    # await rce_coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = SmartRceData(ems, rce_coordinator, weather_coordinator)
 
