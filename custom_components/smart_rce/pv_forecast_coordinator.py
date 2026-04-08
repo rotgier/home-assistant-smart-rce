@@ -32,7 +32,7 @@ def _parse_solcast_forecast(
     """Parse Solcast forecast attribute into domain objects."""
     return [
         SolcastPeriod(
-            period_start=item["period_start"],
+            period_start=str(item["period_start"]),
             pv_estimate=item["pv_estimate"],
             pv_estimate10=item["pv_estimate10"],
             pv_estimate90=item["pv_estimate90"],
