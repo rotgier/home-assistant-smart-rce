@@ -44,12 +44,17 @@ def _parse_solcast_forecast(
 def _parse_weather_conditions(
     forecast_hourly: list[dict[str, Any]] | None,
 ) -> list[WeatherConditionAtHour]:
-    """Parse WeatherListenerCoordinator.forecast_hourly into domain objects."""
+    """Parse WeatherListenerCoordinator.forecast_hourly into domain objects.
+
+    Returns conditions with both hour and date, to allow matching
+    against the correct day in Solcast forecast.
+    """
     if not forecast_hourly:
         return []
     return [
         WeatherConditionAtHour(
             hour=datetime.fromisoformat(item["datetime"]).hour,
+            date=datetime.fromisoformat(item["datetime"]).date(),
             condition_custom=item.get("condition_custom", "cloudy"),
         )
         for item in forecast_hourly
@@ -131,15 +136,32 @@ class PvForecastCoordinator:
         self._notify_listeners()
 
     def _recalculate_at6(self) -> None:
-        """Recalculate weather-adjusted forecast from Solcast at_6 snapshot."""
-        solcast_periods = self._read_solcast_entity(SOLCAST_AT_6_ENTITY, "forecast")
+        """Recalculate weather-adjusted forecast.
+
+        Before 6:01 — use live Solcast (has forecast fetched at 22:00).
+        After 6:01 — use at_6 snapshot (fresh for today).
+        """
+        from homeassistant.util.dt import now as now_local
+
+        now = now_local()
+        if now.hour < 6 or (now.hour == 6 and now.minute < 2):
+            entity_id = SOLCAST_LIVE_ENTITY
+            attr_name = "detailedForecast"
+            source = "live (pre-6:01)"
+        else:
+            entity_id = SOLCAST_AT_6_ENTITY
+            attr_name = "forecast"
+            source = "at_6"
+
+        solcast_periods = self._read_solcast_entity(entity_id, attr_name)
         if not solcast_periods:
             return
 
         weather = _parse_weather_conditions(self._weather_coordinator.forecast_hourly)
         self.adjusted_at_6 = adjust_pv_forecast_at6(solcast_periods, weather)
         _LOGGER.debug(
-            "Adjusted at_6: %.1f kWh (from %d periods)",
+            "Adjusted at_6 (source: %s): %.1f kWh (from %d periods)",
+            source,
             self.adjusted_at_6.total_kwh,
             len(self.adjusted_at_6.forecast),
         )
