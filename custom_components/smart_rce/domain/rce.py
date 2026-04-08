@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final
 
 from zoneinfo import ZoneInfo
@@ -32,7 +32,8 @@ class RceDayPrices:
             published_at = record["publication_ts"]
             dtime = datetime.fromisoformat(record["dtime"])
             dtime = dtime.replace(tzinfo=TIMEZONE)
-            hour_key = dtime.replace(minute=0, second=0)
+            interval_start = dtime - timedelta(minutes=15)
+            hour_key = interval_start.replace(minute=0, second=0)
             hourly_groups.setdefault(hour_key, []).append(record["rce_pln"])
 
         prices = []
