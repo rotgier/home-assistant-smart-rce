@@ -20,23 +20,27 @@ class RceDayPrices:
 
     @classmethod
     def create_from_json(cls, data) -> RceDayPrices | None:
-        """Parse RCE api data into domain object."""
+        """Parse RCE api data into domain object.
+
+        API returns 15-minute intervals. We aggregate to hourly averages,
+        clamping negative prices to 0 before averaging.
+        """
+        hourly_groups: dict[datetime, list[float]] = {}
+        published_at = None
+
+        for record in data["value"]:
+            published_at = record["publication_ts"]
+            dtime = datetime.fromisoformat(record["dtime"])
+            dtime = dtime.replace(tzinfo=TIMEZONE)
+            hour_key = dtime.replace(minute=0, second=0)
+            hourly_groups.setdefault(hour_key, []).append(record["rce_pln"])
 
         prices = []
-        published_at = None
-        for price in data["value"]:
-            published_at = price["source_datetime"]
-            date = price["doba"]
-            hour = price["udtczas_oreb"][:5]
-            date_hour = datetime.fromisoformat(f"{date} {hour}")
-            date_hour = date_hour.replace(tzinfo=TIMEZONE)
-            if date_hour.minute == 0:
-                prices.append(
-                    {
-                        "datetime": date_hour.replace(minute=0),
-                        "price": price["rce_pln"],
-                    }
-                )
+        for hour_key in sorted(hourly_groups):
+            raw_prices = hourly_groups[hour_key]
+            clamped = [max(0, p) for p in raw_prices]
+            avg_price = sum(clamped) / len(clamped)
+            prices.append({"datetime": hour_key, "price": round(avg_price, 2)})
 
         return cls(published_at, prices) if published_at else None
 
