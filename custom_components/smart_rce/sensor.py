@@ -43,12 +43,55 @@ class SmartRceSensorDescription(SensorEntityDescription):
         self.key = self.name.lower().replace(" ", "_")
 
 
+def _avg_price(ems: Ems, day: str) -> float | None:
+    rce_data = ems.rce_data
+    if not rce_data:
+        return None
+    day_prices = rce_data.today if day == "today" else rce_data.tomorrow
+    if not day_prices or not day_prices.prices:
+        return None
+    prices = [p["price"] for p in day_prices.prices]
+    return round(sum(prices) / len(prices), 2)
+
+
+def _prices_attr(ems: Ems, day: str) -> dict[str, Any]:
+    rce_data = ems.rce_data
+    if not rce_data:
+        return {}
+    day_prices = rce_data.today if day == "today" else rce_data.tomorrow
+    if not day_prices or not day_prices.prices:
+        return {}
+    return {
+        "prices": [
+            {
+                "datetime": p["datetime"].isoformat(),
+                "price": p["price"],
+            }
+            for p in day_prices.prices
+        ]
+    }
+
+
 SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
         name="Current Price",
         native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.current_price,
+    ),
+    SmartRceSensorDescription(
+        name="Prices Today",
+        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _avg_price(ems, "today"),
+        attr_fn=lambda ems: _prices_attr(ems, "today"),
+    ),
+    SmartRceSensorDescription(
+        name="Prices Tomorrow",
+        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _avg_price(ems, "tomorrow"),
+        attr_fn=lambda ems: _prices_attr(ems, "tomorrow"),
     ),
     ####
     #### TODAY
@@ -158,3 +201,7 @@ class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEnt
     @property
     def native_value(self) -> str | int | float | datetime | None:
         return self.entity_description.value_fn(self.ems)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self.entity_description.attr_fn(self.ems)
