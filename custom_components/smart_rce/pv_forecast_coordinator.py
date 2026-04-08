@@ -54,7 +54,6 @@ def _parse_weather_conditions(
     return [
         WeatherConditionAtHour(
             hour=datetime.fromisoformat(item["datetime"]).hour,
-            date=datetime.fromisoformat(item["datetime"]).date(),
             condition_custom=item.get("condition_custom", "cloudy"),
         )
         for item in forecast_hourly
