@@ -77,11 +77,12 @@ done
 # --- Przetworzenie history_raw -> history_clean ---
 
 echo "  history_clean.json"
-python3 << 'PYEOF'
+python3 << PYEOF
 import json
 from datetime import datetime, timedelta, timezone
 
-CTX = "$CTX"
+CTX = "${CTX}"
+DATE = "${DATE}"
 OFFSET = timezone(timedelta(hours=2))
 
 with open(f"{CTX}/history_raw.json") as f:
@@ -113,7 +114,7 @@ for e in raw[2]:
     bat_raw[ts.isoformat()] = val
 
 clean = {
-    "date": "$DATE",
+    "date": DATE,
     "pv_bi_hourly": [{"time": k, "rate_x2": round(v * 2, 2)} for k, v in sorted(pv.items())],
     "consumption_bi_hourly": [{"time": k, "rate_x2": round(v * 2, 2)} for k, v in sorted(cons.items())],
     "battery_soc": [{"time": k, "soc": v} for k, v in sorted(bat_raw.items())],
@@ -121,7 +122,7 @@ clean = {
 
 with open(f"{CTX}/history_clean.json", 'w') as f:
     json.dump(clean, f, indent=2, ensure_ascii=False)
-    f.write('\n')
+    f.write('\\n')
 
 print(f"    pv: {len(clean['pv_bi_hourly'])} entries, cons: {len(clean['consumption_bi_hourly'])}, bat: {len(clean['battery_soc'])}")
 PYEOF
