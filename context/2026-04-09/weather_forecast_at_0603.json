@@ -1,0 +1,492 @@
+[
+  {
+    "datetime": "2026-04-09T07:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 0.0,
+    "apparent_temperature": -3.0,
+    "humidity": 85
+  },
+  {
+    "datetime": "2026-04-09T08:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 0.0,
+    "apparent_temperature": -3.0,
+    "humidity": 80
+  },
+  {
+    "datetime": "2026-04-09T09:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 1.0,
+    "apparent_temperature": -2.0,
+    "humidity": 80
+  },
+  {
+    "datetime": "2026-04-09T10:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 2.0,
+    "apparent_temperature": -1.0,
+    "humidity": 75
+  },
+  {
+    "datetime": "2026-04-09T11:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 3.0,
+    "apparent_temperature": 1.0,
+    "humidity": 70
+  },
+  {
+    "datetime": "2026-04-09T12:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 4.0,
+    "apparent_temperature": 2.0,
+    "humidity": 65
+  },
+  {
+    "datetime": "2026-04-09T13:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 5.0,
+    "apparent_temperature": 3.0,
+    "humidity": 55
+  },
+  {
+    "datetime": "2026-04-09T14:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 6.0,
+    "apparent_temperature": 4.0,
+    "humidity": 50
+  },
+  {
+    "datetime": "2026-04-09T15:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 6.0,
+    "apparent_temperature": 4.0,
+    "humidity": 50
+  },
+  {
+    "datetime": "2026-04-09T16:00:00+02:00",
+    "symbol": "bw____",
+    "symboltext": "bw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 6.0,
+    "apparent_temperature": 4.0,
+    "humidity": 45
+  },
+  {
+    "datetime": "2026-04-09T17:00:00+02:00",
+    "symbol": "bw____",
+    "symboltext": "bw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 6.0,
+    "apparent_temperature": 4.0,
+    "humidity": 40
+  },
+  {
+    "datetime": "2026-04-09T18:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 6.0,
+    "apparent_temperature": 4.0,
+    "humidity": 40
+  },
+  {
+    "datetime": "2026-04-09T19:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 5.0,
+    "apparent_temperature": 3.0,
+    "humidity": 45
+  },
+  {
+    "datetime": "2026-04-09T20:00:00+02:00",
+    "symbol": "mb____",
+    "symboltext": "mb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 4.0,
+    "apparent_temperature": 2.0,
+    "humidity": 50
+  },
+  {
+    "datetime": "2026-04-09T21:00:00+02:00",
+    "symbol": "mw____",
+    "symboltext": "mw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 3.0,
+    "apparent_temperature": 1.0,
+    "humidity": 55
+  },
+  {
+    "datetime": "2026-04-09T22:00:00+02:00",
+    "symbol": "mw____",
+    "symboltext": "mw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 2.0,
+    "apparent_temperature": 0.0,
+    "humidity": 60
+  },
+  {
+    "datetime": "2026-04-09T23:00:00+02:00",
+    "symbol": "md____",
+    "symboltext": "md____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 2.0,
+    "apparent_temperature": -1.0,
+    "humidity": 65
+  },
+  {
+    "datetime": "2026-04-10T00:00:00+02:00",
+    "symbol": "md____",
+    "symboltext": "md____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 1.0,
+    "apparent_temperature": -1.0,
+    "humidity": 70
+  },
+  {
+    "datetime": "2026-04-10T01:00:00+02:00",
+    "symbol": "mw____",
+    "symboltext": "mw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 1.0,
+    "apparent_temperature": -1.0,
+    "humidity": 75
+  },
+  {
+    "datetime": "2026-04-10T02:00:00+02:00",
+    "symbol": "mw____",
+    "symboltext": "mw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 1.0,
+    "apparent_temperature": 0.0,
+    "humidity": 80
+  },
+  {
+    "datetime": "2026-04-10T03:00:00+02:00",
+    "symbol": "mw____",
+    "symboltext": "mw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 0.0,
+    "apparent_temperature": -1.0,
+    "humidity": 85
+  },
+  {
+    "datetime": "2026-04-10T04:00:00+02:00",
+    "symbol": "mb____",
+    "symboltext": "mb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 0.0,
+    "apparent_temperature": -1.0,
+    "humidity": 85
+  },
+  {
+    "datetime": "2026-04-10T05:00:00+02:00",
+    "symbol": "mb____",
+    "symboltext": "mb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": -1.0,
+    "apparent_temperature": -2.0,
+    "humidity": 85
+  },
+  {
+    "datetime": "2026-04-10T06:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": -1.0,
+    "apparent_temperature": -2.0,
+    "humidity": 90
+  },
+  {
+    "datetime": "2026-04-10T07:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 0.0,
+    "apparent_temperature": -2.0,
+    "humidity": 90
+  },
+  {
+    "datetime": "2026-04-10T08:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 1.0,
+    "apparent_temperature": 0.0,
+    "humidity": 80
+  },
+  {
+    "datetime": "2026-04-10T09:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 3.0,
+    "apparent_temperature": 2.0,
+    "humidity": 70
+  },
+  {
+    "datetime": "2026-04-10T10:00:00+02:00",
+    "symbol": "bw____",
+    "symboltext": "bw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 4.0,
+    "apparent_temperature": 3.0,
+    "humidity": 60
+  },
+  {
+    "datetime": "2026-04-10T11:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 5.0,
+    "apparent_temperature": 4.0,
+    "humidity": 50
+  },
+  {
+    "datetime": "2026-04-10T12:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 6.0,
+    "apparent_temperature": 4.0,
+    "humidity": 50
+  },
+  {
+    "datetime": "2026-04-10T13:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 6.0,
+    "apparent_temperature": 5.0,
+    "humidity": 50
+  },
+  {
+    "datetime": "2026-04-10T14:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 7.0,
+    "apparent_temperature": 6.0,
+    "humidity": 45
+  },
+  {
+    "datetime": "2026-04-10T15:00:00+02:00",
+    "symbol": "bd____",
+    "symboltext": "bd____",
+    "condition": "cloudy",
+    "condition_custom": "cloudy",
+    "temperature": 7.0,
+    "apparent_temperature": 6.0,
+    "humidity": 45
+  },
+  {
+    "datetime": "2026-04-10T16:00:00+02:00",
+    "symbol": "bw____",
+    "symboltext": "bw____",
+    "condition": "partlycloudy",
+    "condition_custom": "partlycloudy",
+    "temperature": 8.0,
+    "apparent_temperature": 7.0,
+    "humidity": 45
+  },
+  {
+    "datetime": "2026-04-10T17:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 8.0,
+    "apparent_temperature": 7.0,
+    "humidity": 45
+  },
+  {
+    "datetime": "2026-04-10T18:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 7.0,
+    "apparent_temperature": 6.0,
+    "humidity": 45
+  },
+  {
+    "datetime": "2026-04-10T19:00:00+02:00",
+    "symbol": "wb____",
+    "symboltext": "wb____",
+    "condition": "exceptional",
+    "condition_custom": "partlycloudy-variable",
+    "temperature": 6.0,
+    "apparent_temperature": 5.0,
+    "humidity": 60
+  },
+  {
+    "datetime": "2026-04-10T20:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": 4.0,
+    "apparent_temperature": 3.0,
+    "humidity": 65
+  },
+  {
+    "datetime": "2026-04-10T21:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": 3.0,
+    "apparent_temperature": 2.0,
+    "humidity": 65
+  },
+  {
+    "datetime": "2026-04-10T22:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": 2.0,
+    "apparent_temperature": 1.0,
+    "humidity": 70
+  },
+  {
+    "datetime": "2026-04-10T23:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": 1.0,
+    "apparent_temperature": 1.0,
+    "humidity": 75
+  },
+  {
+    "datetime": "2026-04-11T00:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": 0.0,
+    "apparent_temperature": 0.0,
+    "humidity": 75
+  },
+  {
+    "datetime": "2026-04-11T01:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": 0.0,
+    "apparent_temperature": -1.0,
+    "humidity": 75
+  },
+  {
+    "datetime": "2026-04-11T02:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": -1.0,
+    "apparent_temperature": -1.0,
+    "humidity": 75
+  },
+  {
+    "datetime": "2026-04-11T03:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": -1.0,
+    "apparent_temperature": -2.0,
+    "humidity": 80
+  },
+  {
+    "datetime": "2026-04-11T04:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": -2.0,
+    "apparent_temperature": -3.0,
+    "humidity": 80
+  },
+  {
+    "datetime": "2026-04-11T05:00:00+02:00",
+    "symbol": "mo____",
+    "symboltext": "mo____",
+    "condition": "clear-night",
+    "condition_custom": "clear-night",
+    "temperature": -2.0,
+    "apparent_temperature": -3.0,
+    "humidity": 85
+  },
+  {
+    "datetime": "2026-04-11T06:00:00+02:00",
+    "symbol": "so____",
+    "symboltext": "so____",
+    "condition": "sunny",
+    "condition_custom": "sunny",
+    "temperature": -2.0,
+    "apparent_temperature": -3.0,
+    "humidity": 80
+  },
+  {
+    "datetime": "2026-04-11T07:00:00+02:00",
+    "symbol": "so____",
+    "symboltext": "so____",
+    "condition": "sunny",
+    "condition_custom": "sunny",
+    "temperature": -1.0,
+    "apparent_temperature": -2.0,
+    "humidity": 80
+  }
+]
