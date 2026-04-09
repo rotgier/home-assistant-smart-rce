@@ -1,5 +1,20 @@
 # Analiza dnia 2026-04-09
 
+## Pliki w tym katalogu
+
+| Plik | Opis |
+|------|------|
+| `solcast_at_6.json` | Snapshot Solcast z 6:05 — prognoza PV na dzisiaj (39.9 kWh). Atrybuty: forecast z est/est10/est90 per 30min. |
+| `solcast_live.json` | Solcast live (pobrany wieczorem). Atrybut detailedForecast + detailedHourly. |
+| `adjusted_at_6.json` | Sensor rce_weather_adjusted_pv_at_6 (23.2 kWh) — **Z BUGIEM** (matchował jutrzejszą pogodę). |
+| `adjusted_live.json` | Sensor rce_weather_adjusted_pv_live (15.9 kWh). |
+| `weather_history.json` | Historia stanów weather.wetteronline z HA Recorder — kiedy zmieniał się stan (cloudy/partlycloudy/sunny). |
+| `weather_forecast_at_0603.json` | Prognoza hourly z 6:03 rano — zawiera godziny dziś + jutro + pojutrze z condition_custom. |
+| `history_clean.json` | Przetworzone dane: PV bi-hourly (rate × 2), consumption bi-hourly (rate × 2), battery SOC. Czas PL (UTC+2). |
+| `analysis.md` | Ten plik — podsumowanie i tabelki. |
+
+## Podsumowanie
+
 Solcast at_6: 39.9252 kWh
 Adjusted at_6: 23.1655 kWh
 Pogoda faktyczna: cloudy 00:08-17:18, potem partlycloudy/sunny
@@ -74,3 +89,12 @@ Pogoda faktyczna: cloudy 00:08-17:18, potem partlycloudy/sunny
 - Bateria o 7:00: ~37%
 - Minimum baterii: ~8-10% (o ~10:00)
 - Nieplanowane zużycie: 2 pralko-suszarki (9:00-10:00, consumption 4 kWh/h)
+
+## Bug: matching pogody
+
+Adjusted at_6 zawyżył 40% (23.0 vs 16.6 kWh actual). Przyczyna:
+- Forecast hourly o 6:03 zawiera godziny z **dwóch dób** (dziś + jutro)
+- Matching w `_get_condition_for_hour()` szuka po samej godzinie (bez daty)
+- Godzina 7 dzisiejsza (cloudy) i jutrzejsza (partlycloudy-variable) — algorytm złapał jutrzejszą
+- Stąd adj = est × 0.7/0.8 (partlycloudy) zamiast est10 × 0.5 (cloudy)
+- Fix: dodać `forecast_date` do `WeatherConditionAtHour`, matchować po (date, hour)
