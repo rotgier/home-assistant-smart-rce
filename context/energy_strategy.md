@@ -43,6 +43,30 @@ Sensor `sensor.solcast_forecast_at_6` — snapshot prognozy Solcast z godziny 6:
     func: last
 ```
 
+## Battery charge selector i godzina startu ładowania
+
+### Obecny stan (częściowo ręczny)
+
+Automatyzacja `_ Inverter ENABLE Battery Charge MORNING` (id: 1717069389765)
+ustawia `input_number.battery_charge_current` > 0, co zezwala na ładowanie baterii.
+Godzina startu jest **ustawiana ręcznie** w automatyzacji na podstawie:
+- Ceny RCE (im taniej, tym wcześniej zaczynamy ładować)
+- Prognozy PV (im gorzej, tym więcej trzeba naładować z sieci)
+
+**Guard w automatyzacjach grzałek:** `input_number.battery_charge_current > 0`
+— grzałki nie włączają się dopóki nie zezwolono na ładowanie baterii.
+To zapobiega sytuacji, gdy grzałka włącza się o 7:00 a bateria jeszcze nie
+zaczęła się ładować (bo czekamy na tańszą godzinę).
+
+### Docelowo (smart_rce)
+
+Smart_rce już liczy `start_charge_hour` i `end_charge_hour` na podstawie cen RCE.
+Te wartości powinny sterować automatyzacją ładowania — ale jeszcze nie są
+zintegrowane z pełną logiką (taryfa G13, prognoza PV, target SOC).
+
+**TODO:** Połączyć logikę start_charge_hour z target SOC i prognozą PV,
+żeby automatyzacja ładowania działała w pełni autonomicznie.
+
 ## Logika Battery CHARGE in the morning
 
 Na bazie `sensor.sunny_hours_today_morning_forecast` (zakodowana wartość 3-cyfrowa):
