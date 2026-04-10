@@ -87,6 +87,10 @@ def set_exported_energy_hourly(entity: str, i: InputState, state: str) -> None:
     i.exported_energy_hourly = map_float(entity, state)
 
 
+def set_heater_mode(entity: str, i: InputState, state: str) -> None:
+    i.heater_mode = state
+
+
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "switch.water_heater_big_relay": set_water_heater_big_is_on,
     "switch.water_heater_small_relay": set_water_heater_small_is_on,
@@ -95,6 +99,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "sensor.battery_power_avg_2_minutes": set_battery_power_2_minutes,
     "sensor.house_consumption_minus_heaters_minus_pv_avg_2_minutes": set_consumption_minus_pv_2_minutes,
     "sensor.total_export_import_hourly": set_exported_energy_hourly,
+    "input_select.ems_water_heater_mode": set_heater_mode,
 }
 
 

@@ -31,6 +31,7 @@ class InputState:
     battery_power_2_minutes: float | None = None
     consumption_minus_pv_2_minutes: float | None = None
     exported_energy_hourly: float | None = None
+    heater_mode: str | None = None
 
 
 class WaterHeaterManager:
@@ -85,7 +86,7 @@ class WaterHeaterManager:
         battery_charge_limit = state.battery_charge_limit
         exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
 
-        mode = "WASTED"
+        mode = state.heater_mode or "WASTED"
 
         if mode == "ASAP":
             target = self._asap_target(
