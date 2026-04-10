@@ -60,6 +60,25 @@ Na bazie `sensor.sunny_hours_today_morning_forecast` (zakodowana wartość 3-cyf
 | < 235 | 15% | Prawie pełne słońce |
 | >= 235 | 10% | Pełne słońce — PV wystarczy |
 
+## Rozliczenie energii — bilansowanie godzinowe
+
+**Kluczowa zasada:** Rozliczenie z zakładem energetycznym odbywa się na podstawie
+**sumarycznego bilansu energii w danej godzinie** (netto import/eksport).
+
+Przykład: jeśli w godzinie 12:00-13:00 pobrałem 2 kWh a oddałem 3 kWh →
+płacę 0 zł za pobór i dostaję kasę za 1 kWh netto eksportu.
+
+**Implikacje dla strategii:**
+- Eksport w danej godzinie nie jest "stracony" dopóki bilans godzinowy jest dodatni
+- Włączenie grzałki w godzinie z dużym eksportem "konsumuje" nadwyżkę — nie płacimy za ten prąd
+- Ale jeśli grzałka odwróci bilans na netto import → zaczynamy płacić (po cenie taryfy)
+- `sensor.total_export_import_hourly` = skumulowany bilans netto w bieżącej godzinie (dodatni = netto eksport)
+
+**Strategia grzałek powinna:**
+1. Unikać odwracania bilansu godzinowego na import (nie grzej za prąd z sieci)
+2. Wykorzystywać nadwyżkę eksportu (lepiej grzać wodę niż oddawać po niskiej cenie)
+3. Uwzględniać że w połowie godziny bilans może się jeszcze zmienić
+
 ## Bateria
 
 - Pylontech H2, 3 moduły
@@ -67,6 +86,49 @@ Na bazie `sensor.sunny_hours_today_morning_forecast` (zakodowana wartość 3-cyf
 - 1% SOC ≈ 0.107 kWh
 - Minimum SOC: 10% (ochrona)
 - Straty konwersji: ~10%
+
+### Battery charge limit
+
+`sensor.battery_charge_limit` — maksymalny prąd ładowania z BMS (ampery).
+Koreluje z SoC ale jest dokładniejszy — bezpośredni odczyt z BMS.
+
+| battery_charge_limit | Max charging power | Typowy SoC |
+|---|---|---|
+| 18A | ~5200W | niski (< 90%) |
+| 7A | ~2000W | średni (90-96%) |
+| 2A | ~500W | wysoki (97-99%) |
+| 0A | 0W | 100% |
+
+**Implikacja:** Zamiast estymować ile bateria może przyjąć na podstawie SoC,
+można użyć `battery_charge_limit * voltage (~290V)` jako bezpośredni limit.
+
+## Grzałki CWU — sterowanie z EMS
+
+Dwie grzałki elektryczne: BIG (3000W), SMALL (1500W).
+Kombinacje: OFF (0W) → SMALL (1.5kW) → BIG (3kW) → BOTH (4.5kW).
+
+### Mode: ASAP — super słoneczny dzień, niskie ceny oddawania
+
+Agresywne grzanie. Włączamy grzałki jak najszybciej gdy jest wystarczająco PV.
+Stałe progi niezależne od SoC/battery_charge_limit.
+
+Step-up OFF → SMALL → BIG → BOTH:
+| Target | turn_on (pv >) | Utrzymanie (pv >) |
+|---|---|---|
+| SMALL | 1800 | 1300 |
+| BIG | 3300 | 2800 |
+| BOTH | 4800 | 4300 |
+
+### Mode: WASTED — niepewna pogoda, priorytet bateria
+
+Konserwatywne. Bateria ładuje się na maksa. Grzałki włączane dopiero gdy
+energia jest faktycznie marnowana (eksportowana do sieci):
+
+1. Pozwól baterii ładować pełną mocą
+2. Gdy bilans godzinowy staje się dodatni (netto eksport) → włącz BIG
+3. Gdy mimo BIG nadal eksport rośnie → włącz też SMALL
+
+Progi bazowane na `pv_surplus = pv_available - battery_max_charge_power`.
 
 ## Taryfa G13 — weekend i święta
 
