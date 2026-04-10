@@ -181,7 +181,7 @@ class WaterHeaterManager:
     def _none_present(self, state: InputState) -> bool:
         return (
             state.water_heater_big_is_on is None
-            # or state.water_heater_small_is_on is None
+            or state.water_heater_small_is_on is None
             or state.battery_soc is None
             or state.battery_power_2_minutes is None
             or state.consumption_minus_pv_2_minutes is None
