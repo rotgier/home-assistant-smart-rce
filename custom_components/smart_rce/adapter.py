@@ -71,6 +71,10 @@ def set_battery_soc(entity: str, i: InputState, state: str) -> None:
     i.battery_soc = map_float(entity, state)
 
 
+def set_battery_charge_limit(entity: str, i: InputState, state: str) -> None:
+    i.battery_charge_limit = map_float(entity, state)
+
+
 def set_battery_power_2_minutes(entity: str, i: InputState, state: str) -> None:
     i.battery_power_2_minutes = map_float(entity, state)
 
@@ -87,8 +91,9 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "switch.water_heater_big_relay": set_water_heater_big_is_on,
     "switch.water_heater_small_relay": set_water_heater_small_is_on,
     "sensor.battery_state_of_charge": set_battery_soc,
+    "sensor.battery_charge_limit": set_battery_charge_limit,
     "sensor.battery_power_avg_2_minutes": set_battery_power_2_minutes,
-    "sensor.house_consumption_minus_pv_avg_2_minutes": set_consumption_minus_pv_2_minutes,
+    "sensor.house_consumption_minus_heaters_minus_pv_avg_2_minutes": set_consumption_minus_pv_2_minutes,
     "sensor.total_export_import_hourly": set_exported_energy_hourly,
 }
 

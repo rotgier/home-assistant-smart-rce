@@ -48,6 +48,16 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         value_fn=lambda ems: ems.water_heater.should_turn_off,
         icon="mdi:heating-coil",
     ),
+    EmsBinarySensorDescription(
+        name="Water Heater Small Turn On",
+        value_fn=lambda ems: ems.water_heater.should_turn_on_small,
+        icon="mdi:heating-coil",
+    ),
+    EmsBinarySensorDescription(
+        name="Water Heater Small Turn Off",
+        value_fn=lambda ems: ems.water_heater.should_turn_off_small,
+        icon="mdi:heating-coil",
+    ),
 )
 
 
