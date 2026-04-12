@@ -32,6 +32,9 @@ class InputState:
     consumption_minus_pv_2_minutes: float | None = None
     exported_energy_hourly: float | None = None
     heater_mode: str | None = None
+    depth_of_discharge: float | None = (
+        None  # % (number.goodwe_depth_of_discharge_on_grid)
+    )
 
 
 class WaterHeaterManager:
@@ -58,6 +61,8 @@ class WaterHeaterManager:
         self.should_turn_off: bool = False
         self.should_turn_on_small: bool = False
         self.should_turn_off_small: bool = False
+        self.should_block_battery_charge: bool = False
+        self._hourly_balance_negative: bool = False
 
     def update(self, state: InputState) -> None:
         if self._none_present(state):
@@ -70,6 +75,7 @@ class WaterHeaterManager:
         self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
         self.should_turn_on_small = target in (self.SMALL_IS_ON, self.BOTH_ARE_ON)
         self.should_turn_off_small = target in (self.BIG_IS_ON, self.BOTH_ARE_OFF)
+        self.should_block_battery_charge = self._hourly_balance_negative
 
     def _current_state(self, state: InputState) -> str:
         if state.water_heater_big_is_on and state.water_heater_small_is_on:
@@ -85,6 +91,17 @@ class WaterHeaterManager:
         battery_soc = state.battery_soc
         battery_charge_limit = state.battery_charge_limit
         exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
+
+        # GUARD: Ochrona bilansu godzinowego (tylko w trybie charge-only, DoD=0%)
+        if state.depth_of_discharge is not None and state.depth_of_discharge == 0:
+            if exported_energy < 0:
+                self._hourly_balance_negative = True
+                return self.BOTH_ARE_OFF
+
+            if self._hourly_balance_negative and exported_energy < 50:
+                return self.BOTH_ARE_OFF
+
+            self._hourly_balance_negative = False
 
         mode = state.heater_mode or "WASTED"
 
