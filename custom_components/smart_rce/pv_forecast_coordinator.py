@@ -203,13 +203,13 @@ class PvForecastCoordinator:
 
         if self.adjusted_at_6:
             self.target_soc = calculate_target_soc(
-                self.adjusted_at_6, is_workday=is_workday
+                self.adjusted_at_6, is_workday=is_workday, now=now
             )
             _LOGGER.debug("Target SOC (at_6): %d%%", self.target_soc)
 
         if self.adjusted_live:
             self.target_soc_live = calculate_target_soc(
-                self.adjusted_live, is_workday=is_workday
+                self.adjusted_live, is_workday=is_workday, now=now
             )
             _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live)
 

@@ -187,15 +187,25 @@ def adjust_pv_forecast_live(
 def calculate_target_soc(
     forecast: AdjustedPvForecast,
     is_workday: bool,
+    now: datetime | None = None,
 ) -> int:
-    """Calculate target battery SOC for 7:00 based on adjusted PV forecast.
+    """Calculate target battery SOC based on adjusted PV forecast.
 
-    Simulates cumulative energy deficit from 7:00 to 13:00.
+    Simulates cumulative energy deficit from now (or 7:00) to 13:00.
+    Before 7:00 or no now: simulates full 7:00-13:00 window.
+    After 7:00: simulates from current 30min period to 13:00.
     Returns target SOC percentage (minimum 10%).
     Weekend/holidays: always 10%.
     """
     if not is_workday:
         return MIN_SOC_PERCENT
+
+    # Determine start: current 30min period or 7:00
+    start_hour = 7
+    start_minute = 0
+    if now and now.hour >= 7:
+        start_hour = now.hour
+        start_minute = 0 if now.minute < 30 else 30
 
     cumulative_balance = 0.0
     min_balance = 0.0
@@ -203,7 +213,10 @@ def calculate_target_soc(
     for period in forecast.forecast:
         dt = datetime.fromisoformat(period.period_start)
         hour = dt.hour
-        if hour < 7 or hour >= 13:
+        minute = dt.minute
+        if hour < start_hour or (hour == start_hour and minute < start_minute):
+            continue
+        if hour >= 13:
             continue
 
         pv_kwh_30min = period.pv_estimate_adjusted / 2  # rate -> kWh per 30min
