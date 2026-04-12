@@ -129,7 +129,7 @@ class TestHourlyBalanceGuard:
                 small_on=True,
                 depth_of_discharge=0,
                 battery_soc=95.0,
-                battery_charge_limit=0.0,
+                battery_charge_limit=7.0,
                 exported_energy_hourly=-0.01,
                 consumption_minus_pv=-5000.0,
                 heater_mode="ASAP",
@@ -138,6 +138,22 @@ class TestHourlyBalanceGuard:
         assert mgr.should_turn_on is False
         assert mgr.should_turn_off is True
         assert mgr.should_block_battery_charge is True
+
+    def test_low_charge_limit_no_battery_block(self):
+        """Gdy charge_limit < 2A (~500W), nie blokuj ładowania — za mało mocy."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.05,
+                battery_charge_limit=1.5,
+                heater_mode="ASAP",
+            )
+        )
+        # Grzałki off (guard działa), ale battery charge NIE blokowany
+        assert mgr.should_turn_on is False
+        assert mgr.should_turn_off is True
+        assert mgr.should_block_battery_charge is False
 
     def test_initial_state(self):
         mgr = WaterHeaterManager()

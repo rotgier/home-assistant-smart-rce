@@ -75,7 +75,11 @@ class WaterHeaterManager:
         self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
         self.should_turn_on_small = target in (self.SMALL_IS_ON, self.BOTH_ARE_ON)
         self.should_turn_off_small = target in (self.BIG_IS_ON, self.BOTH_ARE_OFF)
-        self.should_block_battery_charge = self._hourly_balance_negative
+        self.should_block_battery_charge = (
+            self._hourly_balance_negative
+            and state.battery_charge_limit is not None
+            and state.battery_charge_limit >= 2
+        )
 
     def _current_state(self, state: InputState) -> str:
         if state.water_heater_big_is_on and state.water_heater_small_is_on:
