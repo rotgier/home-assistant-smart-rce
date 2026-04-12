@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 import logging
 from typing import Any, Final
 
@@ -18,6 +18,7 @@ from .domain.pv_forecast import (
     adjust_pv_forecast_live,
     calculate_target_soc,
 )
+from .weather_forecast_history import WeatherForecastHistory
 from .weather_listener import WeatherListenerCoordinator
 
 SOLCAST_AT_6_ENTITY: Final = "sensor.solcast_forecast_at_6"
@@ -55,6 +56,7 @@ def _parse_weather_conditions(
         WeatherConditionAtHour(
             hour=datetime.fromisoformat(item["datetime"]).hour,
             condition_custom=item.get("condition_custom", "cloudy"),
+            forecast_date=datetime.fromisoformat(item["datetime"]).date(),
         )
         for item in forecast_hourly
         if "datetime" in item
@@ -73,9 +75,11 @@ class PvForecastCoordinator:
         self,
         hass: HomeAssistant,
         weather_coordinator: WeatherListenerCoordinator,
+        weather_forecast_history: WeatherForecastHistory,
     ) -> None:
         self._hass = hass
         self._weather_coordinator = weather_coordinator
+        self._weather_forecast_history = weather_forecast_history
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._cancel_solcast_listeners: list[CALLBACK_TYPE] = []
 
@@ -156,13 +160,14 @@ class PvForecastCoordinator:
         if not solcast_periods:
             return
 
-        weather = _parse_weather_conditions(self._weather_coordinator.forecast_hourly)
+        weather = self._build_weather_conditions(now.date())
         self.adjusted_at_6 = adjust_pv_forecast_at6(solcast_periods, weather)
         _LOGGER.debug(
-            "Adjusted at_6 (source: %s): %.1f kWh (from %d periods)",
+            "Adjusted at_6 (source: %s): %.1f kWh (from %d periods, %d weather conditions)",
             source,
             self.adjusted_at_6.total_kwh,
             len(self.adjusted_at_6.forecast),
+            len(weather),
         )
 
     def _recalculate_live(self) -> None:
@@ -173,7 +178,10 @@ class PvForecastCoordinator:
         if not solcast_periods:
             return
 
-        weather = _parse_weather_conditions(self._weather_coordinator.forecast_hourly)
+        from homeassistant.util.dt import now as now_local
+
+        today = now_local().date()
+        weather = self._build_weather_conditions(today)
         from homeassistant.util.dt import now as now_local
 
         self.adjusted_live = adjust_pv_forecast_live(
@@ -197,6 +205,38 @@ class PvForecastCoordinator:
             self.adjusted_at_6, is_workday=_is_workday(now)
         )
         _LOGGER.debug("Target SOC: %d%%", self.target_soc)
+
+    def _build_weather_conditions(
+        self, today: date | None = None
+    ) -> list[WeatherConditionAtHour]:
+        """Build weather conditions from history (past hours) + forecast (future hours).
+
+        History has conditions for hours that already passed today.
+        Forecast has conditions for upcoming hours (possibly multiple days).
+        Both have forecast_date for correct matching.
+        """
+        # From history tracker (past hours today, already "frozen")
+        history_conditions: list[WeatherConditionAtHour] = []
+        if today:
+            history_conditions = self._weather_forecast_history.get_conditions_for_date(
+                today
+            )
+
+        # From live forecast (future hours, with date filtering via forecast_date)
+        forecast_conditions = _parse_weather_conditions(
+            self._weather_coordinator.forecast_hourly
+        )
+
+        # Combine: history first, forecast overwrites (forecast is more recent for future hours)
+        combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
+        for c in history_conditions:
+            if c.forecast_date:
+                combined[(c.forecast_date, c.hour)] = c
+        for c in forecast_conditions:
+            if c.forecast_date:
+                combined[(c.forecast_date, c.hour)] = c
+
+        return list(combined.values())
 
     def _read_solcast_entity(
         self, entity_id: str, attr_name: str

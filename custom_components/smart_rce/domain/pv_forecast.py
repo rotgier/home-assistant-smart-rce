@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Final
 
 CONSUMPTION_PER_30MIN: Final[float] = 0.45  # kWh (= 0.9 kWh/h / 2)
@@ -42,6 +42,7 @@ class AdjustedPeriod:
 class WeatherConditionAtHour:
     hour: int  # 0-23 local time
     condition_custom: str
+    forecast_date: date | None = None  # None = match only by hour
 
 
 @dataclass
@@ -51,13 +52,21 @@ class AdjustedPvForecast:
 
 
 def _get_condition_for_hour(
-    hour: int, weather_conditions: list[WeatherConditionAtHour]
+    hour: int,
+    weather_conditions: list[WeatherConditionAtHour],
+    target_date: date | None = None,
 ) -> str:
-    """Find weather condition for given hour. Fallback to cloudy."""
+    """Find weather condition for given hour and date. Fallback to cloudy."""
+    # Exact match: date + hour
+    if target_date:
+        for w in weather_conditions:
+            if w.forecast_date == target_date and w.hour == hour:
+                return w.condition_custom
+    # Fallback: hour only (for conditions without date)
     for w in weather_conditions:
-        if w.hour == hour:
+        if w.hour == hour and w.forecast_date is None:
             return w.condition_custom
-    return "cloudy"  # fallback = pessimistic
+    return "cloudy"  # pessimistic fallback
 
 
 def _classify_condition(condition: str) -> str:
@@ -131,7 +140,8 @@ def adjust_pv_forecast_at6(
     for period in solcast_periods:
         dt = datetime.fromisoformat(period.period_start)
         hour = dt.hour
-        condition = _get_condition_for_hour(hour, weather_conditions)
+        target_date = dt.date()
+        condition = _get_condition_for_hour(hour, weather_conditions, target_date)
         adj_rate = _adjust_at6_period(period, condition, hour)
 
         forecast.append(
@@ -158,8 +168,9 @@ def adjust_pv_forecast_live(
     for period in solcast_periods:
         dt = datetime.fromisoformat(period.period_start)
         hour = dt.hour
+        target_date = dt.date()
         is_first_hour = hour == current_hour
-        condition = _get_condition_for_hour(hour, weather_conditions)
+        condition = _get_condition_for_hour(hour, weather_conditions, target_date)
         adj_rate = _adjust_live_period(period, condition, is_first_hour)
 
         forecast.append(

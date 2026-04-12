@@ -9,6 +9,7 @@ import logging
 from typing import Any, Final
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -24,6 +25,7 @@ from .const import DOMAIN
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.ems import Ems
 from .pv_forecast_coordinator import PvForecastCoordinator
+from .weather_forecast_history import WeatherForecastHistory
 
 CURRENCY_PLN: Final = "zł"
 UNIQUE_ID_PREFIX = DOMAIN
@@ -162,6 +164,9 @@ async def async_setup_entry(
         for description in SENSOR_DESCRIPTIONS
     ]
 
+    weather_history = entry.runtime_data.weather_forecast_history
+    weather_coordinator = entry.runtime_data.weather_coordinator
+
     sensors.extend(
         [
             PvForecastSensor(
@@ -185,6 +190,11 @@ async def async_setup_entry(
                 lambda pv: pv.target_soc,
                 lambda _pv: {},
                 unit="%",
+            ),
+            WeatherForecastHistorySensor(
+                weather_history,
+                weather_coordinator,
+                coordinator,
             ),
         ]
     )
@@ -302,3 +312,89 @@ class PvForecastSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return self._attr_fn(self._pv_forecast)
+
+
+class WeatherForecastHistorySensor(RestoreSensor):
+    """Sensor tracking hourly weather forecast conditions throughout the day.
+
+    State changes once per hour (e.g. "07:00 cloudy") — recorder saves snapshot.
+    Attribute 'hours' updates every ~5 min from wetteronline forecast.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Weather Forecast History"
+
+    def __init__(
+        self,
+        weather_history: WeatherForecastHistory,
+        weather_coordinator: Any,
+        rce_coordinator: SmartRceDataUpdateCoordinator,
+    ) -> None:
+        self._weather_history = weather_history
+        self._weather_coordinator = weather_coordinator
+        self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_weather_forecast_history"
+        self._attr_device_info = rce_coordinator.device_info
+        self._attr_native_value: str | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        # Restore from RestoreSensor
+        last_sensor_data = await self.async_get_last_sensor_data()
+        if last_sensor_data and last_sensor_data.native_value:
+            self._attr_native_value = last_sensor_data.native_value
+
+        last_state = await self.async_get_last_state()
+        if last_state:
+            hours_attr = last_state.attributes.get("hours")
+            if hours_attr:
+                from homeassistant.util.dt import now as now_local
+
+                self._weather_history.restore(hours_attr, now_local().date())
+
+        # Listen for weather updates
+        @callback
+        def on_weather_update() -> None:
+            self._handle_weather_update()
+
+        remove_listener = self._weather_coordinator.async_add_listener(
+            on_weather_update
+        )
+        setattr(remove_listener, "_hass_callback", True)
+        self.async_on_remove(remove_listener)
+
+        _LOGGER.debug(
+            "Setup of Weather Forecast History sensor %s (unique_id: %s)",
+            self.entity_id,
+            self._attr_unique_id,
+        )
+
+    @callback
+    def _handle_weather_update(self) -> None:
+        """Handle weather forecast update."""
+        from homeassistant.util.dt import now as now_local
+
+        now = now_local()
+        today = now.date()
+
+        # Update hours from forecast
+        self._weather_history.update_from_forecast(
+            self._weather_coordinator.forecast_hourly, today
+        )
+
+        # Check if state should change (new hour)
+        current_hour_str = f"{now.hour:02d}:00"
+        current_value = self._attr_native_value or ""
+        if not current_value.startswith(current_hour_str):
+            condition = self._weather_history.get_condition(now.hour)
+            self._attr_native_value = f"{current_hour_str} {condition}"
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> str | None:
+        return self._attr_native_value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"hours": self._weather_history.hours_attribute}
