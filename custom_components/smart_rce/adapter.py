@@ -5,7 +5,7 @@ from datetime import datetime
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.const import ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import (
     CoreState,
     EventStateChangedData,
@@ -152,6 +152,50 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
 
 
+BATTERY_CHARGE_TOGGLE = "input_boolean.battery_charge_max_current_toggle"
+BLOCK_BATTERY_CHARGE_SENSOR = "binary_sensor.ems_block_battery_charge"
+
+
+def listen_for_block_battery_charge(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Toggle battery charge based on ems_block_battery_charge sensor."""
+
+    async def block_battery_charge_changed(
+        event: Event[EventStateChangedData],
+    ) -> None:
+        new_state = event.data["new_state"]
+        if new_state is None:
+            return
+        service = "turn_off" if new_state.state == "on" else "turn_on"
+        try:
+            await hass.services.async_call(
+                "input_boolean",
+                service,
+                {ATTR_ENTITY_ID: BATTERY_CHARGE_TOGGLE},
+                blocking=True,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to call input_boolean.%s on %s",
+                service,
+                BATTERY_CHARGE_TOGGLE,
+            )
+
+    @callback
+    def hass_started(_=Event) -> None:
+        entry.async_on_unload(
+            async_track_state_change_event(
+                hass,
+                [BLOCK_BATTERY_CHARGE_SENSOR],
+                block_battery_charge_changed,
+            )
+        )
+
+    if hass.state == CoreState.running:
+        hass_started()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
+
+
 def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     ems: Ems = Ems()
 
@@ -165,5 +209,6 @@ def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     update_hourly(now_local())
 
     listen_for_state_changes(hass, entry, ems)
+    listen_for_block_battery_charge(hass, entry)
 
     return ems
