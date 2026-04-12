@@ -86,6 +86,7 @@ class PvForecastCoordinator:
         self.adjusted_at_6: AdjustedPvForecast | None = None
         self.adjusted_live: AdjustedPvForecast | None = None
         self.target_soc: int | None = None
+        self.target_soc_live: int | None = None
 
     async def async_start(self) -> None:
         """Start listening for weather and Solcast changes."""
@@ -194,17 +195,23 @@ class PvForecastCoordinator:
         )
 
     def _recalculate_target_soc(self) -> None:
-        """Calculate target battery SOC from adjusted at_6 forecast."""
-        if not self.adjusted_at_6:
-            return
-
+        """Calculate target battery SOC from adjusted forecasts."""
         from homeassistant.util.dt import now as now_local
 
         now = now_local()
-        self.target_soc = calculate_target_soc(
-            self.adjusted_at_6, is_workday=_is_workday(now)
-        )
-        _LOGGER.debug("Target SOC: %d%%", self.target_soc)
+        is_workday = _is_workday(now)
+
+        if self.adjusted_at_6:
+            self.target_soc = calculate_target_soc(
+                self.adjusted_at_6, is_workday=is_workday
+            )
+            _LOGGER.debug("Target SOC (at_6): %d%%", self.target_soc)
+
+        if self.adjusted_live:
+            self.target_soc_live = calculate_target_soc(
+                self.adjusted_live, is_workday=is_workday
+            )
+            _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live)
 
     def _build_weather_conditions(
         self, today: date | None = None
