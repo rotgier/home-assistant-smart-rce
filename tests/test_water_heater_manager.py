@@ -120,6 +120,32 @@ class TestHourlyBalanceGuard:
         assert mgr.should_block_battery_charge is False
         assert mgr.should_turn_on is True
 
+    def test_dod_change_from_zero_resets_flag(self):
+        """Zmiana DoD z 0% na >0% resetuje _hourly_balance_negative."""
+        mgr = WaterHeaterManager()
+        # Guard aktywny, flaga ustawiona
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.05,
+            )
+        )
+        assert mgr._hourly_balance_negative is True
+        assert mgr.should_block_battery_charge is True
+
+        # DoD zmienia się na 90% — flaga musi się zresetować
+        mgr.update(
+            _state(
+                depth_of_discharge=90,
+                exported_energy_hourly=-0.05,
+                consumption_minus_pv=-5000.0,
+                heater_mode="ASAP",
+            )
+        )
+        assert mgr._hourly_balance_negative is False
+        assert mgr.should_block_battery_charge is False
+        assert mgr.should_turn_on is True
+
     def test_guard_overrides_soc_90_export_logic(self):
         """Nawet przy SOC≥90 i dużym PV, ujemny bilans + DoD=0% wygrywa."""
         mgr = WaterHeaterManager()

@@ -77,6 +77,8 @@ class WaterHeaterManager:
         self.should_turn_off_small = target in (self.BIG_IS_ON, self.BOTH_ARE_OFF)
         self.should_block_battery_charge = (
             self._hourly_balance_negative
+            and state.depth_of_discharge is not None
+            and state.depth_of_discharge == 0
             and state.battery_charge_limit is not None
             and state.battery_charge_limit >= 2
         )
@@ -105,6 +107,8 @@ class WaterHeaterManager:
             if self._hourly_balance_negative and exported_energy < 50:
                 return self.BOTH_ARE_OFF
 
+            self._hourly_balance_negative = False
+        else:
             self._hourly_balance_negative = False
 
         mode = state.heater_mode or "WASTED"
