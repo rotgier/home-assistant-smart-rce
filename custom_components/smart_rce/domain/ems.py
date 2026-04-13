@@ -56,6 +56,13 @@ class WaterHeaterManager:
         "both_are_on": 3,
     }
 
+    _UPGRADE_MAP: dict[str, str] = {
+        "both_are_off": "small_is_on",
+        "small_is_on": "big_is_on",
+        "big_is_on": "both_are_on",
+        "both_are_on": "both_are_on",
+    }
+
     def __init__(self) -> None:
         self.should_turn_on: bool = False
         self.should_turn_off: bool = False
@@ -63,6 +70,10 @@ class WaterHeaterManager:
         self.should_turn_off_small: bool = False
         self.should_block_battery_charge: bool = False
         self._hourly_balance_negative: bool = False
+        # BALANCED diagnostics
+        self.balanced_heater_budget: float | None = None
+        self.balanced_baseline: str | None = None
+        self.balanced_upgrade_active: bool = False
 
     def update(self, state: InputState) -> None:
         if self._none_present(state):
@@ -82,6 +93,12 @@ class WaterHeaterManager:
             and state.battery_charge_limit is not None
             and state.battery_charge_limit >= 2
         )
+        # Reset BALANCED diagnostics when not in BALANCED mode or guard active
+        mode = state.heater_mode or "WASTED"
+        if mode != "BALANCED" or self._hourly_balance_negative:
+            self.balanced_heater_budget = None
+            self.balanced_baseline = None
+            self.balanced_upgrade_active = False
 
     def _current_state(self, state: InputState) -> str:
         if state.water_heater_big_is_on and state.water_heater_small_is_on:
@@ -117,12 +134,21 @@ class WaterHeaterManager:
             target = self._asap_target(
                 pv_available, battery_charge_limit, current_state
             )
+        elif mode == "BALANCED":
+            return self._balanced_target(
+                pv_available,
+                battery_charge_limit,
+                battery_soc,
+                exported_energy,
+                current_state,
+            )
         else:
             target = self._wasted_target(
                 pv_available, battery_charge_limit, current_state
             )
 
         # Override: exported_energy — nie marnuj skumulowanego eksportu
+        # (tylko dla ASAP i WASTED, NIE dla BALANCED)
         if battery_soc >= 90:
             if exported_energy > 300 and pv_available > 0:
                 if target in (self.BOTH_ARE_OFF, self.SMALL_IS_ON):
@@ -177,6 +203,63 @@ class WaterHeaterManager:
         ):
             return self.BIG_IS_ON
         return self.BOTH_ARE_OFF
+
+    def _balanced_target(
+        self,
+        pv: float,
+        battery_charge_limit: float,
+        battery_soc: float,
+        exported_energy: float,
+        current_state: str,
+    ) -> str:
+        # Rezerwacja (charge_limit: dyskretne 0, 1, 2, 7, 18A)
+        if battery_charge_limit > 7:
+            reserved = 3000 if battery_soc < 50 else 2000
+        elif battery_charge_limit > 2:
+            reserved = 1000
+        elif battery_charge_limit == 2:
+            reserved = 300
+        else:
+            reserved = 0
+
+        heater_budget = pv - reserved
+        hysteresis = 500
+
+        # Piętro 1 — Baseline (histereza trzyma tylko obecny stan, nie wyższy)
+        if heater_budget >= self.BOTH_POWER or (
+            heater_budget >= self.BOTH_POWER - hysteresis
+            and current_state == self.BOTH_ARE_ON
+        ):
+            baseline = self.BOTH_ARE_ON
+        elif heater_budget >= self.BIG_POWER or (
+            heater_budget >= self.BIG_POWER - hysteresis
+            and current_state == self.BIG_IS_ON
+        ):
+            baseline = self.BIG_IS_ON
+        elif heater_budget >= self.SMALL_POWER or (
+            heater_budget >= self.SMALL_POWER - hysteresis
+            and current_state == self.SMALL_IS_ON
+        ):
+            baseline = self.SMALL_IS_ON
+        else:
+            baseline = self.BOTH_ARE_OFF
+
+        # Piętro 2 — Upgrade z budżetu eksportu godzinowego
+        upgrade = self._UPGRADE_MAP[baseline]
+        target = baseline
+        if upgrade != baseline:
+            if exported_energy > 100 or (
+                self._STATE_ORDER[current_state] >= self._STATE_ORDER[upgrade]
+                and exported_energy > 30
+            ):
+                target = upgrade
+
+        # Diagnostyka
+        self.balanced_heater_budget = heater_budget
+        self.balanced_baseline = baseline
+        self.balanced_upgrade_active = target != baseline
+
+        return target
 
     def _none_present(self, state: InputState) -> bool:
         return (

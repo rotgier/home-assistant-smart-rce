@@ -202,3 +202,381 @@ class TestHourlyBalanceGuard:
         # ASAP z battery_full=True: 5000 > 4500 → BOTH_ARE_ON
         assert mgr.should_turn_on is True
         assert mgr.should_turn_on_small is True
+
+
+class TestBalancedBaseline:
+    """Piętro 1 — baseline z rezerwacją dla baterii."""
+
+    def test_18a_low_soc_small(self):
+        """pv=5500, charge_limit=18A, soc=30% → reserved=3000, budget=2500 → SMALL."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-5500.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on is False
+        assert mgr.should_turn_on_small is True
+        assert mgr.balanced_baseline == "small_is_on"
+        assert mgr.balanced_heater_budget == 2500.0
+
+    def test_18a_low_soc_big(self):
+        """pv=7000, charge_limit=18A, soc=30% → reserved=3000, budget=4000 → BIG."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-7000.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on is True
+        assert mgr.should_turn_on_small is False
+        assert mgr.balanced_baseline == "big_is_on"
+
+    def test_18a_low_soc_both(self):
+        """pv=8000, charge_limit=18A, soc=30% → reserved=3000, budget=5000 → BOTH."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-8000.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on is True
+        assert mgr.should_turn_on_small is True
+        assert mgr.balanced_baseline == "both_are_on"
+
+    def test_18a_high_soc_big(self):
+        """pv=5500, charge_limit=18A, soc=70% → reserved=2000, budget=3500 → BIG."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-5500.0,
+                battery_charge_limit=18.0,
+                battery_soc=70.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on is True
+        assert mgr.balanced_baseline == "big_is_on"
+
+    def test_7a_small(self):
+        """pv=3000, charge_limit=7A, soc=95% → reserved=1000, budget=2000 → SMALL."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-3000.0,
+                battery_charge_limit=7.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on_small is True
+        assert mgr.should_turn_on is False
+        assert mgr.balanced_baseline == "small_is_on"
+        assert mgr.balanced_heater_budget == 2000.0
+
+    def test_2a_reserved_300(self):
+        """pv=2000, charge_limit=2A → reserved=300, budget=1700 → SMALL."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-2000.0,
+                battery_charge_limit=2.0,
+                battery_soc=98.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on_small is True
+        assert mgr.balanced_heater_budget == 1700.0
+
+    def test_1a_no_reservation(self):
+        """pv=2000, charge_limit=1A → reserved=0, budget=2000 → SMALL."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-2000.0,
+                battery_charge_limit=1.0,
+                battery_soc=99.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on_small is True
+        assert mgr.balanced_heater_budget == 2000.0
+
+    def test_low_pv_off(self):
+        """pv=1200, charge_limit=18A, soc=30% → reserved=3000, budget=-1800 → OFF."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1200.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_turn_on is False
+        assert mgr.should_turn_on_small is False
+        assert mgr.balanced_baseline == "both_are_off"
+        assert mgr.balanced_heater_budget == -1800.0
+
+    def test_hysteresis_holds_current_state(self):
+        """Histereza trzyma obecny stan na granicy progu."""
+        mgr = WaterHeaterManager()
+        # SMALL jest włączona
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                small_on=True,
+                consumption_minus_pv=-2400.0,  # budget=2400-1000=1400 < 1500
+                battery_charge_limit=7.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # 1400 < 1500 ale >= 1500-500=1000, current==SMALL → trzymaj SMALL
+        assert mgr.should_turn_on_small is True
+        assert mgr.balanced_baseline == "small_is_on"
+
+    def test_hysteresis_does_not_hold_higher_state(self):
+        """Histereza NIE trzyma wyższego stanu."""
+        mgr = WaterHeaterManager()
+        # BIG jest włączona, ale budget na SMALL
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                big_on=True,
+                consumption_minus_pv=-2400.0,  # budget=1400
+                battery_charge_limit=7.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # 1400 < 1500, current==BIG ale histereza BIG wymaga current==BIG i budget>=2500
+        # → OFF (bo 1400 < 1500-500=1000? NIE, 1400 >= 1000)
+        # Wait: 1400 >= 1000 i current==SMALL? NIE current==BIG
+        # → OFF
+        assert mgr.balanced_baseline == "both_are_off"
+
+
+class TestBalancedUpgrade:
+    """Piętro 2 — upgrade z budżetu eksportu godzinowego."""
+
+    def test_upgrade_off_to_small(self):
+        """baseline=OFF, exported=120Wh → upgrade SMALL."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1200.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.12,  # 120 Wh
+            )
+        )
+        assert mgr.balanced_baseline == "both_are_off"
+        assert mgr.balanced_upgrade_active is True
+        assert mgr.should_turn_on_small is True
+
+    def test_upgrade_small_to_big(self):
+        """baseline=SMALL, exported=120Wh → upgrade BIG."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-5500.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.12,
+            )
+        )
+        assert mgr.balanced_baseline == "small_is_on"
+        assert mgr.balanced_upgrade_active is True
+        assert mgr.should_turn_on is True  # BIG
+
+    def test_upgrade_big_to_both(self):
+        """baseline=BIG, exported=120Wh → upgrade BOTH."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-7000.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.12,
+            )
+        )
+        assert mgr.balanced_baseline == "big_is_on"
+        assert mgr.balanced_upgrade_active is True
+        assert mgr.should_turn_on is True
+        assert mgr.should_turn_on_small is True  # BOTH
+
+    def test_upgrade_both_stays_both(self):
+        """baseline=BOTH, exported=120Wh → BOTH (max, no upgrade)."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-8000.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.12,
+            )
+        )
+        assert mgr.balanced_baseline == "both_are_on"
+        assert mgr.balanced_upgrade_active is False
+
+    def test_no_upgrade_below_threshold(self):
+        """baseline=SMALL, exported=80Wh → za mało na upgrade."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-5500.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.08,
+            )
+        )
+        assert mgr.balanced_baseline == "small_is_on"
+        assert mgr.balanced_upgrade_active is False
+
+    def test_upgrade_hysteresis_holds(self):
+        """Upgrade aktywny, exported=50Wh → trzymaj (>30)."""
+        mgr = WaterHeaterManager()
+        # Najpierw aktywuj upgrade (baseline=SMALL → BIG)
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-5300.0,  # budget=2300 → baseline SMALL
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.12,
+            )
+        )
+        assert mgr.balanced_baseline == "small_is_on"
+        assert mgr.balanced_upgrade_active is True
+        # Teraz exported spada do 50Wh, BIG jest włączony
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                big_on=True,
+                consumption_minus_pv=-5300.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.05,  # 50 Wh > 30
+            )
+        )
+        assert mgr.balanced_baseline == "small_is_on"
+        assert mgr.balanced_upgrade_active is True
+
+    def test_upgrade_hysteresis_releases(self):
+        """Exported=20Wh → powrót do baseline (<30)."""
+        mgr = WaterHeaterManager()
+        # Aktywuj upgrade
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-5300.0,  # budget=2300 → baseline SMALL
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.12,
+            )
+        )
+        assert mgr.balanced_upgrade_active is True
+        # Exported spada poniżej 30Wh
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                big_on=True,
+                consumption_minus_pv=-5300.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.02,  # 20 Wh < 30
+            )
+        )
+        assert mgr.balanced_upgrade_active is False
+        assert mgr.balanced_baseline == "small_is_on"
+
+
+class TestBalancedOverrideAndDiagnostics:
+    """Override SOC≥90 nie odpala dla BALANCED + diagnostyka."""
+
+    def test_no_soc90_override(self):
+        """mode=BALANCED, soc=95, exported=400Wh → override NIE odpala."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1200.0,
+                battery_charge_limit=18.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.4,  # 400 Wh
+            )
+        )
+        # budget = 1200 - 2000 = -800 → baseline OFF
+        # upgrade: OFF → SMALL (exported 400 > 100)
+        assert mgr.balanced_baseline == "both_are_off"
+        assert mgr.balanced_upgrade_active is True
+        # Override SOC≥90 would force BIG, but in BALANCED it doesn't
+        assert mgr.should_turn_on is False  # nie BIG
+        assert mgr.should_turn_on_small is True  # SMALL z upgrade
+
+    def test_diagnostics_none_in_wasted_mode(self):
+        """Diagnostyka BALANCED = None/False gdy tryb WASTED."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="WASTED",
+                consumption_minus_pv=-6000.0,
+                battery_charge_limit=18.0,
+                exported_energy_hourly=0.5,
+            )
+        )
+        assert mgr.balanced_heater_budget is None
+        assert mgr.balanced_baseline is None
+        assert mgr.balanced_upgrade_active is False
+
+    def test_diagnostics_none_when_guard_active(self):
+        """Diagnostyka = None gdy guard DoD=0% aktywny."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.05,
+                consumption_minus_pv=-5000.0,
+            )
+        )
+        assert mgr.balanced_heater_budget is None
+        assert mgr.balanced_baseline is None
+        assert mgr.balanced_upgrade_active is False
+
+    def test_guard_works_with_balanced(self):
+        """Guard DoD=0% działa z BALANCED."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                heater_mode="BALANCED",
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.05,
+                consumption_minus_pv=-5000.0,
+            )
+        )
+        assert mgr.should_turn_on is False
+        assert mgr.should_turn_off is True

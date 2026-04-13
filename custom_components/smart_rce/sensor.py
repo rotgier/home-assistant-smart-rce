@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import cached_property
 import logging
 from typing import Any, Final
 
@@ -15,7 +16,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfTime
+from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -149,6 +150,34 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
 )
 
 
+EMS_UNIQUE_ID_PREFIX = "ems"
+
+
+@dataclass(frozen=False, kw_only=True)
+class EmsSensorDescription(SensorEntityDescription):
+    key: str = field(init=False)
+    value_fn: Callable[[Ems], str | int | float | None]
+
+    def __post_init__(self):
+        self.key = self.name.lower().replace(" ", "_")
+
+
+EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
+    EmsSensorDescription(
+        name="Heater Budget",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: ems.water_heater.balanced_heater_budget,
+        icon="mdi:lightning-bolt",
+    ),
+    EmsSensorDescription(
+        name="Balanced Baseline",
+        value_fn=lambda ems: ems.water_heater.balanced_baseline,
+        icon="mdi:heating-coil",
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: SmartRceConfigEntry,
@@ -205,6 +234,18 @@ async def async_setup_entry(
                 coordinator,
             ),
         ]
+    )
+
+    from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+
+    ems_device_info = DeviceInfo(
+        name="EMS",
+        identifiers={("ems", entry.entry_id)},
+        entry_type=DeviceEntryType.SERVICE,
+    )
+    sensors.extend(
+        EmsSensor(ems_device_info, ems, description)
+        for description in EMS_SENSOR_DESCRIPTIONS
     )
 
     async_add_entities(sensors)
@@ -406,3 +447,48 @@ class WeatherForecastHistorySensor(RestoreSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"hours": self._weather_history.hours_attribute}
+
+
+class EmsSensor(SensorEntity):
+    """EMS diagnostic sensor (heater_budget, balanced_baseline)."""
+
+    _attr_has_entity_name = True
+    entity_description: EmsSensorDescription
+
+    def __init__(
+        self,
+        device_info,
+        ems: Ems,
+        description: EmsSensorDescription,
+    ) -> None:
+        self._attr_device_info = device_info
+        self.ems: Ems = ems
+        self.entity_description = description
+        self._attr_unique_id = f"{EMS_UNIQUE_ID_PREFIX}_{description.key}"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        @callback
+        def listener() -> None:
+            self.async_write_ha_state()
+
+        remove_listener = self.ems.async_add_listener(listener)
+        setattr(remove_listener, "_hass_callback", True)
+        self.async_on_remove(remove_listener)
+
+        self.async_write_ha_state()
+        _LOGGER.debug(
+            "Setup of EMS sensor %s (%s, unique_id: %s)",
+            self.name,
+            self.entity_id,
+            self._attr_unique_id,
+        )
+
+    @cached_property
+    def should_poll(self) -> bool:
+        return False
+
+    @property
+    def native_value(self) -> str | int | float | None:
+        return self.entity_description.value_fn(self.ems)
