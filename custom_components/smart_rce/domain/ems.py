@@ -288,6 +288,20 @@ class Ems:
         self._async_update_listeners()
 
     def update_hourly(self, now: datetime) -> None:
+        # Rotate: jeśli today jest z innego dnia, przenieś tomorrow → today
+        if (
+            self.today.start_charge_hour_datetime
+            and self.tomorrow.hour_price
+            and self.today.start_charge_hour_datetime.date() != now.date()
+        ):
+            _LOGGER.info(
+                "Rotating RCE prices: tomorrow → today (today was %s, now is %s)",
+                self.today.start_charge_hour_datetime.date(),
+                now.date(),
+            )
+            self.today = self.tomorrow
+            self.tomorrow = EmsDayData.empty()
+
         if self.today.hour_price:
             self.current_price = self.today.hour_price[now.hour]
             self._async_update_listeners()
