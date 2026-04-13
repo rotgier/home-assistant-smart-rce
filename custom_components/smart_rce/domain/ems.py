@@ -255,7 +255,7 @@ class WaterHeaterManager:
                 target = upgrade
 
         # Diagnostyka
-        self.balanced_heater_budget = heater_budget
+        self.balanced_heater_budget = -heater_budget
         self.balanced_baseline = baseline
         self.balanced_upgrade_active = target != baseline
 
