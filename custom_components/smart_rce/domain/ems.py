@@ -305,6 +305,19 @@ class Ems:
 
             self.update_hourly(now)
 
+    def restore_rce_today(self, prices_attr: list[dict], now: datetime) -> None:
+        """Restore today's RCE prices from sensor attributes."""
+        rce_prices = _restore_rce_day_prices(prices_attr)
+        if rce_prices:
+            self.today = EmsDayData.create(find_charge_hours(rce_prices))
+            self.update_hourly(now)
+
+    def restore_rce_tomorrow(self, prices_attr: list[dict]) -> None:
+        """Restore tomorrow's RCE prices from sensor attributes."""
+        rce_prices = _restore_rce_day_prices(prices_attr)
+        if rce_prices:
+            self.tomorrow = EmsDayData.create(find_charge_hours(rce_prices))
+
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         def remove_listener() -> None:
             self._listeners.pop(remove_listener)
@@ -376,6 +389,17 @@ class EmsDayData:
     @classmethod
     def empty(cls) -> EmsDayData:
         return EmsDayData(None, None, None, None, None)
+
+
+def _restore_rce_day_prices(prices_attr: list[dict]) -> RceDayPrices | None:
+    """Build RceDayPrices from restored sensor attributes."""
+    if not prices_attr:
+        return None
+    prices = [
+        {"datetime": datetime.fromisoformat(p["datetime"]), "price": p["price"]}
+        for p in prices_attr
+    ]
+    return RceDayPrices(published_at=None, prices=prices)
 
 
 class CsvTextBuilder:

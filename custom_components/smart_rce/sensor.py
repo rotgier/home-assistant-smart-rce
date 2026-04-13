@@ -42,6 +42,7 @@ class SmartRceSensorDescription(SensorEntityDescription):
     key: str = field(init=False)
     value_fn: Callable[[Ems], str | int | float | datetime | None]
     attr_fn: Callable[[dict[str, Any]], dict[str, Any]] = lambda _: {}
+    restore_fn: Callable[[Ems, dict[str, Any]], None] | None = None
 
     def __post_init__(self):
         self.key = self.name.lower().replace(" ", "_")
@@ -76,6 +77,20 @@ def _prices_attr(ems: Ems, day: str) -> dict[str, Any]:
     }
 
 
+def _restore_prices_today(ems: Ems, attrs: dict[str, Any]) -> None:
+    prices = attrs.get("prices")
+    if prices:
+        from homeassistant.util.dt import now as now_local
+
+        ems.restore_rce_today(prices, now_local())
+
+
+def _restore_prices_tomorrow(ems: Ems, attrs: dict[str, Any]) -> None:
+    prices = attrs.get("prices")
+    if prices:
+        ems.restore_rce_tomorrow(prices)
+
+
 SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
     SmartRceSensorDescription(
         name="Current Price",
@@ -89,6 +104,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: _avg_price(ems, "today"),
         attr_fn=lambda ems: _prices_attr(ems, "today"),
+        restore_fn=_restore_prices_today,
     ),
     SmartRceSensorDescription(
         name="Prices Tomorrow",
@@ -96,6 +112,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: _avg_price(ems, "tomorrow"),
         attr_fn=lambda ems: _prices_attr(ems, "tomorrow"),
+        restore_fn=_restore_prices_tomorrow,
     ),
     ####
     #### TODAY
@@ -281,7 +298,7 @@ def _pv_forecast_attrs(forecast) -> dict[str, Any]:
     }
 
 
-class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEntity):
+class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], RestoreSensor):
     _attr_has_entity_name = True
     entity_description: SmartRceSensorDescription
 
@@ -299,6 +316,11 @@ class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], SensorEnt
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+
+        if self.entity_description.restore_fn:
+            last_state = await self.async_get_last_state()
+            if last_state:
+                self.entity_description.restore_fn(self.ems, last_state.attributes)
 
         @callback
         def listener() -> None:
