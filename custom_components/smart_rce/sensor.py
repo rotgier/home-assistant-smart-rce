@@ -228,6 +228,22 @@ async def async_setup_entry(
                 lambda _pv: {},
                 unit="%",
             ),
+            PvForecastSensor(
+                pv_forecast,
+                coordinator,
+                "Target Battery SOC Tomorrow",
+                lambda pv: pv.target_soc_tomorrow,
+                lambda _pv: {},
+                unit="%",
+            ),
+            PvForecastSensor(
+                pv_forecast,
+                coordinator,
+                "Target Battery SOC Tomorrow Live",
+                lambda pv: pv.target_soc_tomorrow_live,
+                lambda _pv: {},
+                unit="%",
+            ),
             WeatherForecastHistorySensor(
                 weather_history,
                 weather_coordinator,

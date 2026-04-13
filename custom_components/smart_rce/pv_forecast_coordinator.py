@@ -23,6 +23,7 @@ from .weather_listener import WeatherListenerCoordinator
 
 SOLCAST_AT_6_ENTITY: Final = "sensor.solcast_forecast_at_6"
 SOLCAST_LIVE_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_dzisiaj"
+SOLCAST_TOMORROW_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_jutro"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,8 +86,11 @@ class PvForecastCoordinator:
 
         self.adjusted_at_6: AdjustedPvForecast | None = None
         self.adjusted_live: AdjustedPvForecast | None = None
+        self.adjusted_tomorrow: AdjustedPvForecast | None = None
         self.target_soc: int | None = None
         self.target_soc_live: int | None = None
+        self.target_soc_tomorrow: int | None = None
+        self.target_soc_tomorrow_live: int | None = None
 
     async def async_start(self) -> None:
         """Start listening for weather and Solcast changes."""
@@ -100,7 +104,10 @@ class PvForecastCoordinator:
         cancel_live = async_track_state_change_event(
             self._hass, [SOLCAST_LIVE_ENTITY], self._on_solcast_live_change
         )
-        self._cancel_solcast_listeners = [cancel_at6, cancel_live]
+        cancel_tomorrow = async_track_state_change_event(
+            self._hass, [SOLCAST_TOMORROW_ENTITY], self._on_solcast_tomorrow_change
+        )
+        self._cancel_solcast_listeners = [cancel_at6, cancel_live, cancel_tomorrow]
 
         # Initial calculation
         self._recalculate_all()
@@ -130,12 +137,21 @@ class PvForecastCoordinator:
         """Solcast live changed — recalculate live."""
         _LOGGER.debug("Solcast live changed, recalculating")
         self._recalculate_live()
+        self._recalculate_target_soc()
+        self._notify_listeners()
+
+    @callback
+    def _on_solcast_tomorrow_change(self, event: Event) -> None:
+        """Solcast tomorrow changed — recalculate tomorrow."""
+        _LOGGER.debug("Solcast tomorrow changed, recalculating")
+        self._recalculate_tomorrow()
         self._notify_listeners()
 
     def _recalculate_all(self) -> None:
-        """Recalculate both forecasts and target SOC."""
+        """Recalculate all forecasts and target SOC."""
         self._recalculate_at6()
         self._recalculate_live()
+        self._recalculate_tomorrow()
         self._recalculate_target_soc()
         self._notify_listeners()
 
@@ -212,6 +228,40 @@ class PvForecastCoordinator:
                 self.adjusted_live, is_workday=is_workday, now=now
             )
             _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live)
+
+        # Tomorrow: always full 7-13 window, check tomorrow's workday
+        if self.adjusted_tomorrow:
+            from datetime import timedelta
+
+            tomorrow = now + timedelta(days=1)
+            is_workday_tomorrow = _is_workday(tomorrow)
+            self.target_soc_tomorrow = calculate_target_soc(
+                self.adjusted_tomorrow, is_workday=is_workday_tomorrow
+            )
+            self.target_soc_tomorrow_live = self.target_soc_tomorrow  # same forecast
+            _LOGGER.debug("Target SOC (tomorrow): %d%%", self.target_soc_tomorrow)
+
+    def _recalculate_tomorrow(self) -> None:
+        """Recalculate weather-adjusted forecast for tomorrow."""
+        solcast_periods = self._read_solcast_entity(
+            SOLCAST_TOMORROW_ENTITY, "detailedForecast"
+        )
+        if not solcast_periods:
+            return
+
+        from datetime import timedelta
+
+        from homeassistant.util.dt import now as now_local
+
+        tomorrow = (now_local() + timedelta(days=1)).date()
+        weather = self._build_weather_conditions(tomorrow)
+        self.adjusted_tomorrow = adjust_pv_forecast_at6(solcast_periods, weather)
+        _LOGGER.debug(
+            "Adjusted tomorrow: %.1f kWh (from %d periods, %d weather conditions)",
+            self.adjusted_tomorrow.total_kwh,
+            len(self.adjusted_tomorrow.forecast),
+            len(weather),
+        )
 
     def _build_weather_conditions(
         self, today: date | None = None
