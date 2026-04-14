@@ -469,10 +469,12 @@ class WeatherForecastHistorySensor(RestoreSensor):
         now = now_local()
         today = now.date()
 
-        # Update hours from forecast
-        self._weather_history.update_from_forecast(
-            self._weather_coordinator.forecast_hourly, today
+        # Update hours from forecast, get diff if changed
+        diff_text = self._weather_history.update_from_forecast(
+            self._weather_coordinator.forecast_hourly, today, now
         )
+        if diff_text:
+            self.hass.loop.create_task(self._async_save_diff(now, diff_text))
 
         # Check if state should change (new hour)
         current_hour_str = f"{now.hour:02d}:00"
@@ -482,6 +484,16 @@ class WeatherForecastHistorySensor(RestoreSensor):
             self._attr_native_value = f"{current_hour_str} {condition}"
 
         self.async_write_ha_state()
+
+    async def _async_save_diff(self, now: datetime, diff_text: str) -> None:
+        """Save forecast diff to file."""
+        import aiofiles
+
+        config_dir = self.hass.config.config_dir
+        filename = f"forecast_diff_{now.strftime('%Y-%m-%dT%H:%M')}.txt"
+        path = f"{config_dir}/smart_rce/{filename}"
+        async with aiofiles.open(path, mode="w", encoding="utf-8") as f:
+            await f.write(diff_text)
 
     @property
     def native_value(self) -> str | None:
