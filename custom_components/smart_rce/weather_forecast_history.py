@@ -59,10 +59,14 @@ class WeatherForecastHistory:
                 if old_cond and old_cond != new_cond:
                     diffs[h] = old_cond
 
+        is_initial = not self._hours
+
         # Update hours
         for h, cond in new_conditions.items():
             self._hours[h] = cond
 
+        if is_initial:
+            return self._format_diff(now, current_hour, new_conditions, {})
         if not diffs:
             return None
         return self._format_diff(now, current_hour, new_conditions, diffs)
