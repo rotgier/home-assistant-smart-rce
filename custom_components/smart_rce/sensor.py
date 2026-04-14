@@ -404,8 +404,13 @@ class PvForecastSensor(SensorEntity):
 class WeatherForecastHistorySensor(RestoreSensor):
     """Sensor tracking hourly weather forecast conditions throughout the day.
 
-    State changes once per hour (e.g. "07:00 cloudy") — recorder saves snapshot.
+    State changes once per hour (e.g. "07:00 cloudy").
     Attribute 'hours' updates every ~5 min from wetteronline forecast.
+
+    Recorder saves ~30 entries/day: 24 state changes (hourly) + ~6 attribute-only
+    changes (when WetterOnline updates forecast for future hours).
+    To get the forecast snapshot from the start of hour X, take the FIRST
+    recorder entry in that hour (see ADR 013).
     """
 
     _attr_has_entity_name = True
