@@ -24,13 +24,13 @@ class WeatherForecastHistory:
 
     def update_from_forecast(
         self, forecast_hourly: list[dict] | None, today: date, now: datetime
-    ) -> str | None:
+    ) -> tuple[str, bool] | None:
         """Update from wetteronline hourly forecast.
 
         Overwrites hours present in forecast (future hours).
         Hours not in forecast (already passed) are kept unchanged.
 
-        Returns diff text if forecast changed for future hours, None otherwise.
+        Returns (diff_text, is_initial) if forecast changed, None otherwise.
         """
         if not forecast_hourly:
             return None
@@ -66,10 +66,12 @@ class WeatherForecastHistory:
             self._hours[h] = cond
 
         if is_initial:
-            return self._format_diff(now, current_hour, new_conditions, {})
+            return self._format_diff(
+                now, current_hour, new_conditions, {}, initial=True
+            ), True
         if not diffs:
             return None
-        return self._format_diff(now, current_hour, new_conditions, diffs)
+        return self._format_diff(now, current_hour, new_conditions, diffs), False
 
     def _format_diff(
         self,
@@ -77,9 +79,14 @@ class WeatherForecastHistory:
         current_hour: int,
         new_conditions: dict[int, str],
         diffs: dict[int, str],
+        *,
+        initial: bool = False,
     ) -> str:
         """Format lightweight diff of condition_custom changes."""
-        lines = [now.strftime("%Y-%m-%d %H:%M"), ""]
+        header = now.strftime("%Y-%m-%d %H:%M")
+        if initial:
+            header += "  [initial]"
+        lines = [header, ""]
         for h in range(24):
             cond = new_conditions.get(h, self._hours.get(h, "—"))
             marker = "  <--" if h == current_hour else ""
