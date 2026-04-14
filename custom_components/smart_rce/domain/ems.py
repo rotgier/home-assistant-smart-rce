@@ -93,11 +93,16 @@ class WaterHeaterManager:
             and state.battery_charge_limit is not None
             and state.battery_charge_limit >= 2
         )
-        # Reset BALANCED diagnostics when not in BALANCED mode or guard active
+        # BALANCED diagnostics
         mode = state.heater_mode or "WASTED"
-        if mode != "BALANCED" or self._hourly_balance_negative:
+        if mode != "BALANCED":
             self.balanced_heater_budget = None
             self.balanced_baseline = None
+            self.balanced_upgrade_active = False
+        elif self._hourly_balance_negative:
+            pv_available = -state.consumption_minus_pv_2_minutes
+            self.balanced_heater_budget = -pv_available
+            self.balanced_baseline = "negative_energy"
             self.balanced_upgrade_active = False
 
     def _current_state(self, state: InputState) -> str:
