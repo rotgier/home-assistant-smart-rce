@@ -20,6 +20,10 @@ MAX_CONSECUTIVE_HOURS: Final[int] = 8
 INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
 POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
 
+# Blokada ładowania baterii aktywna tylko dla hour < GUARD_END_HOUR — po tej godzinie
+# brak PV, a tanie godziny RCE pozwalają na ładowanie baterii z sieci.
+GUARD_END_HOUR: Final[int] = 17
+
 
 @dataclass
 class InputState:
@@ -35,6 +39,7 @@ class InputState:
     depth_of_discharge: float | None = (
         None  # % (number.goodwe_depth_of_discharge_on_grid)
     )
+    now: datetime | None = None
 
 
 class WaterHeaterManager:
@@ -120,8 +125,13 @@ class WaterHeaterManager:
         battery_charge_limit = state.battery_charge_limit
         exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
 
-        # GUARD: Ochrona bilansu godzinowego (tylko w trybie charge-only, DoD=0%)
-        if state.depth_of_discharge is not None and state.depth_of_discharge == 0:
+        # GUARD: Ochrona bilansu godzinowego (tryb charge-only, DoD=0%) — tylko w godzinach PV.
+        # Po GUARD_END_HOUR brak PV, a ujemny export to normalne ładowanie baterii z sieci w tanich RCE.
+        if (
+            state.depth_of_discharge is not None
+            and state.depth_of_discharge == 0
+            and state.now.hour < GUARD_END_HOUR
+        ):
             if exported_energy < 0:
                 self._hourly_balance_negative = True
                 return self.BOTH_ARE_OFF
@@ -275,6 +285,7 @@ class WaterHeaterManager:
             or state.battery_power_2_minutes is None
             or state.consumption_minus_pv_2_minutes is None
             or state.exported_energy_hourly is None
+            or state.now is None
         )
 
 

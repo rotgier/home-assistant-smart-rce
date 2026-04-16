@@ -1,4 +1,9 @@
+from datetime import datetime
+
 from custom_components.smart_rce.domain.ems import InputState, WaterHeaterManager
+from custom_components.smart_rce.domain.rce import TIMEZONE
+
+NOON = datetime(2026, 4, 16, 12, 0, tzinfo=TIMEZONE)
 
 
 def _state(
@@ -12,6 +17,7 @@ def _state(
     exported_energy_hourly=0.5,
     heater_mode="WASTED",
     depth_of_discharge=None,
+    now=NOON,
 ) -> InputState:
     return InputState(
         water_heater_big_is_on=big_on,
@@ -23,6 +29,7 @@ def _state(
         exported_energy_hourly=exported_energy_hourly,
         heater_mode=heater_mode,
         depth_of_discharge=depth_of_discharge,
+        now=now,
     )
 
 
@@ -580,3 +587,92 @@ class TestBalancedOverrideAndDiagnostics:
         )
         assert mgr.should_turn_on is False
         assert mgr.should_turn_off is True
+
+
+class TestGuardTimeWindow:
+    """Guard aktywny tylko w godzinach PV (< GUARD_END_HOUR=17)."""
+
+    def _at(self, hour: int) -> datetime:
+        return datetime(2026, 4, 16, hour, 0, tzinfo=TIMEZONE)
+
+    def test_guard_active_at_16(self):
+        """16:00 — guard aktywny, blokada ładowania."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.05,
+                heater_mode="ASAP",
+                now=self._at(16),
+            )
+        )
+        assert mgr.should_block_battery_charge is True
+        assert mgr._hourly_balance_negative is True
+
+    def test_guard_disabled_at_17(self):
+        """17:00 — guard wyłączony, brak blokady nawet przy ujemnym eksporcie."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.05,
+                heater_mode="ASAP",
+                now=self._at(17),
+            )
+        )
+        assert mgr.should_block_battery_charge is False
+        assert mgr._hourly_balance_negative is False
+
+    def test_guard_disabled_at_23(self):
+        """23:00 — tanie godziny RCE, ładowanie z sieci nie powinno być blokowane."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.5,  # znaczny pobór z sieci
+                consumption_minus_pv=-3000.0,
+                heater_mode="ASAP",
+                now=self._at(23),
+            )
+        )
+        assert mgr.should_block_battery_charge is False
+
+    def test_guard_active_at_midnight(self):
+        """0:00 — brak dolnej granicy, guard nadal aktywny (user wybrał only-end)."""
+        mgr = WaterHeaterManager()
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.05,
+                heater_mode="ASAP",
+                now=self._at(0),
+            )
+        )
+        assert mgr.should_block_battery_charge is True
+
+    def test_flag_resets_when_window_closes(self):
+        """Flaga _hourly_balance_negative zeruje się po przekroczeniu GUARD_END_HOUR."""
+        mgr = WaterHeaterManager()
+        # Najpierw guard aktywny o 16:00, flaga ustawiona
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.03,
+                heater_mode="ASAP",
+                now=self._at(16),
+            )
+        )
+        assert mgr._hourly_balance_negative is True
+        assert mgr.should_block_battery_charge is True
+
+        # Godzina 17 — okno zamknięte, flaga musi się zresetować
+        mgr.update(
+            _state(
+                depth_of_discharge=0,
+                exported_energy_hourly=-0.03,
+                heater_mode="ASAP",
+                now=self._at(17),
+            )
+        )
+        assert mgr._hourly_balance_negative is False
+        assert mgr.should_block_battery_charge is False

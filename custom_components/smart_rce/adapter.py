@@ -115,6 +115,7 @@ def update_input_state(hass: HomeAssistant, input_state: InputState) -> InputSta
             _LOGGER.error("State %s is not present in state machine", entity)
         else:
             setter(entity, input_state, state_object.state)
+    input_state.now = now_local()
     return input_state
 
 
@@ -202,6 +203,10 @@ def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     @callback
     def update_hourly(now: datetime) -> None:
         ems.update_hourly(now)
+        # Przelicz guard — zmiana godziny może otworzyć/zamknąć okno GUARD_END_HOUR
+        # nawet gdy żaden z entity w HASS_STATE_MAPPER się nie zmienił.
+        input_state = update_input_state(hass, InputState())
+        ems.update_state(input_state)
 
     entry.async_on_unload(
         async_track_time_change(hass, update_hourly, minute=0, second=0)
