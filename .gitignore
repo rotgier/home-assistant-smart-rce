@@ -1,4 +1,4 @@
-custom_components/smart_rce/__pycache__/**
+**/__pycache__/
 example/**
 scaffold/**
 homeassistant/**
