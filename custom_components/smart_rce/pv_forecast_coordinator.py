@@ -177,17 +177,6 @@ class PvForecastCoordinator:
 
         solcast_periods = self._read_solcast_entity(entity_id, attr_name)
         if not solcast_periods:
-            # Solcast sensor rolled state but emptied detailedForecast
-            # (happens at midnight until next fetch fills it back). Reset
-            # adjusted_at_6 so downstream target_soc calc skips this source
-            # instead of using stale forecast paired with a fresh now.date().
-            if self.adjusted_at_6:
-                _LOGGER.info(
-                    "%s returned empty %s — clearing adjusted_at_6",
-                    entity_id,
-                    attr_name,
-                )
-                self.adjusted_at_6 = None
             return
 
         weather = self._build_weather_conditions(now.date())
@@ -206,12 +195,6 @@ class PvForecastCoordinator:
             SOLCAST_LIVE_ENTITY, "detailedForecast"
         )
         if not solcast_periods:
-            if self.adjusted_live:
-                _LOGGER.info(
-                    "%s returned empty detailedForecast — clearing adjusted_live",
-                    SOLCAST_LIVE_ENTITY,
-                )
-                self.adjusted_live = None
             return
 
         from homeassistant.util.dt import now as now_local
@@ -230,15 +213,7 @@ class PvForecastCoordinator:
         )
 
     def _recalculate_target_soc(self) -> None:
-        """Calculate target battery SOC from adjusted forecasts.
-
-        When adjusted_* is None (e.g. Solcast midnight rollover with empty
-        detailedForecast), target_soc_* is set to None rather than kept at
-        the stale previous value. Stale `target_soc_live` after midnight
-        was computed from yesterday's forecast paired with today's date —
-        meaningless. None is more honest (HA shows "unknown"); downstream
-        automations on `numeric_state` skip unknown cleanly.
-        """
+        """Calculate target battery SOC from adjusted forecasts."""
         from homeassistant.util.dt import now as now_local
 
         now = now_local()
@@ -249,16 +224,12 @@ class PvForecastCoordinator:
                 self.adjusted_at_6, is_workday=is_workday, now=now
             )
             _LOGGER.debug("Target SOC (at_6): %d%%", self.target_soc)
-        else:
-            self.target_soc = None
 
         if self.adjusted_live:
             self.target_soc_live = calculate_target_soc(
                 self.adjusted_live, is_workday=is_workday, now=now
             )
             _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live)
-        else:
-            self.target_soc_live = None
 
         # Tomorrow: always full 7-13 window, check tomorrow's workday
         if self.adjusted_tomorrow:
@@ -271,9 +242,6 @@ class PvForecastCoordinator:
             )
             self.target_soc_tomorrow_live = self.target_soc_tomorrow  # same forecast
             _LOGGER.debug("Target SOC (tomorrow): %d%%", self.target_soc_tomorrow)
-        else:
-            self.target_soc_tomorrow = None
-            self.target_soc_tomorrow_live = None
 
     def _recalculate_tomorrow(self) -> None:
         """Recalculate weather-adjusted forecast for tomorrow."""
@@ -281,12 +249,6 @@ class PvForecastCoordinator:
             SOLCAST_TOMORROW_ENTITY, "detailedForecast"
         )
         if not solcast_periods:
-            if self.adjusted_tomorrow:
-                _LOGGER.info(
-                    "%s returned empty detailedForecast — clearing adjusted_tomorrow",
-                    SOLCAST_TOMORROW_ENTITY,
-                )
-                self.adjusted_tomorrow = None
             return
 
         from datetime import timedelta
