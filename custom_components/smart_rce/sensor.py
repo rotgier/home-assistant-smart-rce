@@ -233,7 +233,7 @@ async def async_setup_entry(
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
-                "Weather Adjusted PV Tomorrow",
+                "Weather Adjusted PV Tomorrow At 6",
                 lambda pv: pv.adjusted_tomorrow.total_kwh
                 if pv.adjusted_tomorrow
                 else None,
