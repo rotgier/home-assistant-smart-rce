@@ -182,6 +182,7 @@ class EmsSensorDescription(SensorEntityDescription):
 EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
     EmsSensorDescription(
         name="Heater Budget",
+        device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.water_heater.balanced_heater_budget,
@@ -228,6 +229,15 @@ async def async_setup_entry(
                 "Weather Adjusted PV Live",
                 lambda pv: pv.adjusted_live.total_kwh if pv.adjusted_live else None,
                 lambda pv: _pv_forecast_attrs(pv.adjusted_live),
+            ),
+            PvForecastSensor(
+                pv_forecast,
+                coordinator,
+                "Weather Adjusted PV Tomorrow",
+                lambda pv: pv.adjusted_tomorrow.total_kwh
+                if pv.adjusted_tomorrow
+                else None,
+                lambda pv: _pv_forecast_attrs(pv.adjusted_tomorrow),
             ),
             PvForecastSensor(
                 pv_forecast,

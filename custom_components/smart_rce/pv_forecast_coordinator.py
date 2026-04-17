@@ -8,7 +8,10 @@ import logging
 from typing import Any, Final
 
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+)
 
 from .domain.pv_forecast import (
     AdjustedPvForecast,
@@ -83,6 +86,7 @@ class PvForecastCoordinator:
         self._weather_forecast_history = weather_forecast_history
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._cancel_solcast_listeners: list[CALLBACK_TYPE] = []
+        self._cancel_midnight_refresh: CALLBACK_TYPE | None = None
 
         self.adjusted_at_6: AdjustedPvForecast | None = None
         self.adjusted_live: AdjustedPvForecast | None = None
@@ -109,6 +113,18 @@ class PvForecastCoordinator:
         )
         self._cancel_solcast_listeners = [cancel_at6, cancel_live, cancel_tomorrow]
 
+        # Defensive midnight refresh: ha-solcast-solar rolls its sensors over
+        # within a few minutes past midnight (update_integration_listeners runs
+        # every 5 min, sees day changed, fires async_update_listeners). Our
+        # state_change listeners above pick that up IF the state value or the
+        # detailedForecast attribute actually differ from yesterday's tomorrow.
+        # If they're numerically identical, HA won't emit state_changed and
+        # our adjusted_*/target_soc_* would stay frozen. This belt-and-suspenders
+        # timer recalculates at 00:00:05 local time regardless.
+        self._cancel_midnight_refresh = async_track_time_change(
+            self._hass, self._on_midnight, hour=0, minute=0, second=5
+        )
+
         # Initial calculation
         self._recalculate_all()
 
@@ -117,6 +133,9 @@ class PvForecastCoordinator:
         for cancel in self._cancel_solcast_listeners:
             cancel()
         self._cancel_solcast_listeners = []
+        if self._cancel_midnight_refresh is not None:
+            self._cancel_midnight_refresh()
+            self._cancel_midnight_refresh = None
 
     @callback
     def _on_weather_update(self) -> None:
@@ -145,7 +164,20 @@ class PvForecastCoordinator:
         """Solcast tomorrow changed — recalculate tomorrow."""
         _LOGGER.debug("Solcast tomorrow changed, recalculating")
         self._recalculate_tomorrow()
+        # target_soc_tomorrow depends on adjusted_tomorrow — must also refresh.
+        self._recalculate_target_soc()
         self._notify_listeners()
+
+    @callback
+    def _on_midnight(self, now: datetime) -> None:
+        """Midnight tick — recalculate everything with fresh `now.date()`.
+
+        Defensive: if ha-solcast-solar emits state_changed on its sensors
+        the state_change listeners already triggered recalc. This is a
+        safety net for cases where values are numerically identical.
+        """
+        _LOGGER.info("Midnight refresh triggered, recalculating PV forecasts")
+        self._recalculate_all()
 
     def _recalculate_all(self) -> None:
         """Recalculate all forecasts and target SOC."""
