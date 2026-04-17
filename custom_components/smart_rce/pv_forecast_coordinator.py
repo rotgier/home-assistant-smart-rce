@@ -87,6 +87,7 @@ class PvForecastCoordinator:
         self.adjusted_at_6: AdjustedPvForecast | None = None
         self.adjusted_live: AdjustedPvForecast | None = None
         self.adjusted_tomorrow: AdjustedPvForecast | None = None
+        self.adjusted_tomorrow_live: AdjustedPvForecast | None = None
         self.target_soc: int | None = None
         self.target_soc_live: int | None = None
         self.target_soc_tomorrow: int | None = None
@@ -231,20 +232,41 @@ class PvForecastCoordinator:
             )
             _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live)
 
-        # Tomorrow: always full 7-13 window, check tomorrow's workday
-        if self.adjusted_tomorrow:
-            from datetime import timedelta
+        # Tomorrow: always full 7-13 window, check tomorrow's workday.
+        # Two variants with DIFFERENT adjustment semantics:
+        #   target_soc_tomorrow      — AT6 modifiers (pessimistic, cloudy cap)
+        #   target_soc_tomorrow_live — LIVE modifiers (optimistic, no cap)
+        # The _live variant matches the adjustment used by target_soc_live
+        # for today — so at midnight rollover, yesterday's target_soc_tomorrow_live
+        # is numerically comparable to today's target_soc_live (both LIVE mods
+        # on same Solcast forecast → continuity).
+        from datetime import timedelta
 
-            tomorrow = now + timedelta(days=1)
-            is_workday_tomorrow = _is_workday(tomorrow)
+        tomorrow = now + timedelta(days=1)
+        is_workday_tomorrow = _is_workday(tomorrow)
+        if self.adjusted_tomorrow:
             self.target_soc_tomorrow = calculate_target_soc(
                 self.adjusted_tomorrow, is_workday=is_workday_tomorrow
             )
-            self.target_soc_tomorrow_live = self.target_soc_tomorrow  # same forecast
             _LOGGER.debug("Target SOC (tomorrow): %d%%", self.target_soc_tomorrow)
+        if self.adjusted_tomorrow_live:
+            self.target_soc_tomorrow_live = calculate_target_soc(
+                self.adjusted_tomorrow_live, is_workday=is_workday_tomorrow
+            )
+            _LOGGER.debug(
+                "Target SOC (tomorrow_live): %d%%", self.target_soc_tomorrow_live
+            )
 
     def _recalculate_tomorrow(self) -> None:
-        """Recalculate weather-adjusted forecast for tomorrow."""
+        """Recalculate weather-adjusted forecast for tomorrow — two variants.
+
+        `adjusted_tomorrow`      — AT6 modifiers (pessimistic, cloudy cap @ hour 7).
+                                   Used for wieczorne planowanie: safety lower-bound
+                                   how much battery we'll need tomorrow morning.
+        `adjusted_tomorrow_live` — LIVE modifiers (optimistic, no cap).
+                                   Used after midnight rollover comparison: aligns
+                                   with tomorrow's `adjusted_live` for continuity.
+        """
         solcast_periods = self._read_solcast_entity(
             SOLCAST_TOMORROW_ENTITY, "detailedForecast"
         )
@@ -255,12 +277,20 @@ class PvForecastCoordinator:
 
         from homeassistant.util.dt import now as now_local
 
-        tomorrow = (now_local() + timedelta(days=1)).date()
+        now = now_local()
+        tomorrow = (now + timedelta(days=1)).date()
         weather = self._build_weather_conditions(tomorrow)
         self.adjusted_tomorrow = adjust_pv_forecast_at6(solcast_periods, weather)
+        # adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
+        # For tomorrow's periods (date = tomorrow), no match → all periods use
+        # standard LIVE modifiers (no special first-hour treatment).
+        self.adjusted_tomorrow_live = adjust_pv_forecast_live(
+            solcast_periods, weather, now
+        )
         _LOGGER.debug(
-            "Adjusted tomorrow: %.1f kWh (from %d periods, %d weather conditions)",
+            "Adjusted tomorrow: AT6=%.1f kWh, LIVE=%.1f kWh (from %d periods, %d weather conditions)",
             self.adjusted_tomorrow.total_kwh,
+            self.adjusted_tomorrow_live.total_kwh,
             len(self.adjusted_tomorrow.forecast),
             len(weather),
         )

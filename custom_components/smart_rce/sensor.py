@@ -242,6 +242,15 @@ async def async_setup_entry(
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
+                "Weather Adjusted PV Tomorrow Live",
+                lambda pv: pv.adjusted_tomorrow_live.total_kwh
+                if pv.adjusted_tomorrow_live
+                else None,
+                lambda pv: _pv_forecast_attrs(pv.adjusted_tomorrow_live),
+            ),
+            PvForecastSensor(
+                pv_forecast,
+                coordinator,
                 "Target Battery SOC",
                 lambda pv: pv.target_soc,
                 lambda _pv: {},
