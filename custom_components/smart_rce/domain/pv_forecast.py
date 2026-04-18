@@ -196,7 +196,6 @@ def adjust_pv_forecast_live(
 
 def calculate_target_soc(
     forecast: AdjustedPvForecast,
-    is_workday: bool,
     consumption_profile: ConsumptionProfile | None = None,
     now: datetime | None = None,
 ) -> int:
@@ -207,11 +206,7 @@ def calculate_target_soc(
     After 7:00: simulates from current 30min period to 13:00.
     consumption_profile: per-bucket overrides; fallback to CONSUMPTION_PER_30MIN.
     Returns target SOC percentage (minimum 10%).
-    Weekend/holidays: always 10%.
     """
-    if not is_workday:
-        return MIN_SOC_PERCENT
-
     # Determine start: current 30min period or 7:00
     start_hour = 7
     start_minute = 0

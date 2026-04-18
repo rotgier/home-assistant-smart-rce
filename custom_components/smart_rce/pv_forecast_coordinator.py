@@ -74,11 +74,6 @@ def _parse_weather_conditions(
     ]
 
 
-def _is_workday(now: datetime) -> bool:
-    """Check if today is a workday (Mon-Fri). Does not check holidays."""
-    return now.weekday() < 5
-
-
 class PvForecastCoordinator:
     """Coordinates weather-adjusted PV forecast calculation."""
 
@@ -247,21 +242,16 @@ class PvForecastCoordinator:
     def _recalculate_target_soc(self) -> None:
         """Calculate target battery SOC from adjusted forecasts."""
         now = dt_util.now()
-        is_workday = _is_workday(now)
 
         if self.adjusted_at_6:
-            self.target_soc = calculate_target_soc(
-                self.adjusted_at_6, is_workday=is_workday, now=now
-            )
+            self.target_soc = calculate_target_soc(self.adjusted_at_6, now=now)
             _LOGGER.debug("Target SOC (at_6): %d%%", self.target_soc)
 
         if self.adjusted_live:
-            self.target_soc_live = calculate_target_soc(
-                self.adjusted_live, is_workday=is_workday, now=now
-            )
+            self.target_soc_live = calculate_target_soc(self.adjusted_live, now=now)
             _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live)
 
-        # Tomorrow: always full 7-13 window, check tomorrow's workday.
+        # Tomorrow: always full 7-13 window.
         # Two variants with DIFFERENT adjustment semantics:
         #   target_soc_tomorrow      — AT6 modifiers (pessimistic, cloudy cap)
         #   target_soc_tomorrow_live — LIVE modifiers (optimistic, no cap)
@@ -269,16 +259,12 @@ class PvForecastCoordinator:
         # for today — so at midnight rollover, yesterday's target_soc_tomorrow_live
         # is numerically comparable to today's target_soc_live (both LIVE mods
         # on same Solcast forecast → continuity).
-        tomorrow = now + timedelta(days=1)
-        is_workday_tomorrow = _is_workday(tomorrow)
         if self.adjusted_tomorrow:
-            self.target_soc_tomorrow = calculate_target_soc(
-                self.adjusted_tomorrow, is_workday=is_workday_tomorrow
-            )
+            self.target_soc_tomorrow = calculate_target_soc(self.adjusted_tomorrow)
             _LOGGER.debug("Target SOC (tomorrow): %d%%", self.target_soc_tomorrow)
         if self.adjusted_tomorrow_live:
             self.target_soc_tomorrow_live = calculate_target_soc(
-                self.adjusted_tomorrow_live, is_workday=is_workday_tomorrow
+                self.adjusted_tomorrow_live
             )
             _LOGGER.debug(
                 "Target SOC (tomorrow_live): %d%%", self.target_soc_tomorrow_live
@@ -291,7 +277,6 @@ class PvForecastCoordinator:
             if self.adjusted_live and profile is not None:
                 self.target_soc_prev_days[i] = calculate_target_soc(
                     self.adjusted_live,
-                    is_workday=is_workday,
                     consumption_profile=profile,
                     now=now,
                 )
@@ -301,7 +286,6 @@ class PvForecastCoordinator:
             if self.adjusted_tomorrow_live and profile is not None:
                 self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
                     self.adjusted_tomorrow_live,
-                    is_workday=is_workday_tomorrow,
                     consumption_profile=profile,
                 )
             else:

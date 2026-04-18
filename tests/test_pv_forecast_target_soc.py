@@ -29,18 +29,17 @@ def _make_forecast(rate_kwh_per_h: float) -> AdjustedPvForecast:
     return AdjustedPvForecast(forecast=periods, total_kwh=total_kwh)
 
 
-def test_weekend_returns_min_soc() -> None:
-    forecast = _make_forecast(2.0)
-    assert calculate_target_soc(forecast, is_workday=False) == MIN_SOC_PERCENT
+def test_surplus_pv_returns_min_soc() -> None:
+    """Gdy PV pokrywa consumption, no deficit → MIN_SOC."""
+    forecast = _make_forecast(2.0)  # PV 1.0 kWh/30min, > 0.45 consumption
+    assert calculate_target_soc(forecast) == MIN_SOC_PERCENT
 
 
 def test_no_profile_matches_constant_consumption() -> None:
     """Backward compat: consumption_profile=None behaves exactly like before."""
     forecast = _make_forecast(0.3)  # PV 0.15 kWh/30min, deficit vs 0.45
-    without = calculate_target_soc(forecast, is_workday=True)
-    with_none = calculate_target_soc(
-        forecast, is_workday=True, consumption_profile=None
-    )
+    without = calculate_target_soc(forecast)
+    with_none = calculate_target_soc(forecast, consumption_profile=None)
     assert without == with_none
     # With PV << consumption there's accumulated deficit → SOC > MIN
     assert without > MIN_SOC_PERCENT
@@ -61,10 +60,8 @@ def test_profile_with_higher_consumption_raises_soc() -> None:
             # Later buckets: fallback to CONSUMPTION_PER_30MIN (0.45)
         }
     )
-    baseline = calculate_target_soc(forecast, is_workday=True)
-    with_profile = calculate_target_soc(
-        forecast, is_workday=True, consumption_profile=profile
-    )
+    baseline = calculate_target_soc(forecast)
+    with_profile = calculate_target_soc(forecast, consumption_profile=profile)
     assert with_profile > baseline
 
 
@@ -74,10 +71,8 @@ def test_profile_with_lower_consumption_lowers_soc() -> None:
     profile = ConsumptionProfile(
         buckets={(h, m): 0.2 for h in range(7, 13) for m in (0, 30)}
     )
-    baseline = calculate_target_soc(forecast, is_workday=True)
-    with_profile = calculate_target_soc(
-        forecast, is_workday=True, consumption_profile=profile
-    )
+    baseline = calculate_target_soc(forecast)
+    with_profile = calculate_target_soc(forecast, consumption_profile=profile)
     assert with_profile <= baseline
 
 
@@ -86,11 +81,9 @@ def test_partial_profile_falls_back_per_bucket() -> None:
     forecast = _make_forecast(0.6)
     # Only bucket (7,0) overridden, rest falls back
     profile = ConsumptionProfile(buckets={(7, 0): 2.0})
-    result = calculate_target_soc(
-        forecast, is_workday=True, consumption_profile=profile
-    )
+    result = calculate_target_soc(forecast, consumption_profile=profile)
     # With one very high bucket we get at least the baseline deficit
-    baseline = calculate_target_soc(forecast, is_workday=True)
+    baseline = calculate_target_soc(forecast)
     assert result >= baseline
 
 
@@ -98,8 +91,8 @@ def test_empty_profile_behaves_like_none() -> None:
     forecast = _make_forecast(0.3)
     empty = ConsumptionProfile(buckets={})
     assert calculate_target_soc(
-        forecast, is_workday=True, consumption_profile=empty
-    ) == calculate_target_soc(forecast, is_workday=True)
+        forecast, consumption_profile=empty
+    ) == calculate_target_soc(forecast)
 
 
 def test_consumption_profile_get() -> None:
