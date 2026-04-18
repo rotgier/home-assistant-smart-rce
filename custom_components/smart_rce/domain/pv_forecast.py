@@ -61,6 +61,26 @@ class ConsumptionProfile:
         return self.buckets.get((hour, minute))
 
 
+@dataclass(frozen=True)
+class TargetSocBucket:
+    """Per 30-min bucket trace entry used to verify target SOC calculation."""
+
+    period: str  # "HH:MM" local
+    pv_kwh: float
+    cons_kwh: float
+    balance: float
+    cumulative: float
+    is_min: bool  # True for bucket where cumulative is most negative
+
+
+@dataclass(frozen=True)
+class TargetSocResult:
+    """Target SOC + per-bucket trace for observability."""
+
+    value: int  # target SOC percent (MIN_SOC_PERCENT or higher)
+    buckets: list[TargetSocBucket]
+
+
 def _get_condition_for_hour(
     hour: int,
     weather_conditions: list[WeatherConditionAtHour],
@@ -198,14 +218,14 @@ def calculate_target_soc(
     forecast: AdjustedPvForecast,
     consumption_profile: ConsumptionProfile | None = None,
     now: datetime | None = None,
-) -> int:
-    """Calculate target battery SOC based on adjusted PV forecast.
+) -> TargetSocResult:
+    """Calculate target battery SOC + per-bucket trace.
 
     Simulates cumulative energy deficit from now (or 7:00) to 13:00.
     Before 7:00 or no now: simulates full 7:00-13:00 window.
     After 7:00: simulates from current 30min period to 13:00.
     consumption_profile: per-bucket overrides; fallback to CONSUMPTION_PER_30MIN.
-    Returns target SOC percentage (minimum 10%).
+    Returns TargetSocResult with .value (SOC percent) and .buckets (trace).
     """
     # Determine start: current 30min period or 7:00
     start_hour = 7
@@ -214,8 +234,10 @@ def calculate_target_soc(
         start_hour = now.hour
         start_minute = 0 if now.minute < 30 else 30
 
+    buckets: list[TargetSocBucket] = []
     cumulative_balance = 0.0
     min_balance = 0.0
+    min_idx = -1
 
     for period in forecast.forecast:
         dt = datetime.fromisoformat(period.period_start)
@@ -234,13 +256,37 @@ def calculate_target_soc(
             consumption = CONSUMPTION_PER_30MIN
         balance = pv_kwh_30min - consumption
         cumulative_balance += balance
-        min_balance = min(min_balance, cumulative_balance)
+        if cumulative_balance < min_balance:
+            min_balance = cumulative_balance
+            min_idx = len(buckets)
+        buckets.append(
+            TargetSocBucket(
+                period=f"{hour:02d}:{minute:02d}",
+                pv_kwh=round(pv_kwh_30min, 3),
+                cons_kwh=round(consumption, 3),
+                balance=round(balance, 3),
+                cumulative=round(cumulative_balance, 3),
+                is_min=False,  # set below
+            )
+        )
+
+    if min_idx >= 0:
+        # Replace min bucket with is_min=True (dataclass is frozen → rebuild)
+        m = buckets[min_idx]
+        buckets[min_idx] = TargetSocBucket(
+            period=m.period,
+            pv_kwh=m.pv_kwh,
+            cons_kwh=m.cons_kwh,
+            balance=m.balance,
+            cumulative=m.cumulative,
+            is_min=True,
+        )
 
     if min_balance >= 0:
-        return MIN_SOC_PERCENT
+        return TargetSocResult(value=MIN_SOC_PERCENT, buckets=buckets)
 
     deficit_kwh = abs(min_balance)
     deficit_percent = deficit_kwh / (BATTERY_CAPACITY_KWH / 100)
     target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
 
-    return max(round(target), MIN_SOC_PERCENT)
+    return TargetSocResult(value=max(round(target), MIN_SOC_PERCENT), buckets=buckets)

@@ -20,6 +20,7 @@ from .domain.pv_forecast import (
     AdjustedPvForecast,
     ConsumptionProfile,
     SolcastPeriod,
+    TargetSocResult,
     WeatherConditionAtHour,
     adjust_pv_forecast_at6,
     adjust_pv_forecast_live,
@@ -94,17 +95,21 @@ class PvForecastCoordinator:
         self.adjusted_live: AdjustedPvForecast | None = None
         self.adjusted_tomorrow: AdjustedPvForecast | None = None
         self.adjusted_tomorrow_live: AdjustedPvForecast | None = None
-        self.target_soc: int | None = None
-        self.target_soc_live: int | None = None
-        self.target_soc_tomorrow: int | None = None
-        self.target_soc_tomorrow_live: int | None = None
+        self.target_soc: TargetSocResult | None = None
+        self.target_soc_live: TargetSocResult | None = None
+        self.target_soc_tomorrow: TargetSocResult | None = None
+        self.target_soc_tomorrow_live: TargetSocResult | None = None
 
         # Prev-workday consumption profile instrumentation (Etap A)
         self.consumption_profiles: list[ConsumptionProfile | None] = [
             None
         ] * PREV_DAYS_COUNT
-        self.target_soc_prev_days: list[int | None] = [None] * PREV_DAYS_COUNT
-        self.target_soc_tomorrow_prev_days: list[int | None] = [None] * PREV_DAYS_COUNT
+        self.target_soc_prev_days: list[TargetSocResult | None] = [
+            None
+        ] * PREV_DAYS_COUNT
+        self.target_soc_tomorrow_prev_days: list[TargetSocResult | None] = [
+            None
+        ] * PREV_DAYS_COUNT
         self.target_soc_max: int | None = None
         self.target_soc_tomorrow_max: int | None = None
 
@@ -245,11 +250,11 @@ class PvForecastCoordinator:
 
         if self.adjusted_at_6:
             self.target_soc = calculate_target_soc(self.adjusted_at_6, now=now)
-            _LOGGER.debug("Target SOC (at_6): %d%%", self.target_soc)
+            _LOGGER.debug("Target SOC (at_6): %d%%", self.target_soc.value)
 
         if self.adjusted_live:
             self.target_soc_live = calculate_target_soc(self.adjusted_live, now=now)
-            _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live)
+            _LOGGER.debug("Target SOC (live): %d%%", self.target_soc_live.value)
 
         # Tomorrow: always full 7-13 window.
         # Two variants with DIFFERENT adjustment semantics:
@@ -261,13 +266,13 @@ class PvForecastCoordinator:
         # on same Solcast forecast → continuity).
         if self.adjusted_tomorrow:
             self.target_soc_tomorrow = calculate_target_soc(self.adjusted_tomorrow)
-            _LOGGER.debug("Target SOC (tomorrow): %d%%", self.target_soc_tomorrow)
+            _LOGGER.debug("Target SOC (tomorrow): %d%%", self.target_soc_tomorrow.value)
         if self.adjusted_tomorrow_live:
             self.target_soc_tomorrow_live = calculate_target_soc(
                 self.adjusted_tomorrow_live
             )
             _LOGGER.debug(
-                "Target SOC (tomorrow_live): %d%%", self.target_soc_tomorrow_live
+                "Target SOC (tomorrow_live): %d%%", self.target_soc_tomorrow_live.value
             )
 
         # Prev-workday instrumentation (Etap A).
@@ -292,26 +297,24 @@ class PvForecastCoordinator:
                 self.target_soc_tomorrow_prev_days[i] = None
 
         today_vals = [
-            v
-            for v in [self.target_soc_live, *self.target_soc_prev_days]
-            if v is not None
+            r.value
+            for r in [self.target_soc_live, *self.target_soc_prev_days]
+            if r is not None
         ]
         self.target_soc_max = max(today_vals) if today_vals else None
         tmrw_vals = [
-            v
-            for v in [
+            r.value
+            for r in [
                 self.target_soc_tomorrow_live,
                 *self.target_soc_tomorrow_prev_days,
             ]
-            if v is not None
+            if r is not None
         ]
         self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
         _LOGGER.debug(
-            "Target SOC max: today=%s tomorrow=%s (prev_days=%s tomorrow_prev_days=%s)",
+            "Target SOC max: today=%s tomorrow=%s",
             self.target_soc_max,
             self.target_soc_tomorrow_max,
-            self.target_soc_prev_days,
-            self.target_soc_tomorrow_prev_days,
         )
 
     @callback

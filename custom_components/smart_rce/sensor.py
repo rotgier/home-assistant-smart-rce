@@ -252,32 +252,36 @@ async def async_setup_entry(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC At 6",
-                lambda pv: pv.target_soc,
-                lambda _pv: {},
+                lambda pv: pv.target_soc.value if pv.target_soc else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc),
                 unit="%",
             ),
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Live",
-                lambda pv: pv.target_soc_live,
-                lambda _pv: {},
+                lambda pv: pv.target_soc_live.value if pv.target_soc_live else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_live),
                 unit="%",
             ),
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Tomorrow At 6",
-                lambda pv: pv.target_soc_tomorrow,
-                lambda _pv: {},
+                lambda pv: pv.target_soc_tomorrow.value
+                if pv.target_soc_tomorrow
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow),
                 unit="%",
             ),
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Tomorrow Live",
-                lambda pv: pv.target_soc_tomorrow_live,
-                lambda _pv: {},
+                lambda pv: pv.target_soc_tomorrow_live.value
+                if pv.target_soc_tomorrow_live
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow_live),
                 unit="%",
             ),
             # Prev-workday instrumentation (Etap A) — today
@@ -285,24 +289,30 @@ async def async_setup_entry(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Prev Day 1",
-                lambda pv: pv.target_soc_prev_days[0],
-                lambda _pv: {},
+                lambda pv: pv.target_soc_prev_days[0].value
+                if pv.target_soc_prev_days[0]
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_prev_days[0]),
                 unit="%",
             ),
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Prev Day 2",
-                lambda pv: pv.target_soc_prev_days[1],
-                lambda _pv: {},
+                lambda pv: pv.target_soc_prev_days[1].value
+                if pv.target_soc_prev_days[1]
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_prev_days[1]),
                 unit="%",
             ),
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Prev Day 3",
-                lambda pv: pv.target_soc_prev_days[2],
-                lambda _pv: {},
+                lambda pv: pv.target_soc_prev_days[2].value
+                if pv.target_soc_prev_days[2]
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_prev_days[2]),
                 unit="%",
             ),
             # Prev-workday instrumentation — tomorrow
@@ -310,24 +320,30 @@ async def async_setup_entry(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Tomorrow Prev Day 1",
-                lambda pv: pv.target_soc_tomorrow_prev_days[0],
-                lambda _pv: {},
+                lambda pv: pv.target_soc_tomorrow_prev_days[0].value
+                if pv.target_soc_tomorrow_prev_days[0]
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow_prev_days[0]),
                 unit="%",
             ),
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Tomorrow Prev Day 2",
-                lambda pv: pv.target_soc_tomorrow_prev_days[1],
-                lambda _pv: {},
+                lambda pv: pv.target_soc_tomorrow_prev_days[1].value
+                if pv.target_soc_tomorrow_prev_days[1]
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow_prev_days[1]),
                 unit="%",
             ),
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
                 "Target Battery SOC Tomorrow Prev Day 3",
-                lambda pv: pv.target_soc_tomorrow_prev_days[2],
-                lambda _pv: {},
+                lambda pv: pv.target_soc_tomorrow_prev_days[2].value
+                if pv.target_soc_tomorrow_prev_days[2]
+                else None,
+                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow_prev_days[2]),
                 unit="%",
             ),
             # Max safety sensors — max(live, prev_day_1..N)
@@ -380,6 +396,25 @@ def _pv_forecast_attrs(forecast) -> dict[str, Any]:
                 "pv_estimate_adjusted": p.pv_estimate_adjusted,
             }
             for p in forecast.forecast
+        ]
+    }
+
+
+def _target_soc_trace_attrs(result) -> dict[str, Any]:
+    """Trace for target_soc_* sensors: per-bucket pv/cons/balance/cumulative + is_min."""
+    if not result or not result.buckets:
+        return {}
+    return {
+        "buckets": [
+            {
+                "period": b.period,
+                "pv": b.pv_kwh,
+                "cons": b.cons_kwh,
+                "balance": b.balance,
+                "cumulative": b.cumulative,
+                "is_min": b.is_min,
+            }
+            for b in result.buckets
         ]
     }
 
