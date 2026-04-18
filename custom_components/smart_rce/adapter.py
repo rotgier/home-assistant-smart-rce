@@ -164,7 +164,10 @@ def listen_for_block_battery_charge(hass: HomeAssistant, entry: ConfigEntry) -> 
         event: Event[EventStateChangedData],
     ) -> None:
         new_state = event.data["new_state"]
-        if new_state is None:
+        old_state = event.data.get("old_state")
+        if new_state is None or new_state.state not in ("on", "off"):
+            return
+        if old_state is None or old_state.state not in ("on", "off"):
             return
         service = "turn_off" if new_state.state == "on" else "turn_on"
         try:
