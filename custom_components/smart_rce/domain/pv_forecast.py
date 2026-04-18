@@ -51,6 +51,16 @@ class AdjustedPvForecast:
     total_kwh: float  # sum of (adjusted rate / 2) = actual kWh
 
 
+@dataclass(frozen=True)
+class ConsumptionProfile:
+    """Consumption per 30-min bucket, keyed by (hour, minute) -> kWh."""
+
+    buckets: dict[tuple[int, int], float]
+
+    def get(self, hour: int, minute: int) -> float | None:
+        return self.buckets.get((hour, minute))
+
+
 def _get_condition_for_hour(
     hour: int,
     weather_conditions: list[WeatherConditionAtHour],
@@ -187,6 +197,7 @@ def adjust_pv_forecast_live(
 def calculate_target_soc(
     forecast: AdjustedPvForecast,
     is_workday: bool,
+    consumption_profile: ConsumptionProfile | None = None,
     now: datetime | None = None,
 ) -> int:
     """Calculate target battery SOC based on adjusted PV forecast.
@@ -194,6 +205,7 @@ def calculate_target_soc(
     Simulates cumulative energy deficit from now (or 7:00) to 13:00.
     Before 7:00 or no now: simulates full 7:00-13:00 window.
     After 7:00: simulates from current 30min period to 13:00.
+    consumption_profile: per-bucket overrides; fallback to CONSUMPTION_PER_30MIN.
     Returns target SOC percentage (minimum 10%).
     Weekend/holidays: always 10%.
     """
@@ -220,7 +232,12 @@ def calculate_target_soc(
             continue
 
         pv_kwh_30min = period.pv_estimate_adjusted / 2  # rate -> kWh per 30min
-        balance = pv_kwh_30min - CONSUMPTION_PER_30MIN
+        consumption = (
+            consumption_profile.get(hour, minute) if consumption_profile else None
+        )
+        if consumption is None:
+            consumption = CONSUMPTION_PER_30MIN
+        balance = pv_kwh_30min - consumption
         cumulative_balance += balance
         min_balance = min(min_balance, cumulative_balance)
 

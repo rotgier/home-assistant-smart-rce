@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 import logging
 from typing import Any, Final
 
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+)
+from homeassistant.util import dt as dt_util
 
 from .domain.pv_forecast import (
     AdjustedPvForecast,
+    ConsumptionProfile,
     SolcastPeriod,
     WeatherConditionAtHour,
     adjust_pv_forecast_at6,
@@ -24,6 +31,9 @@ from .weather_listener import WeatherListenerCoordinator
 SOLCAST_AT_6_ENTITY: Final = "sensor.solcast_forecast_at_6"
 SOLCAST_LIVE_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_dzisiaj"
 SOLCAST_TOMORROW_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_jutro"
+
+CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
+PREV_DAYS_COUNT: Final = 3
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,6 +93,7 @@ class PvForecastCoordinator:
         self._weather_forecast_history = weather_forecast_history
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._cancel_solcast_listeners: list[CALLBACK_TYPE] = []
+        self._cancel_profile_refresh: CALLBACK_TYPE | None = None
 
         self.adjusted_at_6: AdjustedPvForecast | None = None
         self.adjusted_live: AdjustedPvForecast | None = None
@@ -92,6 +103,15 @@ class PvForecastCoordinator:
         self.target_soc_live: int | None = None
         self.target_soc_tomorrow: int | None = None
         self.target_soc_tomorrow_live: int | None = None
+
+        # Prev-workday consumption profile instrumentation (Etap A)
+        self.consumption_profiles: list[ConsumptionProfile | None] = [
+            None
+        ] * PREV_DAYS_COUNT
+        self.target_soc_prev_days: list[int | None] = [None] * PREV_DAYS_COUNT
+        self.target_soc_tomorrow_prev_days: list[int | None] = [None] * PREV_DAYS_COUNT
+        self.target_soc_max: int | None = None
+        self.target_soc_tomorrow_max: int | None = None
 
     async def async_start(self) -> None:
         """Start listening for weather and Solcast changes."""
@@ -110,14 +130,25 @@ class PvForecastCoordinator:
         )
         self._cancel_solcast_listeners = [cancel_at6, cancel_live, cancel_tomorrow]
 
+        # Daily prev-workday consumption profile refresh at 05:55 local.
+        self._cancel_profile_refresh = async_track_time_change(
+            self._hass, self._on_daily_profile_refresh, hour=5, minute=55, second=0
+        )
+
         # Initial calculation
         self._recalculate_all()
+        # Initial profile fetch (runs in background; _recalculate_target_soc will
+        # re-run once profiles arrive).
+        self._hass.async_create_task(self._refresh_profiles())
 
     def async_stop(self) -> None:
         """Stop listening."""
         for cancel in self._cancel_solcast_listeners:
             cancel()
         self._cancel_solcast_listeners = []
+        if self._cancel_profile_refresh:
+            self._cancel_profile_refresh()
+            self._cancel_profile_refresh = None
 
     @callback
     def _on_weather_update(self) -> None:
@@ -215,9 +246,7 @@ class PvForecastCoordinator:
 
     def _recalculate_target_soc(self) -> None:
         """Calculate target battery SOC from adjusted forecasts."""
-        from homeassistant.util.dt import now as now_local
-
-        now = now_local()
+        now = dt_util.now()
         is_workday = _is_workday(now)
 
         if self.adjusted_at_6:
@@ -240,8 +269,6 @@ class PvForecastCoordinator:
         # for today — so at midnight rollover, yesterday's target_soc_tomorrow_live
         # is numerically comparable to today's target_soc_live (both LIVE mods
         # on same Solcast forecast → continuity).
-        from datetime import timedelta
-
         tomorrow = now + timedelta(days=1)
         is_workday_tomorrow = _is_workday(tomorrow)
         if self.adjusted_tomorrow:
@@ -256,6 +283,156 @@ class PvForecastCoordinator:
             _LOGGER.debug(
                 "Target SOC (tomorrow_live): %d%%", self.target_soc_tomorrow_live
             )
+
+        # Prev-workday instrumentation (Etap A).
+        # Uses adjusted_live for today + adjusted_tomorrow_live for tomorrow,
+        # combined with consumption profiles from N workdays back.
+        for i, profile in enumerate(self.consumption_profiles):
+            if self.adjusted_live and profile is not None:
+                self.target_soc_prev_days[i] = calculate_target_soc(
+                    self.adjusted_live,
+                    is_workday=is_workday,
+                    consumption_profile=profile,
+                    now=now,
+                )
+            else:
+                self.target_soc_prev_days[i] = None
+
+            if self.adjusted_tomorrow_live and profile is not None:
+                self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
+                    self.adjusted_tomorrow_live,
+                    is_workday=is_workday_tomorrow,
+                    consumption_profile=profile,
+                )
+            else:
+                self.target_soc_tomorrow_prev_days[i] = None
+
+        today_vals = [
+            v
+            for v in [self.target_soc_live, *self.target_soc_prev_days]
+            if v is not None
+        ]
+        self.target_soc_max = max(today_vals) if today_vals else None
+        tmrw_vals = [
+            v
+            for v in [
+                self.target_soc_tomorrow_live,
+                *self.target_soc_tomorrow_prev_days,
+            ]
+            if v is not None
+        ]
+        self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
+        _LOGGER.debug(
+            "Target SOC max: today=%s tomorrow=%s (prev_days=%s tomorrow_prev_days=%s)",
+            self.target_soc_max,
+            self.target_soc_tomorrow_max,
+            self.target_soc_prev_days,
+            self.target_soc_tomorrow_prev_days,
+        )
+
+    @callback
+    def _on_daily_profile_refresh(self, _now: datetime) -> None:
+        """Scheduled at 05:55 local — refresh prev-workday consumption profiles."""
+        self._hass.async_create_task(self._refresh_profiles())
+
+    async def _refresh_profiles(self) -> None:
+        """Fetch profiles + recalc target SOC + notify listeners."""
+        try:
+            self.consumption_profiles = await self._fetch_all_consumption_profiles()
+        except Exception:  # noqa: BLE001 — defensive, don't crash integration
+            _LOGGER.exception("Failed to fetch consumption profiles")
+            return
+        self._recalculate_target_soc()
+        self._notify_listeners()
+
+    async def _fetch_all_consumption_profiles(
+        self,
+    ) -> list[ConsumptionProfile | None]:
+        """Fetch PREV_DAYS_COUNT prev-workday profiles in a SINGLE LTS query.
+
+        Walk back N workdays (skip weekends), compute earliest..latest date span,
+        fetch 5-min stats once, then bucket per date in memory.
+        """
+        dates: list[date | None] = [
+            self._walk_back_workdays(i + 1) for i in range(PREV_DAYS_COUNT)
+        ]
+        valid_dates = [d for d in dates if d is not None]
+        if not valid_dates:
+            _LOGGER.debug("No valid prev workdays found")
+            return [None] * PREV_DAYS_COUNT
+
+        tz = dt_util.DEFAULT_TIME_ZONE
+        earliest, latest = min(valid_dates), max(valid_dates)
+        start = datetime.combine(earliest, time(6, 30), tzinfo=tz)
+        end = datetime.combine(latest, time(13, 35), tzinfo=tz)
+
+        instance = get_instance(self._hass)
+        stats = await instance.async_add_executor_job(
+            statistics_during_period,
+            self._hass,
+            start,
+            end,
+            {CONSUMPTION_SENSOR_ID},
+            "5minute",
+            None,
+            {"state"},
+        )
+        slots = stats.get(CONSUMPTION_SENSOR_ID, [])
+        _LOGGER.debug(
+            "Fetched %d 5-min slots for %s between %s and %s",
+            len(slots),
+            CONSUMPTION_SENSOR_ID,
+            start.date(),
+            end.date(),
+        )
+
+        # Utility_meter resetuje na :00 i :30 — last pre-reset slot to :25 i :55.
+        # Value state in that slot = total consumption w 30-min cyklu.
+        # Bucket (hour, 0)  = state w slocie (hour, 25)
+        # Bucket (hour, 30) = state w slocie (hour, 55)
+        by_date: dict[date, dict[tuple[int, int], float]] = {d: {} for d in valid_dates}
+        for slot in slots:
+            raw_start = slot.get("start")
+            if raw_start is None:
+                continue
+            ts = datetime.fromtimestamp(float(raw_start), tz=UTC).astimezone(tz)
+            d = ts.date()
+            if d not in by_date or ts.hour < 7 or ts.hour >= 13:
+                continue
+            state_val = slot.get("state")
+            if state_val is None:
+                continue
+            try:
+                value = float(state_val)
+            except (TypeError, ValueError):
+                continue
+            if ts.minute == 25:
+                by_date[d][(ts.hour, 0)] = value
+            elif ts.minute == 55:
+                by_date[d][(ts.hour, 30)] = value
+
+        return [
+            ConsumptionProfile(buckets=dict(by_date[d]))
+            if d and by_date.get(d)
+            else None
+            for d in dates
+        ]
+
+    def _walk_back_workdays(self, days_back: int) -> date | None:
+        """Return date N workdays ago (skip weekends).
+
+        TODO Etap E: replace heuristic with binary_sensor.workday_sensor (PL holidays).
+        """
+        today = dt_util.now().date()
+        target = today
+        found = 0
+        while found < days_back:
+            target -= timedelta(days=1)
+            if target.weekday() < 5:
+                found += 1
+            if (today - target).days > 14:  # safety break
+                return None
+        return target
 
     def _recalculate_tomorrow(self) -> None:
         """Recalculate weather-adjusted forecast for tomorrow — two variants.
