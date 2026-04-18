@@ -15,6 +15,7 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import SmartRceConfigEntry
 from .domain.ems import Ems
@@ -92,7 +93,7 @@ async def async_setup_entry(
     async_add_entities(sensors)
 
 
-class EmsBinarySensor(BinarySensorEntity):
+class EmsBinarySensor(RestoreEntity, BinarySensorEntity):
     _attr_has_entity_name = True
     entity_description: EmsBinarySensorDescription
 
@@ -106,12 +107,18 @@ class EmsBinarySensor(BinarySensorEntity):
         self.ems: Ems = ems
         self.entity_description = description
         self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_{description.key}"
+        self._restored_is_on: bool | None = None
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
 
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in ("on", "off"):
+            self._restored_is_on = last_state.state == "on"
+
         @callback
         def listener() -> None:
+            self._restored_is_on = None
             self.async_write_ha_state()
 
         remove_listener = self.ems.async_add_listener(listener)
@@ -120,10 +127,11 @@ class EmsBinarySensor(BinarySensorEntity):
 
         self.async_write_ha_state()
         _LOGGER.debug(
-            "Setup of EMS binary sensor %s (%s, unique_id: %s)",
+            "Setup of EMS binary sensor %s (%s, unique_id: %s, restored=%s)",
             self.name,
             self.entity_id,
             self._attr_unique_id,
+            self._restored_is_on,
         )
 
     @cached_property
@@ -132,4 +140,6 @@ class EmsBinarySensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
+        if self._restored_is_on is not None:
+            return self._restored_is_on
         return self.entity_description.value_fn(self.ems)
