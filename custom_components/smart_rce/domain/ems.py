@@ -99,7 +99,7 @@ class WaterHeaterManager:
             and state.battery_charge_limit >= 2
         )
         # BALANCED diagnostics
-        mode = state.heater_mode or "WASTED"
+        mode = state.heater_mode or "BALANCED"
         if mode != "BALANCED":
             self.balanced_heater_budget = None
             self.balanced_baseline = None
@@ -143,7 +143,7 @@ class WaterHeaterManager:
         else:
             self._hourly_balance_negative = False
 
-        mode = state.heater_mode or "WASTED"
+        mode = state.heater_mode or "BALANCED"
 
         if mode == "ASAP":
             target = self._asap_target(
