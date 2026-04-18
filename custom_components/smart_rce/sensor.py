@@ -251,7 +251,7 @@ async def async_setup_entry(
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
-                "Target Battery SOC",
+                "Target Battery SOC At 6",
                 lambda pv: pv.target_soc,
                 lambda _pv: {},
                 unit="%",
@@ -267,7 +267,7 @@ async def async_setup_entry(
             PvForecastSensor(
                 pv_forecast,
                 coordinator,
-                "Target Battery SOC Tomorrow",
+                "Target Battery SOC Tomorrow At 6",
                 lambda pv: pv.target_soc_tomorrow,
                 lambda _pv: {},
                 unit="%",
