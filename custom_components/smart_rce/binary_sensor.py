@@ -61,7 +61,7 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
     ),
     EmsBinarySensorDescription(
         name="Block Battery Charge",
-        value_fn=lambda ems: ems.water_heater.should_block_battery_charge,
+        value_fn=lambda ems: ems.battery.should_block_battery_charge,
         icon="mdi:battery-off-outline",
     ),
     EmsBinarySensorDescription(

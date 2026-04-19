@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from .domain.ems import InputState
+from .domain.input_state import InputState
 
 # @dataclass
 # class LOL:

@@ -20,7 +20,8 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util.dt import now as now_local
 
-from .domain.ems import Ems, InputState
+from .domain.ems import Ems
+from .domain.input_state import InputState
 
 _LOGGER = logging.getLogger(__name__)
 

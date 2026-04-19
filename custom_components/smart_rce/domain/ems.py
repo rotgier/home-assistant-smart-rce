@@ -10,7 +10,10 @@ import logging
 from statistics import mean
 from typing import Final
 
+from custom_components.smart_rce.domain.battery import BatteryManager
+from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
+from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 type CALLBACK_TYPE = Callable[[], None]
 
@@ -19,274 +22,6 @@ _LOGGER = logging.getLogger(__name__)
 MAX_CONSECUTIVE_HOURS: Final[int] = 8
 INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
 POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
-
-# Blokada ładowania baterii aktywna tylko dla hour < GUARD_END_HOUR — po tej godzinie
-# brak PV, a tanie godziny RCE pozwalają na ładowanie baterii z sieci.
-GUARD_END_HOUR: Final[int] = 17
-
-
-@dataclass
-class InputState:
-    water_heater_big_is_on: bool | None = None
-    water_heater_small_is_on: bool | None = None
-
-    battery_soc: float | None = None
-    battery_charge_limit: float | None = None  # A (ampery z BMS)
-    battery_power_2_minutes: float | None = None
-    consumption_minus_pv_2_minutes: float | None = None
-    exported_energy_hourly: float | None = None
-    heater_mode: str | None = None
-    depth_of_discharge: float | None = (
-        None  # % (number.goodwe_depth_of_discharge_on_grid)
-    )
-    now: datetime | None = None
-
-
-class WaterHeaterManager:
-    BIG_POWER: int = 3000
-    SMALL_POWER: int = 1500
-    BOTH_POWER: int = 4500
-    BATTERY_VOLTAGE: int = 290
-
-    BOTH_ARE_ON: str = "both_are_on"
-    BIG_IS_ON: str = "big_is_on"
-    SMALL_IS_ON: str = "small_is_on"
-    BOTH_ARE_OFF: str = "both_are_off"
-
-    # Hierarchia stanów do porównania
-    _STATE_ORDER: dict[str, int] = {
-        "both_are_off": 0,
-        "small_is_on": 1,
-        "big_is_on": 2,
-        "both_are_on": 3,
-    }
-
-    _UPGRADE_MAP: dict[str, str] = {
-        "both_are_off": "small_is_on",
-        "small_is_on": "big_is_on",
-        "big_is_on": "both_are_on",
-        "both_are_on": "both_are_on",
-    }
-
-    def __init__(self) -> None:
-        self.should_turn_on: bool = False
-        self.should_turn_off: bool = False
-        self.should_turn_on_small: bool = False
-        self.should_turn_off_small: bool = False
-        self.should_block_battery_charge: bool = False
-        self._hourly_balance_negative: bool = False
-        # BALANCED diagnostics
-        self.balanced_heater_budget: float | None = None
-        self.balanced_baseline: str | None = None
-        self.balanced_upgrade_active: bool = False
-
-    def update(self, state: InputState) -> None:
-        if self._none_present(state):
-            return
-
-        current_state = self._current_state(state)
-        target = self._determine_target(state, current_state)
-
-        self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
-        self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
-        self.should_turn_on_small = target in (self.SMALL_IS_ON, self.BOTH_ARE_ON)
-        self.should_turn_off_small = target in (self.BIG_IS_ON, self.BOTH_ARE_OFF)
-        self.should_block_battery_charge = (
-            self._hourly_balance_negative
-            and state.depth_of_discharge is not None
-            and state.depth_of_discharge == 0
-            and state.battery_charge_limit is not None
-            and state.battery_charge_limit >= 2
-        )
-        # BALANCED diagnostics
-        mode = state.heater_mode or "BALANCED"
-        if mode != "BALANCED":
-            self.balanced_heater_budget = None
-            self.balanced_baseline = None
-            self.balanced_upgrade_active = False
-        elif self._hourly_balance_negative:
-            pv_available = -state.consumption_minus_pv_2_minutes
-            self.balanced_heater_budget = -pv_available
-            self.balanced_baseline = "negative_energy"
-            self.balanced_upgrade_active = False
-
-    def _current_state(self, state: InputState) -> str:
-        if state.water_heater_big_is_on and state.water_heater_small_is_on:
-            return self.BOTH_ARE_ON
-        if state.water_heater_big_is_on:
-            return self.BIG_IS_ON
-        if state.water_heater_small_is_on:
-            return self.SMALL_IS_ON
-        return self.BOTH_ARE_OFF
-
-    def _determine_target(self, state: InputState, current_state: str) -> str:
-        pv_available = -state.consumption_minus_pv_2_minutes
-        battery_soc = state.battery_soc
-        battery_charge_limit = state.battery_charge_limit
-        exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
-
-        # GUARD: Ochrona bilansu godzinowego (tryb charge-only, DoD=0%) — tylko w godzinach PV.
-        # Po GUARD_END_HOUR brak PV, a ujemny export to normalne ładowanie baterii z sieci w tanich RCE.
-        if (
-            state.depth_of_discharge is not None
-            and state.depth_of_discharge == 0
-            and state.now.hour < GUARD_END_HOUR
-        ):
-            if exported_energy < 0:
-                self._hourly_balance_negative = True
-                return self.BOTH_ARE_OFF
-
-            if self._hourly_balance_negative and exported_energy < 50:
-                return self.BOTH_ARE_OFF
-
-            self._hourly_balance_negative = False
-        else:
-            self._hourly_balance_negative = False
-
-        mode = state.heater_mode or "BALANCED"
-
-        if mode == "ASAP":
-            target = self._asap_target(
-                pv_available, battery_charge_limit, current_state
-            )
-        elif mode == "BALANCED":
-            return self._balanced_target(
-                pv_available,
-                battery_charge_limit,
-                battery_soc,
-                exported_energy,
-                current_state,
-            )
-        else:
-            target = self._wasted_target(
-                pv_available, battery_charge_limit, current_state
-            )
-
-        # Override: exported_energy — nie marnuj skumulowanego eksportu
-        # (tylko dla ASAP i WASTED, NIE dla BALANCED)
-        if battery_soc >= 90:
-            if exported_energy > 300 and pv_available > 0:
-                if target in (self.BOTH_ARE_OFF, self.SMALL_IS_ON):
-                    target = self.BIG_IS_ON
-
-            if exported_energy > 80:
-                if self._STATE_ORDER[current_state] > self._STATE_ORDER[target]:
-                    target = current_state
-
-        return target
-
-    def _asap_target(
-        self, pv: float, battery_charge_limit: float, current_state: str
-    ) -> str:
-        battery_full = battery_charge_limit == 0
-        thresholds = (1500, 3000, 4500) if battery_full else (1800, 3300, 4800)
-        hysteresis = 500
-
-        if pv > thresholds[2] or (
-            pv > thresholds[2] - hysteresis and current_state == self.BOTH_ARE_ON
-        ):
-            return self.BOTH_ARE_ON
-        if pv > thresholds[1] or (
-            pv > thresholds[1] - hysteresis
-            and current_state in (self.BIG_IS_ON, self.BOTH_ARE_ON)
-        ):
-            return self.BIG_IS_ON
-        if pv > thresholds[0] or (
-            pv > thresholds[0] - hysteresis
-            and current_state in (self.SMALL_IS_ON, self.BIG_IS_ON, self.BOTH_ARE_ON)
-        ):
-            return self.SMALL_IS_ON
-        return self.BOTH_ARE_OFF
-
-    def _wasted_target(
-        self, pv: float, battery_charge_limit: float, current_state: str
-    ) -> str:
-        battery_max_charge = battery_charge_limit * self.BATTERY_VOLTAGE
-        pv_surplus = pv - battery_max_charge
-        hysteresis = 500
-
-        # pv_surplus nie zależy od stanu grzałek (sensor minus_heaters)
-        # Step-up: OFF → BIG → BOTH (small nigdy sam w WASTED)
-        if pv_surplus > self.BIG_POWER or (
-            pv_surplus > self.BIG_POWER - hysteresis
-            and current_state == self.BOTH_ARE_ON
-        ):
-            return self.BOTH_ARE_ON
-        if pv_surplus > 0 or (
-            pv_surplus > -hysteresis
-            and current_state in (self.BIG_IS_ON, self.BOTH_ARE_ON)
-        ):
-            return self.BIG_IS_ON
-        return self.BOTH_ARE_OFF
-
-    def _balanced_target(
-        self,
-        pv: float,
-        battery_charge_limit: float,
-        battery_soc: float,
-        exported_energy: float,
-        current_state: str,
-    ) -> str:
-        # Rezerwacja (charge_limit: dyskretne 0, 1, 2, 7, 18A)
-        if battery_charge_limit > 7:
-            reserved = 3000 if battery_soc < 50 else 2000
-        elif battery_charge_limit > 2:
-            reserved = 1000
-        elif battery_charge_limit == 2:
-            reserved = 300
-        else:
-            reserved = 0
-
-        heater_budget = pv - reserved
-        hysteresis = 500
-
-        # Piętro 1 — Baseline (histereza trzyma tylko obecny stan, nie wyższy)
-        if heater_budget >= self.BOTH_POWER or (
-            heater_budget >= self.BOTH_POWER - hysteresis
-            and current_state == self.BOTH_ARE_ON
-        ):
-            baseline = self.BOTH_ARE_ON
-        elif heater_budget >= self.BIG_POWER or (
-            heater_budget >= self.BIG_POWER - hysteresis
-            and current_state == self.BIG_IS_ON
-        ):
-            baseline = self.BIG_IS_ON
-        elif heater_budget >= self.SMALL_POWER or (
-            heater_budget >= self.SMALL_POWER - hysteresis
-            and current_state == self.SMALL_IS_ON
-        ):
-            baseline = self.SMALL_IS_ON
-        else:
-            baseline = self.BOTH_ARE_OFF
-
-        # Piętro 2 — Upgrade z budżetu eksportu godzinowego
-        upgrade = self._UPGRADE_MAP[baseline]
-        target = baseline
-        if upgrade != baseline:
-            if exported_energy > 100 or (
-                self._STATE_ORDER[current_state] >= self._STATE_ORDER[upgrade]
-                and exported_energy > 30
-            ):
-                target = upgrade
-
-        # Diagnostyka
-        self.balanced_heater_budget = -heater_budget
-        self.balanced_baseline = baseline
-        self.balanced_upgrade_active = target != baseline
-
-        return target
-
-    def _none_present(self, state: InputState) -> bool:
-        return (
-            state.water_heater_big_is_on is None
-            or state.water_heater_small_is_on is None
-            or state.battery_soc is None
-            or state.battery_charge_limit is None
-            or state.battery_power_2_minutes is None
-            or state.consumption_minus_pv_2_minutes is None
-            or state.exported_energy_hourly is None
-            or state.now is None
-        )
 
 
 class Ems:
@@ -297,10 +32,14 @@ class Ems:
         self.tomorrow: EmsDayData = EmsDayData.empty()
         self.rce_data: RceData = None
         self.current_price: float = None
+        self.battery: BatteryManager = BatteryManager()
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
 
     def update_state(self, state: InputState) -> None:
-        self.water_heater.update(state)
+        # battery FIRST — oblicza flagi (hourly_balance_negative, block_charge)
+        # które czytają inne managery.
+        self.battery.update(state)
+        self.water_heater.update(state, self.battery)
         self._async_update_listeners()
 
     def update_hourly(self, now: datetime) -> None:
