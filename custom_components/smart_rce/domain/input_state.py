@@ -7,7 +7,7 @@ importować InputState bez circular dependency z ems.py.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 
 
 @dataclass
@@ -24,4 +24,14 @@ class InputState:
     depth_of_discharge: float | None = (
         None  # % (number.goodwe_depth_of_discharge_on_grid)
     )
+    battery_charge_toggle_on: bool | None = None
+    # input_boolean.battery_charge_max_current_toggle state.
+    # Używane przez BatteryManager jako guard dla block_charge (nie blokuj
+    # ładowania gdy już zablokowane).
+
+    start_charge_hour_override: time | None = None
+    # input_datetime.rce_start_charge_hour_today_override (HH:MM:SS).
+    # Pre-charge window end. Domyślnie kopia rce_start_charge_hour_today_time,
+    # user może nadpisać ręcznie.
+
     now: datetime | None = None

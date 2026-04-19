@@ -1,7 +1,7 @@
 """Adapter from Hass to Domain."""
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, time
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -96,6 +96,23 @@ def set_depth_of_discharge(entity: str, i: InputState, state: str) -> None:
     i.depth_of_discharge = map_float(entity, state)
 
 
+def set_battery_charge_toggle_on(entity: str, i: InputState, state: str) -> None:
+    i.battery_charge_toggle_on = map_on_off(entity, state)
+
+
+def set_start_charge_hour_override(entity: str, i: InputState, state: str) -> None:
+    """input_datetime.rce_start_charge_hour_today_override state → time."""
+    if state in (None, "", "unavailable", "unknown"):
+        i.start_charge_hour_override = None
+        return
+    try:
+        # HA input_datetime (has_time, has_date=false) string format: "HH:MM:SS"
+        i.start_charge_hour_override = time.fromisoformat(state)
+    except ValueError:
+        _LOGGER.error("State %s=%s cannot be parsed as time", entity, state)
+        i.start_charge_hour_override = None
+
+
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "switch.water_heater_big_relay": set_water_heater_big_is_on,
     "switch.water_heater_small_relay": set_water_heater_small_is_on,
@@ -106,6 +123,8 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "sensor.total_export_import_hourly": set_exported_energy_hourly,
     "input_select.ems_water_heater_mode": set_heater_mode,
     "number.goodwe_depth_of_discharge_on_grid": set_depth_of_discharge,
+    "input_boolean.battery_charge_max_current_toggle": set_battery_charge_toggle_on,
+    "input_datetime.rce_start_charge_hour_today_override": set_start_charge_hour_override,
 }
 
 
