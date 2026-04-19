@@ -5,3 +5,4 @@ homeassistant/**
 homeassistant
 /test_api.py
 /.idea/**
+.DS_Store
