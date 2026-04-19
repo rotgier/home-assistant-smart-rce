@@ -399,7 +399,7 @@ class PvForecastCoordinator:
                 by_date[d][(ts.hour, 30)] = value
 
         return [
-            ConsumptionProfile(buckets=dict(by_date[d]))
+            ConsumptionProfile(buckets=dict(by_date[d]), source_date=d)
             if d and by_date.get(d)
             else None
             for d in dates

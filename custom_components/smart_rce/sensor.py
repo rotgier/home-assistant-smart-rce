@@ -292,7 +292,9 @@ async def async_setup_entry(
                 lambda pv: pv.target_soc_prev_days[0].value
                 if pv.target_soc_prev_days[0]
                 else None,
-                lambda pv: _target_soc_trace_attrs(pv.target_soc_prev_days[0]),
+                lambda pv: _target_soc_trace_attrs(
+                    pv.target_soc_prev_days[0], pv.consumption_profiles[0]
+                ),
                 unit="%",
             ),
             PvForecastSensor(
@@ -302,7 +304,9 @@ async def async_setup_entry(
                 lambda pv: pv.target_soc_prev_days[1].value
                 if pv.target_soc_prev_days[1]
                 else None,
-                lambda pv: _target_soc_trace_attrs(pv.target_soc_prev_days[1]),
+                lambda pv: _target_soc_trace_attrs(
+                    pv.target_soc_prev_days[1], pv.consumption_profiles[1]
+                ),
                 unit="%",
             ),
             PvForecastSensor(
@@ -312,7 +316,9 @@ async def async_setup_entry(
                 lambda pv: pv.target_soc_prev_days[2].value
                 if pv.target_soc_prev_days[2]
                 else None,
-                lambda pv: _target_soc_trace_attrs(pv.target_soc_prev_days[2]),
+                lambda pv: _target_soc_trace_attrs(
+                    pv.target_soc_prev_days[2], pv.consumption_profiles[2]
+                ),
                 unit="%",
             ),
             # Prev-workday instrumentation — tomorrow
@@ -323,7 +329,9 @@ async def async_setup_entry(
                 lambda pv: pv.target_soc_tomorrow_prev_days[0].value
                 if pv.target_soc_tomorrow_prev_days[0]
                 else None,
-                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow_prev_days[0]),
+                lambda pv: _target_soc_trace_attrs(
+                    pv.target_soc_tomorrow_prev_days[0], pv.consumption_profiles[0]
+                ),
                 unit="%",
             ),
             PvForecastSensor(
@@ -333,7 +341,9 @@ async def async_setup_entry(
                 lambda pv: pv.target_soc_tomorrow_prev_days[1].value
                 if pv.target_soc_tomorrow_prev_days[1]
                 else None,
-                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow_prev_days[1]),
+                lambda pv: _target_soc_trace_attrs(
+                    pv.target_soc_tomorrow_prev_days[1], pv.consumption_profiles[1]
+                ),
                 unit="%",
             ),
             PvForecastSensor(
@@ -343,7 +353,9 @@ async def async_setup_entry(
                 lambda pv: pv.target_soc_tomorrow_prev_days[2].value
                 if pv.target_soc_tomorrow_prev_days[2]
                 else None,
-                lambda pv: _target_soc_trace_attrs(pv.target_soc_tomorrow_prev_days[2]),
+                lambda pv: _target_soc_trace_attrs(
+                    pv.target_soc_tomorrow_prev_days[2], pv.consumption_profiles[2]
+                ),
                 unit="%",
             ),
             # Max safety sensors — max(live, prev_day_1..N)
@@ -400,11 +412,15 @@ def _pv_forecast_attrs(forecast) -> dict[str, Any]:
     }
 
 
-def _target_soc_trace_attrs(result) -> dict[str, Any]:
-    """Trace for target_soc_* sensors: per-bucket pv/cons/balance/cumulative + is_min."""
+def _target_soc_trace_attrs(result, profile=None) -> dict[str, Any]:
+    """Trace for target_soc_* sensors: per-bucket pv/cons/balance/cumulative + is_min.
+
+    Jeśli profile przekazany i ma source_date, dodaje 'profile_date' attribute
+    (informuje z którego workday-a wzięty consumption profile).
+    """
     if not result or not result.buckets:
         return {}
-    return {
+    attrs: dict[str, Any] = {
         "buckets": [
             {
                 "period": b.period,
@@ -417,6 +433,9 @@ def _target_soc_trace_attrs(result) -> dict[str, Any]:
             for b in result.buckets
         ]
     }
+    if profile is not None and profile.source_date is not None:
+        attrs["profile_date"] = profile.source_date.isoformat()
+    return attrs
 
 
 class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], RestoreSensor):

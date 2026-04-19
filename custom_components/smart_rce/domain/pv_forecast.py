@@ -56,6 +56,7 @@ class ConsumptionProfile:
     """Consumption per 30-min bucket, keyed by (hour, minute) -> kWh."""
 
     buckets: dict[tuple[int, int], float]
+    source_date: date | None = None  # workday z którego profile został wziety
 
     def get(self, hour: int, minute: int) -> float | None:
         return self.buckets.get((hour, minute))
