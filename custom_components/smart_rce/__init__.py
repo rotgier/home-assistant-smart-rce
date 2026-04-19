@@ -86,6 +86,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.pv_forecast_coordinator"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor"))
+    reload(import_module("custom_components.smart_rce.binary_sensor"))
     reload(import_module("custom_components.smart_rce"))
 
 
