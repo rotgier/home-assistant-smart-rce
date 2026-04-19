@@ -161,55 +161,13 @@ Algorytm ładowania baterii dotyczy **tylko dni roboczych** (pon-pt).
 
 ## Algorytm: target SOC o 7:00 (dni robocze)
 
-### Cel
-Zapewnić wystarczający SOC baterii o 7:00 żeby przetrwać drogą taryfę 7:00-13:00
-bez pobierania z sieci. O 13:00 zaczyna się tania taryfa i można doładować.
+**Cel**: Zapewnić wystarczający SOC baterii o 7:00 żeby w oknie 7:00-13:00 (droga taryfa G13) **nie pobierać netto z sieci** — zgodnie z zasadą hourly billing (sekcja "Rozliczenie energii").
 
-### Dane wejściowe (dostępne o 6:00):
-1. Solcast forecast — pv_estimate, pv_estimate10, pv_estimate90 per 30min
-2. Prognoza pogody WetterOnline — condition per godzinę
-3. Aktualny SOC baterii
-4. Estymowane zużycie domu (z historii lub stałe)
+**Kluczowe implikacje hourly billing dla algorytmu:**
+- W obrębie godziny dodatni i ujemny bilans wzajemnie się kasują — intra-hour surplus "dogoni" intra-hour deficit w rozliczeniu
+- Przed `start_charge_hour_today` bateria NIE ładuje się → surplus PV w tych godzinach idzie do sieci, NIE akumuluje na kolejne godziny (tylko intra-hour kasowanie)
+- Po `start_charge_hour_today` surplus ładuje baterię → akumuluje międzygodzinowo
 
-### Krok 1: Weather-adjusted PV estimate per 30min (7:00-13:00)
+**Pełny design + research + brainstorm wyniesiony do osobnego pliku**: [target_soc_algorithm.md](target_soc_algorithm.md) — aktualny algorytm (po Etapie A), otwarte pytania (60-min vs 30-min granulacja, start_charge gate, buffer tuning), edge cases i TODO decyzje.
 
-| Condition WetterOnline | Estimate Solcast | Mnożnik |
-|---|---|---|
-| sunny | pv_estimate | 1.0 |
-| partlycloudy-variable | pv_estimate | 0.8 |
-| partlycloudy | pv_estimate10 | 1.0 |
-| cloudy / inne | pv_estimate10 | 0.7 |
-
-### Krok 2: Symulacja kumulacji deficytu godzina po godzinie
-
-```
-cumulative_balance = 0
-min_balance = 0
-
-Dla każdego 30min okresu od 7:00 do 13:00:
-  expected_pv = weather_adjusted_estimate (z kroku 1)
-  expected_consumption = estymowane zużycie
-  balance = expected_pv - expected_consumption
-  cumulative_balance += balance
-  min_balance = min(min_balance, cumulative_balance)
-```
-
-### Krok 3: Target SOC
-
-```
-deficit_kwh = abs(min_balance)
-deficit_percent = deficit_kwh / 0.107  # kWh -> % SOC
-losses = deficit_percent * 0.10  # 10% straty konwersji
-target_soc = 10 + deficit_percent + losses + 5  # limit + deficyt + straty + bufor
-```
-
-### Weryfikacja na danych 2026-04-08 (pochmurny dzień)
-
-- Pogoda: cloudy cały dzień
-- Solcast est10 × 0.7 dla 7:00-13:00: ~4.1 kWh PV
-- Zużycie 7:00-13:00: ~5.0 kWh
-- Najniższy punkt kumulacji: -0.74 kWh o 11:00
-- deficit_percent: 6.9%
-- Target SOC: 10 + 6.9 + 0.7 + 5 = ~23%
-- Rzeczywisty SOC 7:00: 24% → bateria spadła do 13% (na styk)
-- Z targetem 27% (uwzględniając realne straty) byłoby bezpieczniej
+**Stan kodu**: `custom_components/smart_rce/domain/pv_forecast.py:calculate_target_soc()`.
