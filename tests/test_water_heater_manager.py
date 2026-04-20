@@ -18,6 +18,7 @@ def _state(
     exported_energy_hourly=0.5,
     heater_mode="WASTED",
     depth_of_discharge=None,
+    water_heater_strategy=None,
     now=NOON,
 ) -> InputState:
     return InputState(
@@ -30,6 +31,7 @@ def _state(
         exported_energy_hourly=exported_energy_hourly,
         heater_mode=heater_mode,
         depth_of_discharge=depth_of_discharge,
+        water_heater_strategy=water_heater_strategy,
         now=now,
     )
 
@@ -342,6 +344,114 @@ class TestBalancedBaseline:
         assert mgr.water_heater.should_turn_on_small is False
         assert mgr.water_heater.balanced_baseline == "both_are_off"
         assert mgr.water_heater.balanced_heater_budget == -1800.0
+
+
+class TestBalancedBatteryFirstStrategy:
+    """BATTERY_FIRST: reserved=4500 gdy charge_limit>7 (bateria może mocno ładować)."""
+
+    def test_battery_first_18a_reserves_4500_heaters_off(self):
+        """pv=5500, charge_limit=18A, BATTERY_FIRST → reserved=4500, budget=1000 < SMALL → OFF."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="BATTERY_FIRST",
+                consumption_minus_pv=-5500.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.water_heater.should_turn_on is False
+        assert mgr.water_heater.should_turn_on_small is False
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_heater_budget == -1000.0
+
+    def test_battery_first_18a_big_pv_allows_small(self):
+        """pv=6500, charge_limit=18A, BATTERY_FIRST → reserved=4500, budget=2000 ≥ SMALL."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="BATTERY_FIRST",
+                consumption_minus_pv=-6500.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.should_turn_on is False
+        assert mgr.water_heater.balanced_baseline == "small_is_on"
+
+    def test_battery_first_fallback_when_charge_limit_drops(self):
+        """BATTERY_FIRST + charge_limit=2A → fallback do normalnej logiki (reserved=300)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="BATTERY_FIRST",
+                consumption_minus_pv=-2000.0,
+                battery_charge_limit=2.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # charge_limit=2 nie jest >7 → BATTERY_FIRST się nie aktywuje →
+        # reserved=300 → budget=1700 → SMALL
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.balanced_heater_budget == -1700.0
+
+    def test_battery_first_fallback_at_charge_limit_7(self):
+        """BATTERY_FIRST + charge_limit=7A → fallback (7>7 is False)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="BATTERY_FIRST",
+                consumption_minus_pv=-3000.0,
+                battery_charge_limit=7.0,
+                battery_soc=85.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # charge_limit=7 nie jest >7 → normalna logika: reserved=1000 → budget=2000 → SMALL
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.balanced_heater_budget == -2000.0
+
+    def test_normal_strategy_uses_existing_algorithm(self):
+        """NORMAL (lub None) + charge_limit=18A, soc=30% → reserved=3000 (istniejąca logika)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="NORMAL",
+                consumption_minus_pv=-5500.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # reserved=3000, budget=2500 → SMALL (jak w test_18a_low_soc_small)
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.balanced_baseline == "small_is_on"
+        assert mgr.water_heater.balanced_heater_budget == -2500.0
+
+    def test_none_strategy_uses_existing_algorithm(self):
+        """strategy=None (stan po restarcie przed loadem) → istniejąca logika."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy=None,
+                consumption_minus_pv=-5500.0,
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.balanced_baseline == "small_is_on"
 
     def test_hysteresis_holds_current_state(self):
         """Histereza trzyma obecny stan na granicy progu."""

@@ -44,4 +44,9 @@ class InputState:
     # Pre-charge window end. Domyślnie kopia rce_start_charge_hour_today_time,
     # user może nadpisać ręcznie.
 
+    water_heater_strategy: str | None = None
+    # input_select.ems_water_heater_strategy — strategia rezerwacji PV między
+    # baterią a grzałkami w trybie BALANCED. Opcje: NORMAL (domyślny algorytm),
+    # BATTERY_FIRST (reserved=4500 gdy battery_charge_limit>7).
+
     now: datetime | None = None

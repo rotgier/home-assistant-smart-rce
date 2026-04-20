@@ -112,6 +112,7 @@ class WaterHeaterManager:
                 battery_soc,
                 exported_energy,
                 current_state,
+                state.water_heater_strategy,
             )
         else:
             target = self._wasted_target(
@@ -182,9 +183,16 @@ class WaterHeaterManager:
         battery_soc: float,
         exported_energy: float,
         current_state: str,
+        strategy: str | None,
     ) -> str:
         # Rezerwacja (charge_limit: dyskretne 0, 1, 2, 7, 18A)
-        if battery_charge_limit > 7:
+        # BATTERY_FIRST: gdy bateria może mocno ładować (charge_limit>7),
+        # rezerwujemy pełne 4500W dla baterii, grzałki praktycznie OFF. Gdy
+        # bateria zbliża się do pełna, charge_limit sam spada (7→2→1→0) i
+        # fallback do istniejącej "łaskawej" logiki.
+        if strategy == "BATTERY_FIRST" and battery_charge_limit > 7:
+            reserved = 4500
+        elif battery_charge_limit > 7:
             reserved = 3000 if battery_soc < 50 else 2000
         elif battery_charge_limit > 2:
             reserved = 1000
