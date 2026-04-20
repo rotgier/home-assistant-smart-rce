@@ -453,6 +453,74 @@ class TestBalancedBatteryFirstStrategy:
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.balanced_baseline == "small_is_on"
 
+    def test_battery_first_18a_skip_upgrade_despite_export(self):
+        """BATTERY_FIRST + 18A + exported=150Wh → nie aktywuj upgrade (SMALL).
+
+        Real scenario z 2026-04-20 13:54: PV akurat niewielki nadmiar,
+        cumulative export narósł do 100 Wh w godzinie, a bateria wciąż
+        ładuje się @ 18A. Upgrade wcześniej włączał SMALL ignorując strategy.
+        """
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="BATTERY_FIRST",
+                consumption_minus_pv=-5500.0,  # pv_available=5500
+                battery_charge_limit=18.0,
+                battery_soc=74.0,
+                exported_energy_hourly=0.150,  # 150 Wh > próg 100
+            )
+        )
+        # reserved=4500, budget=1000 < SMALL → baseline=BOTH_ARE_OFF
+        # upgrade SKIP bo strategy=BATTERY_FIRST AND charge_limit>7
+        assert mgr.water_heater.should_turn_on is False
+        assert mgr.water_heater.should_turn_on_small is False
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_upgrade_active is False
+
+    def test_battery_first_2a_upgrade_works_when_battery_slowing(self):
+        """BATTERY_FIRST + charge_limit=2A → fallback: upgrade działa normalnie.
+
+        Gdy bateria zbliża się do pełna (charge_limit spadł z 18→2), strategy
+        BATTERY_FIRST przestaje się aktywować, upgrade znów chroni przed
+        marnowaniem eksportu.
+        """
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="BATTERY_FIRST",
+                consumption_minus_pv=-1000.0,  # pv_available=1000
+                battery_charge_limit=2.0,
+                battery_soc=98.0,
+                exported_energy_hourly=0.150,
+            )
+        )
+        # reserved=300 (charge_limit=2), budget=700 < SMALL → baseline=BOTH_ARE_OFF
+        # SKIP warunku: charge_limit=2 nie jest >7 → upgrade działa
+        # upgrade = small_is_on, exported>100 → target=SMALL
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.balanced_upgrade_active is True
+
+    def test_normal_strategy_upgrade_still_works(self):
+        """NORMAL + exported>100 → upgrade aktywny (brak regresji)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="NORMAL",
+                consumption_minus_pv=-2000.0,  # pv_available=2000
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.150,
+            )
+        )
+        # reserved=3000, budget=-1000 → baseline=BOTH_ARE_OFF
+        # strategy=NORMAL → upgrade działa
+        # exported>100 → target=SMALL
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.balanced_upgrade_active is True
+
     def test_hysteresis_holds_current_state(self):
         """Histereza trzyma obecny stan na granicy progu."""
         mgr = Ems()

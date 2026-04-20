@@ -223,10 +223,16 @@ class WaterHeaterManager:
         else:
             baseline = self.BOTH_ARE_OFF
 
-        # Piętro 2 — Upgrade z budżetu eksportu godzinowego
+        # Piętro 2 — Upgrade z budżetu eksportu godzinowego.
+        # BATTERY_FIRST + charge_limit>7: skip upgrade. Intent strategii to
+        # forsować ładowanie baterii — nawet jeśli cumulative export już
+        # przekroczył 100 Wh, nie chcemy włączać grzałek póki bateria może
+        # mocno ładować. Gdy charge_limit spadnie (bateria blisko pełna),
+        # upgrade znów działa (symetryczne do Piętra 1).
         upgrade = self._UPGRADE_MAP[baseline]
         target = baseline
-        if upgrade != baseline:
+        skip_upgrade = strategy == "BATTERY_FIRST" and battery_charge_limit > 7
+        if upgrade != baseline and not skip_upgrade:
             if exported_energy > 100 or (
                 self._STATE_ORDER[current_state] >= self._STATE_ORDER[upgrade]
                 and exported_energy > 30
