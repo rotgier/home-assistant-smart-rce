@@ -19,6 +19,10 @@ class InputState:
     battery_charge_limit: float | None = None  # A (ampery z BMS)
     battery_power_2_minutes: float | None = None
     consumption_minus_pv_2_minutes: float | None = None
+    consumption_minus_pv_5_minutes: float | None = None
+    # sensor.house_consumption_minus_heaters_minus_pv_avg_5_minutes (W).
+    # Ujemne = PV > cons (surplus trend). Używane w post-charge dla
+    # continuous check block_discharge (hysteresis -500/0).
     exported_energy_hourly: float | None = None
     heater_mode: str | None = None
     depth_of_discharge: float | None = (

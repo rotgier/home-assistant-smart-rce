@@ -15,6 +15,7 @@ def _state(
     battery_charge_toggle_on: bool | None = None,
     depth_of_discharge: float | None = None,
     battery_charge_limit: float = 18.0,
+    consumption_minus_pv_5_minutes: float | None = None,
 ) -> InputState:
     return InputState(
         water_heater_big_is_on=False,
@@ -23,6 +24,7 @@ def _state(
         battery_charge_limit=battery_charge_limit,
         battery_power_2_minutes=0.0,
         consumption_minus_pv_2_minutes=0.0,
+        consumption_minus_pv_5_minutes=consumption_minus_pv_5_minutes,
         exported_energy_hourly=exported_energy_hourly,
         heater_mode="BALANCED",
         depth_of_discharge=depth_of_discharge,
@@ -330,3 +332,192 @@ class TestEdgeCases:
         )
         assert mgr.should_block_battery_discharge is False
         assert mgr._last_hour_seen is None
+
+
+class TestPostChargeWindowDetection:
+    """Post-charge: start_charge_hour_override ≤ now < 13:00."""
+
+    def test_inside_post_charge(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=0.0,  # dead zone default
+            )
+        )
+        # In post-charge, _last_hour_seen reset to None
+        assert mgr._last_hour_seen is None
+        assert mgr.should_block_battery_discharge is False  # default / dead zone
+
+    def test_exactly_13_is_out(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(13, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-1000.0,  # would trigger set
+            )
+        )
+        # 13:00 poza post-charge window
+        assert mgr.should_block_battery_discharge is False
+
+    def test_before_start_not_post_charge(self):
+        """Now=09:00, override=10:00 → pre-charge, nie post-charge."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(9, 30),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-1000.0,
+                exported_energy_hourly=0.0,  # hour balance zero — no pre-charge set
+            )
+        )
+        # In pre-charge, _last_hour_seen set, block via exported hysteresis (not avg_5min)
+        assert mgr._last_hour_seen == 9
+        # exported=0 → dead zone for pre-charge hysteresis, False
+        assert mgr.should_block_battery_discharge is False
+
+
+class TestPostChargeHysteresis5MinAvg:
+    """Post-charge: hysteresis na avg_5min (sustained surplus/deficit).
+
+    Set: avg_5min < -500W (sustained surplus)
+    Reset: avg_5min > 0W (sustained deficit)
+    Dead zone -500..0 — zachowuje poprzedni stan.
+    """
+
+    def test_surplus_sustained_sets(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-600.0,  # -600W surplus
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_at_surplus_boundary(self):
+        """avg_5min = -500 not < -500 → stays."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-500.0,
+            )
+        )
+        # -500 is NOT < -500 → no set → stays False (initial)
+        assert mgr.should_block_battery_discharge is False
+
+    def test_deficit_sustained_resets(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True  # previous state
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=100.0,  # deficit
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_at_deficit_boundary(self):
+        """avg_5min = 0 not > 0 → stays."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=0.0,
+            )
+        )
+        # 0 is NOT > 0 → dead zone → stays True
+        assert mgr.should_block_battery_discharge is True
+
+    def test_dead_zone_keeps_true(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-300.0,  # -300W in dead zone
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_dead_zone_keeps_false(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = False
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-200.0,  # dead zone
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_none_avg_5min_safe_default(self):
+        """Brak danych avg_5min → False (safe default)."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True  # previous
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=None,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_continuous_across_hour_boundary(self):
+        """Post-charge nie resetuje per-hour — flow przez granicę."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 55),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-700.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+        # Granica godziny 11:59 → 12:00. block_discharge zostaje True.
+        mgr.update(
+            _state(
+                now=_at(12, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-600.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True  # nie reset
+        # _last_hour_seen nadal None (post-charge)
+        assert mgr._last_hour_seen is None
+
+    def test_pre_to_post_transition(self):
+        """Przejście pre-charge → post-charge (crossing start_charge_hour)."""
+        mgr = BatteryManager()
+        # Pre-charge: 09:30, override=10:00
+        mgr.update(
+            _state(
+                now=_at(9, 30),
+                start_charge_hour_override=time(10, 0),
+                exported_energy_hourly=0.0,
+                consumption_minus_pv_5_minutes=-1000.0,
+            )
+        )
+        assert mgr._last_hour_seen == 9
+        # Przejście na 10:00 — post-charge now. _last_hour_seen resetuje się do None.
+        mgr.update(
+            _state(
+                now=_at(10, 0),
+                start_charge_hour_override=time(10, 0),
+                consumption_minus_pv_5_minutes=-1000.0,  # surplus
+            )
+        )
+        assert mgr._last_hour_seen is None
+        assert mgr.should_block_battery_discharge is True  # avg_5min < -500 set

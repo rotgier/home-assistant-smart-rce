@@ -10,13 +10,16 @@ Decyzje:
   toggle ładowania jest `on` (żeby nie blokować tego co jest już zablokowane).
   Blokada chroni przed ładowaniem baterii z sieci w drogiej taryfie.
 
-- `should_block_battery_discharge` — aktywny w pre-charge window
-  (7:00 → `start_charge_hour_override`) gdy eksport godzinowy netto
-  przekroczy próg. Trzyma baterię (DoD=0) żeby nie rozładowywała się
-  przy chwilowych deficytach, które i tak zbilansują się w netto
-  rozliczeniu godzinowym. Patrz `context/target_soc_algorithm.md`.
+- `should_block_battery_discharge` — aktywny:
+  - **Pre-charge** (7:00 → `start_charge_hour_override`): hour-start reset
+    + hysteresis 100/50 na `exported_energy_hourly`. Trzyma baterię gdy
+    hour netto export > 100 Wh, odblokowuje gdy < 50 Wh.
+  - **Post-charge** (`start_charge_hour_override` → 13:00): continuous
+    check na `consumption_minus_pv_5_minutes` (sustained trend).
+    Hysteresis -500/0 W. Unika cycling baterii (charge↔discharge) typowego
+    dla post-charge phase gdzie charge_current>0.
 
-Post-charge logic (okno start_charge → 13:00) to-do — osobna iteracja.
+Patrz `context/target_soc_algorithm.md` dla szerszego kontekstu.
 """
 
 from __future__ import annotations
@@ -45,6 +48,18 @@ PRE_CHARGE_WINDOW_START_HOUR: Final[int] = 7
 DISCHARGE_HYSTERESIS_SET_WH: Final[int] = 100
 DISCHARGE_HYSTERESIS_RESET_WH: Final[int] = 50
 
+# --- discharge guard (post-charge window) --- #
+
+# Post-charge window end (hour). Okno start_charge_hour_override → 13:00.
+POST_CHARGE_WINDOW_END_HOUR: Final[int] = 13
+
+# Continuous check na `consumption_minus_pv_5_minutes` (W):
+# ujemne = PV > cons (surplus), dodatnie = cons > PV (deficit).
+# Hysteresis wyzwala block_discharge gdy sustained surplus >=500W,
+# resetuje gdy sustained deficit >0W. Dead zone -500..0 → keep state.
+AVG_5MIN_SURPLUS_THRESHOLD_W: Final[int] = -500
+AVG_5MIN_DEFICIT_THRESHOLD_W: Final[int] = 0
+
 
 class BatteryState(Protocol):
     """Structural interface — minimalny kontrakt dla readers battery state.
@@ -69,10 +84,10 @@ class BatteryManager:
 
         exported_energy_wh = state.exported_energy_hourly * 1000  # kWh → Wh
 
-        # --- block_discharge (pre-charge window only) ---
+        # --- block_discharge ---
         if self._is_in_pre_charge_window(state):
-            # Hour-start reset: każda nowa godzina zaczyna od block_discharge=False.
-            # Hysteresis w ramach godziny dalej decyduje na podstawie exported_wh.
+            # Pre-charge: hour-start reset + hysteresis na exported_wh.
+            # Każda nowa godzina startuje z block_discharge=False.
             if self._last_hour_seen != state.now.hour:
                 self._last_hour_seen = state.now.hour
                 self.should_block_battery_discharge = False
@@ -81,8 +96,21 @@ class BatteryManager:
             elif exported_energy_wh < DISCHARGE_HYSTERESIS_RESET_WH:
                 self.should_block_battery_discharge = False
                 # Dead zone 50..100 — zachowuje poprzedni stan
+        elif self._is_in_post_charge_window(state):
+            # Post-charge: continuous check na avg_5min (sustained trend).
+            # NIE ma hour-start reset — block_discharge płynnie przechodzi przez godziny.
+            self._last_hour_seen = None
+            avg_5min = state.consumption_minus_pv_5_minutes
+            if avg_5min is None:
+                # Brak danych — safe default (nie blokuj, bateria normalnie discharge).
+                self.should_block_battery_discharge = False
+            elif avg_5min < AVG_5MIN_SURPLUS_THRESHOLD_W:
+                self.should_block_battery_discharge = True
+            elif avg_5min > AVG_5MIN_DEFICIT_THRESHOLD_W:
+                self.should_block_battery_discharge = False
+                # Dead zone -500..0 — zachowuje poprzedni stan
         else:
-            # Poza pre-charge: reset. Post-charge logic to-do.
+            # Poza pre-charge i post-charge: reset.
             self.should_block_battery_discharge = False
             self._last_hour_seen = None
 
@@ -124,6 +152,15 @@ class BatteryManager:
             return False
         # Porównanie time (hh:mm:ss) żeby obsłużyć override np. 10:30
         return state.now.time() < state.start_charge_hour_override
+
+    @staticmethod
+    def _is_in_post_charge_window(state: InputState) -> bool:
+        """Post-charge: start_charge_hour_override ≤ now < 13:00."""
+        if state.start_charge_hour_override is None or state.now is None:
+            return False
+        if state.now.hour >= POST_CHARGE_WINDOW_END_HOUR:
+            return False
+        return state.now.time() >= state.start_charge_hour_override
 
     @staticmethod
     def _none_present(state: InputState) -> bool:

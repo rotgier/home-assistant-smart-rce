@@ -84,6 +84,10 @@ def set_consumption_minus_pv_2_minutes(entity: str, i: InputState, state: str) -
     i.consumption_minus_pv_2_minutes = map_float(entity, state)
 
 
+def set_consumption_minus_pv_5_minutes(entity: str, i: InputState, state: str) -> None:
+    i.consumption_minus_pv_5_minutes = map_float(entity, state)
+
+
 def set_exported_energy_hourly(entity: str, i: InputState, state: str) -> None:
     i.exported_energy_hourly = map_float(entity, state)
 
@@ -120,6 +124,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "sensor.battery_charge_limit": set_battery_charge_limit,
     "sensor.battery_power_avg_2_minutes": set_battery_power_2_minutes,
     "sensor.house_consumption_minus_heaters_minus_pv_avg_2_minutes": set_consumption_minus_pv_2_minutes,
+    "sensor.house_consumption_minus_heaters_minus_pv_avg_5_minutes": set_consumption_minus_pv_5_minutes,
     "sensor.total_export_import_hourly": set_exported_energy_hourly,
     "input_select.ems_water_heater_mode": set_heater_mode,
     "number.goodwe_depth_of_discharge_on_grid": set_depth_of_discharge,
