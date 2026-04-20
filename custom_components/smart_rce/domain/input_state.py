@@ -33,6 +33,12 @@ class InputState:
     # Używane przez BatteryManager jako guard dla block_charge (nie blokuj
     # ładowania gdy już zablokowane).
 
+    ems_allow_discharge_override: bool | None = None
+    # input_boolean.ems_allow_discharge_override — manualny override.
+    # Gdy True, BatteryManager "stoi z boku" (oba should_block_* = False).
+    # Używane przy intencjonalnym rozładowaniu (automation Battery Discharge
+    # Max at 8) żeby EMS nie blokował export'u.
+
     start_charge_hour_override: time | None = None
     # input_datetime.rce_start_charge_hour_today_override (HH:MM:SS).
     # Pre-charge window end. Domyślnie kopia rce_start_charge_hour_today_time,
