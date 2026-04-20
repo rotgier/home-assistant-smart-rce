@@ -296,3 +296,22 @@ Break-even: discharge tylko gdy przewidywane PV surplus w ciągu dnia > 2.14 kWh
 ```
 
 Alternatywnie: sensor binarny `binary_sensor.rce_discharge_makes_sense` wyliczany z cen RCE + surplus.
+
+### 4. Skip `block_charge` w dni o niskiej prognozowanej energii
+
+**Problem**: Obecnie `block_charge` (chronione `hourly_balance_negative`) wyłącza toggle ładowania gdy `exported_wh<0` w guard window (DoD=0 OR block_discharge=True). Logika: "nie ładuj z drogiej sieci w godzinach gdzie powinniśmy konsumować z PV surplus".
+
+W **dni z małą prognozowaną energią** (chmury/zima) taka ochrona może być kontrproduktywna:
+- PV nie dostarczy wystarczająco dużo energii żeby naładować baterię do `target SOC`
+- Małe chwilowe importy (np. 50-200 Wh per godzina) są akceptowalną ceną za zapewnienie że bateria będzie naładowana na drogie wieczorne godziny
+- Lepiej zapłacić teraz niż wieczorem, gdzie RCE bywa 2-3× droższe
+
+**Propozycja**:
+- Rozszerzyć semantykę `input_select.ems_water_heater_strategy` → przemianowane np. `ems_energy_strategy` (obejmuje szersze decyzje energetyczne, nie tylko grzałki)
+- W trybie `BATTERY_FIRST` / `LOW_ENERGY_DAY`: `BatteryManager` **ignoruje** `block_charge` (zostawia toggle on nawet przy exported_wh<0)
+- Pozostaje ochrona discharge (`block_discharge`) bez zmian — to oddzielny wymiar
+- Optimum: automatyczne wykrycie low-energy-day z Solcast forecast (powiązane z punktem 3 — daily surplus estimation); gdy `rce_daily_surplus_estimate < threshold` → automatycznie tryb BATTERY_FIRST
+
+**Ryzyko**: bez block_charge, bateria może ładować się z sieci w każdym momencie gdy toggle=on i PV<cons. Dla safety pozostawić override w drogich RCE godzinach (np. peak 7-10, 17-22).
+
+**Use case dzisiaj (2026-04-20)**: poranek bez słońca, SOC 44%, pre-charge window z block_discharge hysteresis działał poprawnie, ale po post-charge (12:00+) toggle włączył się + przez chwilę była flapa `block_charge` True→False (12:17-12:18). Chociaż zadziałało jak zaprojektowane, jutro przy low-energy-day flag mogłoby pozwolić na kilka Wh importu żeby przyspieszyć ładowanie zamiast czekać aż chmury się rozejdą.
