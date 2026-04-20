@@ -63,6 +63,13 @@ POST_CHARGE_WINDOW_END_HOUR: Final[int] = 13
 AVG_5MIN_SURPLUS_THRESHOLD_W: Final[int] = -500
 AVG_5MIN_DEFICIT_THRESHOLD_W: Final[int] = 0
 
+# --- logging --- #
+
+# Minimum interwał w sekundach między kolejnymi pełnymi DEBUG snapshotami,
+# gdy stan key fields (phase + 3 flagi) się NIE zmienia. Zapobiega spamowaniu
+# logów co tick gdy nic się nie dzieje.
+DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
+
 
 class BatteryState(Protocol):
     """Structural interface — minimalny kontrakt dla readers battery state.
@@ -80,6 +87,9 @@ class BatteryManager:
         self.should_block_battery_charge: bool = False
         self.should_block_battery_discharge: bool = False
         self._last_hour_seen: int | None = None
+        # Throttling dla DEBUG snapshotów
+        self._last_log_snapshot: tuple | None = None
+        self._last_log_ts = None  # type: ignore[var-annotated]
 
     def update(self, state: InputState) -> None:
         if self._none_present(state):
@@ -112,9 +122,7 @@ class BatteryManager:
                 prev_hourly_neg,
                 reason="override_active",
             )
-            _LOGGER.debug(
-                "BatteryManager: OVERRIDE active — block_discharge=False, block_charge=False"
-            )
+            self._maybe_log_snapshot(state, exported_energy_wh, phase="override")
             return
 
         # --- block_discharge ---
@@ -172,7 +180,7 @@ class BatteryManager:
             and state.battery_charge_limit >= 2
         )
 
-        # --- Verbose debug co update (stan wejścia + wyjścia) ---
+        # --- Debug snapshot (throttled) + INFO transitions ---
         phase = (
             "pre-charge"
             if self._is_in_pre_charge_window(state)
@@ -180,12 +188,46 @@ class BatteryManager:
             if self._is_in_post_charge_window(state)
             else "out-of-window"
         )
+        self._log_transitions(
+            prev_block_discharge,
+            prev_block_charge,
+            prev_hourly_neg,
+            reason=phase,
+        )
+        self._maybe_log_snapshot(state, exported_energy_wh, phase=phase)
+
+    def _maybe_log_snapshot(
+        self, state: InputState, exported_energy_wh: float, *, phase: str
+    ) -> None:
+        """Log DEBUG snapshot gdy key fields się zmienią LUB minął throttle interval.
+
+        Zapobiega spamowaniu logów co tick gdy nic się nie zmienia
+        (bateria stoi w stable state przez minuty).
+        """
+        # Key fields których zmiana jest warta logowania
+        snapshot = (
+            phase,
+            self.should_block_battery_discharge,
+            self.should_block_battery_charge,
+            self.hourly_balance_negative,
+        )
+
+        now = state.now
+        should_log = (
+            self._last_log_snapshot is None
+            or snapshot != self._last_log_snapshot
+            or self._last_log_ts is None
+            or (now - self._last_log_ts).total_seconds() >= DEBUG_LOG_THROTTLE_SEC
+        )
+        if not should_log:
+            return
+
         _LOGGER.debug(
             "BatteryManager[%s] now=%s exported=%+.3fkWh(%+dWh) avg_5min=%s "
             "DoD=%s toggle=%s charge_limit=%s override_window=%s | "
             "block_discharge=%s block_charge=%s hourly_neg=%s",
             phase,
-            state.now.strftime("%H:%M:%S") if state.now else "?",
+            now.strftime("%H:%M:%S") if now else "?",
             state.exported_energy_hourly,
             int(exported_energy_wh),
             f"{state.consumption_minus_pv_5_minutes:+.0f}W"
@@ -199,13 +241,8 @@ class BatteryManager:
             self.should_block_battery_charge,
             self.hourly_balance_negative,
         )
-
-        self._log_transitions(
-            prev_block_discharge,
-            prev_block_charge,
-            prev_hourly_neg,
-            reason=phase,
-        )
+        self._last_log_snapshot = snapshot
+        self._last_log_ts = now
 
     def _log_transitions(
         self,
