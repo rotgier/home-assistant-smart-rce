@@ -225,3 +225,74 @@ Gdzie 30min wariant ma mniejszy buffer bo już mamy hourly amortyzację.
 - `custom_components/smart_rce/sensor.py` — wystawiana wartość + trace
 - `context/energy_strategy.md` — szerszy kontekst strategii (CWU, grzałki, taryfy)
 - `/Users/mark/git/home-assistant-ops/research/TODO-observe-prev-day-target-soc.md` — tygodniowa obserwacja Etapu A
+
+## Open follow-up topics — next session (post-observation)
+
+Rozważane po wdrożeniu `should_block_battery_discharge` (pre/post-charge, 2026-04-20):
+
+### 1. Inter-hour surplus transfer w pre-charge
+
+**Problem**: W pre-charge `battery_charge_max_current_toggle=False` — bateria **nie ładuje** się (ani z sieci, ani z PV). Surplus PV w godzinie X **idzie do sieci** (nie akumuluje dla godziny X+1).
+
+Obecny `calculate_target_soc` iteruje 30-min periods od 7:00 do 13:00 i kumuluje `balance = PV - cons`. Zakłada że surplus z godziny 8:00-9:00 pokrywa deficit w godzinie 9:00-10:00. **To nie jest prawda w pre-charge** bo bateria nie ładuje się — surplus idzie do sieci bezpowrotnie.
+
+**Opcje rozwiązania**:
+
+**A) Reset cumulative na granicy godzin (30-min bucket semantics)**:
+```python
+# In calculate_target_soc loop:
+if crossing hour boundary (in pre-charge):
+    cumulative_balance = min(cumulative_balance, 0)  # surplus stracony, deficit kumuluje się
+```
+
+**B) Agregacja do 60-min windows**:
+Worse granularity, ale zgodne z hourly billing semantics. Tracimy informację o intra-hour variance.
+
+**C) Hybrid per-hour max constraint**:
+W ramach godziny dopuszczamy 30-min kumulacja (intra-hour surplus może pokryć intra-hour deficit dzięki hourly netto billing). Ale między godzinami cumulative nie wznosi się wyżej niż 0 w pre-charge.
+
+User (z dyskusji): **skłania się do 30-min windows** (status quo) + jakiś mechanizm "nie pozwól cumulative rosnąć między godzinami". Pre-charge vs post-charge rozróżnienie (post-charge bateria ładuje → surplus przenosi się).
+
+**TODO**: zaprojektować konkretną zmianę w `calculate_target_soc`. Obecny kod iteruje 30-min periods — dodać parameter `pre_charge_end: time | None` (wzięty z `input_datetime.rce_start_charge_hour_today_override`). Wewnątrz pre-charge (okres ≤ pre_charge_end) kumulatywny balance nie może być pozytywny (clamping do 0 gdy przekroczymy zero od góry na granicy godziny).
+
+### 2. Ekstrapolacja current 30-min bucket (in-progress period)
+
+**Problem**: obecna pętla w `calculate_target_soc` zaczyna od bieżącego 30-min okresu z `now` (jeśli podane). W trakcie trwającego okresu (np. 08:15), używa pełnej wartości bucket 08:00-08:30 — zakłada że będzie pełny 30-min. Ale w 08:15 minęło dopiero 15 min z 30.
+
+**Rozwiązanie już istnieje w `rce_forecast.py` (dashboard)**: ekstrapolacja current bucket — `value_so_far / elapsed_fraction * multiplier`. Widać na wykresach aktualną ekstrapolację do końca bucket.
+
+**TODO**: zaaplikować tę samą logikę do `calculate_target_soc`:
+- Dla current 30-min period (gdzie `now` mieści się): ekstrapolować remaining value
+- PV: `PV_now_instant × remaining_minutes / 30` (assumption: stała moc przez resztę okresu)
+- Consumption: z profile lub constant × `remaining_minutes / 30`
+
+**Use case**: o 08:30 decyzja czy oddawać <50% SOC będzie trafniejsza z ekstrapolowanym bieżącym oknem. Bez tego sensor pokazuje "wartość dla pełnego bucketu" co może być nieadekwatne w połowie okresu.
+
+### 3. Daily surplus estimation — "czy warto discharge poniżej 50%"
+
+**Problem**: Idea discharge <50% SOC przed rana → zrobienie miejsca na PV z dnia. Ale w dni o małym forecast PV + wysokie RCE ceny eksportu → **nie tracimy dużo** gdy bateria pełna (i tak eksportujemy cena RCE ~~ cena unikanego importu). Discharge <50% ma sens tylko gdy oczekujemy dużego surplus który nie zmieściłby się w baterii pełnej.
+
+**Estymator break-even**:
+
+```
+Bateria 10.7 kWh. Typical usable discharge 50% → 30% = 20% × 0.107 = 2.14 kWh.
+Koszt discharge teraz: 2.14 kWh × RCE_export_price_now (utrata eksportu)
+Zysk: 2.14 kWh × (evening_drogi_price - evening_RCE_export_price)
+       gdy bateria ma miejsce na PV i ładuje się z taniego RCE.
+
+Break-even: discharge tylko gdy przewidywane PV surplus w ciągu dnia > 2.14 kWh.
+```
+
+**Dane potrzebne**:
+- Solcast forecast today (Solcast: `sensor.solcast_pv_forecast_prognoza_na_dzisiaj`)
+- Consumption estimate today (z prev_day profile)
+- Delta = PV_forecast - expected_consumption — jeśli > threshold, discharge worth it
+
+**TODO**: osobny sensor `sensor.rce_daily_surplus_estimate` (kWh). Obliczany z `adjusted_at_6.total_kwh` - estimated_consumption_today. Używany jako trigger condition w `(DATE) Battery Discharge Max at 8`:
+```yaml
+- condition: numeric_state
+  entity_id: sensor.rce_daily_surplus_estimate
+  above: 2.14  # kWh — minimum żeby miało sens
+```
+
+Alternatywnie: sensor binarny `binary_sensor.rce_discharge_makes_sense` wyliczany z cen RCE + surplus.
