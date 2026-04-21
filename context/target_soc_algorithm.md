@@ -315,3 +315,30 @@ W **dni z małą prognozowaną energią** (chmury/zima) taka ochrona może być 
 **Ryzyko**: bez block_charge, bateria może ładować się z sieci w każdym momencie gdy toggle=on i PV<cons. Dla safety pozostawić override w drogich RCE godzinach (np. peak 7-10, 17-22).
 
 **Use case dzisiaj (2026-04-20)**: poranek bez słońca, SOC 44%, pre-charge window z block_discharge hysteresis działał poprawnie, ale po post-charge (12:00+) toggle włączył się + przez chwilę była flapa `block_charge` True→False (12:17-12:18). Chociaż zadziałało jak zaprojektowane, jutro przy low-energy-day flag mogłoby pozwolić na kilka Wh importu żeby przyspieszyć ładowanie zamiast czekać aż chmury się rozejdą.
+
+### 5. Sens `block_discharge` w pre-charge — czy go w ogóle potrzebujemy?
+
+Z obserwacji 2026-04-21: w obrębie jednej godziny pre-charge (np. 7:00-8:00) mogą być
+niejednorodne warunki (chmura → słońce) które powodują że saldo godzinowe netto
+i tak nie oddaje 30-min bucket planowania target SOC. Pytanie czy zamrażanie
+baterii w pre-charge ma sens czy może zostawić naturalny discharge/charge w
+ramach godziny.
+
+Szczegóły + alternatywy (A: bez block_discharge, B: separate PV-only charge
+toggle, C: status quo) — patrz `ops/research/TODO-2026-04-22-next-session.md`
+punkt 1.
+
+### 6. Piętro 2 upgrade w WaterHeater kanibalizuje ładowanie baterii
+
+Z obserwacji 2026-04-21: w post-charge gdy bateria ma jeszcze zapas (SOC=60%,
+charge_limit=18A) a nagle nagromadzi się `exported_energy_hourly > 100 Wh`,
+grzałka włącza się przez Piętro 2 upgrade. Efekt: zamiast zmniejszyć eksport,
+zmniejszamy ładowanie baterii (Goodwe automatycznie balansuje — bateria
+kompensuje dodatkowy cons).
+
+Obecny skip (`strategy=BATTERY_FIRST AND charge_limit>7`) nie wystarcza bo
+w post-charge strategy może być NORMAL a bateria wciąż aktywnie ładuje się.
+
+Kierunki: skip na bazie `battery_power_2_minutes < -1000W` (instantaneous
+charge rate), lub twardszy warunek `charge_limit <= 2`, lub hybrid —
+`ops/research/TODO-2026-04-22-next-session.md` punkt 2.
