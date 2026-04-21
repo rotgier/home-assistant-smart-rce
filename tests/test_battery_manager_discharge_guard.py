@@ -292,6 +292,105 @@ class TestBlockChargeToggleGuard:
         assert mgr.should_block_battery_charge is True
 
 
+class TestBlockChargeHourBoundary:
+    """Guard window aktywny tylko w godzinach [7, 17). Poza — block_charge=False."""
+
+    def test_midnight_dod_zero_import_no_block_charge(self):
+        """Północ: DoD=0, toggle=on, exported<0 → hour=0 poza guard → block_charge=False.
+
+        Real scenario 2026-04-21 00:00:49: po "Set Min SOC to 100 Afternoon" z 13:00
+        DoD=0 trzyma się całą noc. O północy guard otwierał się (hour<17), co
+        powodowało unwanted toggle off. Nowa logika (hour>=7) zamyka guard w nocy.
+        """
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(0, 1),
+                exported_energy_hourly=-0.060,
+                battery_charge_toggle_on=True,
+                depth_of_discharge=0,
+                start_charge_hour_override=time(10, 0),
+            )
+        )
+        assert mgr.hourly_balance_negative is False
+        assert mgr.should_block_battery_charge is False
+
+    def test_at_6_59_dod_zero_import_no_block_charge(self):
+        """06:59: DoD=0 + toggle=on + exported<0 → hour<7 → guard zamknięty."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(6, 59),
+                exported_energy_hourly=-0.500,
+                battery_charge_toggle_on=True,
+                depth_of_discharge=0,
+                start_charge_hour_override=time(10, 0),
+            )
+        )
+        assert mgr.hourly_balance_negative is False
+        assert mgr.should_block_battery_charge is False
+
+    def test_at_7_00_dod_zero_import_activates_block_charge(self):
+        """07:00 dokładnie: guard się otwiera — block_charge aktywny."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(7, 0),
+                exported_energy_hourly=-0.100,
+                battery_charge_toggle_on=True,
+                depth_of_discharge=0,
+                start_charge_hour_override=time(10, 0),
+            )
+        )
+        assert mgr.hourly_balance_negative is True
+        assert mgr.should_block_battery_charge is True
+
+    def test_at_16_59_dod_zero_import_still_active(self):
+        """16:59: guard wciąż aktywny (hour<17)."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(16, 59),
+                exported_energy_hourly=-0.100,
+                battery_charge_toggle_on=True,
+                depth_of_discharge=0,
+                start_charge_hour_override=time(10, 0),
+            )
+        )
+        assert mgr.hourly_balance_negative is True
+        assert mgr.should_block_battery_charge is True
+
+    def test_at_17_00_dod_zero_guard_closed(self):
+        """17:00 dokładnie: guard się zamyka (hour>=17)."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(17, 0),
+                exported_energy_hourly=-0.100,
+                battery_charge_toggle_on=True,
+                depth_of_discharge=0,
+                start_charge_hour_override=time(10, 0),
+            )
+        )
+        assert mgr.hourly_balance_negative is False
+        assert mgr.should_block_battery_charge is False
+
+    def test_at_20_00_dod_zero_evening_no_block(self):
+        """20:00 wieczór: guard zamknięty — user explicit automations decydują o toggle."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(20, 0),
+                exported_energy_hourly=-0.200,
+                battery_charge_toggle_on=True,
+                depth_of_discharge=0,
+                start_charge_hour_override=time(10, 0),
+            )
+        )
+        assert mgr.hourly_balance_negative is False
+        assert mgr.should_block_battery_charge is False
+
+
 class TestEdgeCases:
     def test_low_charge_limit_no_block(self):
         mgr = BatteryManager()

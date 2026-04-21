@@ -33,8 +33,11 @@ _LOGGER = logging.getLogger(__name__)
 
 # --- charge guard --- #
 
-# Blokada ładowania baterii aktywna tylko dla hour < GUARD_END_HOUR — po tej
-# godzinie brak PV, a tanie godziny RCE pozwalają na ładowanie baterii z sieci.
+# Blokada ładowania baterii aktywna tylko w godzinach [PRE_CHARGE_WINDOW_START_HOUR,
+# GUARD_END_HOUR) — pokrywa okno drogich godzin RCE (7-10, 13-17 w G13 G12w) gdzie
+# nie chcemy ładować baterii z drogiej sieci. Po 17:00 i przed 7:00 guard wyłączony:
+# wieczorem bateria się rozładowuje, nocą user decyduje explicit automations czy
+# chce night charging z taniego RCE.
 GUARD_END_HOUR: Final[int] = 17
 
 # Hysteresis dla `hourly_balance_negative`: gdy flag=True, zostaje True
@@ -160,7 +163,7 @@ class BatteryManager:
         # --- block_charge ---
         in_guard_window = (
             state.depth_of_discharge == 0 or self.should_block_battery_discharge
-        ) and state.now.hour < GUARD_END_HOUR
+        ) and PRE_CHARGE_WINDOW_START_HOUR <= state.now.hour < GUARD_END_HOUR
 
         toggle_is_on = state.battery_charge_toggle_on is True
 
