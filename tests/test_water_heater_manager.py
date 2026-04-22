@@ -502,21 +502,51 @@ class TestBalancedBatteryFirstStrategy:
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.balanced_upgrade_active is True
 
-    def test_normal_strategy_upgrade_still_works(self):
-        """NORMAL + exported>100 → upgrade aktywny (brak regresji)."""
+    def test_normal_strategy_18a_also_skips_upgrade(self):
+        """NORMAL + 18A + exported>100 → skip upgrade universally.
+
+        PV max 9.1 kW, bateria max 5.2 kW, grzałki max 4.5 kW = 9.7 kW > PV.
+        Przy charge_limit>7 bateria chce max mocy — każdy włączony watt
+        grzałki jest zabrany baterii (Goodwe rebalansuje). Historyczny
+        exported_energy>100 Wh to wcześniejsze burst, nie aktualny surplus.
+        Skip applies do NORMAL i BATTERY_FIRST jednakowo.
+        """
         mgr = Ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 water_heater_strategy="NORMAL",
-                consumption_minus_pv=-2000.0,  # pv_available=2000
+                consumption_minus_pv=-2000.0,
                 battery_charge_limit=18.0,
                 battery_soc=30.0,
                 exported_energy_hourly=0.150,
             )
         )
         # reserved=3000, budget=-1000 → baseline=BOTH_ARE_OFF
-        # strategy=NORMAL → upgrade działa
+        # skip_upgrade bo charge_limit>7 → target zostaje BOTH_ARE_OFF
+        assert mgr.water_heater.should_turn_on_small is False
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_upgrade_active is False
+
+    def test_normal_2a_upgrade_works_when_battery_slowing(self):
+        """NORMAL + charge_limit=2A + exported>100 → upgrade działa.
+
+        Gdy bateria zwalnia (charge_limit spadło do 2A, max ~580W), dokładanie
+        grzałki nie kanibalizuje baterii — reszta PV może iść gdzie indziej.
+        """
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                water_heater_strategy="NORMAL",
+                consumption_minus_pv=-1000.0,  # pv_available=1000
+                battery_charge_limit=2.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.150,
+            )
+        )
+        # reserved=300, budget=700 < SMALL → baseline=BOTH_ARE_OFF
+        # charge_limit=2 nie jest >7 → skip_upgrade=False → upgrade działa
         # exported>100 → target=SMALL
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.balanced_upgrade_active is True

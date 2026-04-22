@@ -224,14 +224,16 @@ class WaterHeaterManager:
             baseline = self.BOTH_ARE_OFF
 
         # Piętro 2 — Upgrade z budżetu eksportu godzinowego.
-        # BATTERY_FIRST + charge_limit>7: skip upgrade. Intent strategii to
-        # forsować ładowanie baterii — nawet jeśli cumulative export już
-        # przekroczył 100 Wh, nie chcemy włączać grzałek póki bateria może
-        # mocno ładować. Gdy charge_limit spadnie (bateria blisko pełna),
-        # upgrade znów działa (symetryczne do Piętra 1).
+        # Skip gdy battery_charge_limit > 7 (bateria chce max mocy ~5.2 kW).
+        # Instalacja PV 9.1 kW, grzałki max 4.5 kW, bateria max 5.2 kW — suma
+        # 9.7 kW > PV. Gdy bateria chce max, każdy włączony watt grzałki jest
+        # zabrany baterii (Goodwe rebalansuje automatycznie). Cumulative
+        # exported_energy > 100 Wh to historia z wcześniejszych minut godziny,
+        # nie znak bieżącego surplus. Universal (niezależne od strategy),
+        # symetryczne do warunku na Piętrze 1 BATTERY_FIRST.
         upgrade = self._UPGRADE_MAP[baseline]
         target = baseline
-        skip_upgrade = strategy == "BATTERY_FIRST" and battery_charge_limit > 7
+        skip_upgrade = battery_charge_limit > 7
         if upgrade != baseline and not skip_upgrade:
             if exported_energy > 100 or (
                 self._STATE_ORDER[current_state] >= self._STATE_ORDER[upgrade]
