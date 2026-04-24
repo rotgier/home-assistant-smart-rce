@@ -193,7 +193,7 @@ class WaterHeaterManager:
         if strategy == "BATTERY_FIRST" and battery_charge_limit > 7:
             reserved = 4500
         elif battery_charge_limit > 7:
-            reserved = 3000 if battery_soc < 50 else 2000
+            reserved = 3500 if battery_soc < 50 else 2500
         elif battery_charge_limit > 2:
             reserved = 1000
         elif battery_charge_limit == 2:
