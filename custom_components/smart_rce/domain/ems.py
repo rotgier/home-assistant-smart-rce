@@ -22,6 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 MAX_CONSECUTIVE_HOURS: Final[int] = 8
 INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
 POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
+EARLIEST_CHARGE_HOUR: Final[int] = 6
+SHIFT_EARLIER_THRESHOLD: Final[float] = 40.0
 
 
 class Ems:
@@ -184,12 +186,40 @@ def find_charge_hours(rce_prices: RceDayPrices) -> EmsDayPrices:
     prices: list[float] = [item["price"] for item in rce_prices.prices]
     start_charge_hours: dict[int, int] = calculate_start_charge_hours(prices)
     best_consecutive_hours = find_best_consecutive_hours(prices, start_charge_hours)
+    best_consecutive_hours, shifted_start = shift_earlier_if_cheap(
+        prices, start_charge_hours[best_consecutive_hours], best_consecutive_hours
+    )
+    start_charge_hours[best_consecutive_hours] = shifted_start
     return EmsDayPrices(
         day=rce_prices.prices[0]["datetime"].date(),
         hour_price=prices,
         start_charge_hours=start_charge_hours,
         best_consecutive_hours=best_consecutive_hours,
     )
+
+
+def shift_earlier_if_cheap(
+    prices: list[float], start: int, consecutive_hours: int
+) -> tuple[int, int]:
+    """Rozszerz okno ładowania wcześniej gdy różnica cen z kotwicą jest mała.
+
+    Zachowujemy ostatnią godzinę oryginalnego okna (nadal tania, brak powodu
+    żeby ją gubić) i dokładamy wcześniejsze godziny. Daje margines na
+    załamanie pogody po południu.
+
+    Kotwica (prices[end]) się nie zmienia między iteracjami, więc próg nie
+    kumuluje się przy kolejnych krokach.
+
+    Zwraca (nowe_consecutive_hours, nowy_start).
+    """
+    end = start + consecutive_hours - 1
+    anchor_price = prices[end]
+    while start > EARLIEST_CHARGE_HOUR and consecutive_hours < MAX_CONSECUTIVE_HOURS:
+        if prices[start - 1] - anchor_price > SHIFT_EARLIER_THRESHOLD:
+            break
+        start -= 1
+        consecutive_hours += 1
+    return consecutive_hours, start
 
 
 def calculate_start_charge_hours(prices: list[float]) -> dict[int, int]:
