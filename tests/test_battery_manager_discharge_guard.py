@@ -17,6 +17,7 @@ def _state(
     battery_charge_limit: float = 18.0,
     consumption_minus_pv_5_minutes: float | None = None,
     rce_should_hold_for_peak: bool | None = None,
+    is_workday: bool | None = None,
 ) -> InputState:
     return InputState(
         water_heater_big_is_on=False,
@@ -32,6 +33,7 @@ def _state(
         battery_charge_toggle_on=battery_charge_toggle_on,
         start_charge_hour_override=start_charge_hour_override,
         rce_should_hold_for_peak=rce_should_hold_for_peak,
+        is_workday=is_workday,
         now=now,
     )
 
@@ -887,3 +889,131 @@ class TestAfternoonBlockChargeIntegration:
         # block_charge=True
         assert mgr.hourly_balance_negative is True
         assert mgr.should_block_battery_charge is True
+
+
+class TestPreChargePassthroughWeekend:
+    """W weekend (is_workday=False) BatteryManager nie steruje block_discharge."""
+
+    def test_weekend_pre_charge_export_does_not_set(self):
+        mgr = BatteryManager()
+        mgr._last_hour_seen = 8  # already in hour, post-reset state
+        mgr.update(
+            _state(
+                now=_at(8, 30),
+                start_charge_hour_override=time(11, 0),
+                exported_energy_hourly=0.150,
+                is_workday=False,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+        assert mgr._last_hour_seen is None  # weekend nie trackuje hour
+
+    def test_weekend_clears_leftover_state(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr._last_hour_seen = 7
+        mgr.update(
+            _state(
+                now=_at(8, 0),
+                start_charge_hour_override=time(11, 0),
+                is_workday=False,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+        assert mgr._last_hour_seen is None
+
+    def test_workday_logic_unchanged_export_sets(self):
+        mgr = BatteryManager()
+        mgr._last_hour_seen = 8
+        mgr.update(
+            _state(
+                now=_at(8, 30),
+                start_charge_hour_override=time(11, 0),
+                exported_energy_hourly=0.150,
+                is_workday=True,
+            )
+        )
+        # workday + same hour + exported>=100 → SET
+        assert mgr.should_block_battery_discharge is True
+
+    def test_is_workday_none_falls_back_to_workday_logic(self):
+        mgr = BatteryManager()
+        mgr._last_hour_seen = 8
+        mgr.update(
+            _state(
+                now=_at(8, 30),
+                start_charge_hour_override=time(11, 0),
+                exported_energy_hourly=0.150,
+                is_workday=None,
+            )
+        )
+        # None != False → workday logic → SET
+        assert mgr.should_block_battery_discharge is True
+
+
+class TestPostChargePassthroughWeekend:
+    def test_weekend_post_charge_surplus_no_set(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(11, 0),
+                consumption_minus_pv_5_minutes=-1000.0,  # surplus
+                is_workday=False,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_weekend_post_charge_clears_leftover(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(11, 0),
+                is_workday=False,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_workday_post_charge_logic_unchanged(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(11, 0),
+                consumption_minus_pv_5_minutes=-1000.0,
+                is_workday=True,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+
+class TestAfternoonNotAffectedByWorkday:
+    """Afternoon używa rce_should_hold_for_peak, niezależnie od is_workday."""
+
+    def test_weekend_afternoon_dynamic_still_works(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(15, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-1000.0,
+                is_workday=False,
+            )
+        )
+        # hold=False → afternoon-dynamic, surplus → SET
+        assert mgr.should_block_battery_discharge is True
+
+    def test_weekend_afternoon_static_still_works(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(15, 0),
+                rce_should_hold_for_peak=True,
+                consumption_minus_pv_5_minutes=-1000.0,
+                is_workday=False,
+            )
+        )
+        # hold=True → afternoon-static, BatteryManager nie steruje
+        assert mgr.should_block_battery_discharge is False

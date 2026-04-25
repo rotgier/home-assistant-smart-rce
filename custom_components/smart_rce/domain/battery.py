@@ -138,8 +138,11 @@ class BatteryManager:
 
         # --- block_discharge ---
         if self._is_in_pre_charge_window(state):
-            # Pre-charge: hour-start reset + hysteresis na exported_wh.
-            if self._last_hour_seen != state.now.hour:
+            if state.is_workday is False:
+                # Weekend/święto — passthrough (RCE płaski, brak drogich godzin)
+                self.should_block_battery_discharge = False
+                self._last_hour_seen = None
+            elif self._last_hour_seen != state.now.hour:
                 self._last_hour_seen = state.now.hour
                 self.should_block_battery_discharge = False
                 _LOGGER.debug(
@@ -151,18 +154,22 @@ class BatteryManager:
                 self.should_block_battery_discharge = True
             elif exported_energy_wh < DISCHARGE_HYSTERESIS_RESET_WH:
                 self.should_block_battery_discharge = False
-            # Dead zone 50..100 — zachowuje poprzedni stan
+                # Dead zone 50..100 — zachowuje poprzedni stan
         elif self._is_in_post_charge_window(state):
-            # Post-charge: continuous check na avg_5min (sustained trend).
             self._last_hour_seen = None
-            avg_5min = state.consumption_minus_pv_5_minutes
-            if avg_5min is None:
+            if state.is_workday is False:
+                # Weekend/święto — passthrough
                 self.should_block_battery_discharge = False
-            elif avg_5min < AVG_5MIN_SURPLUS_THRESHOLD_W:
-                self.should_block_battery_discharge = True
-            elif avg_5min > AVG_5MIN_DEFICIT_THRESHOLD_W:
-                self.should_block_battery_discharge = False
-            # Dead zone -500..0 — zachowuje poprzedni stan
+            else:
+                # Workday: continuous check na avg_5min (sustained trend).
+                avg_5min = state.consumption_minus_pv_5_minutes
+                if avg_5min is None:
+                    self.should_block_battery_discharge = False
+                elif avg_5min < AVG_5MIN_SURPLUS_THRESHOLD_W:
+                    self.should_block_battery_discharge = True
+                elif avg_5min > AVG_5MIN_DEFICIT_THRESHOLD_W:
+                    self.should_block_battery_discharge = False
+                # Dead zone -500..0 — zachowuje poprzedni stan
         elif self._is_in_afternoon_window(state):
             self._last_hour_seen = None
             if state.rce_should_hold_for_peak is True:
@@ -216,9 +223,15 @@ class BatteryManager:
 
         # --- Debug snapshot (throttled) + INFO transitions ---
         if self._is_in_pre_charge_window(state):
-            phase = "pre-charge"
+            phase = (
+                "pre-charge-passthrough" if state.is_workday is False else "pre-charge"
+            )
         elif self._is_in_post_charge_window(state):
-            phase = "post-charge"
+            phase = (
+                "post-charge-passthrough"
+                if state.is_workday is False
+                else "post-charge"
+            )
         elif self._is_in_afternoon_window(state):
             phase = (
                 "afternoon-static"

@@ -55,4 +55,12 @@ class InputState:
     # W afternoon window (13-19): True → status quo (DoD=0 z automation),
     # False → BatteryManager dynamic block_discharge na avg_5min + exported_wh.
 
+    is_workday: bool | None = None
+    # binary_sensor.workday (HA workday integration, country=PL).
+    # True=workday (Pn-Pt bez świąt), False=weekend/święto.
+    # W weekend BatteryManager nie steruje block_discharge w pre-charge i
+    # post-charge (passthrough block_discharge=False) — RCE typowo płaski,
+    # brak drogich godzin do ochrony surplus PV. Block_charge i
+    # afternoon-dynamic bez zmian.
+
     now: datetime | None = None
