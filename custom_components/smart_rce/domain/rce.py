@@ -10,6 +10,15 @@ from zoneinfo import ZoneInfo
 
 TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
 
+# Morning discharge window — szukamy peak ceny rano przed startem PV.
+# Use case: niedzielny weekend morning, gdy RCE peak rano > niska niedzielna
+# cena dzienna. Bateria pełna (lub częściowo) z nocy → discharge do 10% w
+# peak hour, niedzielny PV potem napełnia. Pure profit: konwersja
+# "PV-do-grid-za-0" → "discharge-za-peak". Zero-risk decision (bateria
+# rano = realny stan, nie zgadujemy z forecast).
+MORNING_DISCHARGE_START_HOUR: Final[int] = 5  # tomorrow, inclusive
+MORNING_DISCHARGE_END_HOUR: Final[int] = 8  # tomorrow, exclusive (czyli 5,6,7)
+
 
 @dataclass
 class RceDayPrices:
@@ -87,5 +96,29 @@ class RceData:
         if not candidates:
             return None
         # max po (price, datetime) — przy remisie cenowym wybierze późniejszą
+        best = max(candidates, key=lambda x: (x[0], x[1]))
+        return UpcomingPeak(price=best[0], datetime=best[1])
+
+    def best_morning_discharge_slot(self, now: datetime) -> UpcomingPeak | None:
+        """Max RCE w godzinach jutra rano [5, 8) — peak przed startem PV.
+
+        Filter: dt > now (jeśli już po peak rano dziś, sensor patrzy w jutro).
+        Tie-break: późniejsza godzina (preferuje slot bliżej startu PV,
+        krótszy czas trzymania pustej baterii).
+        Returns None gdy brak future slots w range (np. po 8:00 dziś gdy nie
+        ma jeszcze cen jutra, lub gdy tomorrow=None przed publikacją RCE).
+        """
+        if not self.tomorrow:
+            return None
+        candidates: list[tuple[float, datetime]] = [
+            (p["price"], p["datetime"])
+            for p in self.tomorrow.prices
+            if MORNING_DISCHARGE_START_HOUR
+            <= p["datetime"].hour
+            < MORNING_DISCHARGE_END_HOUR
+            and p["datetime"] > now
+        ]
+        if not candidates:
+            return None
         best = max(candidates, key=lambda x: (x[0], x[1]))
         return UpcomingPeak(price=best[0], datetime=best[1])

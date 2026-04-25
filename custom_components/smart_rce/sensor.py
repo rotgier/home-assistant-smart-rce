@@ -20,6 +20,7 @@ from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util.dt import now as now_local
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
@@ -137,6 +138,31 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         value_fn=lambda ems: (
             ems.rce_data.max_upcoming_peak().datetime
             if ems.rce_data and ems.rce_data.max_upcoming_peak()
+            else None
+        ),
+    ),
+    SmartRceSensorDescription(
+        name="Morning Discharge Time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:weather-sunset-up",
+        value_fn=lambda ems: (
+            ems.rce_data.best_morning_discharge_slot(now_local()).datetime
+            if ems.rce_data and ems.rce_data.best_morning_discharge_slot(now_local())
+            else None
+        ),
+    ),
+    SmartRceSensorDescription(
+        name="Morning Discharge Price Gross",
+        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:cash-clock",
+        value_fn=lambda ems: (
+            round(
+                ems.rce_data.best_morning_discharge_slot(now_local()).price
+                * GROSS_MULTIPLIER,
+                2,
+            )
+            if ems.rce_data and ems.rce_data.best_morning_discharge_slot(now_local())
             else None
         ),
     ),
