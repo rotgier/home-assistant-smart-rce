@@ -66,20 +66,29 @@ def test_shift_earlier_anchored_to_original_end_not_cumulative() -> None:
 
 
 def test_shift_earlier_respects_earliest_charge_hour() -> None:
-    # Wszystkie godziny tanie, ale nie schodzimy poniżej 6:00.
-    prices = [50.0] * 24
-    new_consec, new_start = shift_earlier_if_cheap(prices, start=8, consecutive_hours=3)
-    assert new_start == 6
-    assert new_consec == 3 + (8 - 6)  # rozszerzone o ile kroków shift
-
-
-def test_shift_earlier_respects_max_consecutive_hours() -> None:
+    # Wszystkie godziny tanie, ale nie schodzimy poniżej 7:00.
     prices = [50.0] * 24
     new_consec, new_start = shift_earlier_if_cheap(
-        prices, start=15, consecutive_hours=MAX_CONSECUTIVE_HOURS
+        prices, start=10, consecutive_hours=3
     )
-    # Już na maxie — nic nie zmieniamy, niezależnie od cen.
-    assert (new_consec, new_start) == (MAX_CONSECUTIVE_HOURS, 15)
+    assert new_start == 7
+    assert new_consec == 3 + (10 - 7)  # rozszerzone o ile kroków shift
+
+
+def test_shift_earlier_extends_past_max_when_floor_zero() -> None:
+    # Profil typu weekend: 9:00 prawie 0, 10:00-17:00 wszystko 0, anchor=0.
+    # find_best_consecutive_hours wybiera N=MAX (=8), start=10. Shift powinien
+    # rozszerzyć do start=9 (4.11<40), stop na 8 (71>40). Bez tego (z guardem
+    # MAX) ładowalibyśmy 10-17 zamiast 9-17 — gubiąc ekstra-tanią godzinę.
+    prices = [500.0] * 24
+    prices[8] = 71.24
+    prices[9] = 4.11
+    for h in range(10, 18):
+        prices[h] = 0.0
+    new_consec, new_start = shift_earlier_if_cheap(
+        prices, start=10, consecutive_hours=MAX_CONSECUTIVE_HOURS
+    )
+    assert (new_consec, new_start) == (MAX_CONSECUTIVE_HOURS + 1, 9)
 
 
 @pytest.mark.skip

@@ -22,7 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 MAX_CONSECUTIVE_HOURS: Final[int] = 8
 INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
 POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
-EARLIEST_CHARGE_HOUR: Final[int] = 6
+EARLIEST_CHARGE_HOUR: Final[int] = 7
 SHIFT_EARLIER_THRESHOLD: Final[float] = 40.0
 
 
@@ -210,11 +210,16 @@ def shift_earlier_if_cheap(
     Kotwica (prices[end]) się nie zmienia między iteracjami, więc próg nie
     kumuluje się przy kolejnych krokach.
 
+    Nie ograniczamy do MAX_CONSECUTIVE_HOURS — to limit głównego selectora
+    (find_best_consecutive_hours), a tutaj rozszerzamy okno o godziny tak
+    tanie że nie ma powodu ich nie dorzucić (przykład: weekend z cenami ~0).
+    EARLIEST_CHARGE_HOUR jest jedynym twardym hamulcem.
+
     Zwraca (nowe_consecutive_hours, nowy_start).
     """
     end = start + consecutive_hours - 1
     anchor_price = prices[end]
-    while start > EARLIEST_CHARGE_HOUR and consecutive_hours < MAX_CONSECUTIVE_HOURS:
+    while start > EARLIEST_CHARGE_HOUR:
         if prices[start - 1] - anchor_price > SHIFT_EARLIER_THRESHOLD:
             break
         start -= 1
