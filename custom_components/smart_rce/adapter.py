@@ -112,6 +112,10 @@ def set_water_heater_strategy(entity: str, i: InputState, state: str) -> None:
     i.water_heater_strategy = state
 
 
+def set_rce_should_hold_for_peak(entity: str, i: InputState, state: str) -> None:
+    i.rce_should_hold_for_peak = map_on_off(entity, state)
+
+
 def set_start_charge_hour_override(entity: str, i: InputState, state: str) -> None:
     """input_datetime.rce_start_charge_hour_today_override state → time."""
     if state in (None, "", "unavailable", "unknown"):
@@ -140,6 +144,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "input_boolean.ems_allow_discharge_override": set_ems_allow_discharge_override,
     "input_datetime.rce_start_charge_hour_today_override": set_start_charge_hour_override,
     "input_select.ems_water_heater_strategy": set_water_heater_strategy,
+    "binary_sensor.rce_should_hold_for_peak": set_rce_should_hold_for_peak,
 }
 
 

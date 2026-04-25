@@ -47,9 +47,45 @@ class RceDayPrices:
 
 
 @dataclass(frozen=True, kw_only=True)
+class UpcomingPeak:
+    """Najwyższa cena RCE w nadchodzących drogich oknach.
+
+    Wieczór dziś (19-22) lub rano jutro (6-9). Zwracane raw rce_pln
+    (PLN/MWh, netto) — konwersja brutto odbywa się w warstwie sensorów.
+    """
+
+    price: float
+    datetime: datetime
+
+
+@dataclass(frozen=True, kw_only=True)
 class RceData:
     """RCE prices data."""
 
     fetched_at: datetime
     today: RceDayPrices
     tomorrow: RceDayPrices
+
+    def max_upcoming_peak(self) -> UpcomingPeak | None:
+        """Max RCE price w evening today (19-22) + morning tomorrow (6-9).
+
+        Returns None gdy brak danych dla obu okresów. Jeśli kilka godzin ma
+        tę samą max cenę, zwraca **najpóźniejszą** — dłużej akumulujemy
+        energię w baterii (PV w popołudnie wciąż coś dostarcza), buffer
+        czasowy większy.
+        """
+        candidates: list[tuple[float, datetime]] = [
+            (p["price"], p["datetime"])
+            for p in self.today.prices
+            if 19 <= p["datetime"].hour < 22
+        ]
+        candidates.extend(
+            (p["price"], p["datetime"])
+            for p in self.tomorrow.prices
+            if 6 <= p["datetime"].hour < 9
+        )
+        if not candidates:
+            return None
+        # max po (price, datetime) — przy remisie cenowym wybierze późniejszą
+        best = max(candidates, key=lambda x: (x[0], x[1]))
+        return UpcomingPeak(price=best[0], datetime=best[1])

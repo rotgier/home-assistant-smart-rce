@@ -33,6 +33,11 @@ UNIQUE_ID_PREFIX = DOMAIN
 
 PARALLEL_UPDATES = 1
 
+# VAT 23% — RCE spot price netto × GROSS_MULTIPLIER = brutto.
+# Opłaty dystrybucyjne (G12w ~30 gr/kWh) są stałe niezależne od RCE,
+# pomijamy w threshold check (porównujemy sam RCE × VAT vs threshold).
+GROSS_MULTIPLIER: Final[float] = 1.23
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,6 +118,27 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         value_fn=lambda ems: _avg_price(ems, "tomorrow"),
         attr_fn=lambda ems: _prices_attr(ems, "tomorrow"),
         restore_fn=_restore_prices_tomorrow,
+    ),
+    SmartRceSensorDescription(
+        name="RCE Max Upcoming Peak Gross",
+        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:cash-clock",
+        value_fn=lambda ems: (
+            round(ems.rce_data.max_upcoming_peak().price * GROSS_MULTIPLIER, 2)
+            if ems.rce_data and ems.rce_data.max_upcoming_peak()
+            else None
+        ),
+    ),
+    SmartRceSensorDescription(
+        name="RCE Max Upcoming Peak Time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:clock-outline",
+        value_fn=lambda ems: (
+            ems.rce_data.max_upcoming_peak().datetime
+            if ems.rce_data and ems.rce_data.max_upcoming_peak()
+            else None
+        ),
     ),
     ####
     #### TODAY

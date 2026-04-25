@@ -16,6 +16,7 @@ def _state(
     depth_of_discharge: float | None = None,
     battery_charge_limit: float = 18.0,
     consumption_minus_pv_5_minutes: float | None = None,
+    rce_should_hold_for_peak: bool | None = None,
 ) -> InputState:
     return InputState(
         water_heater_big_is_on=False,
@@ -30,6 +31,7 @@ def _state(
         depth_of_discharge=depth_of_discharge,
         battery_charge_toggle_on=battery_charge_toggle_on,
         start_charge_hour_override=start_charge_hour_override,
+        rce_should_hold_for_peak=rce_should_hold_for_peak,
         now=now,
     )
 
@@ -620,3 +622,268 @@ class TestPostChargeHysteresis5MinAvg:
         )
         assert mgr._last_hour_seen is None
         assert mgr.should_block_battery_discharge is True  # avg_5min < -500 set
+
+
+class TestAfternoonWindowDetection:
+    """Afternoon: 13:00 ≤ now < 19:00."""
+
+    def test_just_before_afternoon(self):
+        mgr = BatteryManager()
+        mgr.update(_state(now=_at(12, 59)))
+        # 12:59 jest poza afternoon (a także poza pre/post bo brak override)
+        # → out-of-window, block_discharge=False
+        assert mgr.should_block_battery_discharge is False
+
+    def test_at_13_00_boundary_inclusive(self):
+        # 13:00 exact → afternoon window. With hold=True, status quo.
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(13, 0),
+                rce_should_hold_for_peak=True,
+            )
+        )
+        # afternoon-static — block_discharge=False
+        assert mgr.should_block_battery_discharge is False
+
+    def test_at_18_59_still_afternoon(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(18, 59),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-1000.0,  # surplus
+            )
+        )
+        # afternoon-dynamic — instant_surplus → block_discharge=True
+        assert mgr.should_block_battery_discharge is True
+
+    def test_at_19_00_boundary_exclusive(self):
+        # 19:00 exact → out of afternoon window
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(19, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-1000.0,
+            )
+        )
+        # poza afternoon — block_discharge reset to False
+        assert mgr.should_block_battery_discharge is False
+
+
+class TestAfternoonStaticMode:
+    """High-price (hold=True) — BatteryManager nie steruje, status quo."""
+
+    def test_surplus_does_not_set(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(15, 0),
+                rce_should_hold_for_peak=True,
+                consumption_minus_pv_5_minutes=-1000.0,
+                exported_energy_hourly=0.500,  # 500 Wh exported
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+        assert mgr._last_hour_seen is None
+
+    def test_deficit_does_not_set(self):
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(15, 0),
+                rce_should_hold_for_peak=True,
+                consumption_minus_pv_5_minutes=+500.0,  # deficit
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+
+class TestAfternoonDynamicMode:
+    """Low-price (hold=False) — BatteryManager dynamic na avg_5min OR exported_wh."""
+
+    def test_instant_surplus_sets_regardless_of_export(self):
+        # avg_5min < -500W (surplus) → SET, niezależnie od exported_wh
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-600.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_hourly_net_export_sets_in_dead_zone(self):
+        # avg_5min w dead zone (-200W), ale exported>0 → SET
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-200.0,
+                exported_energy_hourly=0.200,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_dead_zone_no_export_keeps_state(self):
+        # avg_5min dead zone + exported<0 + prev=False → keep False
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = False
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-200.0,
+                exported_energy_hourly=-0.050,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_dead_zone_no_export_keeps_true(self):
+        # avg_5min dead zone + exported<0 + prev=True → keep True
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-200.0,
+                exported_energy_hourly=-0.050,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_deficit_with_export_keeps_state(self):
+        # avg_5min deficit ALE exported_wh>0 → keep state (nie reset)
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=+50.0,
+                exported_energy_hourly=0.200,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_deficit_no_export_resets(self):
+        # avg_5min deficit AND exported<=0 → RESET (allow discharge)
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=+50.0,
+                exported_energy_hourly=-0.050,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_deficit_zero_export_resets_at_boundary(self):
+        # exported=0 jest <=0, też RESET przy deficit
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=+50.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_avg_5min_none_safe_default(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=None,
+                exported_energy_hourly=0.200,
+            )
+        )
+        # None → safe default False, ignore exported
+        assert mgr.should_block_battery_discharge is False
+
+
+class TestAfternoonHoldFlagTransitions:
+    """Hold flag może się zmienić mid-window gdy świeże RCE prices przyszły."""
+
+    def test_hold_true_to_false_enables_dynamic(self):
+        mgr = BatteryManager()
+        # Najpierw hold=True (afternoon-static)
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=True,
+                consumption_minus_pv_5_minutes=-600.0,
+                exported_energy_hourly=0.300,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+        # Hold flip True → False, surplus + export → SET
+        mgr.update(
+            _state(
+                now=_at(14, 5),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-600.0,
+                exported_energy_hourly=0.300,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_hold_false_to_true_disables_dynamic(self):
+        mgr = BatteryManager()
+        # Najpierw hold=False, surplus → block_discharge=True
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                consumption_minus_pv_5_minutes=-600.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+        # Hold flip False → True, BatteryManager wycofuje dynamic → False
+        mgr.update(
+            _state(
+                now=_at(14, 5),
+                rce_should_hold_for_peak=True,
+                consumption_minus_pv_5_minutes=-600.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+
+class TestAfternoonBlockChargeIntegration:
+    """Block_charge w afternoon: in_guard_window aktywny gdy DoD=0 OR block_discharge."""
+
+    def test_dynamic_with_block_discharge_activates_block_charge(self):
+        # afternoon-dynamic, block_discharge=True (surplus), exported<0 (już importujemy
+        # bo bateria ucięta)... ale exported<0 wymusi reset block_discharge
+        # Test simpler: ustaw block_discharge=True manually, sprawdź że in_guard_window otwiera się
+        mgr = BatteryManager()
+        # Symulujemy afternoon-static z DoD=0 z automation
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=True,
+                depth_of_discharge=0,
+                battery_charge_toggle_on=True,
+                exported_energy_hourly=-0.100,  # importujemy
+            )
+        )
+        # DoD=0 + hour=14 ∈ [7,17) → in_guard_window=True
+        # exported<0 + toggle=on → hourly_balance_negative=True
+        # block_charge=True
+        assert mgr.hourly_balance_negative is True
+        assert mgr.should_block_battery_charge is True

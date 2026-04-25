@@ -59,6 +59,14 @@ DISCHARGE_HYSTERESIS_RESET_WH: Final[int] = 50
 # Post-charge window end (hour). Okno start_charge_hour_override → 13:00.
 POST_CHARGE_WINDOW_END_HOUR: Final[int] = 13
 
+# --- discharge guard (afternoon window) --- #
+
+# Afternoon window: 13:00 → 19:00. Po 19:00 przejmują dotychczasowe automations
+# (Set SOC 90 at 19, evening discharge). Dynamic block_discharge active tylko
+# gdy state.rce_should_hold_for_peak=False (low-price upcoming peaks).
+AFTERNOON_WINDOW_START_HOUR: Final[int] = 13
+AFTERNOON_WINDOW_END_HOUR: Final[int] = 19
+
 # Continuous check na `consumption_minus_pv_5_minutes` (W):
 # ujemne = PV > cons (surplus), dodatnie = cons > PV (deficit).
 # Hysteresis wyzwala block_discharge gdy sustained surplus >=500W,
@@ -155,8 +163,31 @@ class BatteryManager:
             elif avg_5min > AVG_5MIN_DEFICIT_THRESHOLD_W:
                 self.should_block_battery_discharge = False
             # Dead zone -500..0 — zachowuje poprzedni stan
+        elif self._is_in_afternoon_window(state):
+            self._last_hour_seen = None
+            if state.rce_should_hold_for_peak is True:
+                # High-price mode — status quo, automation Set Min SOC to 100
+                # Afternoon trzyma DoD=0 do 19:00. BatteryManager nie steruje.
+                self.should_block_battery_discharge = False
+            else:
+                # Low-price mode — dynamic na avg_5min OR exported_wh.
+                # SET (hold): instant_surplus OR hourly_net_export
+                # RESET (allow): instant_deficit AND NOT hourly_net_export
+                # Inne kombinacje (dead zone) → keep state
+                avg_5min = state.consumption_minus_pv_5_minutes
+                if avg_5min is None:
+                    self.should_block_battery_discharge = False
+                else:
+                    instant_surplus = avg_5min < AVG_5MIN_SURPLUS_THRESHOLD_W
+                    instant_deficit = avg_5min > AVG_5MIN_DEFICIT_THRESHOLD_W
+                    hourly_net_export = exported_energy_wh > 0
+                    if instant_surplus or hourly_net_export:
+                        self.should_block_battery_discharge = True
+                    elif instant_deficit and not hourly_net_export:
+                        self.should_block_battery_discharge = False
+                    # else: keep state
         else:
-            # Poza obu oknami: reset.
+            # Poza wszystkich okien: reset.
             self.should_block_battery_discharge = False
             self._last_hour_seen = None
 
@@ -184,13 +215,18 @@ class BatteryManager:
         )
 
         # --- Debug snapshot (throttled) + INFO transitions ---
-        phase = (
-            "pre-charge"
-            if self._is_in_pre_charge_window(state)
-            else "post-charge"
-            if self._is_in_post_charge_window(state)
-            else "out-of-window"
-        )
+        if self._is_in_pre_charge_window(state):
+            phase = "pre-charge"
+        elif self._is_in_post_charge_window(state):
+            phase = "post-charge"
+        elif self._is_in_afternoon_window(state):
+            phase = (
+                "afternoon-static"
+                if state.rce_should_hold_for_peak is True
+                else "afternoon-dynamic"
+            )
+        else:
+            phase = "out-of-window"
         self._log_transitions(
             prev_block_discharge,
             prev_block_charge,
@@ -295,6 +331,13 @@ class BatteryManager:
         if state.now.hour >= POST_CHARGE_WINDOW_END_HOUR:
             return False
         return state.now.time() >= state.start_charge_hour_override
+
+    @staticmethod
+    def _is_in_afternoon_window(state: InputState) -> bool:
+        """Afternoon: 13:00 ≤ now < 19:00."""
+        if state.now is None:
+            return False
+        return AFTERNOON_WINDOW_START_HOUR <= state.now.hour < AFTERNOON_WINDOW_END_HOUR
 
     @staticmethod
     def _none_present(state: InputState) -> bool:

@@ -49,4 +49,10 @@ class InputState:
     # baterią a grzałkami w trybie BALANCED. Opcje: NORMAL (domyślny algorytm),
     # BATTERY_FIRST (reserved=4500 gdy battery_charge_limit>7).
 
+    rce_should_hold_for_peak: bool | None = None
+    # binary_sensor.rce_should_hold_for_peak (HA template) — True gdy
+    # max(evening today 19-22, morning tomorrow 6-9) brutto > threshold.
+    # W afternoon window (13-19): True → status quo (DoD=0 z automation),
+    # False → BatteryManager dynamic block_discharge na avg_5min + exported_wh.
+
     now: datetime | None = None
