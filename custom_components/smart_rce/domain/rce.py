@@ -76,12 +76,12 @@ class RceData:
         """
         candidates: list[tuple[float, datetime]] = [
             (p["price"], p["datetime"])
-            for p in self.today.prices
+            for p in (self.today.prices if self.today else [])
             if 19 <= p["datetime"].hour < 22
         ]
         candidates.extend(
             (p["price"], p["datetime"])
-            for p in self.tomorrow.prices
+            for p in (self.tomorrow.prices if self.tomorrow else [])
             if 6 <= p["datetime"].hour < 9
         )
         if not candidates:
