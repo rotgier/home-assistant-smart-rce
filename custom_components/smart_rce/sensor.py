@@ -120,7 +120,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         restore_fn=_restore_prices_tomorrow,
     ),
     SmartRceSensorDescription(
-        name="RCE Max Upcoming Peak Gross",
+        name="Max Upcoming Peak Gross",
         native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-clock",
@@ -131,7 +131,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         ),
     ),
     SmartRceSensorDescription(
-        name="RCE Max Upcoming Peak Time",
+        name="Max Upcoming Peak Time",
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:clock-outline",
         value_fn=lambda ems: (
