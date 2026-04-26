@@ -76,22 +76,26 @@ class RceData:
     tomorrow: RceDayPrices
 
     def max_upcoming_peak(self) -> UpcomingPeak | None:
-        """Max RCE price w evening today (19-22) + morning tomorrow (6-9).
+        """Max RCE price w evening today (19-24) + morning/early-afternoon tomorrow (6-14).
 
-        Returns None gdy brak danych dla obu okresów. Jeśli kilka godzin ma
-        tę samą max cenę, zwraca **najpóźniejszą** — dłużej akumulujemy
-        energię w baterii (PV w popołudnie wciąż coś dostarcza), buffer
-        czasowy większy.
+        Szerokie okna pokrywają drogie pasma RCE: dziś wieczór do północy +
+        całe rano + południe jutra. Przy remisie cenowym zwraca **najpóźniejszą**
+        godzinę (dłużej akumulujemy energię w baterii — buffer czasowy większy).
+        Returns None gdy brak danych dla obu okresów.
+
+        Konsumenci tego sensora (np. discharge automation) muszą sprawdzać
+        date+hour peak'u żeby wykryć czy peak wskazuje "today evening" czy
+        "tomorrow morning/afternoon" — semantyka różna dla różnych decyzji.
         """
         candidates: list[tuple[float, datetime]] = [
             (p["price"], p["datetime"])
             for p in (self.today.prices if self.today else [])
-            if 19 <= p["datetime"].hour < 22
+            if 19 <= p["datetime"].hour < 24
         ]
         candidates.extend(
             (p["price"], p["datetime"])
             for p in (self.tomorrow.prices if self.tomorrow else [])
-            if 6 <= p["datetime"].hour < 9
+            if 6 <= p["datetime"].hour < 14
         )
         if not candidates:
             return None
@@ -100,24 +104,28 @@ class RceData:
         return UpcomingPeak(price=best[0], datetime=best[1])
 
     def best_morning_discharge_slot(self, now: datetime) -> UpcomingPeak | None:
-        """Max RCE w godzinach jutra rano [5, 8) — peak przed startem PV.
+        """Max RCE w nadchodzących godzinach rano [5, 8) — peak przed startem PV.
 
-        Filter: dt > now (jeśli już po peak rano dziś, sensor patrzy w jutro).
+        Patrzy w **today AND tomorrow**: filter `dt > now` zostawia tylko
+        future slots. Po północy `tomorrow=None` (przed publikacją RCE jutra)
+        ale `today` już ma future slots 5-8 → fallback działa.
+
         Tie-break: późniejsza godzina (preferuje slot bliżej startu PV,
         krótszy czas trzymania pustej baterii).
-        Returns None gdy brak future slots w range (np. po 8:00 dziś gdy nie
-        ma jeszcze cen jutra, lub gdy tomorrow=None przed publikacją RCE).
+        Returns None gdy brak future slots w range.
         """
-        if not self.tomorrow:
-            return None
-        candidates: list[tuple[float, datetime]] = [
-            (p["price"], p["datetime"])
-            for p in self.tomorrow.prices
-            if MORNING_DISCHARGE_START_HOUR
-            <= p["datetime"].hour
-            < MORNING_DISCHARGE_END_HOUR
-            and p["datetime"] > now
-        ]
+        candidates: list[tuple[float, datetime]] = []
+        for day in (self.today, self.tomorrow):
+            if not day:
+                continue
+            candidates.extend(
+                (p["price"], p["datetime"])
+                for p in day.prices
+                if MORNING_DISCHARGE_START_HOUR
+                <= p["datetime"].hour
+                < MORNING_DISCHARGE_END_HOUR
+                and p["datetime"] > now
+            )
         if not candidates:
             return None
         best = max(candidates, key=lambda x: (x[0], x[1]))

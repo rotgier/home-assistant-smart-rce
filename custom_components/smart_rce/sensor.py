@@ -152,7 +152,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         ),
     ),
     SmartRceSensorDescription(
-        name="Morning Discharge Price Gross",
+        name="Morning Discharge Price",
         native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-clock",
