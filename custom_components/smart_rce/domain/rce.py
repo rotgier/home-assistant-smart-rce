@@ -75,28 +75,42 @@ class RceData:
     today: RceDayPrices
     tomorrow: RceDayPrices
 
-    def max_upcoming_peak(self) -> UpcomingPeak | None:
-        """Max RCE price w evening today (19-24) + morning/early-afternoon tomorrow (6-14).
+    def max_upcoming_peak(self, now: datetime) -> UpcomingPeak | None:
+        """Max RCE price w nadchodzącym peak window — z time-of-day branching.
 
-        Szerokie okna pokrywają drogie pasma RCE: dziś wieczór do północy +
-        całe rano + południe jutra. Przy remisie cenowym zwraca **najpóźniejszą**
-        godzinę (dłużej akumulujemy energię w baterii — buffer czasowy większy).
-        Returns None gdy brak danych dla obu okresów.
+        - **Do 12:00**: dzisiejszy poranny peak (today.prices 5-12).
+          Use case: rano user widzi czy poranny peak już był / będzie.
+        - **Od 12:00**: dzisiejszy wieczorny + jutrzejszy poranny/popołudniowy
+          (today 19-24 + tomorrow 6-14). Standard "next peak" decision dla
+          afternoon-static, evening discharge etc.
 
-        Konsumenci tego sensora (np. discharge automation) muszą sprawdzać
-        date+hour peak'u żeby wykryć czy peak wskazuje "today evening" czy
-        "tomorrow morning/afternoon" — semantyka różna dla różnych decyzji.
+        Sensor **NIE filtruje past slots** — intentional, dla retrospekcji
+        (rano user chce widzieć czy oddawaliśmy w wieczornym peaku, sprawdza
+        po południu czy poranny peak był high).
+
+        Tie-break: późniejsza godzina (dłużej akumulujemy energię w baterii).
+        Returns None gdy brak danych dla aktywnego window.
         """
-        candidates: list[tuple[float, datetime]] = [
-            (p["price"], p["datetime"])
-            for p in (self.today.prices if self.today else [])
-            if 19 <= p["datetime"].hour < 24
-        ]
-        candidates.extend(
-            (p["price"], p["datetime"])
-            for p in (self.tomorrow.prices if self.tomorrow else [])
-            if 6 <= p["datetime"].hour < 14
-        )
+        candidates: list[tuple[float, datetime]] = []
+        if now.hour < 12:
+            # Morning cycle: dzisiejszy peak rano (5-12)
+            candidates.extend(
+                (p["price"], p["datetime"])
+                for p in (self.today.prices if self.today else [])
+                if 5 <= p["datetime"].hour < 12
+            )
+        else:
+            # Afternoon/evening cycle: dziś wieczór + jutro morning/afternoon
+            candidates.extend(
+                (p["price"], p["datetime"])
+                for p in (self.today.prices if self.today else [])
+                if 19 <= p["datetime"].hour < 24
+            )
+            candidates.extend(
+                (p["price"], p["datetime"])
+                for p in (self.tomorrow.prices if self.tomorrow else [])
+                if 6 <= p["datetime"].hour < 14
+            )
         if not candidates:
             return None
         # max po (price, datetime) — przy remisie cenowym wybierze późniejszą

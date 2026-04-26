@@ -126,8 +126,11 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-clock",
         value_fn=lambda ems: (
-            round(ems.rce_data.max_upcoming_peak().price * GROSS_MULTIPLIER, 2)
-            if ems.rce_data and ems.rce_data.max_upcoming_peak()
+            round(
+                ems.rce_data.max_upcoming_peak(now_local()).price * GROSS_MULTIPLIER,
+                2,
+            )
+            if ems.rce_data and ems.rce_data.max_upcoming_peak(now_local())
             else None
         ),
     ),
@@ -136,8 +139,8 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:clock-outline",
         value_fn=lambda ems: (
-            ems.rce_data.max_upcoming_peak().datetime
-            if ems.rce_data and ems.rce_data.max_upcoming_peak()
+            ems.rce_data.max_upcoming_peak(now_local()).datetime
+            if ems.rce_data and ems.rce_data.max_upcoming_peak(now_local())
             else None
         ),
     ),
