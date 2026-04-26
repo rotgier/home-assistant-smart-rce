@@ -48,6 +48,14 @@ class WaterHeaterManager:
         "both_are_on": 3,
     }
 
+    # Krótkie etykiety do display sensorów
+    _STATE_LABELS: dict[str, str] = {
+        "both_are_off": "off",
+        "small_is_on": "small",
+        "big_is_on": "big",
+        "both_are_on": "both",
+    }
+
     def __init__(self) -> None:
         self.should_turn_on: bool = False
         self.should_turn_off: bool = False
@@ -57,11 +65,8 @@ class WaterHeaterManager:
         self.balanced_heater_budget: float | None = None
         self.balanced_baseline: str | None = None
         self.balanced_upgrade_target: str | None = None
+        self.balanced_upgrade_active: bool = False
         self.balanced_export_bonus_w: float | None = None
-
-    @property
-    def balanced_upgrade_active(self) -> bool:
-        return self.balanced_upgrade_target is not None
 
     def update(self, state: InputState, battery: BatteryState) -> None:
         if self._none_present(state):
@@ -82,12 +87,14 @@ class WaterHeaterManager:
             self.balanced_heater_budget = None
             self.balanced_baseline = None
             self.balanced_upgrade_target = None
+            self.balanced_upgrade_active = False
             self.balanced_export_bonus_w = None
         elif battery.hourly_balance_negative:
             pv_available = -state.consumption_minus_pv_2_minutes
             self.balanced_heater_budget = -pv_available
             self.balanced_baseline = "negative_energy"
             self.balanced_upgrade_target = None
+            self.balanced_upgrade_active = False
             self.balanced_export_bonus_w = None
 
     def _current_state(self, state: InputState) -> str:
@@ -292,7 +299,16 @@ class WaterHeaterManager:
         # Diagnostyka
         self.balanced_heater_budget = -heater_budget
         self.balanced_baseline = baseline
-        self.balanced_upgrade_target = target if target != baseline else None
+        self.balanced_upgrade_active = target != baseline
+        if target == baseline:
+            # Baseline sam pokrywa target — upgrade niepotrzebny.
+            self.balanced_upgrade_target = f"{self._STATE_LABELS[baseline]} (baseline)"
+        else:
+            # Adaptacyjny upgrade: pokazujemy "from -> to" żeby w wykresie
+            # widać było skok N→N+1, N→N+2 lub N→N+3.
+            self.balanced_upgrade_target = (
+                f"{self._STATE_LABELS[baseline]} -> {self._STATE_LABELS[target]}"
+            )
         self.balanced_export_bonus_w = export_bonus_w
 
         return target

@@ -506,7 +506,7 @@ class TestBalancedBatteryFirstStrategy:
         # reserved=300 (charge_limit=2), budget=700 < SMALL → baseline=BOTH_ARE_OFF
         # skip_upgrade=False (charge_limit=2). bonus=900W → effective=1600 → SMALL
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.balanced_upgrade_target == "small_is_on"
+        assert mgr.water_heater.balanced_upgrade_target == "off -> small"
 
     def test_normal_strategy_18a_also_skips_upgrade(self):
         """NORMAL + 18A + exported>100 → skip upgrade universally.
@@ -557,7 +557,7 @@ class TestBalancedBatteryFirstStrategy:
         # reserved=300, budget=700 < SMALL → baseline=BOTH_ARE_OFF
         # bonus=900W → effective=1600 → upgrade SMALL
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.balanced_upgrade_target == "small_is_on"
+        assert mgr.water_heater.balanced_upgrade_target == "off -> small"
 
     def test_hysteresis_holds_current_state(self):
         """Histereza trzyma obecny stan na granicy progu."""
@@ -830,7 +830,7 @@ class TestBalancedExportBonus:
         # bonus = 500/(5/60) = 6000 W → cap do BOTH_POWER=4500
         # effective = 1200 + 4500 = 5700 → BOTH (≥4500)
         assert mgr.water_heater.balanced_baseline == "both_are_off"
-        assert mgr.water_heater.balanced_upgrade_target == "both_are_on"
+        assert mgr.water_heater.balanced_upgrade_target == "off -> both"
         assert mgr.water_heater.balanced_export_bonus_w == 4500.0
         assert mgr.water_heater.should_turn_on is True
         assert mgr.water_heater.should_turn_on_small is True
@@ -852,7 +852,7 @@ class TestBalancedExportBonus:
         # bonus = 300/(10/60) = 1800 W (no cap)
         # effective = 1200 + 1800 = 3000 → BIG (>=3000, <4500)
         assert mgr.water_heater.balanced_baseline == "both_are_off"
-        assert mgr.water_heater.balanced_upgrade_target == "big_is_on"
+        assert mgr.water_heater.balanced_upgrade_target == "off -> big"
         assert mgr.water_heater.balanced_export_bonus_w == 1800.0
         assert mgr.water_heater.should_turn_on is True
 
@@ -877,7 +877,7 @@ class TestBalancedExportBonus:
         # reserved=300, heater_budget=700, baseline=OFF
         # bonus = 50/1 = 50 W → effective = 750 → OFF
         assert mgr.water_heater.balanced_baseline == "both_are_off"
-        assert mgr.water_heater.balanced_upgrade_target is None
+        assert mgr.water_heater.balanced_upgrade_target == "off (baseline)"
         assert mgr.water_heater.balanced_export_bonus_w == 50.0
 
     def test_cutoff_last_minute_disables_bonus(self):
@@ -896,7 +896,7 @@ class TestBalancedExportBonus:
         # reserved=300, budget=1200, baseline=OFF
         # cutoff aktywny → bonus=0 → effective=1200 → OFF
         assert mgr.water_heater.balanced_baseline == "both_are_off"
-        assert mgr.water_heater.balanced_upgrade_target is None
+        assert mgr.water_heater.balanced_upgrade_target == "off (baseline)"
         assert mgr.water_heater.balanced_export_bonus_w == 0.0
 
     def test_skip_upgrade_charge_limit_18_blocks_bonus(self):
@@ -915,7 +915,7 @@ class TestBalancedExportBonus:
         # reserved=3500 (charge>7, soc<50), budget=-1500, baseline=OFF
         # skip_upgrade=True → bonus=0 → effective=-1500 → OFF
         assert mgr.water_heater.balanced_baseline == "both_are_off"
-        assert mgr.water_heater.balanced_upgrade_target is None
+        assert mgr.water_heater.balanced_upgrade_target == "off (baseline)"
         assert mgr.water_heater.balanced_export_bonus_w == 0.0
 
     def test_adaptive_downgrade_when_pv_drops(self):
@@ -944,7 +944,7 @@ class TestBalancedExportBonus:
         # SMALL nie trzyma. → OFF (1400 < 1500-500=1000? nie, 1400>=1000)
         # dokładnie: dla SMALL warunek hysteresy wymaga current==SMALL — nie BOTH
         # → upgrade_candidate = OFF. baseline=OFF. target=OFF.
-        assert mgr.water_heater.balanced_upgrade_target is None
+        assert mgr.water_heater.balanced_upgrade_target == "off (baseline)"
         # Tu BOTH→OFF to symetria: kiedy adaptacyjny budżet spadł, schodzimy
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_on_small is False
