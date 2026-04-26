@@ -12,8 +12,21 @@ ten Manager tylko *czyta* battery.hourly_balance_negative jako guard.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from custom_components.smart_rce.domain.battery import BatteryState
 from custom_components.smart_rce.domain.input_state import InputState
+
+# BALANCED Piętro 2 — adaptacyjny upgrade pod budżet eksportu w resztę godziny.
+# Bonus = exported_energy_so_far / czas_do_końca_godziny — przelicza dotąd
+# wyeksportowane Wh na ekwiwalent dodatkowej mocy dostępnej do dożarcia.
+EXPORT_BONUS_CUTOFF_SEC: int = 60  # < tego nie aktywuj bonusa (ostatnia minuta)
+EXPORT_BONUS_MIN_T_LEFT_SEC: int = 60  # clamp dolny dla dzielenia
+EXPORT_BONUS_HYSTERESIS_W: int = 500  # symmetryczny do Piętra 1
+
+
+def seconds_until_hour_end(now: datetime) -> int:
+    return 3600 - (now.minute * 60 + now.second)
 
 
 class WaterHeaterManager:
@@ -35,13 +48,6 @@ class WaterHeaterManager:
         "both_are_on": 3,
     }
 
-    _UPGRADE_MAP: dict[str, str] = {
-        "both_are_off": "small_is_on",
-        "small_is_on": "big_is_on",
-        "big_is_on": "both_are_on",
-        "both_are_on": "both_are_on",
-    }
-
     def __init__(self) -> None:
         self.should_turn_on: bool = False
         self.should_turn_off: bool = False
@@ -50,7 +56,12 @@ class WaterHeaterManager:
         # BALANCED diagnostics
         self.balanced_heater_budget: float | None = None
         self.balanced_baseline: str | None = None
-        self.balanced_upgrade_active: bool = False
+        self.balanced_upgrade_target: str | None = None
+        self.balanced_export_bonus_w: float | None = None
+
+    @property
+    def balanced_upgrade_active(self) -> bool:
+        return self.balanced_upgrade_target is not None
 
     def update(self, state: InputState, battery: BatteryState) -> None:
         if self._none_present(state):
@@ -70,12 +81,14 @@ class WaterHeaterManager:
         if mode != "BALANCED":
             self.balanced_heater_budget = None
             self.balanced_baseline = None
-            self.balanced_upgrade_active = False
+            self.balanced_upgrade_target = None
+            self.balanced_export_bonus_w = None
         elif battery.hourly_balance_negative:
             pv_available = -state.consumption_minus_pv_2_minutes
             self.balanced_heater_budget = -pv_available
             self.balanced_baseline = "negative_energy"
-            self.balanced_upgrade_active = False
+            self.balanced_upgrade_target = None
+            self.balanced_export_bonus_w = None
 
     def _current_state(self, state: InputState) -> str:
         if state.water_heater_big_is_on and state.water_heater_small_is_on:
@@ -113,6 +126,7 @@ class WaterHeaterManager:
                 exported_energy,
                 current_state,
                 state.water_heater_strategy,
+                state.now,
             )
         else:
             target = self._wasted_target(
@@ -184,6 +198,7 @@ class WaterHeaterManager:
         exported_energy: float,
         current_state: str,
         strategy: str | None,
+        now: datetime,
     ) -> str:
         # Rezerwacja (charge_limit: dyskretne 0, 1, 2, 7, 18A)
         # BATTERY_FIRST: gdy bateria może mocno ładować (charge_limit>7),
@@ -223,28 +238,62 @@ class WaterHeaterManager:
         else:
             baseline = self.BOTH_ARE_OFF
 
-        # Piętro 2 — Upgrade z budżetu eksportu godzinowego.
+        # Piętro 2 — adaptacyjny upgrade pod budżet eksportu w resztę godziny.
         # Skip gdy battery_charge_limit > 7 (bateria chce max mocy ~5.2 kW).
         # Instalacja PV 9.1 kW, grzałki max 4.5 kW, bateria max 5.2 kW — suma
         # 9.7 kW > PV. Gdy bateria chce max, każdy włączony watt grzałki jest
-        # zabrany baterii (Goodwe rebalansuje automatycznie). Cumulative
-        # exported_energy > 100 Wh to historia z wcześniejszych minut godziny,
-        # nie znak bieżącego surplus. Universal (niezależne od strategy),
-        # symetryczne do warunku na Piętrze 1 BATTERY_FIRST.
-        upgrade = self._UPGRADE_MAP[baseline]
-        target = baseline
+        # zabrany baterii (Goodwe rebalansuje automatycznie).
+        #
+        # Bonus: ile dodatkowej mocy "musi być zjedzone" w resztę godziny,
+        # żeby zniwelować dotąd wyeksportowane Wh. Cap na BOTH_POWER — nigdy
+        # nie udajemy że mamy więcej dyspozycyjnej mocy niż zjedzą obie grzałki.
+        # W ostatnich EXPORT_BONUS_CUTOFF_SEC sekundach nie aktywujemy bonusa
+        # (i tak nie zdążymy zjeść; uniknięcie ostatniego szarpnięcia przed
+        # resetem utility_meter).
         skip_upgrade = battery_charge_limit > 7
-        if upgrade != baseline and not skip_upgrade:
-            if exported_energy > 100 or (
-                self._STATE_ORDER[current_state] >= self._STATE_ORDER[upgrade]
-                and exported_energy > 30
-            ):
-                target = upgrade
+        seconds_left = seconds_until_hour_end(now)
+        if seconds_left >= EXPORT_BONUS_CUTOFF_SEC and not skip_upgrade:
+            t_left_h = max(seconds_left, EXPORT_BONUS_MIN_T_LEFT_SEC) / 3600
+            export_bonus_w = min(
+                float(self.BOTH_POWER), max(0.0, exported_energy / t_left_h)
+            )
+        else:
+            export_bonus_w = 0.0
+
+        effective_budget = heater_budget + export_bonus_w
+        h = EXPORT_BONUS_HYSTERESIS_W
+
+        # Drabinka identyczna do baseline, ale na effective_budget — wybiera
+        # NAJWYŻSZY stan mieszczący się w budżecie (skok N→N+2 dozwolony).
+        if effective_budget >= self.BOTH_POWER or (
+            effective_budget >= self.BOTH_POWER - h
+            and current_state == self.BOTH_ARE_ON
+        ):
+            upgrade_candidate = self.BOTH_ARE_ON
+        elif effective_budget >= self.BIG_POWER or (
+            effective_budget >= self.BIG_POWER - h and current_state == self.BIG_IS_ON
+        ):
+            upgrade_candidate = self.BIG_IS_ON
+        elif effective_budget >= self.SMALL_POWER or (
+            effective_budget >= self.SMALL_POWER - h
+            and current_state == self.SMALL_IS_ON
+        ):
+            upgrade_candidate = self.SMALL_IS_ON
+        else:
+            upgrade_candidate = self.BOTH_ARE_OFF
+
+        # target = max(baseline, upgrade_candidate) — Piętro 2 nigdy nie schodzi
+        # poniżej baseline (baseline ma swoją histerezę na samym pv).
+        if self._STATE_ORDER[upgrade_candidate] > self._STATE_ORDER[baseline]:
+            target = upgrade_candidate
+        else:
+            target = baseline
 
         # Diagnostyka
         self.balanced_heater_budget = -heater_budget
         self.balanced_baseline = baseline
-        self.balanced_upgrade_active = target != baseline
+        self.balanced_upgrade_target = target if target != baseline else None
+        self.balanced_export_bonus_w = export_bonus_w
 
         return target
 

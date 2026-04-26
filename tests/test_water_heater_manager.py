@@ -5,6 +5,9 @@ from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE
 
 NOON = datetime(2026, 4, 16, 12, 0, tzinfo=TIMEZONE)
+NOON_50 = datetime(2026, 4, 16, 12, 50, tzinfo=TIMEZONE)  # 10 min do końca godziny
+NOON_55 = datetime(2026, 4, 16, 12, 55, tzinfo=TIMEZONE)  # 5 min do końca godziny
+NOON_59_30 = datetime(2026, 4, 16, 12, 59, 30, tzinfo=TIMEZONE)  # 30s — cutoff aktywny
 
 
 def _state(
@@ -484,6 +487,9 @@ class TestBalancedBatteryFirstStrategy:
         Gdy bateria zbliża się do pełna (charge_limit spadł z 18→2), strategy
         BATTERY_FIRST przestaje się aktywować, upgrade znów chroni przed
         marnowaniem eksportu.
+
+        now=NOON_50 (10 min do końca): bonus = 150 Wh / (10/60 h) = 900 W
+        → effective = 700 + 900 = 1600 W ≥ SMALL_POWER → upgrade SMALL.
         """
         mgr = Ems()
         mgr.update_state(
@@ -494,13 +500,13 @@ class TestBalancedBatteryFirstStrategy:
                 battery_charge_limit=2.0,
                 battery_soc=98.0,
                 exported_energy_hourly=0.150,
+                now=NOON_50,
             )
         )
         # reserved=300 (charge_limit=2), budget=700 < SMALL → baseline=BOTH_ARE_OFF
-        # SKIP warunku: charge_limit=2 nie jest >7 → upgrade działa
-        # upgrade = small_is_on, exported>100 → target=SMALL
+        # skip_upgrade=False (charge_limit=2). bonus=900W → effective=1600 → SMALL
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.balanced_upgrade_active is True
+        assert mgr.water_heater.balanced_upgrade_target == "small_is_on"
 
     def test_normal_strategy_18a_also_skips_upgrade(self):
         """NORMAL + 18A + exported>100 → skip upgrade universally.
@@ -533,6 +539,8 @@ class TestBalancedBatteryFirstStrategy:
 
         Gdy bateria zwalnia (charge_limit spadło do 2A, max ~580W), dokładanie
         grzałki nie kanibalizuje baterii — reszta PV może iść gdzie indziej.
+
+        now=NOON_50: bonus = 150/(10/60) = 900 W → effective = 1600 → SMALL.
         """
         mgr = Ems()
         mgr.update_state(
@@ -543,13 +551,13 @@ class TestBalancedBatteryFirstStrategy:
                 battery_charge_limit=2.0,
                 battery_soc=95.0,
                 exported_energy_hourly=0.150,
+                now=NOON_50,
             )
         )
         # reserved=300, budget=700 < SMALL → baseline=BOTH_ARE_OFF
-        # charge_limit=2 nie jest >7 → skip_upgrade=False → upgrade działa
-        # exported>100 → target=SMALL
+        # bonus=900W → effective=1600 → upgrade SMALL
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.balanced_upgrade_active is True
+        assert mgr.water_heater.balanced_upgrade_target == "small_is_on"
 
     def test_hysteresis_holds_current_state(self):
         """Histereza trzyma obecny stan na granicy progu."""
@@ -796,6 +804,166 @@ class TestBalancedOverrideAndDiagnostics:
         )
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_off is True
+
+
+class TestBalancedExportBonus:
+    """Piętro 2 — adaptacyjny upgrade pod budżet eksportu w resztę godziny."""
+
+    def test_incident_scenario_off_to_both_at_end_of_hour(self):
+        """Scenariusz incydentu 2026-04-26.
+
+        0.5 kWh wyeksportowane, 5 min do końca, niski pv →
+        adaptacyjny upgrade z OFF bezpośrednio do BOTH (skok N+3).
+        """
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1500.0,  # pv=1500
+                battery_charge_limit=2.0,  # bateria nie chce już dużo (skip=False)
+                battery_soc=95.0,
+                exported_energy_hourly=0.5,  # 500 Wh już oddane
+                now=NOON_55,  # 5 min do końca
+            )
+        )
+        # reserved=300, heater_budget=1200 < SMALL → baseline=OFF
+        # bonus = 500/(5/60) = 6000 W → cap do BOTH_POWER=4500
+        # effective = 1200 + 4500 = 5700 → BOTH (≥4500)
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_upgrade_target == "both_are_on"
+        assert mgr.water_heater.balanced_export_bonus_w == 4500.0
+        assert mgr.water_heater.should_turn_on is True
+        assert mgr.water_heater.should_turn_on_small is True
+
+    def test_skip_n_plus_2_off_to_big(self):
+        """Skok N→N+2 (OFF→BIG) gdy bonus wystarcza tylko na BIG, nie na BOTH."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1500.0,  # pv=1500
+                battery_charge_limit=2.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.3,  # 300 Wh
+                now=NOON_50,  # 10 min do końca, t_left_h=1/6
+            )
+        )
+        # reserved=300, heater_budget=1200, baseline=OFF
+        # bonus = 300/(10/60) = 1800 W (no cap)
+        # effective = 1200 + 1800 = 3000 → BIG (>=3000, <4500)
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_upgrade_target == "big_is_on"
+        assert mgr.water_heater.balanced_export_bonus_w == 1800.0
+        assert mgr.water_heater.should_turn_on is True
+
+    def test_no_upgrade_at_start_of_hour_low_exported(self):
+        """Wczesna godzina + małe exported → bonus znikomy, target=baseline.
+
+        Gdyby aktywować upgrade na SMALL przy 50 Wh exported i pełnej godzinie
+        do końca, SMALL przez 60 min zjadłby 1500 Wh — 30× więcej niż mamy
+        do "zjedzenia". Adaptacyjny algorytm tego nie robi.
+        """
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1000.0,  # pv=1000
+                battery_charge_limit=2.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.05,  # 50 Wh
+                now=NOON,  # pełna godzina do końca
+            )
+        )
+        # reserved=300, heater_budget=700, baseline=OFF
+        # bonus = 50/1 = 50 W → effective = 750 → OFF
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_upgrade_target is None
+        assert mgr.water_heater.balanced_export_bonus_w == 50.0
+
+    def test_cutoff_last_minute_disables_bonus(self):
+        """W ostatnich 60s godziny bonus=0 — nie aktywuj upgrade'u tuż przed resetem."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1500.0,  # pv=1500
+                battery_charge_limit=2.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.5,  # duży exported
+                now=NOON_59_30,  # 30s do końca, < EXPORT_BONUS_CUTOFF_SEC
+            )
+        )
+        # reserved=300, budget=1200, baseline=OFF
+        # cutoff aktywny → bonus=0 → effective=1200 → OFF
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_upgrade_target is None
+        assert mgr.water_heater.balanced_export_bonus_w == 0.0
+
+    def test_skip_upgrade_charge_limit_18_blocks_bonus(self):
+        """charge_limit>7 → skip_upgrade, bonus=0 nawet z dużym exported."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-2000.0,  # pv=2000
+                battery_charge_limit=18.0,
+                battery_soc=30.0,
+                exported_energy_hourly=0.5,
+                now=NOON_50,
+            )
+        )
+        # reserved=3500 (charge>7, soc<50), budget=-1500, baseline=OFF
+        # skip_upgrade=True → bonus=0 → effective=-1500 → OFF
+        assert mgr.water_heater.balanced_baseline == "both_are_off"
+        assert mgr.water_heater.balanced_upgrade_target is None
+        assert mgr.water_heater.balanced_export_bonus_w == 0.0
+
+    def test_adaptive_downgrade_when_pv_drops(self):
+        """Symetryczny downgrade gdy pv nagle spadnie.
+
+        Gdy bonus + pv spadną tak, że effective < heater_W(N) - hysteresis,
+        target schodzi do niższego stanu.
+        """
+        mgr = Ems()
+        # Ostatnio mieliśmy BOTH (current_state=BOTH_ARE_ON), ale pv nagle spadło
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                big_on=True,
+                small_on=True,
+                consumption_minus_pv=-500.0,  # pv=500 (drop)
+                battery_charge_limit=2.0,
+                battery_soc=95.0,
+                exported_energy_hourly=0.1,  # 100 Wh
+                now=NOON_55,  # 5 min do końca
+            )
+        )
+        # reserved=300, heater_budget=200, baseline=OFF
+        # bonus = 100/(5/60) = 1200 W → effective = 1400
+        # Drabinka: 1400 < 1500 ale current==BOTH (nie SMALL) → histereza
+        # SMALL nie trzyma. → OFF (1400 < 1500-500=1000? nie, 1400>=1000)
+        # dokładnie: dla SMALL warunek hysteresy wymaga current==SMALL — nie BOTH
+        # → upgrade_candidate = OFF. baseline=OFF. target=OFF.
+        assert mgr.water_heater.balanced_upgrade_target is None
+        # Tu BOTH→OFF to symetria: kiedy adaptacyjny budżet spadł, schodzimy
+        assert mgr.water_heater.should_turn_on is False
+        assert mgr.water_heater.should_turn_on_small is False
+
+    def test_export_bonus_capped_at_both_power(self):
+        """Bonus jest cappowany do BOTH_POWER żeby nie udawać niemożliwego budżetu."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1500.0,
+                battery_charge_limit=2.0,
+                battery_soc=95.0,
+                exported_energy_hourly=2.0,  # 2 kWh — nierealistycznie dużo
+                now=NOON_55,  # bonus by skoczył do 24kW bez cap
+            )
+        )
+        # bonus = min(4500, 2000/0.0833) = min(4500, 24000) = 4500
+        assert mgr.water_heater.balanced_export_bonus_w == 4500.0
 
 
 class TestGuardTimeWindow:

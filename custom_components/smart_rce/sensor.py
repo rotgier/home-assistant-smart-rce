@@ -248,6 +248,19 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: ems.water_heater.balanced_baseline,
         icon="mdi:heating-coil",
     ),
+    EmsSensorDescription(
+        name="Balanced Upgrade Target",
+        value_fn=lambda ems: ems.water_heater.balanced_upgrade_target,
+        icon="mdi:arrow-up-bold-circle",
+    ),
+    EmsSensorDescription(
+        name="Balanced Export Bonus W",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: ems.water_heater.balanced_export_bonus_w,
+        icon="mdi:transmission-tower-export",
+    ),
 )
 
 
