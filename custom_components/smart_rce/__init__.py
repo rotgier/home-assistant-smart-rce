@@ -44,7 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
 
     websession = async_get_clientsession(hass)
     rceApi = RceApi(websession)
-    ems: Ems = create_ems(hass, entry)
+    ems: Ems = await create_ems(hass, entry)
     rce_coordinator = SmartRceDataUpdateCoordinator(hass, rceApi, ems, entry)
     weather_coordinator = WeatherListenerCoordinator(hass, entry)
 

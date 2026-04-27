@@ -245,8 +245,13 @@ def listen_for_block_battery_charge(hass: HomeAssistant, entry: ConfigEntry) -> 
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
 
 
-def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
-    ems: Ems = Ems()
+async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
+    ems: Ems = Ems(hass=hass)
+
+    # Restore persistent BatteryManager state PRZED pierwszym update_state —
+    # chroni przed race condition po HA restart (template binary_sensor
+    # ładuje się 25-50ms po smart_rce sensors).
+    await ems.battery.async_restore()
 
     @callback
     def update_hourly(now: datetime) -> None:

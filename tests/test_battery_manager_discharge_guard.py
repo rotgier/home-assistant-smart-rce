@@ -16,8 +16,8 @@ def _state(
     depth_of_discharge: float | None = None,
     battery_charge_limit: float = 18.0,
     consumption_minus_pv_5_minutes: float | None = None,
-    rce_should_hold_for_peak: bool | None = None,
-    is_workday: bool | None = None,
+    rce_should_hold_for_peak: bool | None = True,
+    is_workday: bool | None = True,
 ) -> InputState:
     return InputState(
         water_heater_big_is_on=False,
@@ -936,8 +936,11 @@ class TestPreChargePassthroughWeekend:
         # workday + same hour + exported>=100 → SET
         assert mgr.should_block_battery_discharge is True
 
-    def test_is_workday_none_falls_back_to_workday_logic(self):
+    def test_is_workday_none_keeps_state(self):
+        # Defensive None handling — sensor jeszcze niezaładowany, keep state.
+        # Patrz TestDefensiveNoneHandling dla pełnego pokrycia.
         mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True  # restored prev state
         mgr._last_hour_seen = 8
         mgr.update(
             _state(
@@ -947,8 +950,8 @@ class TestPreChargePassthroughWeekend:
                 is_workday=None,
             )
         )
-        # None != False → workday logic → SET
         assert mgr.should_block_battery_discharge is True
+        assert mgr._last_hour_seen == 8
 
 
 class TestPostChargePassthroughWeekend:
@@ -1016,4 +1019,82 @@ class TestAfternoonNotAffectedByWorkday:
             )
         )
         # hold=True → afternoon-static, BatteryManager nie steruje
+        assert mgr.should_block_battery_discharge is False
+
+
+class TestDefensiveNoneHandling:
+    """Defensive None handling — bug 14:33 reprodukcja.
+
+    Gdy critical sensor=None (typowo race po HA restart), BatteryManager
+    nie zmienia stanu (keep state).
+    """
+
+    def test_afternoon_hold_none_keeps_state_true(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True  # restored prev state
+        mgr.update(
+            _state(
+                now=_at(14, 33),
+                rce_should_hold_for_peak=None,
+                consumption_minus_pv_5_minutes=-1000.0,
+                exported_energy_hourly=0.5,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_afternoon_hold_none_keeps_state_false(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = False
+        mgr.update(
+            _state(
+                now=_at(14, 33),
+                rce_should_hold_for_peak=None,
+                consumption_minus_pv_5_minutes=-1000.0,
+                exported_energy_hourly=0.5,
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_pre_charge_workday_none_keeps_state(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr._last_hour_seen = 7
+        mgr.update(
+            _state(
+                now=_at(8, 30),
+                start_charge_hour_override=time(10, 0),
+                is_workday=None,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+        assert mgr._last_hour_seen == 7
+
+    def test_post_charge_workday_none_keeps_state(self):
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                is_workday=None,
+                consumption_minus_pv_5_minutes=-1000.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_afternoon_hold_explicit_true_static_works(self):
+        """Sanity: explicit True wciąż triggers static branch."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(14, 33),
+                rce_should_hold_for_peak=True,
+                consumption_minus_pv_5_minutes=-1000.0,
+                exported_energy_hourly=0.5,
+            )
+        )
+        # afternoon-static → BatteryManager nie steruje, ustawia False
         assert mgr.should_block_battery_discharge is False
