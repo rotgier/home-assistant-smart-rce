@@ -133,6 +133,33 @@ def set_start_charge_hour_override(entity: str, i: InputState, state: str) -> No
         i.start_charge_hour_override = None
 
 
+def set_pv_power(entity: str, i: InputState, state: str) -> None:
+    i.pv_power = map_float(entity, state)
+
+
+def set_battery_power_max_18s(entity: str, i: InputState, state: str) -> None:
+    i.battery_power_max_18s = map_float(entity, state)
+
+
+def set_meter_active_power_total_max_18s(
+    entity: str, i: InputState, state: str
+) -> None:
+    i.meter_active_power_total_max_18s = map_float(entity, state)
+
+
+def set_goodwe_ems_mode(entity: str, i: InputState, state: str) -> None:
+    if state in (None, "", "unavailable", "unknown"):
+        i.goodwe_ems_mode = None
+        return
+    i.goodwe_ems_mode = state
+
+
+def set_other_ems_automation_active_this_hour(
+    entity: str, i: InputState, state: str
+) -> None:
+    i.other_ems_automation_active_this_hour = map_on_off(entity, state)
+
+
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "switch.water_heater_big_relay": set_water_heater_big_is_on,
     "switch.water_heater_small_relay": set_water_heater_small_is_on,
@@ -150,6 +177,11 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "input_select.ems_water_heater_strategy": set_water_heater_strategy,
     "binary_sensor.rce_should_hold_for_peak": set_rce_should_hold_for_peak,
     "binary_sensor.workday": set_is_workday,
+    "sensor.pv_power": set_pv_power,
+    "sensor.battery_power_max_18s": set_battery_power_max_18s,
+    "sensor.meter_active_power_total_max_18s": set_meter_active_power_total_max_18s,
+    "select.goodwe_ems_mode": set_goodwe_ems_mode,
+    "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
 }
 
 
@@ -201,6 +233,11 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
 BATTERY_CHARGE_TOGGLE = "input_boolean.battery_charge_max_current_toggle"
 BLOCK_BATTERY_CHARGE_SENSOR = "binary_sensor.ems_block_battery_charge"
 
+GOODWE_EMS_MODE_SELECT = "select.goodwe_ems_mode"
+GOODWE_EMS_POWER_LIMIT_NUMBER = "number.goodwe_ems_power_limit"
+GRID_EXPORT_RECOMMENDED_MODE_SENSOR = "sensor.ems_grid_export_recommended_ems_mode"
+GRID_EXPORT_RECOMMENDED_XSET_SENSOR = "sensor.ems_grid_export_recommended_xset"
+
 
 def listen_for_block_battery_charge(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Toggle battery charge based on ems_block_battery_charge sensor."""
@@ -245,6 +282,89 @@ def listen_for_block_battery_charge(hass: HomeAssistant, entry: ConfigEntry) -> 
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
 
 
+def listen_for_grid_export_recommendations(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """Apply Goodwe EMS mode/Xset based on smart_rce GridExportManager outputs.
+
+    Nasłuchuje na zmiany sensorów `sensor.ems_grid_export_recommended_ems_mode`
+    i `sensor.ems_grid_export_recommended_xset`. Gdy któryś się zmieni, ustawia
+    odpowiednio `select.goodwe_ems_mode` i `number.goodwe_ems_power_limit`.
+
+    Idempotent: śledzi `last_mode/last_xset` i pomija no-op calls.
+    Order: xset first (jeśli applicable), potem mode — żeby nowy mode od razu
+    używał aktualnego xset (xset jest ignorowany w trybach AUTO/STANDBY ale
+    set_value nieszkodliwy).
+    """
+    last_mode: str | None = None
+    last_xset: str | None = None  # raw state string ("None" lub liczba)
+
+    async def _apply(mode: str, xset: str | None) -> None:
+        try:
+            # xset nie jest "None"/"unknown" → set_value
+            if xset is not None and xset not in ("unknown", "unavailable"):
+                try:
+                    xset_int = int(float(xset))
+                except (ValueError, TypeError):
+                    xset_int = None
+                if xset_int is not None and xset_int > 0:
+                    await hass.services.async_call(
+                        "number",
+                        "set_value",
+                        {
+                            ATTR_ENTITY_ID: GOODWE_EMS_POWER_LIMIT_NUMBER,
+                            "value": xset_int,
+                        },
+                        blocking=True,
+                    )
+            await hass.services.async_call(
+                "select",
+                "select_option",
+                {
+                    ATTR_ENTITY_ID: GOODWE_EMS_MODE_SELECT,
+                    "option": mode,
+                },
+                blocking=True,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to apply grid export recommendation mode=%s xset=%s",
+                mode,
+                xset,
+            )
+
+    async def _on_change(event: Event[EventStateChangedData]) -> None:
+        nonlocal last_mode, last_xset
+        mode_state = hass.states.get(GRID_EXPORT_RECOMMENDED_MODE_SENSOR)
+        xset_state = hass.states.get(GRID_EXPORT_RECOMMENDED_XSET_SENSOR)
+        if mode_state is None or mode_state.state in ("unknown", "unavailable"):
+            return
+        mode = mode_state.state
+        xset = xset_state.state if xset_state else None
+        if mode == last_mode and xset == last_xset:
+            return
+        last_mode, last_xset = mode, xset
+        await _apply(mode, xset)
+
+    @callback
+    def hass_started(_=Event) -> None:
+        entry.async_on_unload(
+            async_track_state_change_event(
+                hass,
+                [
+                    GRID_EXPORT_RECOMMENDED_MODE_SENSOR,
+                    GRID_EXPORT_RECOMMENDED_XSET_SENSOR,
+                ],
+                _on_change,
+            )
+        )
+
+    if hass.state == CoreState.running:
+        hass_started()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
+
+
 async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     ems: Ems = Ems(hass=hass)
 
@@ -268,5 +388,6 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
 
     listen_for_state_changes(hass, entry, ems)
     listen_for_block_battery_charge(hass, entry)
+    listen_for_grid_export_recommendations(hass, entry)
 
     return ems

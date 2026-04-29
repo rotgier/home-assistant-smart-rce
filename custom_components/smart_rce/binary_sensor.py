@@ -74,6 +74,11 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         value_fn=lambda ems: ems.water_heater.balanced_upgrade_active,
         icon="mdi:arrow-up-bold",
     ),
+    EmsBinarySensorDescription(
+        name="Grid Export Intervention Active",
+        value_fn=lambda ems: ems.grid_export.intervention_active,
+        icon="mdi:transmission-tower-export",
+    ),
 )
 
 

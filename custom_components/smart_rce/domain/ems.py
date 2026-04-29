@@ -11,6 +11,7 @@ from statistics import mean
 from typing import Final
 
 from custom_components.smart_rce.domain.battery import BatteryManager
+from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
@@ -37,12 +38,16 @@ class Ems:
         self.current_price: float = None
         self.battery: BatteryManager = BatteryManager(hass=hass)
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
+        self.grid_export: GridExportManager = GridExportManager()
 
     def update_state(self, state: InputState) -> None:
         # battery FIRST — oblicza flagi (hourly_balance_negative, block_charge)
         # które czytają inne managery.
         self.battery.update(state)
         self.water_heater.update(state, self.battery)
+        # grid_export jest niezależny od battery/water_heater, ale wykonujemy
+        # po nich dla deterministyczności (gdyby kiedykolwiek dorzucić cross-deps).
+        self.grid_export.update(state)
         self._async_update_listeners()
 
     def update_hourly(self, now: datetime) -> None:

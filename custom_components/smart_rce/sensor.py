@@ -261,6 +261,24 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: ems.water_heater.balanced_export_bonus_w,
         icon="mdi:transmission-tower-export",
     ),
+    EmsSensorDescription(
+        name="Grid Export Recommended Xset",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: ems.grid_export.recommended_xset,
+        icon="mdi:flash",
+    ),
+    EmsSensorDescription(
+        name="Grid Export Recommended EMS Mode",
+        value_fn=lambda ems: ems.grid_export.recommended_ems_mode,
+        icon="mdi:cog-outline",
+    ),
+    EmsSensorDescription(
+        name="Grid Export Last Decision Reason",
+        value_fn=lambda ems: ems.grid_export.last_decision_reason,
+        icon="mdi:information-outline",
+    ),
 )
 
 

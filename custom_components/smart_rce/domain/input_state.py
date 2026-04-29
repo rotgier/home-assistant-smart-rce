@@ -63,4 +63,33 @@ class InputState:
     # brak drogich godzin do ochrony surplus PV. Block_charge i
     # afternoon-dynamic bez zmian.
 
+    pv_power: float | None = None
+    # sensor.pv_power (W) — chwilowa moc PV (DC). Używane przez
+    # GridExportManager do progu STANDBY (<200W → bateria stop).
+
+    battery_power_max_18s: float | None = None
+    # sensor.battery_power_max_18s (W, statistics value_max max_age 18s).
+    # Konwencja: charging = NEGATIVE (bateria pobiera moc). max z 18s = wartość
+    # NAJBLIŻSZA ZERA (najmniej intensywne ładowanie w okresie).
+    # Próg < -2500 W → bateria stale ładuje się ≥ 2.5 kW (intensywne).
+    # Próg < -4900 W → bateria blisko BMS cap (5.5 kW), PV cięcie zaraz.
+    # Używane przez GridExportManager state machine.
+
+    meter_active_power_total_max_18s: float | None = None
+    # sensor.meter_active_power_total_max_18s (W, statistics value_max max_age 18s).
+    # Konwencja: import = NEGATIVE (z grida do domu). max z 18s = wartość
+    # NAJBLIŻSZA ZERA (najmniej intensywny import).
+    # Próg < -3900 W → meter stale importuje ≥ 3.9 kW (CHARGE za agresywne).
+    # Używane przez GridExportManager state machine do switch CHARGE→BUY.
+
+    goodwe_ems_mode: str | None = None
+    # select.goodwe_ems_mode — aktualny tryb EMS Goodwe (auto, charge_battery,
+    # battery_standby, sell_power, etc.). Diagnostic.
+
+    other_ems_automation_active_this_hour: bool | None = None
+    # binary_sensor.ems_other_automation_active_this_hour (HA template).
+    # True gdy któraś z innych automatyzacji EMS (battery_charge_*,
+    # battery_discharge_*) odpaliła się w bieżącej godzinie. Używane przez
+    # GridExportManager jako entry gate.
+
     now: datetime | None = None
