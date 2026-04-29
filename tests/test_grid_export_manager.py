@@ -43,6 +43,8 @@ def _state(
     meter_active_power_total_max_18s: float | None = -1000.0,  # import 1kW
     start_charge_hour_override: time | None = time(10, 0),
     other_ems_automation_active_this_hour: bool | None = False,
+    grid_export_strategy_mode: str
+    | None = "all",  # default "all" w testach (full state machine)
 ) -> InputState:
     return InputState(
         now=now,
@@ -55,6 +57,7 @@ def _state(
         meter_active_power_total_max_18s=meter_active_power_total_max_18s,
         start_charge_hour_override=start_charge_hour_override,
         other_ems_automation_active_this_hour=other_ems_automation_active_this_hour,
+        grid_export_strategy_mode=grid_export_strategy_mode,
     )
 
 
@@ -458,6 +461,99 @@ class TestNonePresent:
         assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 6000
         assert mgr.last_decision_reason == "low_bms_charge"
+
+
+class TestStrategyMode:
+    """input_select.smart_rce_grid_export_strategy_mode kontroluje manager."""
+
+    def test_disabled_intervention_off_diagnostic_in_reason(self):
+        """Disabled → recommended=auto, intervention_active=False, reason ma would-be info."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                battery_power_max_18s=-3000,  # would-be: entry_charge_intense_charging
+                grid_export_strategy_mode="disabled",
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.recommended_ems_mode == "auto"
+        assert mgr.recommended_xset is None
+        assert "disabled" in mgr.last_decision_reason
+        assert "charge_battery" in mgr.last_decision_reason
+        assert "6000W" in mgr.last_decision_reason
+
+    def test_disabled_when_no_intervention_pure_diagnostic(self):
+        """Disabled + balance below threshold → reason = 'disabled (balance_below_threshold)'."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.03,  # below entry threshold
+                grid_export_strategy_mode="disabled",
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.recommended_ems_mode == "auto"
+        assert mgr.last_decision_reason == "disabled (balance_below_threshold)"
+
+    def test_charge_or_standby_high_pv_force_charge(self):
+        """charge_or_standby + PV>=200 → CHARGE 6000 force (bez state machine)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                battery_power_max_18s=-100,  # weak charging — w 'all' byłby BUY
+                grid_export_strategy_mode="charge_or_standby",
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "charge_battery"
+        assert mgr.recommended_xset == 6000
+        assert mgr.last_decision_reason == "charge_or_standby_force_charge"
+
+    def test_charge_or_standby_low_pv_standby(self):
+        """charge_or_standby + PV<200 → STANDBY (priority)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                now=EVENING,
+                exported_energy_hourly=0.10,
+                pv_power=50,
+                grid_export_strategy_mode="charge_or_standby",
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "battery_standby"
+        assert mgr.recommended_xset is None
+        assert mgr.last_decision_reason == "low_pv_standby"
+
+    def test_all_full_state_machine(self):
+        """All → pełny state machine (CHARGE↔BUY↔STANDBY)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                battery_power_max_18s=-100,  # weak charging → entry BUY
+                grid_export_strategy_mode="all",
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "buy_power"
+        assert mgr.recommended_xset == 1500
+
+    def test_none_strategy_mode_defaults_to_disabled(self):
+        """grid_export_strategy_mode=None (helper niegotowy) → traktuj jak disabled."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                battery_power_max_18s=-3000,
+                grid_export_strategy_mode=None,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.recommended_ems_mode == "auto"
+        assert "no_strategy_mode" in mgr.last_decision_reason
 
 
 class TestIdempotency:

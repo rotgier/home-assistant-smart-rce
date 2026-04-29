@@ -92,6 +92,11 @@ class GridExportManager:
     CHARGE_MODE: Final[str] = "charge_battery"
     BUY_POWER_MODE: Final[str] = "buy_power"
 
+    # Strategy modes (input_select.smart_rce_grid_export_strategy_mode)
+    STRATEGY_MODE_DISABLED: Final[str] = "disabled"
+    STRATEGY_MODE_CHARGE_OR_STANDBY: Final[str] = "charge_or_standby"
+    STRATEGY_MODE_ALL: Final[str] = "all"
+
     def __init__(self) -> None:
         self.intervention_active: bool = False
         self.recommended_ems_mode: str = self.AUTO_MODE
@@ -120,25 +125,63 @@ class GridExportManager:
         if self.intervention_active:
             if state.now.hour != self._intervention_started_hour:
                 self._set_neutral("hour_rollover")
+                self._apply_disabled_override_if_needed(state)
                 return
             exit_reason = self._exit_reason(state)
             if exit_reason is not None:
                 self._set_neutral(exit_reason)
+                self._apply_disabled_override_if_needed(state)
                 return
             # Continue active — re-evaluate strategy (może się zmienić)
             self._apply_strategy(state)
+            self._apply_disabled_override_if_needed(state)
             return
 
         # 4. Entry gates (gdy not intervention_active)
         entry_block_reason = self._entry_block_reason(state)
         if entry_block_reason is not None:
             self._set_neutral(entry_block_reason)
+            self._apply_disabled_override_if_needed(state)
             return
 
         # 5. Entry approved — start intervention
         self.intervention_active = True
         self._intervention_started_hour = state.now.hour
         self._apply_strategy(state)
+        # 6. Final: jeśli disabled, override main outputs (intervention off),
+        #    ale zachowaj would-be info w last_decision_reason
+        self._apply_disabled_override_if_needed(state)
+
+    def _apply_disabled_override_if_needed(self, state: InputState) -> None:
+        """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.
+
+        Manager już wystawił recommended_* (would-be decision). Teraz nadpisujemy
+        na AUTO/None (intervention off, listener cofa Goodwe), zachowując
+        diagnostykę w last_decision_reason.
+
+        Defensive: None → traktuj jak "disabled" (safe default gdy helper
+        jeszcze nieskonfigurowany).
+        """
+        mode = state.grid_export_strategy_mode
+        if mode in (self.STRATEGY_MODE_CHARGE_OR_STANDBY, self.STRATEGY_MODE_ALL):
+            return  # active mode — main outputs zostawiamy
+        # mode is "disabled" or None — override
+        would_be_mode = self.recommended_ems_mode
+        would_be_xset = self.recommended_xset
+        would_be_reason = self.last_decision_reason
+        prefix = (
+            "disabled" if mode == self.STRATEGY_MODE_DISABLED else "no_strategy_mode"
+        )
+        if would_be_mode == self.AUTO_MODE:
+            self.last_decision_reason = f"{prefix} ({would_be_reason})"
+        else:
+            xset_str = f" {would_be_xset}W" if would_be_xset else ""
+            self.last_decision_reason = (
+                f"{prefix} (would: {would_be_mode}{xset_str}, {would_be_reason})"
+            )
+        self.intervention_active = False
+        self.recommended_ems_mode = self.AUTO_MODE
+        self.recommended_xset = None
 
     # --- gates ---
 
@@ -220,12 +263,20 @@ class GridExportManager:
             self.last_decision_reason = "low_pv_standby"
             return
 
-        # 2. battery_charge_limit None → defensive, czekamy na sensor
+        # 2. charge_or_standby mode — CHARGE_BATTERY 6000 force, bez BUY_POWER
+        # (PV<200 już obsłużone w kroku 1 — STANDBY)
+        if state.grid_export_strategy_mode == self.STRATEGY_MODE_CHARGE_OR_STANDBY:
+            self.recommended_ems_mode = self.CHARGE_MODE
+            self.recommended_xset = self.CHARGE_BATTERY_XSET_W
+            self.last_decision_reason = "charge_or_standby_force_charge"
+            return
+
+        # 3. battery_charge_limit None → defensive, czekamy na sensor
         if state.battery_charge_limit is None:
             self._set_neutral("none_battery_charge_limit")
             return
 
-        # 3. Low BMS branch — CHARGE_BATTERY 6000, bez state machine
+        # 4. Low BMS branch — CHARGE_BATTERY 6000, bez state machine
         # (nie wymaga battery_power_max_18s ani meter_max_18s)
         if state.battery_charge_limit <= self.BMS_LOW_LIMIT_A:
             self.recommended_ems_mode = self.CHARGE_MODE
@@ -233,7 +284,7 @@ class GridExportManager:
             self.last_decision_reason = "low_bms_charge"
             return
 
-        # 4. High BMS branch — wymaga max_18s sensors
+        # 5. High BMS branch — wymaga max_18s sensors
         if self._none_present_high_bms_machine(state):
             self._set_neutral("none_present_high_bms_machine")
             return

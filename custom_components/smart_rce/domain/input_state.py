@@ -92,4 +92,11 @@ class InputState:
     # battery_discharge_*) odpaliła się w bieżącej godzinie. Używane przez
     # GridExportManager jako entry gate.
 
+    grid_export_strategy_mode: str | None = None
+    # input_select.smart_rce_grid_export_strategy_mode — runtime kontrola
+    # GridExportManager. Opcje: "disabled" (intervention off, manager
+    # diagnostuje would-be), "charge_or_standby" (tylko CHARGE_BATTERY 6000
+    # lub STANDBY, bez BUY_POWER), "all" (pełny state machine).
+    # Defensive: gdy None → manager traktuje jako "disabled" (safe default).
+
     now: datetime | None = None

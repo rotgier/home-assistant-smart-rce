@@ -160,6 +160,13 @@ def set_other_ems_automation_active_this_hour(
     i.other_ems_automation_active_this_hour = map_on_off(entity, state)
 
 
+def set_grid_export_strategy_mode(entity: str, i: InputState, state: str) -> None:
+    if state in (None, "", "unavailable", "unknown"):
+        i.grid_export_strategy_mode = None
+        return
+    i.grid_export_strategy_mode = state
+
+
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "switch.water_heater_big_relay": set_water_heater_big_is_on,
     "switch.water_heater_small_relay": set_water_heater_small_is_on,
@@ -182,6 +189,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "sensor.meter_active_power_total_max_18s": set_meter_active_power_total_max_18s,
     "select.goodwe_ems_mode": set_goodwe_ems_mode,
     "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
+    "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
 }
 
 
