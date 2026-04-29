@@ -111,6 +111,10 @@ class GridExportManager:
         (0, 2000),
         (-1000, 1000),
     )
+    # Low BMS shortcut dla charge_adaptive — gdy BMS clamp na ~2 kW (charge_limit
+    # ≤ 7A), nie ma sensu obliczać Xset z lookup. Stałe 3500 W (BMS i tak
+    # ograniczy charge do ~2 kW, +1.5 kW margines).
+    CHARGE_ADAPTIVE_LOW_BMS_XSET_W: Final[int] = 3500
 
     def __init__(self) -> None:
         self.intervention_active: bool = False
@@ -306,6 +310,19 @@ class GridExportManager:
         if state.grid_export_strategy_mode == self.STRATEGY_MODE_CHARGE_ADAPTIVE:
             if state.consumption_minus_pv_2_minutes is None:
                 self._set_neutral("none_consumption_minus_pv_2_minutes")
+                return
+            # Low BMS shortcut — bateria clamp ~2 kW, nie ma sensu kombinować
+            # z lookup. Stałe Xset 3500 (BMS ograniczy do BMS_max).
+            if (
+                state.battery_charge_limit is not None
+                and state.battery_charge_limit <= self.BMS_LOW_LIMIT_A
+            ):
+                self.recommended_ems_mode = self.CHARGE_MODE
+                self.recommended_xset = self.CHARGE_ADAPTIVE_LOW_BMS_XSET_W
+                self.last_decision_reason = (
+                    f"charge_adaptive_low_bms_"
+                    f"{self.CHARGE_ADAPTIVE_LOW_BMS_XSET_W}W"
+                )
                 return
             pv_available = -state.consumption_minus_pv_2_minutes
             for threshold, xset in self.CHARGE_ADAPTIVE_BUCKETS:

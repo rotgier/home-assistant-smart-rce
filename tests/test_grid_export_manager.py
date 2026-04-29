@@ -705,6 +705,62 @@ class TestStrategyModeChargeAdaptive:
         assert mgr.recommended_ems_mode == "auto"
         assert mgr.last_decision_reason == "none_consumption_minus_pv_2_minutes"
 
+    def test_low_bms_shortcut_xset_3500(self):
+        """charge_adaptive + battery_charge_limit ≤ 7A → Xset 3500 (BMS clamp)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-5000,  # pv_avail 5000 (lookup → 6000)
+                battery_charge_limit=2,  # low BMS
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        # Low BMS shortcut wins — Xset 3500 zamiast lookup 6000
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "charge_battery"
+        assert mgr.recommended_xset == 3500
+        assert "low_bms" in mgr.last_decision_reason
+
+    def test_low_bms_boundary_7_uses_shortcut(self):
+        """battery_charge_limit = 7 (próg ≤) → low BMS shortcut."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-5000,
+                battery_charge_limit=7,  # boundary
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 3500
+
+    def test_low_bms_above_threshold_uses_lookup(self):
+        """battery_charge_limit > 7 → normalna lookup."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-5000,
+                battery_charge_limit=8,  # above threshold
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 6000  # lookup bucket pv_avail > 4000
+
+    def test_low_bms_with_none_charge_limit_uses_lookup(self):
+        """battery_charge_limit=None → defensive, użyj lookup (nie blokuj manager)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-5000,
+                battery_charge_limit=None,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 6000  # lookup, bez low_bms shortcut
+
     def test_pv_low_standby_overrides_charge_adaptive(self):
         """pv_power_avg_2_minutes < 200 → STANDBY priority nad charge_adaptive."""
         mgr = GridExportManager()
