@@ -20,23 +20,23 @@ Strategie (state machine):
 Decision tree:
 1. pv_power < 200W → STANDBY
 2. battery_charge_limit ≤ 7A → CHARGE_BATTERY 6000 (BMS sam ograniczy charge)
-3. battery_charge_limit > 7A → state machine na battery/meter intensity (18s window)
+3. battery_charge_limit > 7A → state machine na battery/meter intensity (27s mean window)
 
-State machine używa "minimum intensywności w 18s" liczone jako
-`-battery_power_max_18s` (charging) i `-meter_active_power_total_max_18s`
+State machine używa "średniej intensywności w 27s" liczone jako
+`-battery_power_avg_27s` (charging) i `-meter_active_power_total_avg_27s`
 (import) — sensory HA mapują wartości UJEMNE (charging/import), my w
 _apply_strategy konwertujemy na DODATNIE dla czytelności progów.
 
 Progi:
-- entry CHARGE: battery_charging_min_18s > 2.5 kW (intensywne ładowanie sprzed)
-- switch CHARGE→BUY: meter_import_min_18s > 3.9 kW (za agresywny import)
-- switch BUY→CHARGE: battery_charging_min_18s > 4.9 kW (BMS cap blisko)
+- entry CHARGE: battery_charging_avg_27s > 2.5 kW (intensywne ładowanie sprzed)
+- switch CHARGE→BUY: meter_import_avg_27s > 3.9 kW (za agresywny import)
+- switch BUY→CHARGE: battery_charging_avg_27s > 4.9 kW (BMS cap blisko)
 
-Hysteresis: window 18s (3-4 próbki @ scan_interval=5s) + math thresholds
-(~0.9-1.1 kW gap między progami CHARGE/BUY) — brak dodatkowego
-min-time-in-mode debouncingu.
+Hysteresis: window 27s mean (5-6 próbek @ scan_interval=5s) — mean rozprasza
+wpływ single outliers z Goodwe Modbus + math thresholds (~0.9-1.1 kW gap
+między progami CHARGE/BUY). Brak dodatkowego min-time-in-mode debouncingu.
 
-Defensive: gdy battery_charge_limit lub max_18s sensors są None (np. po HA
+Defensive: gdy battery_charge_limit lub avg_27s sensors są None (np. po HA
 restart, sensory unavailable przez ~25-50ms) → no-op, manager wraca do AUTO,
 listener wraca rejestry do AUTO. Po załadowaniu sensorów manager re-evaluuje.
 """
@@ -65,8 +65,8 @@ class GridExportManager:
     EXIT_END_OF_HOUR_MINUTE: Final[int] = 59
     EXIT_END_OF_HOUR_SECOND: Final[int] = 50
 
-    # Strategy thresholds (wartości DODATNIE — porównujemy do `_min_18s`,
-    # wyliczanych jako -battery_power_max_18s i -meter_active_power_total_max_18s).
+    # Strategy thresholds (wartości DODATNIE — porównujemy do `_avg_27s`,
+    # wyliczanych jako -battery_power_avg_27s i -meter_active_power_total_avg_27s).
     PV_STANDBY_THRESHOLD_W: Final[int] = 200
     BMS_LOW_LIMIT_A: Final[int] = 7  # battery_charge_limit ≤ 7A → "low BMS" branch
     BATTERY_CHARGING_INTENSE_W: Final[int] = (
@@ -202,8 +202,8 @@ class GridExportManager:
         Nie wymagane dla low-BMS branch (CHARGE 6000 fallback).
         """
         return (
-            state.battery_power_max_18s is None
-            or state.meter_active_power_total_max_18s is None
+            state.battery_power_avg_27s is None
+            or state.meter_active_power_total_avg_27s is None
         )
 
     @classmethod
@@ -277,31 +277,31 @@ class GridExportManager:
             return
 
         # 4. Low BMS branch — CHARGE_BATTERY 6000, bez state machine
-        # (nie wymaga battery_power_max_18s ani meter_max_18s)
+        # (nie wymaga battery_power_avg_27s ani meter_avg_27s)
         if state.battery_charge_limit <= self.BMS_LOW_LIMIT_A:
             self.recommended_ems_mode = self.CHARGE_MODE
             self.recommended_xset = self.CHARGE_BATTERY_XSET_W
             self.last_decision_reason = "low_bms_charge"
             return
 
-        # 5. High BMS branch — wymaga max_18s sensors
+        # 5. High BMS branch — wymaga avg_27s sensors
         if self._none_present_high_bms_machine(state):
             self._set_neutral("none_present_high_bms_machine")
             return
 
         # State machine (CHARGE_BATTERY ↔ BUY_POWER)
         # Konwersja na wartości dodatnie dla czytelnych progów:
-        # - battery_power: ujemne = charging → battery_charging_min_18s = minimum mocy ładowania
-        # - meter_active_power: ujemne = import → meter_import_min_18s = minimum mocy importu
+        # - battery_power: ujemne = charging → battery_charging_avg_27s = minimum mocy ładowania
+        # - meter_active_power: ujemne = import → meter_import_avg_27s = minimum mocy importu
         # max(ujemne) = wartość najbliższa zera = NAJMNIEJSZA intensywność,
         # więc -max(ujemne) = minimum INTENSYWNOŚCI (charging/import) w oknie 18s.
-        battery_charging_min_18s = -state.battery_power_max_18s
-        meter_import_min_18s = -state.meter_active_power_total_max_18s
+        battery_charging_avg_27s = -state.battery_power_avg_27s
+        meter_import_avg_27s = -state.meter_active_power_total_avg_27s
         current = self.recommended_ems_mode
 
         if current == self.CHARGE_MODE:
             # Wyjście z CHARGE: gdy importujemy stale ≥ 3.9 kW (za agresywne)
-            if meter_import_min_18s > self.METER_IMPORT_AGGRESSIVE_W:
+            if meter_import_avg_27s > self.METER_IMPORT_AGGRESSIVE_W:
                 self.recommended_ems_mode = self.BUY_POWER_MODE
                 self.recommended_xset = self.BUY_POWER_XSET_W
                 self.last_decision_reason = "switch_charge_to_buy_meter_aggressive"
@@ -310,14 +310,14 @@ class GridExportManager:
                 self.last_decision_reason = "stay_charge_battery"
         elif current == self.BUY_POWER_MODE:
             # Wyjście z BUY: gdy bateria stale ≥ 4.9 kW (BMS cap blisko, PV cięcie zaraz)
-            if battery_charging_min_18s > self.BATTERY_NEAR_BMS_CAP_W:
+            if battery_charging_avg_27s > self.BATTERY_NEAR_BMS_CAP_W:
                 self.recommended_ems_mode = self.CHARGE_MODE
                 self.recommended_xset = self.CHARGE_BATTERY_XSET_W
                 self.last_decision_reason = "switch_buy_to_charge_near_bms_cap"
             else:
                 self.recommended_xset = self.BUY_POWER_XSET_W
                 self.last_decision_reason = "stay_buy_power"
-        elif battery_charging_min_18s > self.BATTERY_CHARGING_INTENSE_W:
+        elif battery_charging_avg_27s > self.BATTERY_CHARGING_INTENSE_W:
             self.recommended_ems_mode = self.CHARGE_MODE
             self.recommended_xset = self.CHARGE_BATTERY_XSET_W
             self.last_decision_reason = "entry_charge_intense_charging"

@@ -67,19 +67,19 @@ class InputState:
     # sensor.pv_power (W) — chwilowa moc PV (DC). Używane przez
     # GridExportManager do progu STANDBY (<200W → bateria stop).
 
-    battery_power_max_18s: float | None = None
-    # sensor.battery_power_max_18s (W, statistics value_max max_age 18s).
-    # Konwencja: charging = NEGATIVE (bateria pobiera moc). max z 18s = wartość
-    # NAJBLIŻSZA ZERA (najmniej intensywne ładowanie w okresie).
-    # Próg < -2500 W → bateria stale ładuje się ≥ 2.5 kW (intensywne).
+    battery_power_avg_27s: float | None = None
+    # sensor.battery_power_avg_27s (W, statistics mean max_age 27s).
+    # Konwencja: charging = NEGATIVE (bateria pobiera moc). Mean z 5-6 próbek
+    # daje stabilny "średni intensywność charging" — mniej wrażliwy na single
+    # outliers z Goodwe Modbus niż max_18s.
+    # Próg < -2500 W → bateria średnio ładuje się ≥ 2.5 kW (intensywne).
     # Próg < -4900 W → bateria blisko BMS cap (5.5 kW), PV cięcie zaraz.
     # Używane przez GridExportManager state machine.
 
-    meter_active_power_total_max_18s: float | None = None
-    # sensor.meter_active_power_total_max_18s (W, statistics value_max max_age 18s).
-    # Konwencja: import = NEGATIVE (z grida do domu). max z 18s = wartość
-    # NAJBLIŻSZA ZERA (najmniej intensywny import).
-    # Próg < -3900 W → meter stale importuje ≥ 3.9 kW (CHARGE za agresywne).
+    meter_active_power_total_avg_27s: float | None = None
+    # sensor.meter_active_power_total_avg_27s (W, statistics mean max_age 27s).
+    # Konwencja: import = NEGATIVE (z grida do domu). Mean z 5-6 próbek.
+    # Próg < -3900 W → meter średnio importuje ≥ 3.9 kW (CHARGE za agresywne).
     # Używane przez GridExportManager state machine do switch CHARGE→BUY.
 
     goodwe_ems_mode: str | None = None

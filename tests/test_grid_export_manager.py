@@ -6,11 +6,11 @@ Active window: post_charge → next day 7:00 (skip pre_charge).
 Konwencja sensorów (mletenay/Goodwe):
 - battery_power: ujemne = charging
 - meter_active_power_total: ujemne = import
-- *_max_18s = max wartość w 18s (dla wartości ujemnych = NAJMNIEJ INTENSYWNE)
+- *_avg_27s = max wartość w 18s (dla wartości ujemnych = NAJMNIEJ INTENSYWNE)
 
 W _apply_strategy konwertujemy na dodatnie:
-- battery_charging_min_18s = -battery_power_max_18s
-- meter_import_min_18s = -meter_active_power_total_max_18s
+- battery_charging_avg_27s = -battery_power_avg_27s
+- meter_import_avg_27s = -meter_active_power_total_avg_27s
 """
 
 from datetime import datetime, time
@@ -39,8 +39,8 @@ def _state(
     battery_charge_toggle_on: bool | None = True,
     pv_power: float | None = 3000.0,
     battery_charge_limit: float | None = 18.0,  # high BMS
-    battery_power_max_18s: float | None = -3000.0,  # charging 3kW
-    meter_active_power_total_max_18s: float | None = -1000.0,  # import 1kW
+    battery_power_avg_27s: float | None = -3000.0,  # charging 3kW
+    meter_active_power_total_avg_27s: float | None = -1000.0,  # import 1kW
     start_charge_hour_override: time | None = time(10, 0),
     other_ems_automation_active_this_hour: bool | None = False,
     grid_export_strategy_mode: str
@@ -53,8 +53,8 @@ def _state(
         battery_charge_toggle_on=battery_charge_toggle_on,
         pv_power=pv_power,
         battery_charge_limit=battery_charge_limit,
-        battery_power_max_18s=battery_power_max_18s,
-        meter_active_power_total_max_18s=meter_active_power_total_max_18s,
+        battery_power_avg_27s=battery_power_avg_27s,
+        meter_active_power_total_avg_27s=meter_active_power_total_avg_27s,
         start_charge_hour_override=start_charge_hour_override,
         other_ems_automation_active_this_hour=other_ems_automation_active_this_hour,
         grid_export_strategy_mode=grid_export_strategy_mode,
@@ -65,12 +65,12 @@ class TestEntryStrategy:
     """Wybór strategii przy wejściu w intervention (high BMS branch)."""
 
     def test_entry_charge_battery_after_intense_charging(self):
-        """battery_charging_min_18s > 2.5 kW → CHARGE_BATTERY 6000."""
+        """battery_charging_avg_27s > 2.5 kW → CHARGE_BATTERY 6000."""
         mgr = GridExportManager()
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,  # 3 kW sustained charging > 2.5 kW
+                battery_power_avg_27s=-3000,  # 3 kW sustained charging > 2.5 kW
             )
         )
         assert mgr.intervention_active is True
@@ -79,12 +79,12 @@ class TestEntryStrategy:
         assert mgr.last_decision_reason == "entry_charge_intense_charging"
 
     def test_entry_buy_power_default(self):
-        """battery_charging_min_18s ≤ 2.5 kW → BUY_POWER 1500."""
+        """battery_charging_avg_27s ≤ 2.5 kW → BUY_POWER 1500."""
         mgr = GridExportManager()
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-1000,  # 1 kW charging, below threshold
+                battery_power_avg_27s=-1000,  # 1 kW charging, below threshold
             )
         )
         assert mgr.intervention_active is True
@@ -114,7 +114,7 @@ class TestEntryStrategy:
             _state(
                 exported_energy_hourly=0.10,
                 battery_charge_limit=2,
-                battery_power_max_18s=-500,  # nawet niskie charging
+                battery_power_avg_27s=-500,  # nawet niskie charging
             )
         )
         assert mgr.intervention_active is True
@@ -127,14 +127,14 @@ class TestStateMachineSwitches:
     """Switching CHARGE↔BUY w trakcie intervention."""
 
     def test_charge_to_buy_when_meter_aggressive_import(self):
-        """CHARGE → BUY gdy meter_import_min_18s > 3.9 kW."""
+        """CHARGE → BUY gdy meter_import_avg_27s > 3.9 kW."""
         mgr = GridExportManager()
         # Entry CHARGE
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,  # entry CHARGE
-                meter_active_power_total_max_18s=-1000,
+                battery_power_avg_27s=-3000,  # entry CHARGE
+                meter_active_power_total_avg_27s=-1000,
             )
         )
         assert mgr.recommended_ems_mode == "charge_battery"
@@ -142,8 +142,8 @@ class TestStateMachineSwitches:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,
-                meter_active_power_total_max_18s=-4500,  # 4.5 kW import sustained
+                battery_power_avg_27s=-3000,
+                meter_active_power_total_avg_27s=-4500,  # 4.5 kW import sustained
             )
         )
         assert mgr.recommended_ems_mode == "buy_power"
@@ -151,14 +151,14 @@ class TestStateMachineSwitches:
         assert mgr.last_decision_reason == "switch_charge_to_buy_meter_aggressive"
 
     def test_buy_to_charge_when_battery_near_bms_cap(self):
-        """BUY → CHARGE gdy battery_charging_min_18s > 4.9 kW."""
+        """BUY → CHARGE gdy battery_charging_avg_27s > 4.9 kW."""
         mgr = GridExportManager()
         # Entry BUY
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-1000,  # entry BUY
-                meter_active_power_total_max_18s=-1500,
+                battery_power_avg_27s=-1000,  # entry BUY
+                meter_active_power_total_avg_27s=-1500,
             )
         )
         assert mgr.recommended_ems_mode == "buy_power"
@@ -166,8 +166,8 @@ class TestStateMachineSwitches:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-5100,  # 5.1 kW sustained charging
-                meter_active_power_total_max_18s=-1500,
+                battery_power_avg_27s=-5100,  # 5.1 kW sustained charging
+                meter_active_power_total_avg_27s=-1500,
             )
         )
         assert mgr.recommended_ems_mode == "charge_battery"
@@ -175,31 +175,31 @@ class TestStateMachineSwitches:
         assert mgr.last_decision_reason == "switch_buy_to_charge_near_bms_cap"
 
     def test_stay_charge_when_meter_below_threshold(self):
-        """W CHARGE: meter_import_min_18s ≤ 3.9 kW → stay CHARGE."""
+        """W CHARGE: meter_import_avg_27s ≤ 3.9 kW → stay CHARGE."""
         mgr = GridExportManager()
-        mgr.update(_state(exported_energy_hourly=0.10, battery_power_max_18s=-3000))
+        mgr.update(_state(exported_energy_hourly=0.10, battery_power_avg_27s=-3000))
         assert mgr.recommended_ems_mode == "charge_battery"
         # Meter import 3 kW (poniżej progu 3.9)
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,
-                meter_active_power_total_max_18s=-3000,
+                battery_power_avg_27s=-3000,
+                meter_active_power_total_avg_27s=-3000,
             )
         )
         assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.last_decision_reason == "stay_charge_battery"
 
     def test_stay_buy_when_battery_below_cap(self):
-        """W BUY: battery_charging_min_18s ≤ 4.9 kW → stay BUY."""
+        """W BUY: battery_charging_avg_27s ≤ 4.9 kW → stay BUY."""
         mgr = GridExportManager()
-        mgr.update(_state(exported_energy_hourly=0.10, battery_power_max_18s=-1000))
+        mgr.update(_state(exported_energy_hourly=0.10, battery_power_avg_27s=-1000))
         assert mgr.recommended_ems_mode == "buy_power"
         # Bateria 4 kW (poniżej progu 4.9)
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-4000,
+                battery_power_avg_27s=-4000,
             )
         )
         assert mgr.recommended_ems_mode == "buy_power"
@@ -214,14 +214,14 @@ class TestStrategyOverride:
         mgr = GridExportManager()
         mgr.update(
             _state(
-                exported_energy_hourly=0.10, battery_power_max_18s=-3000, pv_power=3000
+                exported_energy_hourly=0.10, battery_power_avg_27s=-3000, pv_power=3000
             )
         )
         assert mgr.recommended_ems_mode == "charge_battery"
         # PV zniknęło
         mgr.update(
             _state(
-                exported_energy_hourly=0.10, battery_power_max_18s=-3000, pv_power=50
+                exported_energy_hourly=0.10, battery_power_avg_27s=-3000, pv_power=50
             )
         )
         assert mgr.intervention_active is True
@@ -256,7 +256,7 @@ class TestEntryGates:
     def test_balance_just_above_threshold(self):
         """Hourly = 0.061 → entry."""
         mgr = GridExportManager()
-        mgr.update(_state(exported_energy_hourly=0.061, battery_power_max_18s=-3000))
+        mgr.update(_state(exported_energy_hourly=0.061, battery_power_avg_27s=-3000))
         assert mgr.intervention_active is True
 
     def test_soc_at_ceiling(self):
@@ -285,7 +285,7 @@ class TestEntryGates:
             _state(
                 now=just_before,
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,
+                battery_power_avg_27s=-3000,
             )
         )
         assert mgr.intervention_active is True
@@ -308,9 +308,9 @@ class TestExitGates:
     def test_exit_balance_recovered(self):
         """Hourly < 0.05 → exit."""
         mgr = GridExportManager()
-        mgr.update(_state(exported_energy_hourly=0.10, battery_power_max_18s=-3000))
+        mgr.update(_state(exported_energy_hourly=0.10, battery_power_avg_27s=-3000))
         assert mgr.intervention_active is True
-        mgr.update(_state(exported_energy_hourly=0.04, battery_power_max_18s=-3000))
+        mgr.update(_state(exported_energy_hourly=0.04, battery_power_avg_27s=-3000))
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
         assert mgr.recommended_xset is None
@@ -320,7 +320,7 @@ class TestExitGates:
         mgr = GridExportManager()
         mgr.update(
             _state(
-                exported_energy_hourly=0.10, battery_soc=99, battery_power_max_18s=-3000
+                exported_energy_hourly=0.10, battery_soc=99, battery_power_avg_27s=-3000
             )
         )
         assert mgr.intervention_active is True
@@ -328,7 +328,7 @@ class TestExitGates:
             _state(
                 exported_energy_hourly=0.10,
                 battery_soc=100,
-                battery_power_max_18s=-3000,
+                battery_power_avg_27s=-3000,
             )
         )
         assert mgr.intervention_active is False
@@ -336,13 +336,13 @@ class TestExitGates:
 
     def test_exit_toggle_off(self):
         mgr = GridExportManager()
-        mgr.update(_state(exported_energy_hourly=0.10, battery_power_max_18s=-3000))
+        mgr.update(_state(exported_energy_hourly=0.10, battery_power_avg_27s=-3000))
         assert mgr.intervention_active is True
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
                 battery_charge_toggle_on=False,
-                battery_power_max_18s=-3000,
+                battery_power_avg_27s=-3000,
             )
         )
         assert mgr.intervention_active is False
@@ -356,14 +356,14 @@ class TestExitGates:
         """
         mgr = GridExportManager()
         mgr.update(
-            _state(now=NOON, exported_energy_hourly=0.10, battery_power_max_18s=-3000)
+            _state(now=NOON, exported_energy_hourly=0.10, battery_power_avg_27s=-3000)
         )
         assert mgr.intervention_active is True
         mgr.update(
             _state(
                 now=END_OF_HOUR,
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,
+                battery_power_avg_27s=-3000,
             )
         )
         assert mgr.intervention_active is False
@@ -376,14 +376,14 @@ class TestExitGates:
             _state(
                 now=POST_CHARGE,
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,
+                battery_power_avg_27s=-3000,
             )
         )  # hour=11
         assert mgr.intervention_active is True
         assert mgr._intervention_started_hour == 11
         mgr.update(
             _state(
-                now=NEXT_HOUR, exported_energy_hourly=0.10, battery_power_max_18s=-3000
+                now=NEXT_HOUR, exported_energy_hourly=0.10, battery_power_avg_27s=-3000
             )
         )  # hour=13
         assert mgr.intervention_active is False
@@ -428,35 +428,35 @@ class TestNonePresent:
         assert mgr.intervention_active is False
         assert mgr.last_decision_reason == "none_battery_charge_limit"
 
-    def test_none_battery_power_max_18s_in_high_bms_machine(self):
+    def test_none_battery_power_avg_27s_in_high_bms_machine(self):
         mgr = GridExportManager()
-        mgr.update(_state(exported_energy_hourly=0.10, battery_power_max_18s=None))
+        mgr.update(_state(exported_energy_hourly=0.10, battery_power_avg_27s=None))
         assert mgr.intervention_active is False
         assert mgr.last_decision_reason == "none_present_high_bms_machine"
 
-    def test_none_meter_max_18s_in_high_bms_machine(self):
+    def test_none_meter_avg_27s_in_high_bms_machine(self):
         mgr = GridExportManager()
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                meter_active_power_total_max_18s=None,
+                meter_active_power_total_avg_27s=None,
             )
         )
         assert mgr.intervention_active is False
         assert mgr.last_decision_reason == "none_present_high_bms_machine"
 
-    def test_low_bms_branch_does_not_need_max_18s(self):
-        """battery_charge_limit ≤ 7 → CHARGE 6000 nawet bez max_18s sensors."""
+    def test_low_bms_branch_does_not_need_avg_27s(self):
+        """battery_charge_limit ≤ 7 → CHARGE 6000 nawet bez avg_27s sensors."""
         mgr = GridExportManager()
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
                 battery_charge_limit=2,
-                battery_power_max_18s=None,
-                meter_active_power_total_max_18s=None,
+                battery_power_avg_27s=None,
+                meter_active_power_total_avg_27s=None,
             )
         )
-        # Low BMS branch nie wymaga max_18s (CHARGE 6000 jako bezwarunkowy fallback)
+        # Low BMS branch nie wymaga avg_27s (CHARGE 6000 jako bezwarunkowy fallback)
         assert mgr.intervention_active is True
         assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 6000
@@ -472,7 +472,7 @@ class TestStrategyMode:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,  # would-be: entry_charge_intense_charging
+                battery_power_avg_27s=-3000,  # would-be: entry_charge_intense_charging
                 grid_export_strategy_mode="disabled",
             )
         )
@@ -502,7 +502,7 @@ class TestStrategyMode:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-100,  # weak charging — w 'all' byłby BUY
+                battery_power_avg_27s=-100,  # weak charging — w 'all' byłby BUY
                 grid_export_strategy_mode="charge_or_standby",
             )
         )
@@ -533,7 +533,7 @@ class TestStrategyMode:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-100,  # weak charging → entry BUY
+                battery_power_avg_27s=-100,  # weak charging → entry BUY
                 grid_export_strategy_mode="all",
             )
         )
@@ -547,7 +547,7 @@ class TestStrategyMode:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_power_max_18s=-3000,
+                battery_power_avg_27s=-3000,
                 grid_export_strategy_mode=None,
             )
         )
@@ -565,7 +565,7 @@ class TestIdempotency:
 
     def test_two_updates_same_state_keeps_outputs(self):
         mgr = GridExportManager()
-        s = _state(exported_energy_hourly=0.10, battery_power_max_18s=-3000)
+        s = _state(exported_energy_hourly=0.10, battery_power_avg_27s=-3000)
         mgr.update(s)
         snapshot = (
             mgr.intervention_active,

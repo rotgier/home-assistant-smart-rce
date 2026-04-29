@@ -137,14 +137,14 @@ def set_pv_power(entity: str, i: InputState, state: str) -> None:
     i.pv_power = map_float(entity, state)
 
 
-def set_battery_power_max_18s(entity: str, i: InputState, state: str) -> None:
-    i.battery_power_max_18s = map_float(entity, state)
+def set_battery_power_avg_27s(entity: str, i: InputState, state: str) -> None:
+    i.battery_power_avg_27s = map_float(entity, state)
 
 
-def set_meter_active_power_total_max_18s(
+def set_meter_active_power_total_avg_27s(
     entity: str, i: InputState, state: str
 ) -> None:
-    i.meter_active_power_total_max_18s = map_float(entity, state)
+    i.meter_active_power_total_avg_27s = map_float(entity, state)
 
 
 def set_goodwe_ems_mode(entity: str, i: InputState, state: str) -> None:
@@ -192,8 +192,8 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "binary_sensor.rce_should_hold_for_peak": set_rce_should_hold_for_peak,
     "binary_sensor.workday": set_is_workday,
     "sensor.pv_power": set_pv_power,
-    "sensor.battery_power_max_18s": set_battery_power_max_18s,
-    "sensor.meter_active_power_total_max_18s": set_meter_active_power_total_max_18s,
+    "sensor.battery_power_avg_27s": set_battery_power_avg_27s,
+    "sensor.meter_active_power_total_avg_27s": set_meter_active_power_total_avg_27s,
     "select.goodwe_ems_mode": set_goodwe_ems_mode,
     "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
     "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
