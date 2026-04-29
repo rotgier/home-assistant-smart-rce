@@ -39,6 +39,7 @@ def _state(
     battery_charge_toggle_on: bool | None = True,
     pv_power: float | None = 3000.0,
     pv_power_avg_2_minutes: float | None = None,  # None → fallback do pv_power
+    consumption_minus_pv_2_minutes: float | None = None,  # surplus tracking
     battery_charge_limit: float | None = 18.0,  # high BMS
     battery_power_avg_27s: float | None = -3000.0,  # charging 3kW
     meter_active_power_total_avg_27s: float | None = -1000.0,  # import 1kW
@@ -54,6 +55,7 @@ def _state(
         battery_charge_toggle_on=battery_charge_toggle_on,
         pv_power=pv_power,
         pv_power_avg_2_minutes=pv_power_avg_2_minutes,
+        consumption_minus_pv_2_minutes=consumption_minus_pv_2_minutes,
         battery_charge_limit=battery_charge_limit,
         battery_power_avg_27s=battery_power_avg_27s,
         meter_active_power_total_avg_27s=meter_active_power_total_avg_27s,
@@ -588,6 +590,135 @@ class TestStrategyMode:
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
         assert "no_strategy_mode" in mgr.last_decision_reason
+
+
+class TestStrategyModeChargeAdaptive:
+    """charge_adaptive mode: lookup table na pv_available (-consumption_minus_pv_2_minutes).
+
+    pv_avail = -consumption_minus_pv_2_minutes, więc:
+    - consumption_minus_pv = -5000 → pv_avail = 5000
+    - consumption_minus_pv = +500  → pv_avail = -500
+    """
+
+    def test_pv_above_4000_xset_6000(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-5000,  # pv_avail = 5000 > 4000
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "charge_battery"
+        assert mgr.recommended_xset == 6000
+
+    def test_pv_3500_xset_5000(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-3500,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 5000
+
+    def test_pv_2500_xset_4000(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-2500,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 4000
+
+    def test_pv_500_xset_2000(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-500,  # pv_avail = 500 > 0
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 2000
+
+    def test_pv_minus_500_xset_1000(self):
+        """pv_avail między -1000 a 0 → Xset 1000."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=500,  # pv_avail = -500 > -1000
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 1000
+        assert mgr.recommended_ems_mode == "charge_battery"
+
+    def test_pv_minus_1500_auto_intervention_active(self):
+        """pv_avail ≤ -1000 → mode=AUTO ale intervention NADAL active.
+
+        Manager NIE robi _set_neutral — żeby uniknąć flap entry/exit gdy
+        hourly stale > 0.06. Listener cofa Goodwe do AUTO. Gdy pv_avail
+        wzrośnie ponad -1000, manager znów wystawi charge_battery.
+        """
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=1500,  # pv_avail = -1500
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.intervention_active is True  # NADAL active
+        assert mgr.recommended_ems_mode == "auto"
+        assert mgr.recommended_xset is None
+        assert "charge_adaptive_auto" in mgr.last_decision_reason
+
+    def test_pv_boundary_4000_exactly_xset_5000(self):
+        """Próg ścisły `> 4000`. Wartość dokładnie 4000 → Xset 5000 (drugi bucket)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-4000,  # pv_avail = 4000 (nie >4000)
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 5000  # drugi bucket: > 3000
+
+    def test_none_consumption_minus_pv_defensive(self):
+        """consumption_minus_pv_2_minutes=None → defensive no-op."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=None,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.recommended_ems_mode == "auto"
+        assert mgr.last_decision_reason == "none_consumption_minus_pv_2_minutes"
+
+    def test_pv_low_standby_overrides_charge_adaptive(self):
+        """pv_power_avg_2_minutes < 200 → STANDBY priority nad charge_adaptive."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                now=EVENING,
+                exported_energy_hourly=0.10,
+                pv_power=50,
+                consumption_minus_pv_2_minutes=-3000,  # pv_avail 3000 BUT pv<200
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        # PV<200 → STANDBY (krok 1 ma priority nad charge_adaptive)
+        assert mgr.recommended_ems_mode == "battery_standby"
 
 
 class TestIdempotency:

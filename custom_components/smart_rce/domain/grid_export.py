@@ -14,13 +14,15 @@ BatteryManager rządzi przez hysteresis 100/50 Wh + DoD).
 
 Strategie (state machine):
 - BATTERY_STANDBY  — gdy pv_power < 200W (noc, bateria stop)
-- CHARGE_BATTERY   — Xset=6000W, bateria łapie surplus + import z grida
+- CHARGE_BATTERY   — Xset=6000W (lub adaptive), bateria łapie surplus + import
 - BUY_POWER        — Xset=1500W, regulator trzyma meter ≈ 1500W import
 
-Decision tree:
-1. pv_power < 200W → STANDBY
-2. battery_charge_limit ≤ 7A → CHARGE_BATTERY 6000 (BMS sam ograniczy charge)
-3. battery_charge_limit > 7A → state machine na battery/meter intensity (27s mean window)
+Decision tree (`grid_export_strategy_mode`):
+- "charge_or_standby" → tylko CHARGE 6000 lub STANDBY (bez BUY_POWER)
+- "charge_adaptive"  → CHARGE z Xset z lookup table na pv_available
+                      (-consumption_minus_pv_2_minutes); pv_avail ≤ -1000 → AUTO
+- "all"              → pełny state machine na high BMS branch
+- "disabled"         → manager evaluuje, ale intervention off (diagnostic only)
 
 State machine używa "średniej intensywności w 27s" liczone jako
 `-battery_power_avg_27s` (charging) i `-meter_active_power_total_avg_27s`
@@ -96,6 +98,19 @@ class GridExportManager:
     STRATEGY_MODE_DISABLED: Final[str] = "disabled"
     STRATEGY_MODE_CHARGE_OR_STANDBY: Final[str] = "charge_or_standby"
     STRATEGY_MODE_ALL: Final[str] = "all"
+    STRATEGY_MODE_CHARGE_ADAPTIVE: Final[str] = "charge_adaptive"
+
+    # Adaptive charge lookup — pv_available (= -consumption_minus_pv_2_minutes)
+    # mapped na Xset. Każdy próg w (W). Pierwszy spełniający → Xset.
+    # pv_available ≤ -1000 → AUTO (block_discharge w battery.py przejmuje).
+    CHARGE_ADAPTIVE_BUCKETS: Final[tuple[tuple[int, int], ...]] = (
+        (4000, 6000),
+        (3000, 5000),
+        (2000, 4000),
+        (1000, 3000),
+        (0, 2000),
+        (-1000, 1000),
+    )
 
     def __init__(self) -> None:
         self.intervention_active: bool = False
@@ -163,7 +178,12 @@ class GridExportManager:
         jeszcze nieskonfigurowany).
         """
         mode = state.grid_export_strategy_mode
-        if mode in (self.STRATEGY_MODE_CHARGE_OR_STANDBY, self.STRATEGY_MODE_ALL):
+        active_modes = (
+            self.STRATEGY_MODE_CHARGE_OR_STANDBY,
+            self.STRATEGY_MODE_ALL,
+            self.STRATEGY_MODE_CHARGE_ADAPTIVE,
+        )
+        if mode in active_modes:
             return  # active mode — main outputs zostawiamy
         # mode is "disabled" or None — override
         would_be_mode = self.recommended_ems_mode
@@ -277,6 +297,33 @@ class GridExportManager:
             self.recommended_ems_mode = self.CHARGE_MODE
             self.recommended_xset = self.CHARGE_BATTERY_XSET_W
             self.last_decision_reason = "charge_or_standby_force_charge"
+            return
+
+        # 2b. charge_adaptive mode — CHARGE_BATTERY z lookup-based Xset.
+        # pv_available = -consumption_minus_pv_2_minutes (ujemne sensor =
+        # surplus PV ponad dom-bez-heaters). Każdy bucket zwiększa Xset o 1000W
+        # ponad próg pv_available — średnio 1.5 kW import z grida.
+        if state.grid_export_strategy_mode == self.STRATEGY_MODE_CHARGE_ADAPTIVE:
+            if state.consumption_minus_pv_2_minutes is None:
+                self._set_neutral("none_consumption_minus_pv_2_minutes")
+                return
+            pv_available = -state.consumption_minus_pv_2_minutes
+            for threshold, xset in self.CHARGE_ADAPTIVE_BUCKETS:
+                if pv_available > threshold:
+                    self.recommended_ems_mode = self.CHARGE_MODE
+                    self.recommended_xset = xset
+                    self.last_decision_reason = (
+                        f"charge_adaptive_{xset}W_pv_avail_{int(pv_available)}"
+                    )
+                    return
+            # pv_available ≤ -1000 → mode=AUTO ale zostań w intervention
+            # (NIE _set_neutral — exit dopiero przy standardowych gates;
+            # block_discharge w battery.py przejmuje gdy hourly idzie negative).
+            self.recommended_ems_mode = self.AUTO_MODE
+            self.recommended_xset = None
+            self.last_decision_reason = (
+                f"charge_adaptive_auto_pv_avail_{int(pv_available)}"
+            )
             return
 
         # 3. battery_charge_limit None → defensive, czekamy na sensor
