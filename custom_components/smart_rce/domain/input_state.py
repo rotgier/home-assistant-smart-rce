@@ -64,8 +64,14 @@ class InputState:
     # afternoon-dynamic bez zmian.
 
     pv_power: float | None = None
-    # sensor.pv_power (W) — chwilowa moc PV (DC). Używane przez
-    # GridExportManager do progu STANDBY (<200W → bateria stop).
+    # sensor.pv_power (W) — chwilowa moc PV (DC). Diagnostic + fallback dla
+    # pv_power_avg_2_minutes gdy avg jeszcze nie zebrał próbek.
+
+    pv_power_avg_2_minutes: float | None = None
+    # sensor.pv_power_avg_2_minutes (W, statistics mean max_age 2min) —
+    # uśredniona moc PV używana przez GridExportManager dla progu STANDBY
+    # (<200W → bateria stop). Avg eliminuje flap'owanie gdy inwerter
+    # chwilowo "przymuli się" (transient spadek <200W).
 
     battery_power_avg_27s: float | None = None
     # sensor.battery_power_avg_27s (W, statistics mean max_age 27s).

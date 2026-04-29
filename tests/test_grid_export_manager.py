@@ -38,6 +38,7 @@ def _state(
     battery_soc: float | None = 80.0,
     battery_charge_toggle_on: bool | None = True,
     pv_power: float | None = 3000.0,
+    pv_power_avg_2_minutes: float | None = None,  # None → fallback do pv_power
     battery_charge_limit: float | None = 18.0,  # high BMS
     battery_power_avg_27s: float | None = -3000.0,  # charging 3kW
     meter_active_power_total_avg_27s: float | None = -1000.0,  # import 1kW
@@ -52,6 +53,7 @@ def _state(
         battery_soc=battery_soc,
         battery_charge_toggle_on=battery_charge_toggle_on,
         pv_power=pv_power,
+        pv_power_avg_2_minutes=pv_power_avg_2_minutes,
         battery_charge_limit=battery_charge_limit,
         battery_power_avg_27s=battery_power_avg_27s,
         meter_active_power_total_avg_27s=meter_active_power_total_avg_27s,
@@ -93,7 +95,10 @@ class TestEntryStrategy:
         assert mgr.last_decision_reason == "entry_buy_power_default"
 
     def test_standby_when_pv_low(self):
-        """PV<200W → STANDBY niezależnie od BMS branch."""
+        """PV<200W → STANDBY niezależnie od BMS branch.
+
+        pv_power_avg_2_minutes=None → fallback do chwilowego pv_power.
+        """
         mgr = GridExportManager()
         mgr.update(
             _state(
@@ -105,6 +110,35 @@ class TestEntryStrategy:
         assert mgr.intervention_active is True
         assert mgr.recommended_ems_mode == "battery_standby"
         assert mgr.recommended_xset is None
+        assert mgr.last_decision_reason == "low_pv_standby"
+
+    def test_standby_uses_avg_not_instantaneous(self):
+        """Transient spike-down — chwilowy pv<200, ale avg_2min>200 → CHARGE."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                pv_power=50,  # chwilowy spike-down (inwerter "przymulił")
+                pv_power_avg_2_minutes=2500,  # rzeczywisty PV stable
+                battery_power_avg_27s=-3000,  # entry CHARGE
+            )
+        )
+        # Manager używa avg_2min (2500W >= 200W) → CHARGE_BATTERY (NIE STANDBY)
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "charge_battery"
+
+    def test_standby_avg_below_threshold(self):
+        """Sustained low PV — avg_2min<200, chwilowy może być wyżej → STANDBY."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                now=EVENING,
+                exported_energy_hourly=0.10,
+                pv_power=300,  # chwilowy spike-up (zachód słońca, ale stabilnie niskie)
+                pv_power_avg_2_minutes=80,  # mean stabilnie niskie
+            )
+        )
+        assert mgr.recommended_ems_mode == "battery_standby"
         assert mgr.last_decision_reason == "low_pv_standby"
 
     def test_low_bms_charge_branch(self):

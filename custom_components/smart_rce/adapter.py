@@ -137,6 +137,10 @@ def set_pv_power(entity: str, i: InputState, state: str) -> None:
     i.pv_power = map_float(entity, state)
 
 
+def set_pv_power_avg_2_minutes(entity: str, i: InputState, state: str) -> None:
+    i.pv_power_avg_2_minutes = map_float(entity, state)
+
+
 def set_battery_power_avg_27s(entity: str, i: InputState, state: str) -> None:
     i.battery_power_avg_27s = map_float(entity, state)
 
@@ -192,6 +196,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "binary_sensor.rce_should_hold_for_peak": set_rce_should_hold_for_peak,
     "binary_sensor.workday": set_is_workday,
     "sensor.pv_power": set_pv_power,
+    "sensor.pv_power_avg_2_minutes": set_pv_power_avg_2_minutes,
     "sensor.battery_power_avg_27s": set_battery_power_avg_27s,
     "sensor.meter_active_power_total_avg_27s": set_meter_active_power_total_avg_27s,
     "select.goodwe_ems_mode": set_goodwe_ems_mode,

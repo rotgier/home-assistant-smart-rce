@@ -256,8 +256,16 @@ class GridExportManager:
 
         State machine używa `self.recommended_ems_mode` jako current_mode.
         """
-        # 1. PV niskie → STANDBY (najwyższy priorytet, nawet w trakcie active)
-        if state.pv_power < self.PV_STANDBY_THRESHOLD_W:
+        # 1. PV niskie → STANDBY (najwyższy priorytet, nawet w trakcie active).
+        # Używamy avg 2min — chwilowy pv_power flapuje (~200W spike-down gdy
+        # inwerter krótko "przymuli się"). Fallback do chwilowego gdy avg=None
+        # (np. po restart HA, sensor jeszcze nie zebrał próbek przez 2min).
+        pv_for_standby = (
+            state.pv_power_avg_2_minutes
+            if state.pv_power_avg_2_minutes is not None
+            else state.pv_power
+        )
+        if pv_for_standby < self.PV_STANDBY_THRESHOLD_W:
             self.recommended_ems_mode = self.STANDBY_MODE
             self.recommended_xset = None
             self.last_decision_reason = "low_pv_standby"
