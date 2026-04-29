@@ -68,12 +68,25 @@ class WaterHeaterManager:
         self.balanced_upgrade_active: bool = False
         self.balanced_export_bonus_w: float | None = None
 
-    def update(self, state: InputState, battery: BatteryState) -> None:
+    def update(
+        self,
+        state: InputState,
+        battery: BatteryState,
+        grid_export=None,  # noqa: ANN001 — duck-typed (GridExportManager-like)
+    ) -> None:
+        """Update target state based on PV/battery/heater config.
+
+        `grid_export` (optional, default None for backward compat) — gdy
+        recommended_ems_mode == "charge_battery", reserved budget zostaje
+        zwiększony do 3500W (chronimy baterię intervention przed konkurencją
+        z grzałkami). `mode=buy_power` / `auto` / `battery_standby` →
+        original logic (regulator dynamic, grzałki działają normalnie).
+        """
         if self._none_present(state):
             return
 
         current_state = self._current_state(state)
-        target = self._determine_target(state, battery, current_state)
+        target = self._determine_target(state, battery, current_state, grid_export)
 
         self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
         self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
@@ -107,7 +120,11 @@ class WaterHeaterManager:
         return self.BOTH_ARE_OFF
 
     def _determine_target(
-        self, state: InputState, battery: BatteryState, current_state: str
+        self,
+        state: InputState,
+        battery: BatteryState,
+        current_state: str,
+        grid_export=None,  # noqa: ANN001 — duck-typed
     ) -> str:
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
@@ -120,6 +137,14 @@ class WaterHeaterManager:
             return self.BOTH_ARE_OFF
 
         mode = state.heater_mode or "BALANCED"
+
+        # GridExport intervention CHARGE_BATTERY → priorytet baterii, większa
+        # rezerwacja PV (chronimy przed konkurencją grzałek). buy_power /
+        # battery_standby / auto → original logic.
+        grid_export_charge_active = (
+            grid_export is not None
+            and getattr(grid_export, "recommended_ems_mode", None) == "charge_battery"
+        )
 
         if mode == "ASAP":
             target = self._asap_target(
@@ -134,6 +159,7 @@ class WaterHeaterManager:
                 current_state,
                 state.water_heater_strategy,
                 state.now,
+                grid_export_charge_active,
             )
         else:
             target = self._wasted_target(
@@ -206,16 +232,24 @@ class WaterHeaterManager:
         current_state: str,
         strategy: str | None,
         now: datetime,
+        grid_export_charge_active: bool = False,
     ) -> str:
         # Rezerwacja (charge_limit: dyskretne 0, 1, 2, 7, 18A)
         # BATTERY_FIRST: gdy bateria może mocno ładować (charge_limit>7),
         # rezerwujemy pełne 4500W dla baterii, grzałki praktycznie OFF. Gdy
         # bateria zbliża się do pełna, charge_limit sam spada (7→2→1→0) i
         # fallback do istniejącej "łaskawej" logiki.
+        # GridExport CHARGE intervention (charge_battery active) — bateria
+        # ma priorytet, reserved=3500 (jak BATTERY_FIRST ale low BMS branchy
+        # bez zmian). Konkurencja z grzałkami eliminowana — typowo SMALL/BIG
+        # włącza się dopiero gdy pv_available > 5000/6500.
         if strategy == "BATTERY_FIRST" and battery_charge_limit > 7:
             reserved = 4500
         elif battery_charge_limit > 7:
-            reserved = 3500 if battery_soc < 50 else 2500
+            if grid_export_charge_active:
+                reserved = 3500
+            else:
+                reserved = 3500 if battery_soc < 50 else 2500
         elif battery_charge_limit > 2:
             reserved = 1000
         elif battery_charge_limit == 2:

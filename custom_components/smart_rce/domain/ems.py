@@ -44,10 +44,11 @@ class Ems:
         # battery FIRST — oblicza flagi (hourly_balance_negative, block_charge)
         # które czytają inne managery.
         self.battery.update(state)
-        self.water_heater.update(state, self.battery)
-        # grid_export jest niezależny od battery/water_heater, ale wykonujemy
-        # po nich dla deterministyczności (gdyby kiedykolwiek dorzucić cross-deps).
+        # grid_export PRZED water_heater — water_heater czyta
+        # grid_export.recommended_ems_mode dla synergii (charge_battery →
+        # reserved=3500 dla baterii, grzałki ograniczone).
         self.grid_export.update(state)
+        self.water_heater.update(state, self.battery, self.grid_export)
         self._async_update_listeners()
 
     def update_hourly(self, now: datetime) -> None:
