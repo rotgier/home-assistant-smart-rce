@@ -116,26 +116,44 @@ class GridExportManager:
     # ograniczy charge do ~2 kW, +1.5 kW margines).
     CHARGE_ADAPTIVE_LOW_BMS_XSET_W: Final[int] = 3500
 
+    # Hysteresis dla charge_adaptive — gdy current Xset jest w lookup, sprawdź
+    # czy pv_available mieści się w rozszerzonym range (±300W od granic bucket'a).
+    # Eliminuje flap'owanie Xset gdy pv_available oscyluje na granicy bucket'a.
+    # Pierwszy tick intervention (current_xset=None) → bez hysteresis (lookup).
+    CHARGE_ADAPTIVE_HYSTERESIS_W: Final[int] = 300
+
+    # Logowanie — throttle DEBUG snapshot gdy nic się nie zmienia (60s).
+    DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
+
     def __init__(self) -> None:
         self.intervention_active: bool = False
         self.recommended_ems_mode: str = self.AUTO_MODE
         self.recommended_xset: int | None = None
         self.last_decision_reason: str | None = None
         self._intervention_started_hour: int | None = None
+        # Throttling dla DEBUG snapshotów (jak w BatteryManager)
+        self._last_log_snapshot: tuple | None = None
+        self._last_log_ts = None  # type: ignore[var-annotated]
 
     def update(self, state: InputState) -> None:
         """Re-evaluate intervention state from current InputState.
 
         Called reactively by Ems on every state change.
         """
+        prev_active = self.intervention_active
+        prev_mode = self.recommended_ems_mode
+        prev_xset = self.recommended_xset
+
         # 1. None-guard (core inputs)
         if self._none_present_core(state):
             self._set_neutral("none_present")
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
         # 2. Active window — skip pre_charge (BatteryManager rządzi)
         if self._is_in_pre_charge_window(state):
             self._set_neutral("in_pre_charge_window")
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
         # 3. Exit gates (gdy intervention_active)
@@ -145,15 +163,18 @@ class GridExportManager:
             if state.now.hour != self._intervention_started_hour:
                 self._set_neutral("hour_rollover")
                 self._apply_disabled_override_if_needed(state)
+                self._log_after_update(state, prev_active, prev_mode, prev_xset)
                 return
             exit_reason = self._exit_reason(state)
             if exit_reason is not None:
                 self._set_neutral(exit_reason)
                 self._apply_disabled_override_if_needed(state)
+                self._log_after_update(state, prev_active, prev_mode, prev_xset)
                 return
             # Continue active — re-evaluate strategy (może się zmienić)
             self._apply_strategy(state)
             self._apply_disabled_override_if_needed(state)
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
         # 4. Entry gates (gdy not intervention_active)
@@ -161,6 +182,7 @@ class GridExportManager:
         if entry_block_reason is not None:
             self._set_neutral(entry_block_reason)
             self._apply_disabled_override_if_needed(state)
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
         # 5. Entry approved — start intervention
@@ -170,6 +192,7 @@ class GridExportManager:
         # 6. Final: jeśli disabled, override main outputs (intervention off),
         #    ale zachowaj would-be info w last_decision_reason
         self._apply_disabled_override_if_needed(state)
+        self._log_after_update(state, prev_active, prev_mode, prev_xset)
 
     def _apply_disabled_override_if_needed(self, state: InputState) -> None:
         """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.
@@ -325,6 +348,26 @@ class GridExportManager:
                 )
                 return
             pv_available = -state.consumption_minus_pv_2_minutes
+            # Hysteresis — jeśli current Xset jest w lookup i pv_available
+            # mieści się w rozszerzonym range (±300W), zostań przy current.
+            # Pierwszy tick (current_xset=None) lub poza lookup → fresh lookup.
+            current_xset = self.recommended_xset
+            current_range = (
+                self._charge_adaptive_xset_range(current_xset)
+                if current_xset is not None
+                else None
+            )
+            if current_range is not None:
+                lower, upper = current_range
+                hyst = self.CHARGE_ADAPTIVE_HYSTERESIS_W
+                if (lower - hyst) < pv_available <= (upper + hyst):
+                    self.recommended_ems_mode = self.CHARGE_MODE
+                    self.recommended_xset = current_xset
+                    self.last_decision_reason = (
+                        f"charge_adaptive_stay_{current_xset}W_"
+                        f"pv_avail_{int(pv_available)}"
+                    )
+                    return
             for threshold, xset in self.CHARGE_ADAPTIVE_BUCKETS:
                 if pv_available > threshold:
                     self.recommended_ems_mode = self.CHARGE_MODE
@@ -405,3 +448,95 @@ class GridExportManager:
         self.recommended_xset = None
         self.last_decision_reason = reason
         self._intervention_started_hour = None
+
+    @classmethod
+    def _charge_adaptive_xset_range(cls, xset: int) -> tuple[float, float] | None:
+        """Range pv_available który aktywowałby dany Xset z lookup table.
+
+        Zwraca (lower, upper) lub None gdy xset nie jest w CHARGE_ADAPTIVE_BUCKETS
+        (np. low_bms_shortcut 3500, BUY_POWER 1500, etc. — fallback do plain lookup).
+        Najwyższy bucket ma upper=inf.
+        """
+        bucket_xsets = [x for _, x in cls.CHARGE_ADAPTIVE_BUCKETS]
+        if xset not in bucket_xsets:
+            return None
+        idx = bucket_xsets.index(xset)
+        lower = float(cls.CHARGE_ADAPTIVE_BUCKETS[idx][0])
+        upper = (
+            float("inf") if idx == 0 else float(cls.CHARGE_ADAPTIVE_BUCKETS[idx - 1][0])
+        )
+        return (lower, upper)
+
+    # --- logging ---
+
+    def _log_after_update(
+        self,
+        state: InputState,
+        prev_active: bool,
+        prev_mode: str,
+        prev_xset: int | None,
+    ) -> None:
+        """INFO transition + DEBUG snapshot (throttled)."""
+        if (
+            prev_active != self.intervention_active
+            or prev_mode != self.recommended_ems_mode
+            or prev_xset != self.recommended_xset
+        ):
+            _LOGGER.info(
+                "GridExportManager transition: active %s→%s, mode %s→%s, "
+                "xset %s→%s, reason=%s",
+                prev_active,
+                self.intervention_active,
+                prev_mode,
+                self.recommended_ems_mode,
+                prev_xset,
+                self.recommended_xset,
+                self.last_decision_reason,
+            )
+        self._maybe_log_snapshot(state)
+
+    def _maybe_log_snapshot(self, state: InputState) -> None:
+        """Log DEBUG snapshot gdy key fields się zmienią LUB minął throttle interval."""
+        snapshot = (
+            self.intervention_active,
+            self.recommended_ems_mode,
+            self.recommended_xset,
+            self.last_decision_reason,
+        )
+        now = state.now
+        should_log = (
+            self._last_log_snapshot is None
+            or snapshot != self._last_log_snapshot
+            or self._last_log_ts is None
+            or (
+                now is not None
+                and (now - self._last_log_ts).total_seconds()
+                >= self.DEBUG_LOG_THROTTLE_SEC
+            )
+        )
+        if not should_log:
+            return
+        cmpv = state.consumption_minus_pv_2_minutes
+        pv_avail = -cmpv if cmpv is not None else None
+        _LOGGER.debug(
+            "GridExportManager: now=%s active=%s mode=%s xset=%s reason=%s | "
+            "strategy=%s hourly=%s soc=%s pv=%s pv_avg2m=%s pv_avail=%s "
+            "bp_avg27s=%s meter_avg27s=%s charge_limit=%s toggle=%s",
+            now.strftime("%H:%M:%S") if now else "?",
+            self.intervention_active,
+            self.recommended_ems_mode,
+            self.recommended_xset,
+            self.last_decision_reason,
+            state.grid_export_strategy_mode,
+            state.exported_energy_hourly,
+            state.battery_soc,
+            state.pv_power,
+            state.pv_power_avg_2_minutes,
+            int(pv_avail) if pv_avail is not None else None,
+            state.battery_power_avg_27s,
+            state.meter_active_power_total_avg_27s,
+            state.battery_charge_limit,
+            state.battery_charge_toggle_on,
+        )
+        self._last_log_snapshot = snapshot
+        self._last_log_ts = now

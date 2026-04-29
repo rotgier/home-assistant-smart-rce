@@ -761,6 +761,96 @@ class TestStrategyModeChargeAdaptive:
         )
         assert mgr.recommended_xset == 6000  # lookup, bez low_bms shortcut
 
+    def test_hysteresis_stay_within_extended_range(self):
+        """Stay przy current Xset gdy pv_avail w extended range.
+
+        Current Xset 5000 (range 3000-4000), pv_avail 2950 → extended
+        (2700, 4300] → stay 5000 (zamiast lookup → 4000).
+        """
+        mgr = GridExportManager()
+        # Pierwszy update — wybierze 5000 z lookup (pv_avail=3500)
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-3500,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 5000
+        # Drugi update — pv_avail spada do 3050 (poniżej progu 3000? Nie, 3050>3000).
+        # Bez hysteresis: lookup → 5000 też. Ale chcę żeby test sprawdzał stay.
+        # Zrobię edge case: pv_avail 2950 (poniżej progu, lookup → 4000),
+        # ale w extended range (2700, 4300] dla current=5000.
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-2950,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 5000  # stay (extended range)
+        assert "stay" in mgr.last_decision_reason
+
+    def test_hysteresis_drop_when_outside_extended_range(self):
+        """Drop do lookup gdy pv_avail wyjdzie poza extended range.
+
+        Current Xset 5000, pv_avail 2600 → poza extended (2700, 4300]
+        → lookup wybierze 4000.
+        """
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-3500,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 5000
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-2600,  # pv_avail = 2600 < 2700
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 4000  # drop (lookup, pv_avail > 2000)
+
+    def test_hysteresis_upgrade_when_above_extended_range(self):
+        """Hysteresis: current Xset 5000, pv_avail 4400 → powyżej extended → upgrade do 6000."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-3500,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 5000
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-4400,  # pv_avail = 4400 > 4300
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        assert mgr.recommended_xset == 6000  # upgrade (lookup)
+
+    def test_hysteresis_first_tick_no_hysteresis(self):
+        """Pierwszy tick (current_xset=None — przejście z auto) → plain lookup."""
+        mgr = GridExportManager()
+        # Manager w auto, recommended_xset=None
+        assert mgr.recommended_xset is None
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                consumption_minus_pv_2_minutes=-3500,
+                grid_export_strategy_mode="charge_adaptive",
+            )
+        )
+        # Plain lookup (bez hysteresis na pierwszym ticku)
+        assert mgr.recommended_xset == 5000
+        assert "stay" not in mgr.last_decision_reason
+
     def test_pv_low_standby_overrides_charge_adaptive(self):
         """pv_power_avg_2_minutes < 200 → STANDBY priority nad charge_adaptive."""
         mgr = GridExportManager()
