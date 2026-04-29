@@ -262,10 +262,15 @@ class BatteryManager:
         else:
             self.hourly_balance_negative = False
 
+        # Runtime kontrola przez input_select.smart_rce_block_charge_logic_mode:
+        # "disabled" → block_charge logika wyłączona (toggle nigdy nie wyłączany).
+        # None / "enabled" → current behavior (defensive).
+        block_charge_logic_disabled = state.block_charge_logic_mode == "disabled"
         self.should_block_battery_charge = (
             self.hourly_balance_negative
             and state.battery_charge_limit is not None
             and state.battery_charge_limit >= 2
+            and not block_charge_logic_disabled
         )
 
         # --- Debug snapshot (throttled) + INFO transitions ---

@@ -167,6 +167,13 @@ def set_grid_export_strategy_mode(entity: str, i: InputState, state: str) -> Non
     i.grid_export_strategy_mode = state
 
 
+def set_block_charge_logic_mode(entity: str, i: InputState, state: str) -> None:
+    if state in (None, "", "unavailable", "unknown"):
+        i.block_charge_logic_mode = None
+        return
+    i.block_charge_logic_mode = state
+
+
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "switch.water_heater_big_relay": set_water_heater_big_is_on,
     "switch.water_heater_small_relay": set_water_heater_small_is_on,
@@ -190,6 +197,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "select.goodwe_ems_mode": set_goodwe_ems_mode,
     "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
     "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
+    "input_select.smart_rce_block_charge_logic_mode": set_block_charge_logic_mode,
 }
 
 

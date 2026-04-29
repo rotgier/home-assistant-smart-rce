@@ -99,4 +99,11 @@ class InputState:
     # lub STANDBY, bez BUY_POWER), "all" (pełny state machine).
     # Defensive: gdy None → manager traktuje jako "disabled" (safe default).
 
+    block_charge_logic_mode: str | None = None
+    # input_select.smart_rce_block_charge_logic_mode — runtime kontrola
+    # BatteryManager.should_block_battery_charge. Opcje: "enabled" (default,
+    # current behavior), "disabled" (block_charge zawsze False, toggle nie
+    # jest wyłączane).
+    # Defensive: gdy None lub "enabled" → block_charge logika włączona.
+
     now: datetime | None = None
