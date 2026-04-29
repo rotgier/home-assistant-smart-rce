@@ -135,6 +135,15 @@ class GridExportManager:
         self._last_log_snapshot: tuple | None = None
         self._last_log_ts = None  # type: ignore[var-annotated]
 
+    def is_charge_battery_active(self) -> bool:
+        """Czy manager aktywnie wymusza CHARGE_BATTERY (forced battery charging).
+
+        Inne managery (np. WaterHeaterManager) używają jako sygnał do ochrony
+        baterii przed konkurencją (np. większa rezerwacja PV).
+        Zwraca False gdy mode = auto / buy_power / battery_standby.
+        """
+        return self.recommended_ems_mode == self.CHARGE_MODE
+
     def update(self, state: InputState) -> None:
         """Re-evaluate intervention state from current InputState.
 

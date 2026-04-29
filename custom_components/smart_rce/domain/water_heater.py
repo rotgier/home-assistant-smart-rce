@@ -72,21 +72,22 @@ class WaterHeaterManager:
         self,
         state: InputState,
         battery: BatteryState,
-        grid_export=None,  # noqa: ANN001 — duck-typed (GridExportManager-like)
+        grid_export_charge_active: bool = False,
     ) -> None:
         """Update target state based on PV/battery/heater config.
 
-        `grid_export` (optional, default None for backward compat) — gdy
-        recommended_ems_mode == "charge_battery", reserved budget zostaje
-        zwiększony do 3500W (chronimy baterię intervention przed konkurencją
-        z grzałkami). `mode=buy_power` / `auto` / `battery_standby` →
-        original logic (regulator dynamic, grzałki działają normalnie).
+        `grid_export_charge_active` (optional, default False for backward
+        compat) — gdy GridExportManager wymusza CHARGE_BATTERY, reserved
+        budget zostaje zwiększony do 3500W (chronimy baterię intervention
+        przed konkurencją z grzałkami). False → original logic.
         """
         if self._none_present(state):
             return
 
         current_state = self._current_state(state)
-        target = self._determine_target(state, battery, current_state, grid_export)
+        target = self._determine_target(
+            state, battery, current_state, grid_export_charge_active
+        )
 
         self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
         self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
@@ -124,7 +125,7 @@ class WaterHeaterManager:
         state: InputState,
         battery: BatteryState,
         current_state: str,
-        grid_export=None,  # noqa: ANN001 — duck-typed
+        grid_export_charge_active: bool = False,
     ) -> str:
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
@@ -137,14 +138,6 @@ class WaterHeaterManager:
             return self.BOTH_ARE_OFF
 
         mode = state.heater_mode or "BALANCED"
-
-        # GridExport intervention CHARGE_BATTERY → priorytet baterii, większa
-        # rezerwacja PV (chronimy przed konkurencją grzałek). buy_power /
-        # battery_standby / auto → original logic.
-        grid_export_charge_active = (
-            grid_export is not None
-            and getattr(grid_export, "recommended_ems_mode", None) == "charge_battery"
-        )
 
         if mode == "ASAP":
             target = self._asap_target(
