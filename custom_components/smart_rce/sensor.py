@@ -23,7 +23,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util.dt import now as now_local
 
 from . import SmartRceConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, GROSS_MULTIPLIER
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.ems import Ems
 from .pv_forecast_coordinator import PvForecastCoordinator
@@ -33,11 +33,6 @@ CURRENCY_PLN: Final = "zł"
 UNIQUE_ID_PREFIX = DOMAIN
 
 PARALLEL_UPDATES = 1
-
-# VAT 23% — RCE spot price netto × GROSS_MULTIPLIER = brutto.
-# Opłaty dystrybucyjne (G12w ~30 gr/kWh) są stałe niezależne od RCE,
-# pomijamy w threshold check (porównujemy sam RCE × VAT vs threshold).
-GROSS_MULTIPLIER: Final[float] = 1.23
 
 
 _LOGGER = logging.getLogger(__name__)

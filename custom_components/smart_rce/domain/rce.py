@@ -8,6 +8,8 @@ from typing import Final
 
 from zoneinfo import ZoneInfo
 
+from ..const import GROSS_MULTIPLIER
+
 TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
 
 # Morning discharge window — szukamy peak ceny rano przed startem PV.
@@ -18,6 +20,14 @@ TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
 # rano = realny stan, nie zgadujemy z forecast).
 MORNING_DISCHARGE_START_HOUR: Final[int] = 5  # tomorrow, inclusive
 MORNING_DISCHARGE_END_HOUR: Final[int] = 8  # tomorrow, exclusive (czyli 5,6,7)
+
+# Tolerancja near-peak dla tie-break w best_morning_discharge_slot.
+# Sloty z ceną ≤ tolerance od peaku traktujemy jako "remis" — wybieramy
+# najpóźniejszy z near-peak slotów (skraca czas trzymania pustej baterii
+# do startu PV). Stała wyrażona w **brutto** (myślenie konsumenckie),
+# konwertowana do netto przy porównaniu (RceData.prices są w netto).
+# 20 zł/MWh brutto ≈ 2 grosze/kWh brutto.
+MORNING_DISCHARGE_TIE_BREAK_TOLERANCE_PLN_MWH_GROSS: Final[float] = 20.0
 
 
 @dataclass
@@ -124,8 +134,11 @@ class RceData:
         future slots. Po północy `tomorrow=None` (przed publikacją RCE jutra)
         ale `today` już ma future slots 5-8 → fallback działa.
 
-        Tie-break: późniejsza godzina (preferuje slot bliżej startu PV,
-        krótszy czas trzymania pustej baterii).
+        Tie-break z tolerancją: sloty z ceną w odległości
+        ≤ MORNING_DISCHARGE_TIE_BREAK_TOLERANCE (~2 gr/kWh brutto) od peaku
+        są równoważne — wybieramy najpóźniejszy (krótszy czas trzymania
+        pustej baterii do startu PV).
+
         Returns None gdy brak future slots w range.
         """
         candidates: list[tuple[float, datetime]] = []
@@ -142,5 +155,10 @@ class RceData:
             )
         if not candidates:
             return None
-        best = max(candidates, key=lambda x: (x[0], x[1]))
+        max_price = max(c[0] for c in candidates)
+        tolerance_net = (
+            MORNING_DISCHARGE_TIE_BREAK_TOLERANCE_PLN_MWH_GROSS / GROSS_MULTIPLIER
+        )
+        near_peak = [c for c in candidates if c[0] >= max_price - tolerance_net]
+        best = max(near_peak, key=lambda x: x[1])
         return UpcomingPeak(price=best[0], datetime=best[1])
