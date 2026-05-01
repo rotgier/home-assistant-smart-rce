@@ -2,7 +2,7 @@
 
 Wystawia 4 pola czytane przez sensory:
 - intervention_active (bool, diagnostic)
-- recommended_ems_mode (str: "auto" | "battery_standby" | "charge_battery" | "buy_power")
+- recommended_ems_mode (str: "auto" | "discharge_battery" | "charge_battery" | "buy_power")
 - recommended_xset (int | None) — W
 - last_decision_reason (str)
 
@@ -13,9 +13,10 @@ Active window: post_charge → next day 7:00 (skip pre_charge — tam
 BatteryManager rządzi przez hysteresis 100/50 Wh + DoD).
 
 Strategie (state machine):
-- BATTERY_STANDBY  — gdy pv_power < 200W (noc, bateria stop)
-- CHARGE_BATTERY   — Xset=6000W (lub adaptive), bateria łapie surplus + import
-- BUY_POWER        — Xset=1500W, regulator trzyma meter ≈ 1500W import
+- STANDBY (discharge_battery xset=0) — gdy pv_power < 200W (noc, bateria
+                                       target=0, house consumption z grida)
+- CHARGE_BATTERY                      — Xset=6000W (lub adaptive), bateria łapie surplus + import
+- BUY_POWER                           — Xset=1500W, regulator trzyma meter ≈ 1500W import
 
 Decision tree (`grid_export_strategy_mode`):
 - "charge_or_standby" → tylko CHARGE 6000 lub STANDBY (bez BUY_POWER)
@@ -90,7 +91,12 @@ class GridExportManager:
 
     # Mode constants
     AUTO_MODE: Final[str] = "auto"
-    STANDBY_MODE: Final[str] = "battery_standby"
+    # Semantyczne "standby" (bateria stoi). Faktyczny Goodwe mode = discharge_battery
+    # z Xset=0 — bateria target=0W (stoi), house consumption idzie z grida →
+    # import zjada saldo POSITIVE. Zastąpił literalny battery_standby — tamten
+    # w praktyce dopuszczał faktyczny discharge (obs. 2026-04-30 22:48
+    # battery_power=-1300/-1400W mimo battery_standby).
+    STANDBY_MODE: Final[str] = "discharge_battery"
     CHARGE_MODE: Final[str] = "charge_battery"
     BUY_POWER_MODE: Final[str] = "buy_power"
 
@@ -140,7 +146,7 @@ class GridExportManager:
 
         Inne managery (np. WaterHeaterManager) używają jako sygnał do ochrony
         baterii przed konkurencją (np. większa rezerwacja PV).
-        Zwraca False gdy mode = auto / buy_power / battery_standby.
+        Zwraca False gdy mode = auto / buy_power / discharge_battery (STANDBY).
         """
         return self.recommended_ems_mode == self.CHARGE_MODE
 
@@ -323,7 +329,7 @@ class GridExportManager:
         )
         if pv_for_standby < self.PV_STANDBY_THRESHOLD_W:
             self.recommended_ems_mode = self.STANDBY_MODE
-            self.recommended_xset = None
+            self.recommended_xset = 0
             self.last_decision_reason = "low_pv_standby"
             return
 

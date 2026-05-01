@@ -328,7 +328,7 @@ def listen_for_grid_export_recommendations(
                     xset_int = int(float(xset))
                 except (ValueError, TypeError):
                     xset_int = None
-                if xset_int is not None and xset_int > 0:
+                if xset_int is not None and xset_int >= 0:
                     await hass.services.async_call(
                         "number",
                         "set_value",

@@ -110,8 +110,8 @@ class TestEntryStrategy:
             )
         )
         assert mgr.intervention_active is True
-        assert mgr.recommended_ems_mode == "battery_standby"
-        assert mgr.recommended_xset is None
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 0
         assert mgr.last_decision_reason == "low_pv_standby"
 
     def test_standby_uses_avg_not_instantaneous(self):
@@ -140,7 +140,7 @@ class TestEntryStrategy:
                 pv_power_avg_2_minutes=80,  # mean stabilnie niskie
             )
         )
-        assert mgr.recommended_ems_mode == "battery_standby"
+        assert mgr.recommended_ems_mode == "discharge_battery"
         assert mgr.last_decision_reason == "low_pv_standby"
 
     def test_low_bms_charge_branch(self):
@@ -261,8 +261,8 @@ class TestStrategyOverride:
             )
         )
         assert mgr.intervention_active is True
-        assert mgr.recommended_ems_mode == "battery_standby"
-        assert mgr.recommended_xset is None
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 0
         assert mgr.last_decision_reason == "low_pv_standby"
 
 
@@ -559,8 +559,8 @@ class TestStrategyMode:
             )
         )
         assert mgr.intervention_active is True
-        assert mgr.recommended_ems_mode == "battery_standby"
-        assert mgr.recommended_xset is None
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 0
         assert mgr.last_decision_reason == "low_pv_standby"
 
     def test_all_full_state_machine(self):
@@ -864,7 +864,7 @@ class TestStrategyModeChargeAdaptive:
             )
         )
         # PV<200 → STANDBY (krok 1 ma priority nad charge_adaptive)
-        assert mgr.recommended_ems_mode == "battery_standby"
+        assert mgr.recommended_ems_mode == "discharge_battery"
 
 
 class TestIdempotency:
