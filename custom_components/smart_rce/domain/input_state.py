@@ -73,21 +73,6 @@ class InputState:
     # (<200W → bateria stop). Avg eliminuje flap'owanie gdy inwerter
     # chwilowo "przymuli się" (transient spadek <200W).
 
-    battery_power_avg_27s: float | None = None
-    # sensor.battery_power_avg_27s (W, statistics mean max_age 27s).
-    # Konwencja: charging = NEGATIVE (bateria pobiera moc). Mean z 5-6 próbek
-    # daje stabilny "średni intensywność charging" — mniej wrażliwy na single
-    # outliers z Goodwe Modbus niż max_18s.
-    # Próg < -2500 W → bateria średnio ładuje się ≥ 2.5 kW (intensywne).
-    # Próg < -4900 W → bateria blisko BMS cap (5.5 kW), PV cięcie zaraz.
-    # Używane przez GridExportManager state machine.
-
-    meter_active_power_total_avg_27s: float | None = None
-    # sensor.meter_active_power_total_avg_27s (W, statistics mean max_age 27s).
-    # Konwencja: import = NEGATIVE (z grida do domu). Mean z 5-6 próbek.
-    # Próg < -3900 W → meter średnio importuje ≥ 3.9 kW (CHARGE za agresywne).
-    # Używane przez GridExportManager state machine do switch CHARGE→BUY.
-
     goodwe_ems_mode: str | None = None
     # select.goodwe_ems_mode — aktualny tryb EMS Goodwe (auto, charge_battery,
     # battery_standby, sell_power, etc.). Diagnostic.
@@ -101,8 +86,8 @@ class InputState:
     grid_export_strategy_mode: str | None = None
     # input_select.smart_rce_grid_export_strategy_mode — runtime kontrola
     # GridExportManager. Opcje: "disabled" (intervention off, manager
-    # diagnostuje would-be), "charge_or_standby" (tylko CHARGE_BATTERY 6000
-    # lub STANDBY, bez BUY_POWER), "all" (pełny state machine).
+    # diagnostuje would-be), "charge_adaptive" (domyślne aktywne — STANDBY
+    # gdy PV<200W, lookup-based Xset gdy PV≥200W).
     # Defensive: gdy None → manager traktuje jako "disabled" (safe default).
 
     block_charge_logic_mode: str | None = None

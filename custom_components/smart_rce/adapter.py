@@ -141,16 +141,6 @@ def set_pv_power_avg_2_minutes(entity: str, i: InputState, state: str) -> None:
     i.pv_power_avg_2_minutes = map_float(entity, state)
 
 
-def set_battery_power_avg_27s(entity: str, i: InputState, state: str) -> None:
-    i.battery_power_avg_27s = map_float(entity, state)
-
-
-def set_meter_active_power_total_avg_27s(
-    entity: str, i: InputState, state: str
-) -> None:
-    i.meter_active_power_total_avg_27s = map_float(entity, state)
-
-
 def set_goodwe_ems_mode(entity: str, i: InputState, state: str) -> None:
     if state in (None, "", "unavailable", "unknown"):
         i.goodwe_ems_mode = None
@@ -197,8 +187,6 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "binary_sensor.workday": set_is_workday,
     "sensor.pv_power": set_pv_power,
     "sensor.pv_power_avg_2_minutes": set_pv_power_avg_2_minutes,
-    "sensor.battery_power_avg_27s": set_battery_power_avg_27s,
-    "sensor.meter_active_power_total_avg_27s": set_meter_active_power_total_avg_27s,
     "select.goodwe_ems_mode": set_goodwe_ems_mode,
     "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
     "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
