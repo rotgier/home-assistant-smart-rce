@@ -439,9 +439,9 @@ class TestBalancedUpgrade:
     """Piętro 2 — upgrade z budżetu eksportu godzinowego."""
 
     def test_upgrade_off_to_small(self):
-        """cl=5A (no skip_upgrade), pv=1200, exp=1.4kWh → bonus=1400 → SMALL upgrade.
+        """cl=7A (no skip_upgrade), pv=1200, exp=1.4kWh → bonus=1400 → SMALL upgrade.
 
-        cl=5 → reserved=1000 (cl>2). budget=1200-1000=200, baseline=OFF.
+        cl=7 → reserved=1000 (cl>2). budget=1200-1000=200, baseline=OFF.
         time_left=1h → bonus=1400W. effective=1600 ≥ SMALL_POWER=1500 → upgrade SMALL.
         """
         mgr = Ems()
@@ -449,7 +449,7 @@ class TestBalancedUpgrade:
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-1200.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=30.0,
                 exported_energy_hourly=1.4,
             )
@@ -459,9 +459,9 @@ class TestBalancedUpgrade:
         assert mgr.water_heater.should_turn_on_small is True
 
     def test_upgrade_small_to_big(self):
-        """cl=5A, pv=3000, exp=1.1kWh → bonus=1100 → BIG upgrade.
+        """cl=7A, pv=3000, exp=1.1kWh → bonus=1100 → BIG upgrade.
 
-        cl=5 → reserved=1000. budget=3000-1000=2000, baseline=SMALL.
+        cl=7 → reserved=1000. budget=3000-1000=2000, baseline=SMALL.
         bonus=1100W. effective=3100 ≥ BIG_POWER=3000 → upgrade BIG.
         """
         mgr = Ems()
@@ -469,7 +469,7 @@ class TestBalancedUpgrade:
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-3000.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=30.0,
                 exported_energy_hourly=1.1,
             )
@@ -479,9 +479,9 @@ class TestBalancedUpgrade:
         assert mgr.water_heater.should_turn_on is True  # BIG
 
     def test_upgrade_big_to_both(self):
-        """cl=5A, pv=4000, exp=1.6kWh → bonus=1600 → BOTH upgrade.
+        """cl=7A, pv=4000, exp=1.6kWh → bonus=1600 → BOTH upgrade.
 
-        cl=5 → reserved=1000. budget=4000-1000=3000, baseline=BIG.
+        cl=7 → reserved=1000. budget=4000-1000=3000, baseline=BIG.
         bonus=1600W. effective=4600 ≥ BOTH_POWER=4500 → upgrade BOTH.
         """
         mgr = Ems()
@@ -489,7 +489,7 @@ class TestBalancedUpgrade:
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-4000.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=30.0,
                 exported_energy_hourly=1.6,
             )
@@ -532,7 +532,7 @@ class TestBalancedUpgrade:
     def test_upgrade_hysteresis_holds(self):
         """Upgrade BIG aktywny, exp drop ale w hysteresis → trzymaj BIG.
 
-        cl=5, pv=3000 → budget=2000, baseline=SMALL. Tick 1: exp=1.1 → bonus=1100,
+        cl=7, pv=3000 → budget=2000, baseline=SMALL. Tick 1: exp=1.1 → bonus=1100,
         effective=3100 ≥ BIG=3000 → upgrade BIG. Tick 2 (big_on=True): exp=0.6 →
         bonus=600, effective=2600 ≥ BIG-HYSTERESIS=2500 AND current=BIG → trzyma BIG.
         """
@@ -541,7 +541,7 @@ class TestBalancedUpgrade:
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-3000.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=30.0,
                 exported_energy_hourly=1.1,
             )
@@ -554,7 +554,7 @@ class TestBalancedUpgrade:
                 heater_mode="BALANCED",
                 big_on=True,
                 consumption_minus_pv=-3000.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=30.0,
                 exported_energy_hourly=0.6,
             )
@@ -574,7 +574,7 @@ class TestBalancedUpgrade:
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-3000.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=30.0,
                 exported_energy_hourly=1.1,
             )
@@ -586,7 +586,7 @@ class TestBalancedUpgrade:
                 heater_mode="BALANCED",
                 big_on=True,
                 consumption_minus_pv=-3000.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=30.0,
                 exported_energy_hourly=0.4,
             )
@@ -601,7 +601,7 @@ class TestBalancedOverrideAndDiagnostics:
     def test_no_soc90_override(self):
         """mode=BALANCED, soc=95, exp=1.4kWh → override SOC≥90 NIE odpala dla BALANCED.
 
-        cl=5 → reserved=1000. budget=1200-1000=200, baseline=OFF.
+        cl=7 → reserved=1000. budget=1200-1000=200, baseline=OFF.
         bonus=1400W. effective=1600 ≥ SMALL=1500 → upgrade SMALL.
         Override SOC≥90 (BIG forsowany) odpala TYLKO dla ASAP/WASTED, NIE BALANCED.
         """
@@ -610,7 +610,7 @@ class TestBalancedOverrideAndDiagnostics:
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-1200.0,
-                battery_charge_limit=5.0,
+                battery_charge_limit=7.0,
                 battery_soc=95.0,
                 exported_energy_hourly=1.4,
             )
