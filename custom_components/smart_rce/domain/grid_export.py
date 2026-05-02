@@ -178,11 +178,11 @@ class GridExportManager:
     # --- NEGATIVE branch ---
 
     def _continue_negative(self, state: InputState) -> None:
-        """Continue NEGATIVE — resolve+clamp, exit check, apply.
+        """Continue NEGATIVE — resolve+clamp z hysteresis, exit check, apply.
 
         Exit_reason wymaga post-clamp xset_signed, więc resolve PRZED exit check.
         """
-        resolved = self._negative.resolve(
+        resolved = self._negative.resolve_for_continue(
             state, self.recommended_ems_mode, self.recommended_xset
         )
         if resolved is None:
@@ -196,14 +196,12 @@ class GridExportManager:
         self._commit_negative(xset_signed, is_stay, pv_available)
 
     def _apply_negative(self, state: InputState) -> None:
-        """Apply NegativeStrategy — entry path (bez exit_reason check).
+        """Apply NegativeStrategy — entry path (fresh resolve, bez exit check).
 
-        Resolve używa hysteresis. Na fresh entry `recommended_xset=None` (po
-        `_set_neutral`) → hysteresis degeneruje się do fresh lookup.
+        Wchodzimy z AUTO (clean state) — fresh lookup zamiast matchować przez
+        hysteresis do tego co było wcześniej.
         """
-        resolved = self._negative.resolve(
-            state, self.recommended_ems_mode, self.recommended_xset
-        )
+        resolved = self._negative.resolve_for_entry(state)
         if resolved is None:
             self._set_neutral("none_pv_available")
             return

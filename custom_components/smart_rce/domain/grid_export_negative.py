@@ -144,19 +144,35 @@ class NegativeStrategy:
         return None
 
     @classmethod
-    def resolve(
+    def resolve_for_entry(cls, state: InputState) -> tuple[int, bool, float] | None:
+        """Resolve dla entry path — fresh lookup bez hysteresis.
+
+        Wchodzimy z AUTO (clean state — bateria oddawała "nie wiadomo co"),
+        nie ma sensu matchować przez hysteresis do tego co było wcześniej
+        (np. 2 godziny temu).
+
+        Returns None gdy `state.pv_available is None`.
+        """
+        if state.pv_available is None:
+            return None
+        pv_available = state.pv_available
+        xset_signed = cls._lookup_xset(pv_available)
+        xset_signed, _ = cls._clamp_charge_bucket(xset_signed, False, state)
+        return xset_signed, False, pv_available
+
+    @classmethod
+    def resolve_for_continue(
         cls,
         state: InputState,
         current_mode: str,
         current_xset: int | None,
     ) -> tuple[int, bool, float] | None:
-        """Resolve (xset_signed, is_stay, pv_available) dla NEGATIVE intervention.
+        """Resolve dla continue path — hysteresis-aware.
 
-        Returns None gdy `state.pv_available is None` (orchestrator robi `_set_neutral`).
+        Utrzymuje current bucket gdy pv_available oscyluje na granicy. Flow:
+        signed_xset z (mode, xset) → hysteresis lookup → SoC clamp.
 
-        Flow: signed_xset z (mode, xset) → hysteresis-aware lookup → SoC clamp.
-        Wynikowy xset_signed używany przez orchestrator do exit_reason check
-        (continue path) i build_output (oba paths).
+        Returns None gdy `state.pv_available is None`.
         """
         if state.pv_available is None:
             return None
