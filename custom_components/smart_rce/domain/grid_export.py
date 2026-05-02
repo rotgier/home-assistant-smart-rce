@@ -102,48 +102,23 @@ class GridExportManager:
         prev_mode = self.recommended_ems_mode
         prev_xset = self.recommended_xset
 
-        # 1. None-guard (core inputs)
+        # None-guard: brak core inputs → set_neutral, skip disabled_override
+        # (manager nie może działać, override też nie ma sensu).
         if self._none_present_core(state):
             self._set_neutral("none_present")
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
-        # 2. Continue (gdy intervention_active) — branch po direction.
-        # Hour rollover wspólny: utility_meter resetuje balans hourly o pełnej
-        # godzinie, każda godzina = osobna decyzja czy intervention.
-        if self.intervention_active:
-            if state.now.hour != self._intervention_started_hour:
-                self._set_neutral("hour_rollover")
-            elif self.intervention_direction is InterventionDirection.NEGATIVE:
-                self._continue_negative(state)
-            else:
-                self._continue_positive(state)
-            self._apply_disabled_override_if_needed(state)
-            self._log_after_update(state, prev_active, prev_mode, prev_xset)
-            return
-
-        # 3. Entry gates — POSITIVE i NEGATIVE są mutually exclusive (różne
-        # progi hourly), kolejność sprawdzania arbitralna.
-        pos_block = self._positive.entry_block_reason(state)
-        if pos_block is None:
-            self._enter_positive(state)
-            self._apply_disabled_override_if_needed(state)
-            self._log_after_update(state, prev_active, prev_mode, prev_xset)
-            return
-
-        neg_block = self._negative.entry_block_reason(state)
-        if neg_block is None:
-            self._enter_negative(state)
-            self._apply_disabled_override_if_needed(state)
-            self._log_after_update(state, prev_active, prev_mode, prev_xset)
-            return
-
-        # Neither direction — neutral z join'em obu block reasons (oba są
-        # not None bo wcześniejsze if'y already returned przy entry approval).
-        # Pokazuje DLACZEGO żaden kierunek nie wszedł w intervention.
-        self._set_neutral(f"pos:{pos_block} | neg:{neg_block}")
+        self._update_core(state)
         self._apply_disabled_override_if_needed(state)
         self._log_after_update(state, prev_active, prev_mode, prev_xset)
+
+    def _update_core(self, state: InputState) -> None:
+        """Dispatch — continue branch (gdy active) lub entry branch."""
+        if self.intervention_active:
+            self._continue_intervention(state)
+            return
+        self._try_enter(state)
 
     @staticmethod
     def _none_present_core(state: InputState) -> bool:
@@ -155,14 +130,19 @@ class GridExportManager:
             or state.pv_power is None
         )
 
-    # --- POSITIVE branch ---
+    def _continue_intervention(self, state: InputState) -> None:
+        """Continue branch — hour rollover check + dispatch po direction.
 
-    def _enter_positive(self, state: InputState) -> None:
-        """Enter POSITIVE intervention — mark state + resolve + commit."""
-        self.intervention_active = True
-        self.intervention_direction = InterventionDirection.POSITIVE
-        self._intervention_started_hour = state.now.hour
-        self._resolve_and_commit_positive(state)
+        Hour rollover: utility_meter resetuje balans hourly o pełnej godzinie,
+        każda godzina = osobna decyzja czy intervention.
+        """
+        if state.now.hour != self._intervention_started_hour:
+            self._set_neutral("hour_rollover")
+            return
+        if self.intervention_direction is InterventionDirection.NEGATIVE:
+            self._continue_negative(state)
+        else:
+            self._continue_positive(state)
 
     def _continue_positive(self, state: InputState) -> None:
         """Continue POSITIVE — exit check + resolve + commit."""
@@ -171,38 +151,6 @@ class GridExportManager:
             self._set_neutral(exit_reason)
             return
         self._resolve_and_commit_positive(state)
-
-    def _resolve_and_commit_positive(self, state: InputState) -> None:
-        """Resolve PositiveStrategy + commit do recommended_* (lub set_neutral).
-
-        Common helper dla _enter_positive (entry) i _continue_positive (continue).
-        Resolution z mode=None sygnalizuje exit (np. none_pv_available).
-        """
-        resolution = self._positive.resolve(state, self.recommended_xset)
-        if resolution.mode is None:
-            self._set_neutral(resolution.reason)
-            return
-        mode, xset, reason = resolution.build_output()
-        self.recommended_ems_mode = mode
-        self.recommended_xset = xset
-        self.last_decision_reason = reason
-
-    # --- NEGATIVE branch ---
-
-    def _enter_negative(self, state: InputState) -> None:
-        """Enter NEGATIVE intervention — mark state + fresh resolve + commit.
-
-        Wchodzimy z AUTO (clean state) — fresh lookup zamiast matchować przez
-        hysteresis do tego co było wcześniej.
-        """
-        self.intervention_active = True
-        self.intervention_direction = InterventionDirection.NEGATIVE
-        self._intervention_started_hour = state.now.hour
-        resolution = self._negative.resolve_for_entry(state)
-        if resolution is None:
-            self._set_neutral("none_pv_available")
-            return
-        self._commit_negative(resolution)
 
     def _continue_negative(self, state: InputState) -> None:
         """Continue NEGATIVE — resolve+clamp z hysteresis, exit check, commit.
@@ -222,6 +170,76 @@ class GridExportManager:
             return
         self._commit_negative(resolution)
 
+    def _try_enter(self, state: InputState) -> None:
+        """Entry branch — sprawdź POSITIVE/NEGATIVE entry, neutral z join'em.
+
+        POSITIVE i NEGATIVE są mutually exclusive (różne progi hourly), kolejność
+        sprawdzania arbitralna.
+        """
+        pos_block = self._positive.entry_block_reason(state)
+        if pos_block is None:
+            self._enter_positive(state)
+            return
+        neg_block = self._negative.entry_block_reason(state)
+        if neg_block is None:
+            self._enter_negative(state)
+            return
+        # Neither direction — pokazuje DLACZEGO żaden kierunek nie wszedł.
+        self._set_neutral(f"pos:{pos_block} | neg:{neg_block}")
+
+    def _enter_positive(self, state: InputState) -> None:
+        """Enter POSITIVE intervention — mark state + resolve + commit."""
+        self.intervention_active = True
+        self.intervention_direction = InterventionDirection.POSITIVE
+        self._intervention_started_hour = state.now.hour
+        self._resolve_and_commit_positive(state)
+
+    def _resolve_and_commit_positive(self, state: InputState) -> None:
+        """Resolve PositiveStrategy + commit do recommended_* (lub set_neutral).
+
+        Common helper dla _enter_positive (entry) i _continue_positive (continue).
+        Resolution z mode=None sygnalizuje exit (np. none_pv_available).
+        """
+        resolution = self._positive.resolve(state, self.recommended_xset)
+        if resolution.mode is None:
+            self._set_neutral(resolution.reason)
+            return
+        mode, xset, reason = resolution.build_output()
+        self.recommended_ems_mode = mode
+        self.recommended_xset = xset
+        self.last_decision_reason = reason
+
+    def _enter_negative(self, state: InputState) -> None:
+        """Enter NEGATIVE intervention — mark state + fresh resolve + commit.
+
+        Wchodzimy z AUTO (clean state) — fresh lookup zamiast matchować przez
+        hysteresis do tego co było wcześniej.
+        """
+        self.intervention_active = True
+        self.intervention_direction = InterventionDirection.NEGATIVE
+        self._intervention_started_hour = state.now.hour
+        resolution = self._negative.resolve_for_entry(state)
+        if resolution is None:
+            self._set_neutral("none_pv_available")
+            return
+        self._commit_negative(resolution)
+
+    def _set_neutral(self, reason: str) -> None:
+        """Reset to AUTO mode with given reason. Idempotent.
+
+        Multi-caller helper — wywoływany przez _update_core (none_present, neither),
+        _continue_intervention (hour_rollover), _continue_positive/negative (exit),
+        _enter_negative (none_pv_available), _try_enter (neither),
+        _resolve_and_commit_positive (exit signal). Last caller w pliku =
+        _enter_negative, umieszczone zaraz po nim.
+        """
+        self.intervention_active = False
+        self.intervention_direction = None
+        self.recommended_ems_mode = self.AUTO_MODE
+        self.recommended_xset = None
+        self.last_decision_reason = reason
+        self._intervention_started_hour = None
+
     def _commit_negative(self, resolution: NegativeResolution) -> None:
         """Build NEGATIVE output (z resolution.build_output) i zapisz do recommended_*.
 
@@ -231,20 +249,6 @@ class GridExportManager:
         self.recommended_ems_mode = mode
         self.recommended_xset = xset
         self.last_decision_reason = reason
-
-    def _set_neutral(self, reason: str) -> None:
-        """Reset to AUTO mode with given reason. Idempotent.
-
-        Multi-caller helper (update + _enter_positive + _continue_positive +
-        _apply_positive + _enter_negative + _continue_negative) — ostatni caller
-        w pliku _continue_negative, umieszczone zaraz po nim (i po _commit_negative).
-        """
-        self.intervention_active = False
-        self.intervention_direction = None
-        self.recommended_ems_mode = self.AUTO_MODE
-        self.recommended_xset = None
-        self.last_decision_reason = reason
-        self._intervention_started_hour = None
 
     # --- common helpers ---
 
