@@ -102,27 +102,26 @@ class GridExportManager:
         prev_mode = self.recommended_ems_mode
         prev_xset = self.recommended_xset
 
-        # None-guard: brak core inputs → set_neutral, skip disabled_override
-        # (manager nie może działać, override też nie ma sensu).
         if self._none_present_core(state):
             self._set_neutral("none_present")
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
-        self._update_core(state)
+        if self.intervention_active:
+            self._continue_intervention(state)
+        else:
+            self._try_enter(state)
+
         self._apply_disabled_override_if_needed(state)
         self._log_after_update(state, prev_active, prev_mode, prev_xset)
 
-    def _update_core(self, state: InputState) -> None:
-        """Dispatch — continue branch (gdy active) lub entry branch."""
-        if self.intervention_active:
-            self._continue_intervention(state)
-            return
-        self._try_enter(state)
-
     @staticmethod
     def _none_present_core(state: InputState) -> bool:
-        """Pola wymagane do podjęcia DECYZJI o entry/exit (gates)."""
+        """Pola wymagane do podjęcia DECYZJI o entry/exit (gates).
+
+        Gdy któryś None → manager nie może działać, update robi set_neutral
+        i skip disabled_override (override też nie ma sensu bez core inputs).
+        """
         return (
             state.now is None
             or state.exported_energy_hourly is None
@@ -144,14 +143,6 @@ class GridExportManager:
         else:
             self._continue_positive(state)
 
-    def _continue_positive(self, state: InputState) -> None:
-        """Continue POSITIVE — exit check + resolve + commit."""
-        exit_reason = self._positive.exit_reason(state)
-        if exit_reason is not None:
-            self._set_neutral(exit_reason)
-            return
-        self._resolve_and_commit_positive(state)
-
     def _continue_negative(self, state: InputState) -> None:
         """Continue NEGATIVE — resolve+clamp z hysteresis, exit check, commit.
 
@@ -169,6 +160,14 @@ class GridExportManager:
             self._set_neutral(exit_reason)
             return
         self._commit_negative(resolution)
+
+    def _continue_positive(self, state: InputState) -> None:
+        """Continue POSITIVE — exit check + resolve + commit."""
+        exit_reason = self._positive.exit_reason(state)
+        if exit_reason is not None:
+            self._set_neutral(exit_reason)
+            return
+        self._resolve_and_commit_positive(state)
 
     def _try_enter(self, state: InputState) -> None:
         """Entry branch — sprawdź POSITIVE/NEGATIVE entry, neutral z join'em.
@@ -224,22 +223,6 @@ class GridExportManager:
             return
         self._commit_negative(resolution)
 
-    def _set_neutral(self, reason: str) -> None:
-        """Reset to AUTO mode with given reason. Idempotent.
-
-        Multi-caller helper — wywoływany przez _update_core (none_present, neither),
-        _continue_intervention (hour_rollover), _continue_positive/negative (exit),
-        _enter_negative (none_pv_available), _try_enter (neither),
-        _resolve_and_commit_positive (exit signal). Last caller w pliku =
-        _enter_negative, umieszczone zaraz po nim.
-        """
-        self.intervention_active = False
-        self.intervention_direction = None
-        self.recommended_ems_mode = self.AUTO_MODE
-        self.recommended_xset = None
-        self.last_decision_reason = reason
-        self._intervention_started_hour = None
-
     def _commit_negative(self, resolution: NegativeResolution) -> None:
         """Build NEGATIVE output (z resolution.build_output) i zapisz do recommended_*.
 
@@ -251,6 +234,21 @@ class GridExportManager:
         self.last_decision_reason = reason
 
     # --- common helpers ---
+
+    def _set_neutral(self, reason: str) -> None:
+        """Reset to AUTO mode with given reason. Idempotent.
+
+        Wywoływany w bardzo wielu miejscach (każdy branch który nie commit'uje
+        intervention) — umieszczone w common helpers section zamiast "zaraz po
+        ostatnim caller-ze" (Reguła 1 strict): grupowanie z innymi common
+        helpers wygrywa nad lokalnością gdy callers są rozproszeni.
+        """
+        self.intervention_active = False
+        self.intervention_direction = None
+        self.recommended_ems_mode = self.AUTO_MODE
+        self.recommended_xset = None
+        self.last_decision_reason = reason
+        self._intervention_started_hour = None
 
     def _apply_disabled_override_if_needed(self, state: InputState) -> None:
         """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.
