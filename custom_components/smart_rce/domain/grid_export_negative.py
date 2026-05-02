@@ -19,6 +19,46 @@ Hysteresis ±300W na granicach bucketów (analog POSITIVE). SoC clamp:
 Pre_charge window NIE blokuje (POSITIVE skip, NEGATIVE pozwolony — bateria może
 discharge'ować jeśli SoC > min). `ems_allow_discharge_override=True` blokuje
 NEGATIVE entry/continue (user wymusza discharge — np. Battery Discharge Max).
+
+Target meter (charge_limit > 7, reserved=5500W w water_heater dla NEGATIVE,
+heater praktycznie zawsze OFF bo heater_budget = pv_avail − 5500 ujemny w typowym
+zakresie) — meter = pv_avail − heaters − battery_actual:
+
+    ┌─────────────────┬──────────┬─────────┬──────────────────────────┐
+    │ Active pv_avail │ xset_sig │ battery │ meter (heater OFF)       │
+    ├─────────────────┼──────────┼─────────┼──────────────────────────┤
+    │ > 5000          │ +4000    │  +4000  │ ≥ +1000 (przy pv ≥ 5000) │
+    │ 4000–5000       │ +3000    │  +3000  │   +1500                  │
+    │ 3000–4000       │ +2000    │  +2000  │   +1500                  │
+    │ 2000–3000       │ +1000    │  +1000  │   +1500                  │
+    │ 1000–2000       │      0   │      0  │   +1500 (= pv_avail)     │
+    │ 0–1000          │  −1000   │  −1000  │   +1500                  │
+    │ −1000–0         │  −2000   │  −2000  │   +1500                  │
+    │ −2000–−1000     │  −3000   │  −3000  │   +1500                  │
+    │ −3000–−2000     │  −4000   │  −4000  │   +1500                  │
+    │ −4000–−3000     │  −6000   │  −5300* │ ≈ +1800 (BMS clamp)      │
+    │ ≤ −4000         │  −6000   │  −5300* │ < +1500 (deep deficit)   │
+    └─────────────────┴──────────┴─────────┴──────────────────────────┘
+
+    * BMS clamp ~5300W przy max discharge (target −6000 nieosiągalny — często
+      praktycznie ~5000-5300W).
+
+    Formuła: xset_signed = środek_bucketu − 1500, więc
+             meter = środek − xset_signed = +1500 fixed (poza top/bottom).
+    Top bucket (>5000): xset=+4000 stały, meter rośnie z pv_avail (eksport ≥ 1000).
+    Bottom (≤ −4000): cap −6000, BMS nie nadąża, eksport < +1500W.
+
+Wniosek: NEGATIVE intervention utrzymuje meter ≈ +1500W eksport w 9 z 11
+bucketów. Symetria do POSITIVE: oba celują w ±1500W w środkach bucketów.
+
+Edge cases (świadomie nie obsłużone):
+- pv_avail > 5000 przy NEGATIVE (np. silna chwilowa PV mimo deficit hourly):
+  meter rośnie do ~+5000 przy pv_avail=9000. POSITIVE zwykle przejmuje wcześniej
+  (hourly > 0.06), ale moment przed transition może dać wysoki eksport.
+- pv_avail ≤ −4000 (głęboki deficit, np. heater 3kW user-forced + low PV):
+  bateria daje max BMS, reszta z grida. Saldo ratujemy częściowo.
+- Heater forced ON (manual override): zwiększa import o moc heatera. NEGATIVE
+  branch przeznaczony dla heater OFF (water_heater wymusza off przez reserved).
 """
 
 from __future__ import annotations
