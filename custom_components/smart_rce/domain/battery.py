@@ -1,14 +1,10 @@
-"""Battery charge/discharge management.
+"""Battery discharge management.
 
-Monitoruje bilans godzinowy (`exported_energy_hourly`) i decyduje kiedy
-zablokować ładowanie/rozładowywanie baterii.
+Monitoruje bilans godzinowy i okna pre/post-charge by decydować kiedy
+zablokować rozładowywanie baterii. Block_charge handling przeniesiony
+do GridExportManager (Etap 2 — NEGATIVE balance).
 
 Decyzje:
-
-- `should_block_battery_charge` — aktywny gdy bilans godzinowy ujemny w
-  trybie charge-only (DoD=0 lub block_discharge=True) w oknie 7-17, i
-  toggle ładowania jest `on` (żeby nie blokować tego co jest już zablokowane).
-  Blokada chroni przed ładowaniem baterii z sieci w drogiej taryfie.
 
 - `should_block_battery_discharge` — aktywny:
   - **Pre-charge** (7:00 → `start_charge_hour_override`): hour-start reset
@@ -25,7 +21,7 @@ Patrz `context/target_soc_algorithm.md` dla szerszego kontekstu.
 from __future__ import annotations
 
 import logging
-from typing import Final, Protocol
+from typing import Final
 
 from custom_components.smart_rce.domain.input_state import InputState
 from homeassistant.core import HomeAssistant
@@ -37,19 +33,6 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION: Final[int] = 1
 STORAGE_KEY: Final[str] = "smart_rce_battery_manager"
-
-# --- charge guard --- #
-
-# Blokada ładowania baterii aktywna tylko w godzinach [PRE_CHARGE_WINDOW_START_HOUR,
-# GUARD_END_HOUR) — pokrywa okno drogich godzin RCE (7-10, 13-17 w G13 G12w) gdzie
-# nie chcemy ładować baterii z drogiej sieci. Po 17:00 i przed 7:00 guard wyłączony:
-# wieczorem bateria się rozładowuje, nocą user decyduje explicit automations czy
-# chce night charging z taniego RCE.
-GUARD_END_HOUR: Final[int] = 17
-
-# Hysteresis dla `hourly_balance_negative`: gdy flag=True, zostaje True
-# dopóki eksport godzinowy nie przekroczy tego progu (anti-flap).
-HYSTERESIS_WH: Final[int] = 50
 
 # --- discharge guard (pre-charge window) --- #
 
@@ -89,20 +72,8 @@ AVG_5MIN_DEFICIT_THRESHOLD_W: Final[int] = 0
 DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
 
 
-class BatteryState(Protocol):
-    """Structural interface — minimalny kontrakt dla readers battery state.
-
-    Używane przez WaterHeaterManager i inne managery które potrzebują
-    orientacji czy bilans godzinowy jest ujemny.
-    """
-
-    hourly_balance_negative: bool
-
-
 class BatteryManager:
     def __init__(self, hass: HomeAssistant | None = None) -> None:
-        self.hourly_balance_negative: bool = False
-        self.should_block_battery_charge: bool = False
         self.should_block_battery_discharge: bool = False
         self._last_hour_seen: int | None = None
         # Throttling dla DEBUG snapshotów
@@ -131,32 +102,18 @@ class BatteryManager:
         # Snapshot poprzednich wartości dla detekcji transitions w logach
         # i decydowania czy persistować stan na disk.
         prev_block_discharge = self.should_block_battery_discharge
-        prev_block_charge = self.should_block_battery_charge
-        prev_hourly_neg = self.hourly_balance_negative
         prev_last_hour_seen = self._last_hour_seen
 
         # --- OVERRIDE: intencjonalne rozładowanie (np. Battery Discharge Max) ---
         # Gdy input_boolean.ems_allow_discharge_override=True, EMS "stoi z boku".
-        # Oba should_block_* wymuszone na False — pozwalamy innym automations
+        # block_discharge wymuszone na False — pozwalamy innym automations
         # swobodnie sterować baterią bez interferencji.
         if state.ems_allow_discharge_override is True:
             self.should_block_battery_discharge = False
-            self.should_block_battery_charge = False
-            self.hourly_balance_negative = False
             self._last_hour_seen = None
-            self._log_transitions(
-                prev_block_discharge,
-                prev_block_charge,
-                prev_hourly_neg,
-                reason="override_active",
-            )
+            self._log_transitions(prev_block_discharge, reason="override_active")
             self._maybe_log_snapshot(state, exported_energy_wh, phase="override")
-            self._maybe_save(
-                prev_block_discharge,
-                prev_block_charge,
-                prev_hourly_neg,
-                prev_last_hour_seen,
-            )
+            self._maybe_save(prev_block_discharge, prev_last_hour_seen)
             return
 
         # --- block_discharge ---
@@ -245,34 +202,6 @@ class BatteryManager:
             self.should_block_battery_discharge = False
             self._last_hour_seen = None
 
-        # --- block_charge ---
-        in_guard_window = (
-            state.depth_of_discharge == 0 or self.should_block_battery_discharge
-        ) and PRE_CHARGE_WINDOW_START_HOUR <= state.now.hour < GUARD_END_HOUR
-
-        toggle_is_on = state.battery_charge_toggle_on is True
-
-        if in_guard_window:
-            if exported_energy_wh < 0 and toggle_is_on:
-                self.hourly_balance_negative = True
-            elif self.hourly_balance_negative and exported_energy_wh < HYSTERESIS_WH:
-                pass  # hysteresis hold
-            else:
-                self.hourly_balance_negative = False
-        else:
-            self.hourly_balance_negative = False
-
-        # Runtime kontrola przez input_select.smart_rce_block_charge_logic_mode:
-        # "disabled" → block_charge logika wyłączona (toggle nigdy nie wyłączany).
-        # None / "enabled" → current behavior (defensive).
-        block_charge_logic_disabled = state.block_charge_logic_mode == "disabled"
-        self.should_block_battery_charge = (
-            self.hourly_balance_negative
-            and state.battery_charge_limit is not None
-            and state.battery_charge_limit >= 2
-            and not block_charge_logic_disabled
-        )
-
         # --- Debug snapshot (throttled) + INFO transitions ---
         if self._is_in_pre_charge_window(state):
             phase = (
@@ -292,19 +221,9 @@ class BatteryManager:
             )
         else:
             phase = "out-of-window"
-        self._log_transitions(
-            prev_block_discharge,
-            prev_block_charge,
-            prev_hourly_neg,
-            reason=phase,
-        )
+        self._log_transitions(prev_block_discharge, reason=phase)
         self._maybe_log_snapshot(state, exported_energy_wh, phase=phase)
-        self._maybe_save(
-            prev_block_discharge,
-            prev_block_charge,
-            prev_hourly_neg,
-            prev_last_hour_seen,
-        )
+        self._maybe_save(prev_block_discharge, prev_last_hour_seen)
 
     async def async_restore(self) -> None:
         """Wywołać RAZ przed pierwszym update() w async_setup_entry."""
@@ -314,23 +233,16 @@ class BatteryManager:
         if not data:
             return
         self.should_block_battery_discharge = data.get("block_discharge", False)
-        self.should_block_battery_charge = data.get("block_charge", False)
-        self.hourly_balance_negative = data.get("hourly_neg", False)
         self._last_hour_seen = data.get("last_hour_seen")
         _LOGGER.info(
-            "BatteryManager restored: block_discharge=%s block_charge=%s "
-            "hourly_neg=%s last_hour=%s",
+            "BatteryManager restored: block_discharge=%s last_hour=%s",
             self.should_block_battery_discharge,
-            self.should_block_battery_charge,
-            self.hourly_balance_negative,
             self._last_hour_seen,
         )
 
     def _maybe_save(
         self,
         prev_block_discharge: bool,
-        prev_block_charge: bool,
-        prev_hourly_neg: bool,
         prev_last_hour_seen: int | None,
     ) -> None:
         """Persist state on every change (no throttle — flapping rzadkie, write tani)."""
@@ -338,8 +250,6 @@ class BatteryManager:
             return
         if (
             prev_block_discharge == self.should_block_battery_discharge
-            and prev_block_charge == self.should_block_battery_charge
-            and prev_hourly_neg == self.hourly_balance_negative
             and prev_last_hour_seen == self._last_hour_seen
         ):
             return
@@ -349,8 +259,6 @@ class BatteryManager:
         await self._store.async_save(
             {
                 "block_discharge": self.should_block_battery_discharge,
-                "block_charge": self.should_block_battery_charge,
-                "hourly_neg": self.hourly_balance_negative,
                 "last_hour_seen": self._last_hour_seen,
             }
         )
@@ -367,8 +275,6 @@ class BatteryManager:
         snapshot = (
             phase,
             self.should_block_battery_discharge,
-            self.should_block_battery_charge,
-            self.hourly_balance_negative,
         )
 
         now = state.now
@@ -384,7 +290,7 @@ class BatteryManager:
         _LOGGER.debug(
             "BatteryManager[%s] now=%s exported=%+.3fkWh(%+dWh) avg_5min=%s "
             "DoD=%s toggle=%s charge_limit=%s override_window=%s | "
-            "block_discharge=%s block_charge=%s hourly_neg=%s",
+            "block_discharge=%s",
             phase,
             now.strftime("%H:%M:%S") if now else "?",
             state.exported_energy_hourly,
@@ -397,8 +303,6 @@ class BatteryManager:
             state.battery_charge_limit,
             state.start_charge_hour_override,
             self.should_block_battery_discharge,
-            self.should_block_battery_charge,
-            self.hourly_balance_negative,
         )
         self._last_log_snapshot = snapshot
         self._last_log_ts = now
@@ -406,8 +310,6 @@ class BatteryManager:
     def _log_transitions(
         self,
         prev_block_discharge: bool,
-        prev_block_charge: bool,
-        prev_hourly_neg: bool,
         *,
         reason: str,
     ) -> None:
@@ -418,19 +320,6 @@ class BatteryManager:
                 prev_block_discharge,
                 self.should_block_battery_discharge,
                 reason,
-            )
-        if prev_block_charge != self.should_block_battery_charge:
-            _LOGGER.info(
-                "BatteryManager: block_charge %s → %s (reason: %s)",
-                prev_block_charge,
-                self.should_block_battery_charge,
-                reason,
-            )
-        if prev_hourly_neg != self.hourly_balance_negative:
-            _LOGGER.debug(
-                "BatteryManager: hourly_balance_negative %s → %s",
-                prev_hourly_neg,
-                self.hourly_balance_negative,
             )
 
     @staticmethod

@@ -3,18 +3,18 @@
 Sterowanie grzałkami CWU (BIG 3kW, SMALL 1.5kW) na podstawie:
 - PV surplus (sensor minus_pv)
 - SOC baterii + battery_charge_limit (ile bateria przyjmie)
-- Bilansu godzinowego eksport/import (przez BatteryState)
+- Aktualnej interwencji GridExportManager (POSITIVE/NEGATIVE — większy reserved)
 - Mode: ASAP / BALANCED / WASTED
 
-Battery-related decisions (block charge/discharge) są w BatteryManager —
-ten Manager tylko *czyta* battery.hourly_balance_negative jako guard.
+NEGATIVE intervention wymusza większy reserved (grzałki off priorytetowo) bo
+grzałka 3kW jest typowo główną przyczyną deficytu hourly.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from custom_components.smart_rce.domain.battery import BatteryState
+from custom_components.smart_rce.domain.grid_export import InterventionDirection
 from custom_components.smart_rce.domain.input_state import InputState
 
 # BALANCED Piętro 2 — adaptacyjny upgrade pod budżet eksportu w resztę godziny.
@@ -71,42 +71,36 @@ class WaterHeaterManager:
     def update(
         self,
         state: InputState,
-        battery: BatteryState,
-        grid_export_charge_active: bool = False,
+        grid_export_intervention: InterventionDirection | None = None,
     ) -> None:
         """Update target state based on PV/battery/heater config.
 
-        `grid_export_charge_active` (optional, default False for backward
-        compat) — gdy GridExportManager wymusza CHARGE_BATTERY, reserved
-        budget zostaje zwiększony do 3500W (chronimy baterię intervention
-        przed konkurencją z grzałkami). False → original logic.
+        `grid_export_intervention` (POSITIVE/NEGATIVE/None):
+        - POSITIVE: bateria łapie surplus, reserved zwiększony do 3500W
+          (`charge_limit > 7`) by chronić baterię intervention.
+        - NEGATIVE: deficit hourly — większy reserved (5500W dla `>7`,
+          2000W dla `>2`, 600W dla `==2`) by wymusić grzałki off.
+        - None: original logic.
         """
         if self._none_present(state):
             return
 
         current_state = self._current_state(state)
-        target = self._determine_target(
-            state, battery, current_state, grid_export_charge_active
-        )
+        target = self._determine_target(state, current_state, grid_export_intervention)
 
         self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
         self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
         self.should_turn_on_small = target in (self.SMALL_IS_ON, self.BOTH_ARE_ON)
         self.should_turn_off_small = target in (self.BIG_IS_ON, self.BOTH_ARE_OFF)
 
-        # BALANCED diagnostics — gdy bilans godzinowy ujemny, budżet jest
-        # ujemną nadwyżką (import netto), pokazujemy to jako diagnostykę.
+        # BALANCED diagnostics reset gdy nie BALANCED mode.
+        # Reaction na NEGATIVE intervention to większy reserved w `_balanced_target`
+        # (heater_budget naturalnie spada poniżej BIG_POWER → grzałki off).
+        # Diagnostic budget/baseline ustawia normalny BALANCED flow.
         mode = state.heater_mode or "BALANCED"
         if mode != "BALANCED":
             self.balanced_heater_budget = None
             self.balanced_baseline = None
-            self.balanced_upgrade_target = None
-            self.balanced_upgrade_active = False
-            self.balanced_export_bonus_w = None
-        elif battery.hourly_balance_negative:
-            pv_available = -state.consumption_minus_pv_2_minutes
-            self.balanced_heater_budget = -pv_available
-            self.balanced_baseline = "negative_energy"
             self.balanced_upgrade_target = None
             self.balanced_upgrade_active = False
             self.balanced_export_bonus_w = None
@@ -123,19 +117,13 @@ class WaterHeaterManager:
     def _determine_target(
         self,
         state: InputState,
-        battery: BatteryState,
         current_state: str,
-        grid_export_charge_active: bool = False,
+        grid_export_intervention: InterventionDirection | None = None,
     ) -> str:
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
         battery_charge_limit = state.battery_charge_limit
         exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
-
-        # GUARD: Ochrona bilansu godzinowego (tryb charge-only, DoD=0%) — tylko
-        # w godzinach PV. Zarządzany przez BatteryManager (hysteresis, guard window).
-        if battery.hourly_balance_negative:
-            return self.BOTH_ARE_OFF
 
         mode = state.heater_mode or "BALANCED"
 
@@ -152,7 +140,7 @@ class WaterHeaterManager:
                 current_state,
                 state.water_heater_strategy,
                 state.now,
-                grid_export_charge_active,
+                grid_export_intervention,
             )
         else:
             target = self._wasted_target(
@@ -225,29 +213,38 @@ class WaterHeaterManager:
         current_state: str,
         strategy: str | None,
         now: datetime,
-        grid_export_charge_active: bool = False,
+        grid_export_intervention: InterventionDirection | None = None,
     ) -> str:
-        # Rezerwacja (charge_limit: dyskretne 0, 1, 2, 7, 18A)
-        # BATTERY_FIRST: gdy bateria może mocno ładować (charge_limit>7),
-        # rezerwujemy pełne 4500W dla baterii, grzałki praktycznie OFF. Gdy
-        # bateria zbliża się do pełna, charge_limit sam spada (7→2→1→0) i
-        # fallback do istniejącej "łaskawej" logiki.
-        # GridExport CHARGE intervention (charge_battery active) — bateria
-        # ma priorytet, reserved=3500 (jak BATTERY_FIRST ale low BMS branchy
-        # bez zmian). Konkurencja z grzałkami eliminowana — typowo SMALL/BIG
-        # włącza się dopiero gdy pv_available > 5000/6500.
+        # Rezerwacja per battery_charge_limit (0, 1, 2, 7, 18A) i intervention.
+        # NEGATIVE intervention: większy reserved (grzałki off priorytetowo),
+        # bo grzałka 3kW jest typowo główną przyczyną deficytu hourly.
+        # POSITIVE intervention: bateria łapie surplus, reserved=3500W (>7)
+        # by chronić baterię intervention przed konkurencją z grzałkami.
+        is_positive = grid_export_intervention is InterventionDirection.POSITIVE
+        is_negative = grid_export_intervention is InterventionDirection.NEGATIVE
+
         if strategy == "BATTERY_FIRST" and battery_charge_limit > 7:
             reserved = 4500
         elif battery_charge_limit > 7:
-            if grid_export_charge_active:
+            if is_positive:
                 reserved = 3500
+            elif is_negative:
+                reserved = 5500  # grzałki MUSZĄ off
             else:
                 reserved = 3500 if battery_soc < 50 else 2500
         elif battery_charge_limit > 2:
-            reserved = 1000
+            if is_negative:
+                reserved = 2000
+            else:
+                reserved = 1000
         elif battery_charge_limit == 2:
+            if is_negative:
+                reserved = 600
+            else:
+                reserved = 300
+        elif battery_charge_limit == 1:
             reserved = 300
-        else:
+        else:  # battery_charge_limit == 0
             reserved = 0
 
         heater_budget = pv - reserved

@@ -161,13 +161,6 @@ def set_grid_export_strategy_mode(entity: str, i: InputState, state: str) -> Non
     i.grid_export_strategy_mode = state
 
 
-def set_block_charge_logic_mode(entity: str, i: InputState, state: str) -> None:
-    if state in (None, "", "unavailable", "unknown"):
-        i.block_charge_logic_mode = None
-        return
-    i.block_charge_logic_mode = state
-
-
 HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "switch.water_heater_big_relay": set_water_heater_big_is_on,
     "switch.water_heater_small_relay": set_water_heater_small_is_on,
@@ -190,7 +183,6 @@ HASS_STATE_MAPPER: dict[str, Callable[[InputState, str], None]] = {
     "select.goodwe_ems_mode": set_goodwe_ems_mode,
     "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
     "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
-    "input_select.smart_rce_block_charge_logic_mode": set_block_charge_logic_mode,
 }
 
 
@@ -239,56 +231,10 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
 
 
-BATTERY_CHARGE_TOGGLE = "input_boolean.battery_charge_max_current_toggle"
-BLOCK_BATTERY_CHARGE_SENSOR = "binary_sensor.ems_block_battery_charge"
-
 GOODWE_EMS_MODE_SELECT = "select.goodwe_ems_mode"
 GOODWE_EMS_POWER_LIMIT_NUMBER = "number.goodwe_ems_power_limit"
 GRID_EXPORT_RECOMMENDED_MODE_SENSOR = "sensor.ems_grid_export_recommended_ems_mode"
 GRID_EXPORT_RECOMMENDED_XSET_SENSOR = "sensor.ems_grid_export_recommended_xset"
-
-
-def listen_for_block_battery_charge(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Toggle battery charge based on ems_block_battery_charge sensor."""
-
-    async def block_battery_charge_changed(
-        event: Event[EventStateChangedData],
-    ) -> None:
-        new_state = event.data["new_state"]
-        old_state = event.data.get("old_state")
-        if new_state is None or new_state.state not in ("on", "off"):
-            return
-        if old_state is None or old_state.state not in ("on", "off"):
-            return
-        service = "turn_off" if new_state.state == "on" else "turn_on"
-        try:
-            await hass.services.async_call(
-                "input_boolean",
-                service,
-                {ATTR_ENTITY_ID: BATTERY_CHARGE_TOGGLE},
-                blocking=True,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Failed to call input_boolean.%s on %s",
-                service,
-                BATTERY_CHARGE_TOGGLE,
-            )
-
-    @callback
-    def hass_started(_=Event) -> None:
-        entry.async_on_unload(
-            async_track_state_change_event(
-                hass,
-                [BLOCK_BATTERY_CHARGE_SENSOR],
-                block_battery_charge_changed,
-            )
-        )
-
-    if hass.state == CoreState.running:
-        hass_started()
-    else:
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
 
 
 def listen_for_grid_export_recommendations(
@@ -385,7 +331,12 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     @callback
     def update_hourly(now: datetime) -> None:
         ems.update_hourly(now)
-        # Przelicz guard — zmiana godziny może otworzyć/zamknąć okno GUARD_END_HOUR
+        # Przelicz state — godzina ma znaczenie dla:
+        # - battery.py: okien pre/post-charge
+        # - grid_export.py: hour rollover defense (intervention zostaje
+        #   ograniczona do bieżącej godziny — utility_meter resetuje hourly
+        #   na pełnej godzinie); time-dependent NEGATIVE entry threshold
+        #   przesuwa się przy minucie 45 (-0.05 → 0)
         # nawet gdy żaden z entity w HASS_STATE_MAPPER się nie zmienił.
         input_state = update_input_state(hass, InputState())
         ems.update_state(input_state)
@@ -396,7 +347,6 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     update_hourly(now_local())
 
     listen_for_state_changes(hass, entry, ems)
-    listen_for_block_battery_charge(hass, entry)
     listen_for_grid_export_recommendations(hass, entry)
 
     return ems

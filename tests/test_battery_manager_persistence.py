@@ -81,8 +81,6 @@ async def test_save_on_state_change(mock_hass, mock_store):
     saved = mock_store.async_save.call_args.args[0]
     assert saved == {
         "block_discharge": True,
-        "block_charge": False,
-        "hourly_neg": False,
         "last_hour_seen": None,
     }
 
@@ -118,8 +116,6 @@ async def test_no_save_when_state_unchanged(mock_hass, mock_store):
 async def test_restore_loads_state(mock_hass, mock_store):
     mock_store.async_load.return_value = {
         "block_discharge": True,
-        "block_charge": True,
-        "hourly_neg": True,
         "last_hour_seen": 8,
     }
     mgr = BatteryManager(hass=mock_hass)
@@ -127,8 +123,6 @@ async def test_restore_loads_state(mock_hass, mock_store):
     await mgr.async_restore()
 
     assert mgr.should_block_battery_discharge is True
-    assert mgr.should_block_battery_charge is True
-    assert mgr.hourly_balance_negative is True
     assert mgr._last_hour_seen == 8
 
 
@@ -140,8 +134,6 @@ async def test_restore_with_no_data_keeps_defaults(mock_hass, mock_store):
     await mgr.async_restore()
 
     assert mgr.should_block_battery_discharge is False
-    assert mgr.should_block_battery_charge is False
-    assert mgr.hourly_balance_negative is False
     assert mgr._last_hour_seen is None
 
 

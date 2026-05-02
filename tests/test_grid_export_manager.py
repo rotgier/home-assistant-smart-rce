@@ -1,12 +1,16 @@
-"""Tests for GridExportManager — POSITIVE balance handling.
+"""Tests for GridExportManager — POSITIVE i NEGATIVE balance handling.
 
-Strategie: STANDBY (PV<200W), CHARGE_BATTERY adaptive (PV≥200W).
+POSITIVE: STANDBY (PV<200W) lub CHARGE_BATTERY adaptive (PV≥200W).
+NEGATIVE: adaptive charge/discharge buckets (target meter +1500W eksport).
 Active window: post_charge → next day 7:00 (skip pre_charge).
 """
 
 from datetime import datetime, time
 
-from custom_components.smart_rce.domain.grid_export import GridExportManager
+from custom_components.smart_rce.domain.grid_export import (
+    GridExportManager,
+    InterventionDirection,
+)
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE
 
@@ -32,9 +36,11 @@ def _state(
     pv_power_avg_2_minutes: float | None = None,  # None → fallback do pv_power
     consumption_minus_pv_2_minutes: float | None = -3000.0,  # surplus PV 3kW
     battery_charge_limit: float | None = 18.0,  # high BMS
+    depth_of_discharge: float | None = 78.0,  # min_soc = 100-78 = 22% (NEGATIVE gate)
     start_charge_hour_override: time | None = time(10, 0),
     other_ems_automation_active_this_hour: bool | None = False,
     grid_export_strategy_mode: str | None = "charge_adaptive",
+    ems_allow_discharge_override: bool | None = False,
 ) -> InputState:
     return InputState(
         now=now,
@@ -45,9 +51,11 @@ def _state(
         pv_power_avg_2_minutes=pv_power_avg_2_minutes,
         consumption_minus_pv_2_minutes=consumption_minus_pv_2_minutes,
         battery_charge_limit=battery_charge_limit,
+        depth_of_discharge=depth_of_discharge,
         start_charge_hour_override=start_charge_hour_override,
         other_ems_automation_active_this_hour=other_ems_automation_active_this_hour,
         grid_export_strategy_mode=grid_export_strategy_mode,
+        ems_allow_discharge_override=ems_allow_discharge_override,
     )
 
 
@@ -141,14 +149,14 @@ class TestEntryGates:
         )
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
-        assert mgr.last_decision_reason == "in_pre_charge_window"
+        assert "in_pre_charge_window" in mgr.last_decision_reason
 
     def test_balance_below_threshold(self):
         """Hourly ≤ 0.06 → no entry (entry threshold > 0.06)."""
         mgr = GridExportManager()
         mgr.update(_state(exported_energy_hourly=0.05))
         assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "balance_below_threshold"
+        assert "balance_below_threshold" in mgr.last_decision_reason
 
     def test_balance_just_above_threshold(self):
         """Hourly = 0.061 → entry."""
@@ -164,19 +172,19 @@ class TestEntryGates:
         mgr = GridExportManager()
         mgr.update(_state(exported_energy_hourly=0.10, battery_soc=100))
         assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "soc_at_ceiling"
+        assert "soc_at_ceiling" in mgr.last_decision_reason
 
     def test_toggle_off(self):
         mgr = GridExportManager()
         mgr.update(_state(exported_energy_hourly=0.10, battery_charge_toggle_on=False))
         assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "toggle_off"
+        assert "toggle_off" in mgr.last_decision_reason
 
     def test_late_hour_blocks(self):
         mgr = GridExportManager()
         mgr.update(_state(now=LATE, exported_energy_hourly=0.10))
         assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "too_late_in_hour"
+        assert "too_late_in_hour" in mgr.last_decision_reason
 
     def test_late_hour_just_before_threshold_passes(self):
         """minute=59 AND second<40 → entry allowed."""
@@ -199,7 +207,7 @@ class TestEntryGates:
             )
         )
         assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "other_automation_active"
+        assert "other_automation_active" in mgr.last_decision_reason
 
 
 class TestExitGates:
@@ -358,7 +366,7 @@ class TestNonePresent:
             )
         )
         assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "none_consumption_minus_pv_2_minutes"
+        assert mgr.last_decision_reason == "none_pv_available"
 
 
 class TestStrategyMode:
@@ -391,7 +399,8 @@ class TestStrategyMode:
         )
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
-        assert mgr.last_decision_reason == "disabled (balance_below_threshold)"
+        assert "disabled" in mgr.last_decision_reason
+        assert "balance_below_threshold" in mgr.last_decision_reason
 
     def test_none_strategy_mode_defaults_to_disabled(self):
         """grid_export_strategy_mode=None (helper niegotowy) → traktuj jak disabled."""
@@ -518,7 +527,7 @@ class TestStrategyModeChargeAdaptive:
         )
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
-        assert mgr.last_decision_reason == "none_consumption_minus_pv_2_minutes"
+        assert mgr.last_decision_reason == "none_pv_available"
 
     def test_low_bms_shortcut_xset_3500(self):
         """charge_adaptive + battery_charge_limit ≤ 7A → Xset 3500 (BMS clamp)."""
@@ -709,3 +718,425 @@ class TestIdempotency:
         # last_decision_reason zmienia się z "charge_adaptive_*" na
         # "charge_adaptive_stay_*" (hysteresis) — OK.
         assert "charge_adaptive_stay_" in mgr.last_decision_reason
+
+
+# ============ NEGATIVE balance tests ============
+
+
+class TestNegativeEntry:
+    """Entry NEGATIVE — time-dependent threshold + feasibility gates."""
+
+    def test_entry_pre45_below_005(self):
+        """Pre-45min: hourly < -0.05 → entry."""
+        mgr = GridExportManager()
+        early = datetime(2026, 4, 16, 12, 30, 0, tzinfo=TIMEZONE)
+        mgr.update(_state(now=early, exported_energy_hourly=-0.06))
+        assert mgr.intervention_active is True
+        assert mgr.intervention_direction is InterventionDirection.NEGATIVE
+
+    def test_no_entry_pre45_above_005(self):
+        """Pre-45min: hourly > -0.05 → no entry."""
+        mgr = GridExportManager()
+        early = datetime(2026, 4, 16, 12, 30, 0, tzinfo=TIMEZONE)
+        mgr.update(_state(now=early, exported_energy_hourly=-0.04))
+        assert mgr.intervention_active is False
+
+    def test_entry_post45_below_zero(self):
+        """Post-45min: hourly < 0 → entry (any negative)."""
+        mgr = GridExportManager()
+        late = datetime(2026, 4, 16, 12, 50, 0, tzinfo=TIMEZONE)
+        mgr.update(_state(now=late, exported_energy_hourly=-0.02))
+        assert mgr.intervention_active is True
+        assert mgr.intervention_direction is InterventionDirection.NEGATIVE
+
+    def test_no_entry_post45_zero_or_positive(self):
+        """Post-45min: hourly ≥ 0 → no entry."""
+        mgr = GridExportManager()
+        late = datetime(2026, 4, 16, 12, 50, 0, tzinfo=TIMEZONE)
+        mgr.update(_state(now=late, exported_energy_hourly=0.0))
+        assert mgr.intervention_active is False
+
+    def test_no_entry_soc_below_hard_floor(self):
+        """SoC ≤ 10 → no entry."""
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10, battery_soc=10))
+        assert mgr.intervention_active is False
+        assert "soc_below_hard_floor" in mgr.last_decision_reason
+
+    def test_no_entry_dod_none(self):
+        """depth_of_discharge=None → no entry."""
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10, depth_of_discharge=None))
+        assert mgr.intervention_active is False
+
+    def test_no_entry_consumption_minus_pv_none(self):
+        """consumption_minus_pv_2_minutes=None → no entry."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(exported_energy_hourly=-0.10, consumption_minus_pv_2_minutes=None)
+        )
+        assert mgr.intervention_active is False
+
+    def test_no_entry_other_automation_active(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                other_ems_automation_active_this_hour=True,
+            )
+        )
+        assert mgr.intervention_active is False
+
+    def test_no_entry_late_hour(self):
+        mgr = GridExportManager()
+        late = datetime(2026, 4, 16, 12, 59, 50, tzinfo=TIMEZONE)
+        mgr.update(_state(now=late, exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is False
+
+    def test_no_entry_discharge_bucket_at_dod_floor(self):
+        """Bucket discharge (pv_avail < 1500) + SoC = floor → entry blocked."""
+        mgr = GridExportManager()
+        # consumption_minus_pv = +500 (deficit) → pv_avail = -500 → bucket discharge
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=500,
+                battery_soc=22,  # = 100 - DoD (78)
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert "soc_at_dod_floor_no_discharge" in mgr.last_decision_reason
+
+    def test_entry_charge_bucket_at_soc_ceiling(self):
+        """Bucket charge (pv_avail > 1000) + SoC = 100 → entry pozwolony, clamp do STOP."""
+        mgr = GridExportManager()
+        # pv_avail = 3000 → bucket charge xset 2000, ale SoC=100 → clamp do 0
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-3000,  # pv_avail = 3000
+                battery_soc=100,
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.intervention_direction is InterventionDirection.NEGATIVE
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 0  # clamped from charge to stop
+
+
+class TestNegativeExit:
+    """Exit NEGATIVE — feasibility loss / recovery / end_of_hour."""
+
+    def test_exit_balance_recovered(self):
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is True
+        # Recovery do dodatniego salda
+        mgr.update(_state(exported_energy_hourly=0.01))
+        assert mgr.intervention_active is False
+        assert mgr.last_decision_reason == "negative_balance_recovered"
+
+    def test_exit_soc_at_dod_floor_during_discharge(self):
+        """Bucket discharge + SoC opada do floor → exit."""
+        mgr = GridExportManager()
+        # Entry NEGATIVE z bucket discharge
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=500,  # pv_avail = -500 → discharge
+                battery_soc=30,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is True
+        # SoC spada do floor (22)
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=500,
+                battery_soc=22,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.last_decision_reason == "soc_at_dod_floor_exit"
+
+    def test_no_exit_soc_floor_during_charge_bucket(self):
+        """Bucket charge + SoC=100 → clamp do STOP, NIE exit."""
+        mgr = GridExportManager()
+        # Entry charge bucket
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-3000,  # pv_avail = 3000 → charge
+                battery_soc=80,
+            )
+        )
+        assert mgr.intervention_active is True
+        # SoC dochodzi do 100 — bucket charge + SoC=100 → clamp do STOP
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-3000,
+                battery_soc=100,
+            )
+        )
+        # Continue intervention (clamp), NIE exit
+        assert mgr.intervention_active is True
+        assert mgr.recommended_xset == 0  # clamped to stop bucket
+        assert mgr.recommended_ems_mode == "discharge_battery"
+
+    def test_exit_end_of_hour(self):
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is True
+        # End of hour
+        eoh = datetime(2026, 4, 16, 11, 59, 55, tzinfo=TIMEZONE)
+        mgr.update(_state(now=eoh, exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is False
+        assert mgr.last_decision_reason == "end_of_hour_cleanup"
+
+    def test_exit_hour_rollover(self):
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is True
+        # Hour rollover
+        next_hour = datetime(2026, 4, 16, 12, 5, 0, tzinfo=TIMEZONE)
+        mgr.update(_state(now=next_hour, exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is False
+        assert mgr.last_decision_reason == "hour_rollover"
+
+
+class TestNegativeAdaptiveBuckets:
+    """Adaptive buckets — pv_avail → mode/xset (target +1500W eksport)."""
+
+    def test_pv_above_5000_charge_4000(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-6000,  # pv_avail = 6000
+            )
+        )
+        assert mgr.recommended_ems_mode == "charge_battery"
+        assert mgr.recommended_xset == 4000
+
+    def test_pv_4000_to_5000_charge_3000(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-4500,  # pv_avail = 4500
+            )
+        )
+        assert mgr.recommended_ems_mode == "charge_battery"
+        assert mgr.recommended_xset == 3000
+
+    def test_pv_1000_to_2000_charge_zero_stop(self):
+        """Bucket STOP — bateria stoi, eksport = pv_avail."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-1500,  # pv_avail = 1500
+            )
+        )
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 0
+
+    def test_pv_zero_to_1000_discharge_1000(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-500,  # pv_avail = 500
+            )
+        )
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 1000
+
+    def test_pv_negative_discharge(self):
+        """Deficit — bucket discharge."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=1500,  # pv_avail = -1500
+            )
+        )
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 3000  # bucket -2000..-1000 → discharge 3000
+
+    def test_pv_below_minus_4000_cap(self):
+        """Najgłębszy bucket — discharge cap 6000W (BMS max)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=5000,  # pv_avail = -5000
+            )
+        )
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 6000
+
+    def test_hysteresis_stay_in_extended_range(self):
+        """Bucket stable jeśli pv_avail w ±300W od bucket boundary."""
+        mgr = GridExportManager()
+        # Entry: pv_avail = 4500 → charge 3000
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-4500,
+            )
+        )
+        assert mgr.recommended_xset == 3000
+        # pv_avail jumps to 5100 — w extended range (5000-300 < pv_avail <= +inf)
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-5100,
+            )
+        )
+        # Hysteresis: range bucketu (4000, 5000), extended (3700, 5300]
+        # pv=5100 < 5300 → stay
+        assert mgr.recommended_xset == 3000
+        assert "stay" in mgr.last_decision_reason
+
+
+class TestInterventionDirection:
+    """Public API get_active_intervention()."""
+
+    def test_idle_returns_none(self):
+        mgr = GridExportManager()
+        assert mgr.get_active_intervention() is None
+
+    def test_positive_returns_positive(self):
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=0.10))
+        assert mgr.intervention_active is True
+        assert mgr.get_active_intervention() is InterventionDirection.POSITIVE
+
+    def test_negative_returns_negative(self):
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is True
+        assert mgr.get_active_intervention() is InterventionDirection.NEGATIVE
+
+    def test_after_exit_returns_none(self):
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10))
+        mgr.update(_state(exported_energy_hourly=0.01))
+        assert mgr.intervention_active is False
+        assert mgr.get_active_intervention() is None
+
+
+class TestNegativeInPreCharge:
+    """NEGATIVE działa też w pre_charge window (POSITIVE skip)."""
+
+    def test_negative_entry_in_pre_charge_with_soc(self):
+        """Pre_charge + hourly < -0.05 + SoC > min_soc → NEGATIVE entry pozwolony."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                now=PRE_CHARGE,  # 08:00 < start_charge=10:00
+                exported_energy_hourly=-0.10,
+                battery_soc=80,  # > min_soc (22)
+                consumption_minus_pv_2_minutes=500,  # pv_avail=-500 → discharge bucket
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.intervention_direction is InterventionDirection.NEGATIVE
+
+    def test_positive_blocked_in_pre_charge(self):
+        """Pre_charge + hourly > 0.06 → POSITIVE blocked (BatteryManager rządzi)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                now=PRE_CHARGE,
+                exported_energy_hourly=0.10,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert "in_pre_charge_window" in mgr.last_decision_reason
+
+
+class TestChargeToggleClamp:
+    """Toggle off → bucket charge clamp do STOP."""
+
+    def test_charge_toggle_off_clamps_to_stop(self):
+        """Bucket charge (xset>0) + toggle=False → clamp xset=0."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-3000,  # pv_avail=3000 → bucket charge xset 2000
+                battery_charge_toggle_on=False,
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 0  # clamped
+
+    def test_discharge_bucket_unaffected_by_toggle(self):
+        """Bucket discharge nie jest clampowany przez toggle (toggle dotyczy charge)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=500,  # pv_avail=-500 → discharge 2000
+                battery_charge_toggle_on=False,
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 2000  # not clamped
+
+
+class TestEmsOverride:
+    """ems_allow_discharge_override → blokuje TYLKO NEGATIVE (POSITIVE OK).
+
+    User wymusza discharge → manager nie ingeruje w NEGATIVE intervention
+    (która konfliktuje z discharge intent). POSITIVE force charge dalej OK
+    (zwiększa SoC, niezwiązane z user discharge intent).
+    """
+
+    def test_override_blocks_negative_entry(self):
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                ems_allow_discharge_override=True,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.recommended_ems_mode == "auto"
+        assert "ems_allow_discharge_override" in mgr.last_decision_reason
+
+    def test_override_does_not_block_positive_entry(self):
+        """POSITIVE entry pozwolony nawet z override."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                ems_allow_discharge_override=True,
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.intervention_direction is InterventionDirection.POSITIVE
+
+    def test_override_during_active_negative_exits(self):
+        """Override aktywuje się gdy NEGATIVE intervention active → exit."""
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=-0.10))
+        assert mgr.intervention_active is True
+        assert mgr.intervention_direction is InterventionDirection.NEGATIVE
+        # Override on
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                ems_allow_discharge_override=True,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert "ems_allow_discharge_override" in mgr.last_decision_reason

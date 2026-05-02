@@ -90,11 +90,18 @@ class InputState:
     # gdy PV<200W, lookup-based Xset gdy PV≥200W).
     # Defensive: gdy None → manager traktuje jako "disabled" (safe default).
 
-    block_charge_logic_mode: str | None = None
-    # input_select.smart_rce_block_charge_logic_mode — runtime kontrola
-    # BatteryManager.should_block_battery_charge. Opcje: "enabled" (default,
-    # current behavior), "disabled" (block_charge zawsze False, toggle nie
-    # jest wyłączane).
-    # Defensive: gdy None lub "enabled" → block_charge logika włączona.
-
     now: datetime | None = None
+
+    @property
+    def pv_available(self) -> float | None:
+        """Surplus PV ponad dom_bez_heaters (W). None gdy sensor unavailable.
+
+        Liczone jako `-consumption_minus_pv_2_minutes`:
+        - dodatnie = PV > dom_bez_heaters (surplus, hourly POSITIVE side)
+        - ujemne   = dom_bez_heaters > PV (deficit, hourly NEGATIVE side)
+
+        Używane przez GridExportManager (charge_adaptive lookup, NEGATIVE buckets).
+        """
+        if self.consumption_minus_pv_2_minutes is None:
+            return None
+        return -self.consumption_minus_pv_2_minutes

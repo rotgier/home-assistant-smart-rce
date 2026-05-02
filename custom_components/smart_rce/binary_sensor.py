@@ -60,11 +60,6 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         icon="mdi:heating-coil",
     ),
     EmsBinarySensorDescription(
-        name="Block Battery Charge",
-        value_fn=lambda ems: ems.battery.should_block_battery_charge,
-        icon="mdi:battery-off-outline",
-    ),
-    EmsBinarySensorDescription(
         name="Block Battery Discharge",
         value_fn=lambda ems: ems.battery.should_block_battery_discharge,
         icon="mdi:battery-arrow-down-outline",

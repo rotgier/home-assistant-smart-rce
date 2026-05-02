@@ -41,17 +41,16 @@ class Ems:
         self.grid_export: GridExportManager = GridExportManager()
 
     def update_state(self, state: InputState) -> None:
-        # battery FIRST — oblicza flagi (hourly_balance_negative, block_charge)
-        # które czytają inne managery.
+        # battery — oblicza should_block_battery_discharge dla binary_sensor
+        # (entity diagnostic). Niezależne od innych managerów po Etap 2.
         self.battery.update(state)
-        # grid_export PRZED water_heater — water_heater dostaje boolean cross-ref
-        # (charge_battery → reserved=3500, ochrona baterii intervention przed
-        # konkurencją grzałek).
+        # grid_export PRZED water_heater — water_heater dostaje aktualny
+        # `get_active_intervention()` (POSITIVE → reserved=3500W, NEGATIVE →
+        # większy reserved by wymusić grzałki off).
         self.grid_export.update(state)
         self.water_heater.update(
             state,
-            self.battery,
-            self.grid_export.is_charge_battery_active(),
+            self.grid_export.get_active_intervention(),
         )
         self._async_update_listeners()
 

@@ -15,31 +15,47 @@ BatteryManager rządzi przez hysteresis 100/50 Wh + DoD).
 Strategie:
 - STANDBY (discharge_battery xset=0) — gdy pv_power_avg_2_minutes < 200W
                                        (noc, bateria target=0, house z grida)
-- CHARGE_BATTERY adaptive            — Xset z lookup table na pv_available
-                                       (-consumption_minus_pv_2_minutes);
-                                       pv_avail ≤ -1000 → AUTO
+- POSITIVE charge_adaptive           — Xset z lookup na `state.pv_available`
+                                       (PV − dom_bez_heaters); pv_avail ≤ -1000 → AUTO
+- NEGATIVE adaptive                  — charge/discharge buckets na pv_available;
+                                       target meter +1500W eksport
 
 Decision tree (`grid_export_strategy_mode`):
-- "charge_adaptive" → domyślne aktywne (STANDBY lub adaptive Xset)
+- "charge_adaptive" → domyślne aktywne (POSITIVE i NEGATIVE)
 - "disabled"        → manager evaluuje, ale intervention off (diagnostic only)
 
-Hysteresis: w charge_adaptive lookup — current Xset stable jeśli pv_available
-mieści się w rozszerzonym range (±300W od bucket boundaries). Eliminuje
-flap'owanie Xset gdy pv_available oscyluje na granicy.
+Hysteresis: w lookup — current Xset stable jeśli pv_available mieści się
+w rozszerzonym range (±300W od bucket boundaries). Eliminuje flap'owanie
+gdy pv_available oscyluje na granicy.
 
-Defensive: gdy `consumption_minus_pv_2_minutes` lub `battery_charge_limit`
-są None (np. po HA restart, sensory unavailable przez ~25-50ms) → no-op,
-manager wraca do AUTO, listener wraca rejestry do AUTO.
+Defensive: gdy `state.pv_available` lub `battery_charge_limit` są None
+(np. po HA restart, sensory unavailable przez ~25-50ms) → no-op, manager
+wraca do AUTO, listener wraca rejestry do AUTO.
 """
 
 from __future__ import annotations
 
+from enum import StrEnum
 import logging
 from typing import Final
 
 from custom_components.smart_rce.domain.input_state import InputState
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class InterventionDirection(StrEnum):
+    """Kierunek aktywnej interwencji GridExportManager.
+
+    POSITIVE — bilans hourly nadmiernie pozytywny (eksport > 0.06 kWh),
+    manager wymusza CHARGE_BATTERY (lub STANDBY przy niskim PV) by zjeść saldo.
+
+    NEGATIVE — bilans hourly negatywny (import netto), manager wymusza
+    adaptive charge/discharge by ustabilizować meter ≈ +1500W eksport.
+    """
+
+    POSITIVE = "POSITIVE"
+    NEGATIVE = "NEGATIVE"
 
 
 class GridExportManager:
@@ -56,6 +72,17 @@ class GridExportManager:
     EXIT_END_OF_HOUR_MINUTE: Final[int] = 59
     EXIT_END_OF_HOUR_SECOND: Final[int] = 50
 
+    # NEGATIVE balance gates (time-dependent entry threshold).
+    # Pre-45min: entry gdy hourly < -0.05 (toleruj umiarkowane negative,
+    # czas na natural recovery z PV).
+    # Post-45min: entry gdy hourly < 0 (każdy negative — godzina się kończy).
+    # Exit zawsze gdy hourly > 0 (saldo recovery).
+    NEGATIVE_ENTRY_THRESHOLD_EARLY_KWH: Final[float] = -0.05
+    NEGATIVE_ENTRY_THRESHOLD_LATE_KWH: Final[float] = 0.0
+    NEGATIVE_EXIT_BALANCE_KWH: Final[float] = 0.0
+    NEGATIVE_LATE_HALF_HOUR_MINUTE: Final[int] = 45
+    NEGATIVE_SOC_HARD_FLOOR: Final[int] = 10
+
     # Strategy thresholds
     PV_STANDBY_THRESHOLD_W: Final[int] = 200
     BMS_LOW_LIMIT_A: Final[int] = 7  # battery_charge_limit ≤ 7A → low BMS shortcut
@@ -71,14 +98,17 @@ class GridExportManager:
     # w praktyce dopuszczał faktyczny discharge (obs. 2026-04-30 22:48
     # battery_power=-1300/-1400W mimo battery_standby).
     STANDBY_MODE: Final[str] = "discharge_battery"
+    # Active discharge (Xset > 0). Wartość ta sama co STANDBY_MODE — semantyka
+    # inna (NEGATIVE active discharge zamiast POSITIVE bateria stop).
+    DISCHARGE_MODE: Final[str] = "discharge_battery"
     CHARGE_MODE: Final[str] = "charge_battery"
 
     # Strategy modes (input_select.smart_rce_grid_export_strategy_mode)
     STRATEGY_MODE_DISABLED: Final[str] = "disabled"
     STRATEGY_MODE_CHARGE_ADAPTIVE: Final[str] = "charge_adaptive"
 
-    # Adaptive charge lookup — pv_available (= -consumption_minus_pv_2_minutes)
-    # mapped na Xset. Każdy próg w (W). Pierwszy spełniający → Xset.
+    # Adaptive charge lookup — `state.pv_available` mapped na Xset.
+    # Każdy próg w (W). Pierwszy spełniający → Xset.
     # pv_available ≤ -1000 → AUTO (block_discharge w battery.py przejmuje).
     CHARGE_ADAPTIVE_BUCKETS: Final[tuple[tuple[int, int], ...]] = (
         (4000, 6000),
@@ -99,11 +129,33 @@ class GridExportManager:
     # Pierwszy tick intervention (current_xset=None) → bez hysteresis (lookup).
     CHARGE_ADAPTIVE_HYSTERESIS_W: Final[int] = 300
 
+    # NEGATIVE adaptive buckets (target meter +1500W eksport).
+    # Format: (lower, upper, xset_signed) — bucket aktywuje się gdy
+    # `lower < pv_avail <= upper` (dla najwyższego upper=None oznacza +inf).
+    # - xset_signed > 0 → charge_battery z xset = xset_signed
+    # - xset_signed = 0 → discharge_battery z xset = 0 (bucket STOP, bateria stoi)
+    # - xset_signed < 0 → discharge_battery z xset = abs(xset_signed)
+    # Bucket centrum daje ekport ~1500W (Xset = lower - 1000).
+    NEGATIVE_ADAPTIVE_BUCKETS: Final[tuple[tuple[int, int | None, int], ...]] = (
+        (5000, None, 4000),  # > 5000 W → charge 4000 (eksport ≥ 1000)
+        (4000, 5000, 3000),  # charge 3000 (eksport ~1500)
+        (3000, 4000, 2000),
+        (2000, 3000, 1000),
+        (1000, 2000, 0),  # bucket STOP — bateria stoi, eksport = pv_avail
+        (0, 1000, -1000),  # discharge 1000 (eksport ~1500)
+        (-1000, 0, -2000),
+        (-2000, -1000, -3000),
+        (-3000, -2000, -4000),
+        (-4000, -3000, -6000),  # discharge 6000 (BMS max ~5.2-5.3 kW)
+        # pv_avail ≤ -4000: fallback do cap (-6000), brak osobnego bucketu
+    )
+
     # Logowanie — throttle DEBUG snapshot gdy nic się nie zmienia (60s).
     DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
 
     def __init__(self) -> None:
         self.intervention_active: bool = False
+        self.intervention_direction: InterventionDirection | None = None
         self.recommended_ems_mode: str = self.AUTO_MODE
         self.recommended_xset: int | None = None
         self.last_decision_reason: str | None = None
@@ -112,14 +164,15 @@ class GridExportManager:
         self._last_log_snapshot: tuple | None = None
         self._last_log_ts = None  # type: ignore[var-annotated]
 
-    def is_charge_battery_active(self) -> bool:
-        """Czy manager aktywnie wymusza CHARGE_BATTERY (forced battery charging).
+    def get_active_intervention(self) -> InterventionDirection | None:
+        """Aktualny kierunek interwencji (POSITIVE/NEGATIVE/None).
 
-        Inne managery (np. WaterHeaterManager) używają jako sygnał do ochrony
-        baterii przed konkurencją (np. większa rezerwacja PV).
-        Zwraca False gdy mode = auto / discharge_battery (STANDBY).
+        Używane przez WaterHeaterManager do dyfferencjacji reserved (większy
+        reserved przy NEGATIVE — grzałki off priorytetowo).
         """
-        return self.recommended_ems_mode == self.CHARGE_MODE
+        if not self.intervention_active:
+            return None
+        return self.intervention_direction
 
     def update(self, state: InputState) -> None:
         """Re-evaluate intervention state from current InputState.
@@ -136,49 +189,116 @@ class GridExportManager:
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
-        # 2. Active window — skip pre_charge (BatteryManager rządzi)
-        if self._is_in_pre_charge_window(state):
-            self._set_neutral("in_pre_charge_window")
-            self._log_after_update(state, prev_active, prev_mode, prev_xset)
-            return
-
-        # 3. Exit gates (gdy intervention_active)
-        # Pierwsza gate: hour rollover — utility_meter resetuje balans hourly
-        # o pełnej godzinie, każda godzina = osobna decyzja czy POSITIVE wystąpi.
+        # 2. Exit gates (gdy intervention_active) — branch po direction.
+        # Hour rollover wspólny: utility_meter resetuje balans hourly o pełnej
+        # godzinie, każda godzina = osobna decyzja czy intervention.
+        # Pre-charge window obsługiwany przez `_positive_*` gates (POSITIVE
+        # blocked, NEGATIVE działa — jeśli SoC > min_soc).
         if self.intervention_active:
             if state.now.hour != self._intervention_started_hour:
                 self._set_neutral("hour_rollover")
                 self._apply_disabled_override_if_needed(state)
                 self._log_after_update(state, prev_active, prev_mode, prev_xset)
                 return
-            exit_reason = self._exit_reason(state)
-            if exit_reason is not None:
-                self._set_neutral(exit_reason)
-                self._apply_disabled_override_if_needed(state)
-                self._log_after_update(state, prev_active, prev_mode, prev_xset)
-                return
-            # Continue active — re-evaluate strategy (może się zmienić)
-            self._apply_strategy(state)
+            if self.intervention_direction is InterventionDirection.NEGATIVE:
+                self._continue_negative(state)
+            else:
+                self._continue_positive(state)
             self._apply_disabled_override_if_needed(state)
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
-        # 4. Entry gates (gdy not intervention_active)
-        entry_block_reason = self._entry_block_reason(state)
-        if entry_block_reason is not None:
-            self._set_neutral(entry_block_reason)
+        # 3. Entry gates — POSITIVE i NEGATIVE są mutually exclusive (różne
+        # progi hourly), kolejność sprawdzania arbitralna.
+        pos_block = self._positive_entry_block_reason(state)
+        if pos_block is None:
+            self.intervention_active = True
+            self.intervention_direction = InterventionDirection.POSITIVE
+            self._intervention_started_hour = state.now.hour
+            self._apply_strategy_positive(state)
             self._apply_disabled_override_if_needed(state)
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
-        # 5. Entry approved — start intervention
-        self.intervention_active = True
-        self._intervention_started_hour = state.now.hour
-        self._apply_strategy(state)
-        # 6. Final: jeśli disabled, override main outputs (intervention off),
-        #    ale zachowaj would-be info w last_decision_reason
+        neg_block = self._negative_entry_block_reason(state)
+        if neg_block is None:
+            self.intervention_active = True
+            self.intervention_direction = InterventionDirection.NEGATIVE
+            self._intervention_started_hour = state.now.hour
+            self._apply_negative_with_clamp(state)
+            self._apply_disabled_override_if_needed(state)
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
+            return
+
+        # Neither direction — neutral z join'em obu block reasons (oba są
+        # not None bo wcześniejsze if'y already returned przy entry approval).
+        # Pokazuje DLACZEGO żaden kierunek nie wszedł w intervention.
+        self._set_neutral(f"pos:{pos_block} | neg:{neg_block}")
         self._apply_disabled_override_if_needed(state)
         self._log_after_update(state, prev_active, prev_mode, prev_xset)
+
+    def _continue_positive(self, state: InputState) -> None:
+        """Continue POSITIVE intervention — exit check + apply."""
+        exit_reason = self._positive_exit_reason(state)
+        if exit_reason is not None:
+            self._set_neutral(exit_reason)
+            return
+        self._apply_strategy_positive(state)
+
+    def _continue_negative(self, state: InputState) -> None:
+        """Continue NEGATIVE intervention — pre-compute xset + clamp + exit."""
+        if state.pv_available is None:
+            self._set_neutral("none_pv_available")
+            return
+        pv_available = state.pv_available
+        xset_signed, is_stay = self._negative_resolve_xset_with_hysteresis(pv_available)
+        xset_signed, is_stay = self._negative_clamp_charge_bucket(
+            xset_signed, is_stay, state
+        )
+        # Exit check (z aktualnym xset_signed po clamp)
+        exit_reason = self._negative_exit_reason(state, xset_signed)
+        if exit_reason is not None:
+            self._set_neutral(exit_reason)
+            return
+        prefix = "negative_stay" if is_stay else "negative"
+        self._apply_signed_xset(xset_signed, prefix, pv_available)
+
+    def _apply_negative_with_clamp(self, state: InputState) -> None:
+        """Entry NEGATIVE — compute xset, clamp, apply.
+
+        Defensive: caller (`update()`) wywołuje tylko gdy entry gates passed
+        (m.in. `pv_available is not None`), ale dodajemy explicit guard
+        dla type-safety + odporności na refactor.
+        """
+        if state.pv_available is None:
+            self._set_neutral("none_pv_available")
+            return
+        pv_available = state.pv_available
+        xset_signed = self._negative_lookup(pv_available)
+        xset_signed, _ = self._negative_clamp_charge_bucket(xset_signed, False, state)
+        self._apply_signed_xset(xset_signed, "negative", pv_available)
+
+    def _negative_clamp_charge_bucket(
+        self, xset_signed: int, is_stay: bool, state: InputState
+    ) -> tuple[int, bool]:
+        """Clamp charge bucket (xset>0) do bucket STOP gdy bateria pełna lub toggle off.
+
+        - SoC = 100 → bateria pełna, nie ma jak ładować, ale eksport z PV
+          niweluje NEGATIVE (bucket STOP daje pv_avail eksport).
+        - battery_charge_toggle_on = False → user wyłączył ładowanie, manager
+          szanuje (bucket STOP). NEGATIVE branch nadal aktywny — pv_avail
+          eksport ratuje saldo.
+        """
+        if xset_signed <= 0:
+            return xset_signed, is_stay
+        if (
+            state.battery_soc is not None
+            and state.battery_soc >= self.POSITIVE_SOC_CEILING
+        ):
+            return 0, False
+        if state.battery_charge_toggle_on is False:
+            return 0, False
+        return xset_signed, is_stay
 
     def _apply_disabled_override_if_needed(self, state: InputState) -> None:
         """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.
@@ -208,6 +328,7 @@ class GridExportManager:
                 f"{prefix} (would: {would_be_mode}{xset_str}, {would_be_reason})"
             )
         self.intervention_active = False
+        self.intervention_direction = None
         self.recommended_ems_mode = self.AUTO_MODE
         self.recommended_xset = None
 
@@ -233,8 +354,10 @@ class GridExportManager:
         return state.now.time() < state.start_charge_hour_override
 
     @classmethod
-    def _exit_reason(cls, state: InputState) -> str | None:
+    def _positive_exit_reason(cls, state: InputState) -> str | None:
         """Return exit reason if any exit gate fires, else None."""
+        if cls._is_in_pre_charge_window(state):
+            return "in_pre_charge_window"
         if state.exported_energy_hourly < cls.POSITIVE_EXIT_BALANCE_KWH:
             return "balance_recovered"
         if state.battery_soc >= cls.POSITIVE_SOC_CEILING:
@@ -249,8 +372,14 @@ class GridExportManager:
         return None
 
     @classmethod
-    def _entry_block_reason(cls, state: InputState) -> str | None:
-        """Return reason if entry blocked, else None (entry allowed)."""
+    def _positive_entry_block_reason(cls, state: InputState) -> str | None:
+        """Return reason if entry blocked, else None (entry allowed).
+
+        Pre-charge window blocks POSITIVE — BatteryManager rządzi (block_discharge
+        hysteresis). NEGATIVE może działać w pre_charge (osobny gate).
+        """
+        if cls._is_in_pre_charge_window(state):
+            return "in_pre_charge_window"
         if state.exported_energy_hourly <= cls.POSITIVE_BALANCE_GATE_KWH:
             return "balance_below_threshold"
         if state.battery_soc >= cls.POSITIVE_SOC_CEILING:
@@ -266,9 +395,181 @@ class GridExportManager:
             return "other_automation_active"
         return None
 
+    # --- NEGATIVE gates ---
+
+    @classmethod
+    def _negative_entry_threshold(cls, state: InputState) -> float:
+        """Time-dependent entry threshold dla NEGATIVE.
+
+        Pre-45min: -0.05 (toleruj umiarkowane negative, czas na natural recovery).
+        Post-45min: 0.0 (każdy negative — godzina się kończy).
+        """
+        if state.now.minute < cls.NEGATIVE_LATE_HALF_HOUR_MINUTE:
+            return cls.NEGATIVE_ENTRY_THRESHOLD_EARLY_KWH
+        return cls.NEGATIVE_ENTRY_THRESHOLD_LATE_KWH
+
+    @classmethod
+    def _negative_entry_block_reason(cls, state: InputState) -> str | None:
+        """Return reason if entry blocked, else None (entry allowed).
+
+        Filozofia: entry tylko gdy bucket może coś realnie zrobić.
+        - bucket DISCHARGE wymaga SoC > min_soc (energia do oddania)
+        - bucket CHARGE + SoC=100 → entry pozwolony (clamp do bucket STOP)
+        - bucket STOP zawsze feasible
+
+        EMS override (`ems_allow_discharge_override=True`) blokuje NEGATIVE —
+        user wymusza discharge (np. Battery Discharge Max), nie ingerujemy.
+        POSITIVE może nadal działać — force charge nie konfliktuje z user
+        intent (override dotyczy discharge).
+        """
+        if state.ems_allow_discharge_override is True:
+            return "ems_allow_discharge_override"
+        threshold = cls._negative_entry_threshold(state)
+        if state.exported_energy_hourly >= threshold:
+            return f"balance_above_neg_threshold_{threshold:.2f}"
+        if state.battery_soc <= cls.NEGATIVE_SOC_HARD_FLOOR:
+            return "soc_below_hard_floor"
+        if state.depth_of_discharge is None:
+            return "none_depth_of_discharge"
+        if state.pv_available is None:
+            return "none_pv_available"
+        if not (
+            state.now.minute < cls.LATE_HOUR_MINUTE
+            or state.now.second < cls.LATE_HOUR_SECOND
+        ):
+            return "too_late_in_hour"
+        if state.other_ems_automation_active_this_hour is True:
+            return "other_automation_active"
+        # Feasibility — bucket discharge wymaga SoC > min_soc.
+        # Bucket charge przy SoC=100 NIE blokuje (clamp do bucket STOP).
+        pv_available = state.pv_available
+        xset_signed = cls._negative_lookup_static(pv_available)
+        if xset_signed < 0 and state.battery_soc <= (100 - state.depth_of_discharge):
+            return "soc_at_dod_floor_no_discharge"
+        return None
+
+    @classmethod
+    def _negative_exit_reason(
+        cls, state: InputState, current_xset_signed: int
+    ) -> str | None:
+        """Exit gdy bucket discharge przestał być feasible lub override aktywne.
+
+        `current_xset_signed` = xset PO clamp w `_continue_negative`.
+        Bucket charge + SoC=100 jest już clamp'owany do 0, więc tutaj
+        widzimy tylko discharge (xset_signed<0) lub stop (xset_signed=0).
+        """
+        if state.ems_allow_discharge_override is True:
+            return "ems_allow_discharge_override"
+        if state.exported_energy_hourly > cls.NEGATIVE_EXIT_BALANCE_KWH:
+            return "negative_balance_recovered"
+        if state.depth_of_discharge is None:
+            return "none_depth_of_discharge_exit"
+        if current_xset_signed < 0 and state.battery_soc <= (
+            100 - state.depth_of_discharge
+        ):
+            return "soc_at_dod_floor_exit"
+        if (
+            state.now.minute >= cls.EXIT_END_OF_HOUR_MINUTE
+            and state.now.second >= cls.EXIT_END_OF_HOUR_SECOND
+        ):
+            return "end_of_hour_cleanup"
+        return None
+
+    # --- NEGATIVE adaptive lookup ---
+
+    @classmethod
+    def _negative_lookup_static(cls, pv_available: float) -> int:
+        """Znajdź xset_signed dla pv_available z NEGATIVE_ADAPTIVE_BUCKETS."""
+        for lower, upper, xset_signed in cls.NEGATIVE_ADAPTIVE_BUCKETS:
+            if upper is None:
+                if pv_available > lower:
+                    return xset_signed
+            elif lower < pv_available <= upper:
+                return xset_signed
+        # Fallback: cap przy najgłębszym bucket (pv_avail ≤ -4000) → -6000
+        return cls.NEGATIVE_ADAPTIVE_BUCKETS[-1][2]
+
+    def _negative_lookup(self, pv_available: float) -> int:
+        return self._negative_lookup_static(pv_available)
+
+    @classmethod
+    def _negative_adaptive_xset_range(
+        cls, xset_signed: int | None
+    ) -> tuple[float, float] | None:
+        """Range pv_available który aktywowałby dany xset_signed.
+
+        Zwraca (lower, upper) lub None gdy xset_signed nie jest w bucketach.
+        Najwyższy bucket ma upper=inf.
+        """
+        if xset_signed is None:
+            return None
+        for lower, upper, xs in cls.NEGATIVE_ADAPTIVE_BUCKETS:
+            if xs == xset_signed:
+                upper_f = float("inf") if upper is None else float(upper)
+                return (float(lower), upper_f)
+        return None
+
+    def _negative_resolve_xset_with_hysteresis(
+        self, pv_available: float
+    ) -> tuple[int, bool]:
+        """Lookup xset_signed z hysteresis (current bucket + ±300W tolerance).
+
+        Zwraca (xset_signed, is_stay):
+        - is_stay=True gdy hysteresis utrzymuje current bucket (pv_avail
+          w rozszerzonym range), is_stay=False gdy fresh lookup (zmiana bucketu).
+        """
+        current_xset_signed = self._signed_xset()
+        current_range = self._negative_adaptive_xset_range(current_xset_signed)
+        if current_range is not None:
+            lower, upper = current_range
+            hyst = self.CHARGE_ADAPTIVE_HYSTERESIS_W
+            if (lower - hyst) < pv_available <= (upper + hyst):
+                return current_xset_signed, True  # type: ignore[return-value]
+        return self._negative_lookup(pv_available), False
+
+    def _signed_xset(self) -> int | None:
+        """Aktualny xset_signed z (mode, xset). None gdy auto/idle."""
+        if self.recommended_xset is None:
+            return None
+        if self.recommended_ems_mode == self.CHARGE_MODE:
+            return self.recommended_xset
+        if self.recommended_ems_mode in (self.STANDBY_MODE, self.DISCHARGE_MODE):
+            # xset=0 → bucket stop; xset>0 → bucket discharge → -xset
+            return -self.recommended_xset if self.recommended_xset > 0 else 0
+        return None
+
+    def _apply_signed_xset(
+        self, xset_signed: int, prefix: str, pv_available: float
+    ) -> None:
+        """Apply mode/xset z xset_signed (NEGATIVE strategy output).
+
+        - xset_signed > 0 → charge_battery z xset = xset_signed
+        - xset_signed = 0 → discharge_battery z xset = 0 (bucket STOP)
+        - xset_signed < 0 → discharge_battery z xset = abs(xset_signed)
+        """
+        if xset_signed > 0:
+            self.recommended_ems_mode = self.CHARGE_MODE
+            self.recommended_xset = xset_signed
+            self.last_decision_reason = (
+                f"{prefix}_charge_{xset_signed}W_pv_avail_{int(pv_available)}"
+            )
+        elif xset_signed == 0:
+            self.recommended_ems_mode = self.STANDBY_MODE
+            self.recommended_xset = 0
+            self.last_decision_reason = (
+                f"{prefix}_stop_xset_0_pv_avail_{int(pv_available)}"
+            )
+        else:
+            self.recommended_ems_mode = self.DISCHARGE_MODE
+            self.recommended_xset = abs(xset_signed)
+            self.last_decision_reason = (
+                f"{prefix}_discharge_{abs(xset_signed)}W_"
+                f"pv_avail_{int(pv_available)}"
+            )
+
     # --- strategy ---
 
-    def _apply_strategy(self, state: InputState) -> None:
+    def _apply_strategy_positive(self, state: InputState) -> None:
         """Pick STANDBY (low PV) or charge_adaptive lookup-based Xset.
 
         Wywoływane tylko dla `STRATEGY_MODE_CHARGE_ADAPTIVE` (jedyna aktywna
@@ -290,15 +591,10 @@ class GridExportManager:
             return
 
         # 2. charge_adaptive — CHARGE_BATTERY z lookup-based Xset.
-        # pv_available = -consumption_minus_pv_2_minutes (ujemne sensor =
-        # surplus PV ponad dom-bez-heaters). Każdy bucket zwiększa Xset o 1000W
-        # ponad próg pv_available — średnio 1.5 kW import z grida.
-        if state.consumption_minus_pv_2_minutes is None:
-            self._set_neutral("none_consumption_minus_pv_2_minutes")
-            return
 
         # Low BMS shortcut — bateria clamp ~2 kW, nie ma sensu kombinować
         # z lookup. Stałe Xset 3500 (BMS ograniczy do BMS_max).
+        # NIE wymaga pv_available, więc shortcut przed guard'em.
         if (
             state.battery_charge_limit is not None
             and state.battery_charge_limit <= self.BMS_LOW_LIMIT_A
@@ -310,7 +606,13 @@ class GridExportManager:
             )
             return
 
-        pv_available = -state.consumption_minus_pv_2_minutes
+        # Lookup-based Xset wymaga pv_available (surplus PV ponad dom-bez-heaters).
+        # Każdy bucket zwiększa Xset o 1000W ponad próg pv_available — średnio
+        # 1.5 kW import z grida.
+        if state.pv_available is None:
+            self._set_neutral("none_pv_available")
+            return
+        pv_available = state.pv_available
         # Hysteresis — jeśli current Xset jest w lookup i pv_available
         # mieści się w rozszerzonym range (±300W), zostań przy current.
         # Pierwszy tick (current_xset=None) lub poza lookup → fresh lookup.
@@ -349,6 +651,7 @@ class GridExportManager:
     def _set_neutral(self, reason: str) -> None:
         """Reset to AUTO mode with given reason. Idempotent."""
         self.intervention_active = False
+        self.intervention_direction = None
         self.recommended_ems_mode = self.AUTO_MODE
         self.recommended_xset = None
         self.last_decision_reason = reason
@@ -421,8 +724,7 @@ class GridExportManager:
         )
         if not should_log:
             return
-        cmpv = state.consumption_minus_pv_2_minutes
-        pv_avail = -cmpv if cmpv is not None else None
+        pv_avail = state.pv_available
         _LOGGER.debug(
             "GridExportManager: now=%s active=%s mode=%s xset=%s reason=%s | "
             "strategy=%s hourly=%s soc=%s pv=%s pv_avg2m=%s pv_avail=%s "
