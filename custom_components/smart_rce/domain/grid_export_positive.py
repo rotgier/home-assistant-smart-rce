@@ -55,9 +55,27 @@ Edge cases (świadomie nie obsłużone):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Final
 
 from custom_components.smart_rce.domain.input_state import InputState
+
+
+@dataclass(frozen=True, slots=True)
+class PositiveResolution:
+    """Wynik PositiveStrategy.resolve.
+
+    `mode is None` sygnalizuje exit (orchestrator robi `_set_neutral(reason)`).
+    Inne mode → orchestrator commits `(mode, xset, reason)` do recommended_*.
+    """
+
+    mode: str | None
+    xset: int | None
+    reason: str
+
+    def build_output(self) -> tuple[str | None, int | None, str]:
+        """Zwraca (mode, xset, reason) gotowe do recommended_*."""
+        return (self.mode, self.xset, self.reason)
 
 
 class PositiveStrategy:
@@ -166,13 +184,11 @@ class PositiveStrategy:
         return state.now.time() < state.start_charge_hour_override
 
     @classmethod
-    def apply(
-        cls, state: InputState, current_xset: int | None
-    ) -> tuple[str | None, int | None, str]:
-        """Compute (mode, xset, reason) dla POSITIVE intervention.
+    def resolve(cls, state: InputState, current_xset: int | None) -> PositiveResolution:
+        """Compute PositiveResolution (mode/xset/reason) dla POSITIVE intervention.
 
-        `mode is None` sygnalizuje exit (orchestrator robi `_set_neutral(reason)`).
-        Inne mode → orchestrator ustawia recommended_*.
+        `resolution.mode is None` sygnalizuje exit (orchestrator robi
+        `_set_neutral(reason)`). Inne mode → orchestrator commits do recommended_*.
 
         Kolejność:
         1. STANDBY (najwyższy priorytet) — pv_for_standby < 200W
@@ -187,7 +203,7 @@ class PositiveStrategy:
             else state.pv_power
         )
         if pv_for_standby < cls.PV_STANDBY_THRESHOLD_W:
-            return (cls.STANDBY_MODE, 0, "low_pv_standby")
+            return PositiveResolution(cls.STANDBY_MODE, 0, "low_pv_standby")
 
         # 2. Low BMS shortcut — bateria clamp ~2 kW, lookup zbędny.
         # NIE wymaga pv_available, więc shortcut przed guard'em.
@@ -195,7 +211,7 @@ class PositiveStrategy:
             state.battery_charge_limit is not None
             and state.battery_charge_limit <= cls.BMS_LOW_LIMIT_A
         ):
-            return (
+            return PositiveResolution(
                 cls.CHARGE_MODE,
                 cls.LOW_BMS_XSET_W,
                 f"charge_adaptive_low_bms_{cls.LOW_BMS_XSET_W}W",
@@ -204,7 +220,7 @@ class PositiveStrategy:
         # 3. charge_adaptive lookup — wymaga pv_available.
         if state.pv_available is None:
             # Exit signal — orchestrator robi _set_neutral.
-            return (None, None, "none_pv_available")
+            return PositiveResolution(None, None, "none_pv_available")
 
         pv_available = state.pv_available
 
@@ -213,7 +229,7 @@ class PositiveStrategy:
         if current_range is not None:
             lower, upper = current_range
             if (lower - cls.HYSTERESIS_W) < pv_available <= (upper + cls.HYSTERESIS_W):
-                return (
+                return PositiveResolution(
                     cls.CHARGE_MODE,
                     current_xset,
                     f"charge_adaptive_stay_{current_xset}W_pv_avail_{int(pv_available)}",
@@ -222,7 +238,7 @@ class PositiveStrategy:
         # Fresh lookup
         xset = cls._lookup_xset(pv_available)
         if xset is not None:
-            return (
+            return PositiveResolution(
                 cls.CHARGE_MODE,
                 xset,
                 f"charge_adaptive_{xset}W_pv_avail_{int(pv_available)}",
@@ -230,7 +246,7 @@ class PositiveStrategy:
 
         # pv_available ≤ -1000 → mode=AUTO ale stay in intervention (NIE exit).
         # block_discharge w battery.py przejmuje gdy hourly idzie negative.
-        return (
+        return PositiveResolution(
             cls.AUTO_MODE,
             None,
             f"charge_adaptive_auto_pv_avail_{int(pv_available)}",

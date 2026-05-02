@@ -63,9 +63,56 @@ Edge cases (świadomie nie obsłużone):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Final
 
 from custom_components.smart_rce.domain.input_state import InputState
+
+# Mode constants (Goodwe EMS) — module-level dla NegativeResolution + NegativeStrategy
+_CHARGE_MODE: Final[str] = "charge_battery"
+_STANDBY_MODE: Final[str] = "discharge_battery"  # bucket STOP (xset=0)
+_DISCHARGE_MODE: Final[str] = "discharge_battery"  # bucket DISCHARGE (xset>0)
+
+
+@dataclass(frozen=True, slots=True)
+class NegativeResolution:
+    """Wynik NegativeStrategy.resolve_for_*.
+
+    Zawiera intermediate state (xset_signed po clamp, is_stay flag, pv_available).
+    Manager używa `xset_signed` do exit_reason check (continue path) i wywołuje
+    `build_output()` żeby dostać finalne (mode, xset, reason) dla recommended_*.
+    """
+
+    xset_signed: int
+    is_stay: bool
+    pv_available: float
+
+    def build_output(self) -> tuple[str, int, str]:
+        """Build (mode, xset, reason) z xset_signed.
+
+        - xset_signed > 0 → charge_battery z xset = xset_signed
+        - xset_signed = 0 → discharge_battery z xset = 0 (bucket STOP)
+        - xset_signed < 0 → discharge_battery z xset = abs(xset_signed)
+        """
+        prefix = "negative_stay" if self.is_stay else "negative"
+        pv = int(self.pv_available)
+        if self.xset_signed > 0:
+            return (
+                _CHARGE_MODE,
+                self.xset_signed,
+                f"{prefix}_charge_{self.xset_signed}W_pv_avail_{pv}",
+            )
+        if self.xset_signed == 0:
+            return (
+                _STANDBY_MODE,
+                0,
+                f"{prefix}_stop_xset_0_pv_avail_{pv}",
+            )
+        return (
+            _DISCHARGE_MODE,
+            abs(self.xset_signed),
+            f"{prefix}_discharge_{abs(self.xset_signed)}W_pv_avail_{pv}",
+        )
 
 
 class NegativeStrategy:
@@ -92,10 +139,10 @@ class NegativeStrategy:
     # Hysteresis dla bucket transitions
     HYSTERESIS_W: Final[int] = 300
 
-    # Mode constants (Goodwe EMS)
-    STANDBY_MODE: Final[str] = "discharge_battery"  # bucket STOP (xset=0)
-    DISCHARGE_MODE: Final[str] = "discharge_battery"  # bucket DISCHARGE (xset>0)
-    CHARGE_MODE: Final[str] = "charge_battery"  # bucket CHARGE
+    # Mode constants (re-export module-level — używane przez _signed_xset).
+    STANDBY_MODE: Final[str] = _STANDBY_MODE
+    DISCHARGE_MODE: Final[str] = _DISCHARGE_MODE
+    CHARGE_MODE: Final[str] = _CHARGE_MODE
 
     # Adaptive buckets — `(lower, upper, xset_signed)`.
     # Aktywuje się gdy `lower < pv_available <= upper` (najwyższy bucket: upper=None=+inf).
@@ -189,7 +236,7 @@ class NegativeStrategy:
         state: InputState,
         current_mode: str,
         current_xset: int | None,
-    ) -> tuple[int, bool, float] | None:
+    ) -> NegativeResolution | None:
         """Resolve dla continue path — hysteresis-aware.
 
         Utrzymuje current bucket gdy pv_available oscyluje na granicy. Flow:
@@ -205,7 +252,7 @@ class NegativeStrategy:
             pv_available, current_signed
         )
         xset_signed, is_stay = cls._clamp_charge_bucket(xset_signed, is_stay, state)
-        return xset_signed, is_stay, pv_available
+        return NegativeResolution(xset_signed, is_stay, pv_available)
 
     @classmethod
     def _signed_xset(cls, mode: str, xset: int | None) -> int | None:
@@ -256,7 +303,7 @@ class NegativeStrategy:
         return None
 
     @classmethod
-    def resolve_for_entry(cls, state: InputState) -> tuple[int, bool, float] | None:
+    def resolve_for_entry(cls, state: InputState) -> NegativeResolution | None:
         """Resolve dla entry path — fresh lookup bez hysteresis.
 
         Wchodzimy z AUTO (clean state — bateria oddawała "nie wiadomo co"),
@@ -270,7 +317,7 @@ class NegativeStrategy:
         pv_available = state.pv_available
         xset_signed = cls._lookup_xset(pv_available)
         xset_signed, _ = cls._clamp_charge_bucket(xset_signed, False, state)
-        return xset_signed, False, pv_available
+        return NegativeResolution(xset_signed, False, pv_available)
 
     @classmethod
     def _lookup_xset(cls, pv_available: float) -> int:
@@ -308,31 +355,3 @@ class NegativeStrategy:
         if state.battery_charge_toggle_on is False:
             return 0, False
         return xset_signed, is_stay
-
-    @classmethod
-    def build_output(
-        cls, xset_signed: int, prefix: str, pv_available: float
-    ) -> tuple[str, int, str]:
-        """Build (mode, xset, reason) z xset_signed.
-
-        - xset_signed > 0 → charge_battery z xset = xset_signed
-        - xset_signed = 0 → discharge_battery z xset = 0 (bucket STOP)
-        - xset_signed < 0 → discharge_battery z xset = abs(xset_signed)
-        """
-        if xset_signed > 0:
-            return (
-                cls.CHARGE_MODE,
-                xset_signed,
-                f"{prefix}_charge_{xset_signed}W_pv_avail_{int(pv_available)}",
-            )
-        if xset_signed == 0:
-            return (
-                cls.STANDBY_MODE,
-                0,
-                f"{prefix}_stop_xset_0_pv_avail_{int(pv_available)}",
-            )
-        return (
-            cls.DISCHARGE_MODE,
-            abs(xset_signed),
-            f"{prefix}_discharge_{abs(xset_signed)}W_pv_avail_{int(pv_available)}",
-        )

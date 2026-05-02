@@ -31,7 +31,10 @@ from enum import StrEnum
 import logging
 from typing import Final
 
-from custom_components.smart_rce.domain.grid_export_negative import NegativeStrategy
+from custom_components.smart_rce.domain.grid_export_negative import (
+    NegativeResolution,
+    NegativeStrategy,
+)
 from custom_components.smart_rce.domain.grid_export_positive import PositiveStrategy
 from custom_components.smart_rce.domain.input_state import InputState
 
@@ -155,30 +158,31 @@ class GridExportManager:
     # --- POSITIVE branch ---
 
     def _enter_positive(self, state: InputState) -> None:
-        """Enter POSITIVE intervention — mark state + apply."""
+        """Enter POSITIVE intervention — mark state + resolve + commit."""
         self.intervention_active = True
         self.intervention_direction = InterventionDirection.POSITIVE
         self._intervention_started_hour = state.now.hour
-        self._apply_positive(state)
+        self._resolve_and_commit_positive(state)
 
     def _continue_positive(self, state: InputState) -> None:
-        """Continue POSITIVE — exit check + apply."""
+        """Continue POSITIVE — exit check + resolve + commit."""
         exit_reason = self._positive.exit_reason(state)
         if exit_reason is not None:
             self._set_neutral(exit_reason)
             return
-        self._apply_positive(state)
+        self._resolve_and_commit_positive(state)
 
-    def _apply_positive(self, state: InputState) -> None:
-        """Apply PositiveStrategy result to manager outputs.
+    def _resolve_and_commit_positive(self, state: InputState) -> None:
+        """Resolve PositiveStrategy + commit do recommended_* (lub set_neutral).
 
         Common helper dla _enter_positive (entry) i _continue_positive (continue).
+        Resolution z mode=None sygnalizuje exit (np. none_pv_available).
         """
-        mode, xset, reason = self._positive.apply(state, self.recommended_xset)
-        if mode is None:
-            # Exit signal (np. none_pv_available)
-            self._set_neutral(reason)
+        resolution = self._positive.resolve(state, self.recommended_xset)
+        if resolution.mode is None:
+            self._set_neutral(resolution.reason)
             return
+        mode, xset, reason = resolution.build_output()
         self.recommended_ems_mode = mode
         self.recommended_xset = xset
         self.last_decision_reason = reason
@@ -194,42 +198,36 @@ class GridExportManager:
         self.intervention_active = True
         self.intervention_direction = InterventionDirection.NEGATIVE
         self._intervention_started_hour = state.now.hour
-        resolved = self._negative.resolve_for_entry(state)
-        if resolved is None:
+        resolution = self._negative.resolve_for_entry(state)
+        if resolution is None:
             self._set_neutral("none_pv_available")
             return
-        xset_signed, is_stay, pv_available = resolved
-        self._commit_negative(xset_signed, is_stay, pv_available)
+        self._commit_negative(resolution)
 
     def _continue_negative(self, state: InputState) -> None:
-        """Continue NEGATIVE — resolve+clamp z hysteresis, exit check, apply.
+        """Continue NEGATIVE — resolve+clamp z hysteresis, exit check, commit.
 
-        Exit_reason wymaga post-clamp xset_signed, więc resolve PRZED exit check.
+        Exit_reason wymaga post-clamp xset_signed (z resolution), więc resolve
+        PRZED exit check.
         """
-        resolved = self._negative.resolve_for_continue(
+        resolution = self._negative.resolve_for_continue(
             state, self.recommended_ems_mode, self.recommended_xset
         )
-        if resolved is None:
+        if resolution is None:
             self._set_neutral("none_pv_available")
             return
-        xset_signed, is_stay, pv_available = resolved
-        exit_reason = self._negative.exit_reason(state, xset_signed)
+        exit_reason = self._negative.exit_reason(state, resolution.xset_signed)
         if exit_reason is not None:
             self._set_neutral(exit_reason)
             return
-        self._commit_negative(xset_signed, is_stay, pv_available)
+        self._commit_negative(resolution)
 
-    def _commit_negative(
-        self, xset_signed: int, is_stay: bool, pv_available: float
-    ) -> None:
-        """Build NEGATIVE output i zapisz do recommended_*.
+    def _commit_negative(self, resolution: NegativeResolution) -> None:
+        """Build NEGATIVE output (z resolution.build_output) i zapisz do recommended_*.
 
         Common helper dla _enter_negative (entry) i _continue_negative (continue).
         """
-        prefix = "negative_stay" if is_stay else "negative"
-        mode, xset, reason = self._negative.build_output(
-            xset_signed, prefix, pv_available
-        )
+        mode, xset, reason = resolution.build_output()
         self.recommended_ems_mode = mode
         self.recommended_xset = xset
         self.last_decision_reason = reason
