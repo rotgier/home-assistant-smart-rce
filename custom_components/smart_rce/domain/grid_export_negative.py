@@ -112,6 +112,13 @@ class NegativeStrategy:
         return None
 
     @classmethod
+    def _entry_threshold(cls, state: InputState) -> float:
+        """Time-dependent entry threshold (-0.05 pre-45min, 0.0 post-45min)."""
+        if state.now.minute < cls.LATE_HALF_HOUR_MINUTE:
+            return cls.ENTRY_THRESHOLD_EARLY_KWH
+        return cls.ENTRY_THRESHOLD_LATE_KWH
+
+    @classmethod
     def exit_reason(cls, state: InputState, current_xset_signed: int) -> str | None:
         """Reason if exit fires, else None (continue).
 
@@ -162,41 +169,6 @@ class NegativeStrategy:
         return xset_signed, is_stay, pv_available
 
     @classmethod
-    def build_output(
-        cls, xset_signed: int, prefix: str, pv_available: float
-    ) -> tuple[str, int, str]:
-        """Build (mode, xset, reason) z xset_signed.
-
-        - xset_signed > 0 → charge_battery z xset = xset_signed
-        - xset_signed = 0 → discharge_battery z xset = 0 (bucket STOP)
-        - xset_signed < 0 → discharge_battery z xset = abs(xset_signed)
-        """
-        if xset_signed > 0:
-            return (
-                cls.CHARGE_MODE,
-                xset_signed,
-                f"{prefix}_charge_{xset_signed}W_pv_avail_{int(pv_available)}",
-            )
-        if xset_signed == 0:
-            return (
-                cls.STANDBY_MODE,
-                0,
-                f"{prefix}_stop_xset_0_pv_avail_{int(pv_available)}",
-            )
-        return (
-            cls.DISCHARGE_MODE,
-            abs(xset_signed),
-            f"{prefix}_discharge_{abs(xset_signed)}W_pv_avail_{int(pv_available)}",
-        )
-
-    @classmethod
-    def _entry_threshold(cls, state: InputState) -> float:
-        """Time-dependent entry threshold (-0.05 pre-45min, 0.0 post-45min)."""
-        if state.now.minute < cls.LATE_HALF_HOUR_MINUTE:
-            return cls.ENTRY_THRESHOLD_EARLY_KWH
-        return cls.ENTRY_THRESHOLD_LATE_KWH
-
-    @classmethod
     def _signed_xset(cls, mode: str, xset: int | None) -> int | None:
         """Aktualny xset_signed z (mode, xset). None gdy auto/idle.
 
@@ -230,6 +202,37 @@ class NegativeStrategy:
         return cls._lookup_xset(pv_available), False
 
     @classmethod
+    def _xset_range(cls, xset_signed: int | None) -> tuple[float, float] | None:
+        """Range pv_available który aktywowałby dany xset_signed.
+
+        Zwraca (lower, upper) lub None gdy xset_signed nie jest w bucketach.
+        Najwyższy bucket ma upper=inf.
+        """
+        if xset_signed is None:
+            return None
+        for lower, upper, xs in cls.ADAPTIVE_BUCKETS:
+            if xs == xset_signed:
+                upper_f = float("inf") if upper is None else float(upper)
+                return (float(lower), upper_f)
+        return None
+
+    @classmethod
+    def _lookup_xset(cls, pv_available: float) -> int:
+        """Znajdź xset_signed dla pv_available z ADAPTIVE_BUCKETS.
+
+        Multi-caller helper (entry_block_reason + _resolve_xset_with_hysteresis) —
+        umieszczone zaraz po ostatnim caller-ze (_resolve_xset_with_hysteresis).
+        """
+        for lower, upper, xset_signed in cls.ADAPTIVE_BUCKETS:
+            if upper is None:
+                if pv_available > lower:
+                    return xset_signed
+            elif lower < pv_available <= upper:
+                return xset_signed
+        # Fallback: cap przy najgłębszym bucket (pv_avail ≤ -4000) → -6000
+        return cls.ADAPTIVE_BUCKETS[-1][2]
+
+    @classmethod
     def _clamp_charge_bucket(
         cls, xset_signed: int, is_stay: bool, state: InputState
     ) -> tuple[int, bool]:
@@ -250,28 +253,29 @@ class NegativeStrategy:
         return xset_signed, is_stay
 
     @classmethod
-    def _xset_range(cls, xset_signed: int | None) -> tuple[float, float] | None:
-        """Range pv_available który aktywowałby dany xset_signed.
+    def build_output(
+        cls, xset_signed: int, prefix: str, pv_available: float
+    ) -> tuple[str, int, str]:
+        """Build (mode, xset, reason) z xset_signed.
 
-        Zwraca (lower, upper) lub None gdy xset_signed nie jest w bucketach.
-        Najwyższy bucket ma upper=inf.
+        - xset_signed > 0 → charge_battery z xset = xset_signed
+        - xset_signed = 0 → discharge_battery z xset = 0 (bucket STOP)
+        - xset_signed < 0 → discharge_battery z xset = abs(xset_signed)
         """
-        if xset_signed is None:
-            return None
-        for lower, upper, xs in cls.ADAPTIVE_BUCKETS:
-            if xs == xset_signed:
-                upper_f = float("inf") if upper is None else float(upper)
-                return (float(lower), upper_f)
-        return None
-
-    @classmethod
-    def _lookup_xset(cls, pv_available: float) -> int:
-        """Znajdź xset_signed dla pv_available z ADAPTIVE_BUCKETS."""
-        for lower, upper, xset_signed in cls.ADAPTIVE_BUCKETS:
-            if upper is None:
-                if pv_available > lower:
-                    return xset_signed
-            elif lower < pv_available <= upper:
-                return xset_signed
-        # Fallback: cap przy najgłębszym bucket (pv_avail ≤ -4000) → -6000
-        return cls.ADAPTIVE_BUCKETS[-1][2]
+        if xset_signed > 0:
+            return (
+                cls.CHARGE_MODE,
+                xset_signed,
+                f"{prefix}_charge_{xset_signed}W_pv_avail_{int(pv_available)}",
+            )
+        if xset_signed == 0:
+            return (
+                cls.STANDBY_MODE,
+                0,
+                f"{prefix}_stop_xset_0_pv_avail_{int(pv_available)}",
+            )
+        return (
+            cls.DISCHARGE_MODE,
+            abs(xset_signed),
+            f"{prefix}_discharge_{abs(xset_signed)}W_pv_avail_{int(pv_available)}",
+        )

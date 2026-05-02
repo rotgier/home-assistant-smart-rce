@@ -151,6 +151,19 @@ class PositiveStrategy:
         return None
 
     @classmethod
+    def _is_in_pre_charge_window(cls, state: InputState) -> bool:
+        """Pre-charge: 7:00 ≤ now < start_charge_hour_override.
+
+        Multi-caller helper (entry_block_reason + exit_reason) — umieszczone
+        zaraz po ostatnim caller-ze (exit_reason).
+        """
+        if state.start_charge_hour_override is None:
+            return False
+        if state.now.hour < cls.PRE_CHARGE_WINDOW_START_HOUR:
+            return False
+        return state.now.time() < state.start_charge_hour_override
+
+    @classmethod
     def apply(
         cls, state: InputState, current_xset: int | None
     ) -> tuple[str | None, int | None, str]:
@@ -220,15 +233,6 @@ class PositiveStrategy:
             None,
             f"charge_adaptive_auto_pv_avail_{int(pv_available)}",
         )
-
-    @classmethod
-    def _is_in_pre_charge_window(cls, state: InputState) -> bool:
-        """Pre-charge: 7:00 ≤ now < start_charge_hour_override."""
-        if state.start_charge_hour_override is None:
-            return False
-        if state.now.hour < cls.PRE_CHARGE_WINDOW_START_HOUR:
-            return False
-        return state.now.time() < state.start_charge_hour_override
 
     @classmethod
     def _xset_range(cls, xset: int | None) -> tuple[float, float] | None:

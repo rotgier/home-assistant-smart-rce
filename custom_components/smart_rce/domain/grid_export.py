@@ -222,6 +222,21 @@ class GridExportManager:
         self.recommended_xset = xset
         self.last_decision_reason = reason
 
+    def _set_neutral(self, reason: str) -> None:
+        """Reset to AUTO mode with given reason. Idempotent.
+
+        Multi-caller helper (update + _continue_positive + _apply_positive +
+        _continue_negative + _apply_negative) — ostatni caller _apply_negative,
+        więc umieszczone zaraz po nim (i po _commit_negative który też ma
+        ostatniego caller-a _apply_negative).
+        """
+        self.intervention_active = False
+        self.intervention_direction = None
+        self.recommended_ems_mode = self.AUTO_MODE
+        self.recommended_xset = None
+        self.last_decision_reason = reason
+        self._intervention_started_hour = None
+
     # --- common helpers ---
 
     def _enter(self, direction: InterventionDirection, state: InputState) -> None:
@@ -229,15 +244,6 @@ class GridExportManager:
         self.intervention_active = True
         self.intervention_direction = direction
         self._intervention_started_hour = state.now.hour
-
-    def _set_neutral(self, reason: str) -> None:
-        """Reset to AUTO mode with given reason. Idempotent."""
-        self.intervention_active = False
-        self.intervention_direction = None
-        self.recommended_ems_mode = self.AUTO_MODE
-        self.recommended_xset = None
-        self.last_decision_reason = reason
-        self._intervention_started_hour = None
 
     def _apply_disabled_override_if_needed(self, state: InputState) -> None:
         """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.
