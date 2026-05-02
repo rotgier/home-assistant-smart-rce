@@ -95,15 +95,17 @@ class PositiveStrategy:
     STANDBY_MODE: Final[str] = "discharge_battery"
     CHARGE_MODE: Final[str] = "charge_battery"
 
-    # Adaptive charge lookup — `(threshold, xset)`. Pierwszy spełniający → Xset.
+    # Adaptive charge lookup — `(lower, upper, xset)` (analog NEGATIVE).
+    # Aktywuje się gdy `lower < pv_available <= upper` (top: upper=None=+inf).
+    # Bucket centrum daje meter ≈ -1500W (xset = środek + 1500).
     # pv_available ≤ -1000 → AUTO (block_discharge w battery.py przejmuje).
-    ADAPTIVE_BUCKETS: Final[tuple[tuple[int, int], ...]] = (
-        (4000, 6000),
-        (3000, 5000),
-        (2000, 4000),
-        (1000, 3000),
-        (0, 2000),
-        (-1000, 1000),
+    ADAPTIVE_BUCKETS: Final[tuple[tuple[int, int | None, int], ...]] = (
+        (4000, None, 6000),  # > 4000 W → charge 6000 (top, BMS practical max)
+        (3000, 4000, 5000),  # charge 5000 (meter ~-1500 w środku)
+        (2000, 3000, 4000),
+        (1000, 2000, 3000),
+        (0, 1000, 2000),
+        (-1000, 0, 1000),  # discharge zbliża się; pv_avail ≤ -1000 → AUTO
     )
     # Low BMS shortcut — BMS clamp na ~2 kW, lookup zbędny.
     LOW_BMS_XSET_W: Final[int] = 3500
@@ -244,21 +246,23 @@ class PositiveStrategy:
         """
         if xset is None:
             return None
-        bucket_xsets = [x for _, x in cls.ADAPTIVE_BUCKETS]
-        if xset not in bucket_xsets:
-            return None
-        idx = bucket_xsets.index(xset)
-        lower = float(cls.ADAPTIVE_BUCKETS[idx][0])
-        upper = float("inf") if idx == 0 else float(cls.ADAPTIVE_BUCKETS[idx - 1][0])
-        return (lower, upper)
+        for lower, upper, xs in cls.ADAPTIVE_BUCKETS:
+            if xs == xset:
+                upper_f = float("inf") if upper is None else float(upper)
+                return (float(lower), upper_f)
+        return None
 
     @classmethod
     def _lookup_xset(cls, pv_available: float) -> int | None:
         """Znajdź Xset dla pv_available z ADAPTIVE_BUCKETS.
 
-        Returns None gdy pv_available ≤ -1000 (poza najniższym bucket'em).
+        Returns None gdy pv_available ≤ -1000 (poza najniższym bucket'em) —
+        orchestrator przełącza na AUTO mode (stay in intervention).
         """
-        for threshold, xset in cls.ADAPTIVE_BUCKETS:
-            if pv_available > threshold:
+        for lower, upper, xset in cls.ADAPTIVE_BUCKETS:
+            if upper is None:
+                if pv_available > lower:
+                    return xset
+            elif lower < pv_available <= upper:
                 return xset
         return None
