@@ -123,16 +123,14 @@ class GridExportManager:
         # progi hourly), kolejność sprawdzania arbitralna.
         pos_block = self._positive.entry_block_reason(state)
         if pos_block is None:
-            self._enter(InterventionDirection.POSITIVE, state)
-            self._apply_positive(state)
+            self._enter_positive(state)
             self._apply_disabled_override_if_needed(state)
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
         neg_block = self._negative.entry_block_reason(state)
         if neg_block is None:
-            self._enter(InterventionDirection.NEGATIVE, state)
-            self._apply_negative(state)
+            self._enter_negative(state)
             self._apply_disabled_override_if_needed(state)
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
@@ -156,6 +154,13 @@ class GridExportManager:
 
     # --- POSITIVE branch ---
 
+    def _enter_positive(self, state: InputState) -> None:
+        """Enter POSITIVE intervention — mark state + apply."""
+        self.intervention_active = True
+        self.intervention_direction = InterventionDirection.POSITIVE
+        self._intervention_started_hour = state.now.hour
+        self._apply_positive(state)
+
     def _continue_positive(self, state: InputState) -> None:
         """Continue POSITIVE — exit check + apply."""
         exit_reason = self._positive.exit_reason(state)
@@ -165,7 +170,10 @@ class GridExportManager:
         self._apply_positive(state)
 
     def _apply_positive(self, state: InputState) -> None:
-        """Apply PositiveStrategy result to manager outputs."""
+        """Apply PositiveStrategy result to manager outputs.
+
+        Common helper dla _enter_positive (entry) i _continue_positive (continue).
+        """
         mode, xset, reason = self._positive.apply(state, self.recommended_xset)
         if mode is None:
             # Exit signal (np. none_pv_available)
@@ -176,6 +184,22 @@ class GridExportManager:
         self.last_decision_reason = reason
 
     # --- NEGATIVE branch ---
+
+    def _enter_negative(self, state: InputState) -> None:
+        """Enter NEGATIVE intervention — mark state + fresh resolve + commit.
+
+        Wchodzimy z AUTO (clean state) — fresh lookup zamiast matchować przez
+        hysteresis do tego co było wcześniej.
+        """
+        self.intervention_active = True
+        self.intervention_direction = InterventionDirection.NEGATIVE
+        self._intervention_started_hour = state.now.hour
+        resolved = self._negative.resolve_for_entry(state)
+        if resolved is None:
+            self._set_neutral("none_pv_available")
+            return
+        xset_signed, is_stay, pv_available = resolved
+        self._commit_negative(xset_signed, is_stay, pv_available)
 
     def _continue_negative(self, state: InputState) -> None:
         """Continue NEGATIVE — resolve+clamp z hysteresis, exit check, apply.
@@ -195,23 +219,13 @@ class GridExportManager:
             return
         self._commit_negative(xset_signed, is_stay, pv_available)
 
-    def _apply_negative(self, state: InputState) -> None:
-        """Apply NegativeStrategy — entry path (fresh resolve, bez exit check).
-
-        Wchodzimy z AUTO (clean state) — fresh lookup zamiast matchować przez
-        hysteresis do tego co było wcześniej.
-        """
-        resolved = self._negative.resolve_for_entry(state)
-        if resolved is None:
-            self._set_neutral("none_pv_available")
-            return
-        xset_signed, is_stay, pv_available = resolved
-        self._commit_negative(xset_signed, is_stay, pv_available)
-
     def _commit_negative(
         self, xset_signed: int, is_stay: bool, pv_available: float
     ) -> None:
-        """Build NEGATIVE output i zapisz do recommended_*."""
+        """Build NEGATIVE output i zapisz do recommended_*.
+
+        Common helper dla _enter_negative (entry) i _continue_negative (continue).
+        """
         prefix = "negative_stay" if is_stay else "negative"
         mode, xset, reason = self._negative.build_output(
             xset_signed, prefix, pv_available
@@ -223,10 +237,9 @@ class GridExportManager:
     def _set_neutral(self, reason: str) -> None:
         """Reset to AUTO mode with given reason. Idempotent.
 
-        Multi-caller helper (update + _continue_positive + _apply_positive +
-        _continue_negative + _apply_negative) — ostatni caller _apply_negative,
-        więc umieszczone zaraz po nim (i po _commit_negative który też ma
-        ostatniego caller-a _apply_negative).
+        Multi-caller helper (update + _enter_positive + _continue_positive +
+        _apply_positive + _enter_negative + _continue_negative) — ostatni caller
+        w pliku _continue_negative, umieszczone zaraz po nim (i po _commit_negative).
         """
         self.intervention_active = False
         self.intervention_direction = None
@@ -236,12 +249,6 @@ class GridExportManager:
         self._intervention_started_hour = None
 
     # --- common helpers ---
-
-    def _enter(self, direction: InterventionDirection, state: InputState) -> None:
-        """Mark intervention active in given direction."""
-        self.intervention_active = True
-        self.intervention_direction = direction
-        self._intervention_started_hour = state.now.hour
 
     def _apply_disabled_override_if_needed(self, state: InputState) -> None:
         """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.

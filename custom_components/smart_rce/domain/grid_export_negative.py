@@ -144,23 +144,6 @@ class NegativeStrategy:
         return None
 
     @classmethod
-    def resolve_for_entry(cls, state: InputState) -> tuple[int, bool, float] | None:
-        """Resolve dla entry path — fresh lookup bez hysteresis.
-
-        Wchodzimy z AUTO (clean state — bateria oddawała "nie wiadomo co"),
-        nie ma sensu matchować przez hysteresis do tego co było wcześniej
-        (np. 2 godziny temu).
-
-        Returns None gdy `state.pv_available is None`.
-        """
-        if state.pv_available is None:
-            return None
-        pv_available = state.pv_available
-        xset_signed = cls._lookup_xset(pv_available)
-        xset_signed, _ = cls._clamp_charge_bucket(xset_signed, False, state)
-        return xset_signed, False, pv_available
-
-    @classmethod
     def resolve_for_continue(
         cls,
         state: InputState,
@@ -233,11 +216,29 @@ class NegativeStrategy:
         return None
 
     @classmethod
+    def resolve_for_entry(cls, state: InputState) -> tuple[int, bool, float] | None:
+        """Resolve dla entry path — fresh lookup bez hysteresis.
+
+        Wchodzimy z AUTO (clean state — bateria oddawała "nie wiadomo co"),
+        nie ma sensu matchować przez hysteresis do tego co było wcześniej
+        (np. 2 godziny temu).
+
+        Returns None gdy `state.pv_available is None`.
+        """
+        if state.pv_available is None:
+            return None
+        pv_available = state.pv_available
+        xset_signed = cls._lookup_xset(pv_available)
+        xset_signed, _ = cls._clamp_charge_bucket(xset_signed, False, state)
+        return xset_signed, False, pv_available
+
+    @classmethod
     def _lookup_xset(cls, pv_available: float) -> int:
         """Znajdź xset_signed dla pv_available z ADAPTIVE_BUCKETS.
 
-        Multi-caller helper (entry_block_reason + _resolve_xset_with_hysteresis) —
-        umieszczone zaraz po ostatnim caller-ze (_resolve_xset_with_hysteresis).
+        Multi-caller helper (entry_block_reason, _resolve_xset_with_hysteresis,
+        resolve_for_entry) — umieszczone zaraz po ostatnim caller-ze
+        (resolve_for_entry).
         """
         for lower, upper, xset_signed in cls.ADAPTIVE_BUCKETS:
             if upper is None:
