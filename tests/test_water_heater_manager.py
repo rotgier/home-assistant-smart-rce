@@ -1,20 +1,10 @@
 from datetime import datetime
 
 from custom_components.smart_rce.domain.ems import Ems
+from custom_components.smart_rce.domain.grid_export import InterventionDirection
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE
-import pytest
-
-# TODO: upgrade tests + DoD-guard diagnostic test są strukturalnie out-of-date
-# - skip_upgrade=True dla battery_charge_limit>7 (commit a799e97) — testy z cl=18
-#   nie mogą obserwować upgrade activation, trzeba przepisać z cl≤7 + większy
-#   exported_energy żeby budget+bonus przekroczył próg SMALL/BIG/BOTH
-# - DoD=0% guard usunięty z water_heater w Etap 2 (logika przeniesiona do
-#   GridExportManager) — test_diagnostics_none_when_guard_active testuje
-#   nieistniejący guard
-_OUT_OF_DATE = pytest.mark.skip(
-    reason="TODO: rewrite for current logic (skip_upgrade if cl>7, no DoD guard)"
-)
+from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 NOON = datetime(2026, 4, 16, 12, 0, tzinfo=TIMEZONE)
 NOON_50 = datetime(2026, 4, 16, 12, 50, tzinfo=TIMEZONE)  # 10 min do końca godziny
@@ -621,6 +611,55 @@ class TestBalancedOverrideAndDiagnostics:
         assert mgr.water_heater.should_turn_on is False  # nie BIG
         assert mgr.water_heater.should_turn_on_small is True  # SMALL z upgrade
 
+    def test_negative_intervention_bumps_reserved_blocks_heaters(self):
+        """NEGATIVE intervention → reserved 3500→5500 (cl>7) → grzałki off.
+
+        Mechanizm który zastąpił stary "guard DoD=0%" — gdy GridExportManager
+        ma NEGATIVE intervention aktywne, water_heater dostaje to przez argument
+        i podbija reserved (5500W zamiast 3500W przy cl>7), co naturalnie spada
+        heater_budget poniżej progów grzałek.
+        """
+        wh = WaterHeaterManager()
+        # pv=4000, cl=18, soc=70 → bez intervention reserved=2500, budget=1500 → SMALL
+        state = _state(
+            heater_mode="BALANCED",
+            consumption_minus_pv=-4000.0,
+            battery_charge_limit=18.0,
+            battery_soc=70.0,
+            exported_energy_hourly=0.0,
+        )
+        wh.update(state, grid_export_intervention=None)
+        assert wh.balanced_baseline == "small_is_on"
+        assert wh.balanced_heater_budget == -1500.0  # -(4000-2500)
+
+        # Z NEGATIVE intervention: reserved=5500 → budget=-1500 → OFF (grzałki off)
+        wh.update(state, grid_export_intervention=InterventionDirection.NEGATIVE)
+        assert wh.balanced_baseline == "both_are_off"
+        assert wh.balanced_heater_budget == 1500.0  # -(4000-5500) = -(-1500) = 1500
+
+    def test_negative_intervention_bumps_reserved_for_low_cl(self):
+        """NEGATIVE + cl=2 → reserved 300→600 → naturalnie blokuje SMALL gdy budget mały.
+
+        cl=2 ma w aktualnym kodzie reserved=300 default, NEGATIVE bumps do 600.
+        """
+        wh = WaterHeaterManager()
+        # pv=1700, cl=2 → bez intervention reserved=300, budget=1400 → OFF (1400<1500)
+        # Hysteresis może zatrzymać SMALL gdy current=SMALL — używamy current=OFF.
+        state = _state(
+            heater_mode="BALANCED",
+            consumption_minus_pv=-1800.0,  # pv_avail=1800
+            battery_charge_limit=2.0,
+            battery_soc=50.0,
+            exported_energy_hourly=0.0,
+        )
+        wh.update(state, grid_export_intervention=None)
+        # reserved=300, budget=1500 → SMALL (1500≥1500)
+        assert wh.balanced_baseline == "small_is_on"
+
+        # Z NEGATIVE: reserved=600, budget=1200 → OFF (1200<1500)
+        wh.update(state, grid_export_intervention=InterventionDirection.NEGATIVE)
+        assert wh.balanced_baseline == "both_are_off"
+
     def test_diagnostics_none_in_wasted_mode(self):
         """Diagnostyka BALANCED = None/False gdy tryb WASTED."""
         mgr = Ems()
@@ -636,21 +675,12 @@ class TestBalancedOverrideAndDiagnostics:
         assert mgr.water_heater.balanced_baseline is None
         assert mgr.water_heater.balanced_upgrade_active is False
 
-    @_OUT_OF_DATE
-    def test_diagnostics_none_when_guard_active(self):
-        """Diagnostyka = None gdy guard DoD=0% aktywny (guard usunięty w Etap 2)."""
-        mgr = Ems()
-        mgr.update_state(
-            _state(
-                heater_mode="BALANCED",
-                depth_of_discharge=0,
-                exported_energy_hourly=-0.05,
-                consumption_minus_pv=-5000.0,
-            )
-        )
-        assert mgr.water_heater.balanced_heater_budget is None
-        assert mgr.water_heater.balanced_baseline is None
-        assert mgr.water_heater.balanced_upgrade_active is False
+    # USUNIĘTY: test_diagnostics_none_when_guard_active — testował stary mechanizm
+    # "guard DoD=0% w water_heater" (water_heater wyzerowywał diagnostykę BALANCED
+    # na None gdy DoD=0% i hourly negative). W Etap 2 ten guard został usunięty
+    # — logika "ratowania ujemnego bilansu" przeniesiona do GridExportManager
+    # (NegativeStrategy → reserved bump w water_heater). Nowy mechanizm pokrywany
+    # przez TestBalancedNegativeIntervention (powyżej).
 
     def test_guard_works_with_balanced(self):
         """Guard DoD=0% działa z BALANCED."""
