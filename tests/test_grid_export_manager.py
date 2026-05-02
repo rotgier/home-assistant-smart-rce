@@ -168,11 +168,18 @@ class TestEntryGates:
         )
         assert mgr.intervention_active is True
 
-    def test_soc_at_ceiling(self):
+    def test_soc_at_entry_ceiling(self):
         mgr = GridExportManager()
         mgr.update(_state(exported_energy_hourly=0.10, battery_soc=100))
         assert mgr.intervention_active is False
-        assert "soc_at_ceiling" in mgr.last_decision_reason
+        assert "soc_at_entry_ceiling" in mgr.last_decision_reason
+
+    def test_soc_at_99_blocked_to_avoid_flap(self):
+        # SOC_ENTRY_CEILING=99 zapobiega flap'owaniu gdy SoC oscyluje 99↔100.
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=0.10, battery_soc=99))
+        assert mgr.intervention_active is False
+        assert "soc_at_entry_ceiling" in mgr.last_decision_reason
 
     def test_toggle_off(self):
         mgr = GridExportManager()
@@ -237,7 +244,7 @@ class TestExitGates:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_soc=99,
+                battery_soc=98,
             )
         )
         assert mgr.intervention_active is True

@@ -78,6 +78,8 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.input_state"))
     reload(import_module("custom_components.smart_rce.domain.battery"))
     reload(import_module("custom_components.smart_rce.domain.water_heater"))
+    reload(import_module("custom_components.smart_rce.domain.grid_export_positive"))
+    reload(import_module("custom_components.smart_rce.domain.grid_export_negative"))
     reload(import_module("custom_components.smart_rce.domain.grid_export"))
     reload(import_module("custom_components.smart_rce.domain.ems"))
     reload(import_module("custom_components.smart_rce.domain"))
