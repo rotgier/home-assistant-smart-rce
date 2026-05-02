@@ -105,6 +105,18 @@ class WaterHeaterManager:
             self.balanced_upgrade_active = False
             self.balanced_export_bonus_w = None
 
+    def _none_present(self, state: InputState) -> bool:
+        return (
+            state.water_heater_big_is_on is None
+            or state.water_heater_small_is_on is None
+            or state.battery_soc is None
+            or state.battery_charge_limit is None
+            or state.battery_power_2_minutes is None
+            or state.consumption_minus_pv_2_minutes is None
+            or state.exported_energy_hourly is None
+            or state.now is None
+        )
+
     def _current_state(self, state: InputState) -> str:
         if state.water_heater_big_is_on and state.water_heater_small_is_on:
             return self.BOTH_ARE_ON
@@ -181,27 +193,6 @@ class WaterHeaterManager:
             and current_state in (self.SMALL_IS_ON, self.BIG_IS_ON, self.BOTH_ARE_ON)
         ):
             return self.SMALL_IS_ON
-        return self.BOTH_ARE_OFF
-
-    def _wasted_target(
-        self, pv: float, battery_charge_limit: float, current_state: str
-    ) -> str:
-        battery_max_charge = battery_charge_limit * self.BATTERY_VOLTAGE
-        pv_surplus = pv - battery_max_charge
-        hysteresis = 500
-
-        # pv_surplus nie zależy od stanu grzałek (sensor minus_heaters)
-        # Step-up: OFF → BIG → BOTH (small nigdy sam w WASTED)
-        if pv_surplus > self.BIG_POWER or (
-            pv_surplus > self.BIG_POWER - hysteresis
-            and current_state == self.BOTH_ARE_ON
-        ):
-            return self.BOTH_ARE_ON
-        if pv_surplus > 0 or (
-            pv_surplus > -hysteresis
-            and current_state in (self.BIG_IS_ON, self.BOTH_ARE_ON)
-        ):
-            return self.BIG_IS_ON
         return self.BOTH_ARE_OFF
 
     def _balanced_target(
@@ -337,14 +328,23 @@ class WaterHeaterManager:
 
         return target
 
-    def _none_present(self, state: InputState) -> bool:
-        return (
-            state.water_heater_big_is_on is None
-            or state.water_heater_small_is_on is None
-            or state.battery_soc is None
-            or state.battery_charge_limit is None
-            or state.battery_power_2_minutes is None
-            or state.consumption_minus_pv_2_minutes is None
-            or state.exported_energy_hourly is None
-            or state.now is None
-        )
+    def _wasted_target(
+        self, pv: float, battery_charge_limit: float, current_state: str
+    ) -> str:
+        battery_max_charge = battery_charge_limit * self.BATTERY_VOLTAGE
+        pv_surplus = pv - battery_max_charge
+        hysteresis = 500
+
+        # pv_surplus nie zależy od stanu grzałek (sensor minus_heaters)
+        # Step-up: OFF → BIG → BOTH (small nigdy sam w WASTED)
+        if pv_surplus > self.BIG_POWER or (
+            pv_surplus > self.BIG_POWER - hysteresis
+            and current_state == self.BOTH_ARE_ON
+        ):
+            return self.BOTH_ARE_ON
+        if pv_surplus > 0 or (
+            pv_surplus > -hysteresis
+            and current_state in (self.BIG_IS_ON, self.BOTH_ARE_ON)
+        ):
+            return self.BIG_IS_ON
+        return self.BOTH_ARE_OFF
