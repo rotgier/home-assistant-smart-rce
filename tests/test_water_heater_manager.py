@@ -438,51 +438,60 @@ class TestBalancedBatteryFirstStrategy:
 class TestBalancedUpgrade:
     """Piętro 2 — upgrade z budżetu eksportu godzinowego."""
 
-    @_OUT_OF_DATE
     def test_upgrade_off_to_small(self):
-        """baseline=OFF, exported=120Wh → upgrade SMALL."""
+        """cl=5A (no skip_upgrade), pv=1200, exp=1.4kWh → bonus=1400 → SMALL upgrade.
+
+        cl=5 → reserved=1000 (cl>2). budget=1200-1000=200, baseline=OFF.
+        time_left=1h → bonus=1400W. effective=1600 ≥ SMALL_POWER=1500 → upgrade SMALL.
+        """
         mgr = Ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-1200.0,
-                battery_charge_limit=18.0,
+                battery_charge_limit=5.0,
                 battery_soc=30.0,
-                exported_energy_hourly=0.12,  # 120 Wh
+                exported_energy_hourly=1.4,
             )
         )
         assert mgr.water_heater.balanced_baseline == "both_are_off"
         assert mgr.water_heater.balanced_upgrade_active is True
         assert mgr.water_heater.should_turn_on_small is True
 
-    @_OUT_OF_DATE
     def test_upgrade_small_to_big(self):
-        """baseline=SMALL, exported=120Wh → upgrade BIG."""
+        """cl=5A, pv=3000, exp=1.1kWh → bonus=1100 → BIG upgrade.
+
+        cl=5 → reserved=1000. budget=3000-1000=2000, baseline=SMALL.
+        bonus=1100W. effective=3100 ≥ BIG_POWER=3000 → upgrade BIG.
+        """
         mgr = Ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
-                consumption_minus_pv=-5500.0,
-                battery_charge_limit=18.0,
+                consumption_minus_pv=-3000.0,
+                battery_charge_limit=5.0,
                 battery_soc=30.0,
-                exported_energy_hourly=0.12,
+                exported_energy_hourly=1.1,
             )
         )
         assert mgr.water_heater.balanced_baseline == "small_is_on"
         assert mgr.water_heater.balanced_upgrade_active is True
         assert mgr.water_heater.should_turn_on is True  # BIG
 
-    @_OUT_OF_DATE
     def test_upgrade_big_to_both(self):
-        """baseline=BIG, exported=120Wh → upgrade BOTH."""
+        """cl=5A, pv=4000, exp=1.6kWh → bonus=1600 → BOTH upgrade.
+
+        cl=5 → reserved=1000. budget=4000-1000=3000, baseline=BIG.
+        bonus=1600W. effective=4600 ≥ BOTH_POWER=4500 → upgrade BOTH.
+        """
         mgr = Ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
-                consumption_minus_pv=-7000.0,
-                battery_charge_limit=18.0,
+                consumption_minus_pv=-4000.0,
+                battery_charge_limit=5.0,
                 battery_soc=30.0,
-                exported_energy_hourly=0.12,
+                exported_energy_hourly=1.6,
             )
         )
         assert mgr.water_heater.balanced_baseline == "big_is_on"
@@ -520,60 +529,66 @@ class TestBalancedUpgrade:
         assert mgr.water_heater.balanced_baseline == "small_is_on"
         assert mgr.water_heater.balanced_upgrade_active is False
 
-    @_OUT_OF_DATE
     def test_upgrade_hysteresis_holds(self):
-        """Upgrade aktywny, exported=50Wh → trzymaj (>30)."""
+        """Upgrade BIG aktywny, exp drop ale w hysteresis → trzymaj BIG.
+
+        cl=5, pv=3000 → budget=2000, baseline=SMALL. Tick 1: exp=1.1 → bonus=1100,
+        effective=3100 ≥ BIG=3000 → upgrade BIG. Tick 2 (big_on=True): exp=0.6 →
+        bonus=600, effective=2600 ≥ BIG-HYSTERESIS=2500 AND current=BIG → trzyma BIG.
+        """
         mgr = Ems()
-        # Najpierw aktywuj upgrade (baseline=SMALL → BIG)
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
-                consumption_minus_pv=-5300.0,  # budget=2300 → baseline SMALL
-                battery_charge_limit=18.0,
+                consumption_minus_pv=-3000.0,
+                battery_charge_limit=5.0,
                 battery_soc=30.0,
-                exported_energy_hourly=0.12,
+                exported_energy_hourly=1.1,
             )
         )
         assert mgr.water_heater.balanced_baseline == "small_is_on"
         assert mgr.water_heater.balanced_upgrade_active is True
-        # Teraz exported spada do 50Wh, BIG jest włączony
+        # Drop exp ale w hysteresis (bonus=600 → effective=2600 ≥ 2500=BIG-500)
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 big_on=True,
-                consumption_minus_pv=-5300.0,
-                battery_charge_limit=18.0,
+                consumption_minus_pv=-3000.0,
+                battery_charge_limit=5.0,
                 battery_soc=30.0,
-                exported_energy_hourly=0.05,  # 50 Wh > 30
+                exported_energy_hourly=0.6,
             )
         )
         assert mgr.water_heater.balanced_baseline == "small_is_on"
         assert mgr.water_heater.balanced_upgrade_active is True
 
-    @_OUT_OF_DATE
     def test_upgrade_hysteresis_releases(self):
-        """Exported=20Wh → powrót do baseline (<30)."""
+        """Upgrade BIG aktywny, exp drop poniżej hysteresis → release do SMALL.
+
+        Tick 1: jak holds. Tick 2 (big_on=True): exp=0.4 → bonus=400, effective=2400
+        < BIG-HYSTERESIS=2500 → release. effective ≥ SMALL=1500 → upgrade=SMALL.
+        baseline=SMALL, target=SMALL → upgrade_active=False.
+        """
         mgr = Ems()
-        # Aktywuj upgrade
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
-                consumption_minus_pv=-5300.0,  # budget=2300 → baseline SMALL
-                battery_charge_limit=18.0,
+                consumption_minus_pv=-3000.0,
+                battery_charge_limit=5.0,
                 battery_soc=30.0,
-                exported_energy_hourly=0.12,
+                exported_energy_hourly=1.1,
             )
         )
         assert mgr.water_heater.balanced_upgrade_active is True
-        # Exported spada poniżej 30Wh
+        # Drop poniżej hysteresis
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 big_on=True,
-                consumption_minus_pv=-5300.0,
-                battery_charge_limit=18.0,
+                consumption_minus_pv=-3000.0,
+                battery_charge_limit=5.0,
                 battery_soc=30.0,
-                exported_energy_hourly=0.02,  # 20 Wh < 30
+                exported_energy_hourly=0.4,
             )
         )
         assert mgr.water_heater.balanced_upgrade_active is False
@@ -583,24 +598,26 @@ class TestBalancedUpgrade:
 class TestBalancedOverrideAndDiagnostics:
     """Override SOC≥90 nie odpala dla BALANCED + diagnostyka."""
 
-    @_OUT_OF_DATE
     def test_no_soc90_override(self):
-        """mode=BALANCED, soc=95, exported=400Wh → override NIE odpala."""
+        """mode=BALANCED, soc=95, exp=1.4kWh → override SOC≥90 NIE odpala dla BALANCED.
+
+        cl=5 → reserved=1000. budget=1200-1000=200, baseline=OFF.
+        bonus=1400W. effective=1600 ≥ SMALL=1500 → upgrade SMALL.
+        Override SOC≥90 (BIG forsowany) odpala TYLKO dla ASAP/WASTED, NIE BALANCED.
+        """
         mgr = Ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-1200.0,
-                battery_charge_limit=18.0,
+                battery_charge_limit=5.0,
                 battery_soc=95.0,
-                exported_energy_hourly=0.4,  # 400 Wh
+                exported_energy_hourly=1.4,
             )
         )
-        # budget = 1200 - 2000 = -800 → baseline OFF
-        # upgrade: OFF → SMALL (exported 400 > 100)
         assert mgr.water_heater.balanced_baseline == "both_are_off"
         assert mgr.water_heater.balanced_upgrade_active is True
-        # Override SOC≥90 would force BIG, but in BALANCED it doesn't
+        # Override SOC≥90 NIE forsuje BIG dla BALANCED
         assert mgr.water_heater.should_turn_on is False  # nie BIG
         assert mgr.water_heater.should_turn_on_small is True  # SMALL z upgrade
 
