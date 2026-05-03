@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from datetime import datetime, time
 import logging
+from typing import Final
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_STARTED
@@ -18,12 +19,60 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
+from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import now as now_local
 
+from .domain.battery import BatteryManager
 from .domain.ems import Ems
 from .domain.input_state import InputState
 
 _LOGGER = logging.getLogger(__name__)
+
+# --- BatteryManager persistence (HA Storage helper) --- #
+BATTERY_STORAGE_VERSION: Final[int] = 1
+BATTERY_STORAGE_KEY: Final[str] = "smart_rce_battery_manager"
+
+
+class BatteryStatePersistence:
+    """Application service: persists BatteryManager state across HA restarts.
+
+    Domain (`BatteryManager`) jest pure — eksponuje `snapshot()`/`restore(data)`.
+    Tutaj trzymamy `Store`, dispatchujemy save jako entry-scoped foreground
+    task (musi przeżyć shutdown — `entry.async_create_task` jest waited
+    przez `async_block_till_done`, w przeciwieństwie do background_task).
+    """
+
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, manager: BatteryManager
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._manager = manager
+        self._store: Store = Store(hass, BATTERY_STORAGE_VERSION, BATTERY_STORAGE_KEY)
+        self._last_snapshot: dict | None = None
+
+    async def async_restore(self) -> None:
+        """Wywołać RAZ przed pierwszym update() w async_setup_entry."""
+        data = await self._store.async_load()
+        if data:
+            self._manager.restore(data)
+        self._last_snapshot = self._manager.snapshot()
+
+    @callback
+    def save_if_changed(self) -> None:
+        """Persist snapshot na disk gdy zmienił się od ostatniego zapisu.
+
+        Wywoływane jako listener po każdym ems.update_state.
+        """
+        current = self._manager.snapshot()
+        if current == self._last_snapshot:
+            return
+        self._last_snapshot = current
+        self._entry.async_create_task(
+            self._hass,
+            self._store.async_save(current),
+            name="smart_rce_battery_save",
+        )
 
 
 _UNAVAILABLE_WARNED: set[str] = set()
@@ -321,12 +370,14 @@ def listen_for_grid_export_recommendations(
 
 
 async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
-    ems: Ems = Ems(hass=hass)
+    ems: Ems = Ems()
 
     # Restore persistent BatteryManager state PRZED pierwszym update_state —
     # chroni przed race condition po HA restart (template binary_sensor
     # ładuje się 25-50ms po smart_rce sensors).
-    await ems.battery.async_restore()
+    battery_persistence = BatteryStatePersistence(hass, entry, ems.battery)
+    await battery_persistence.async_restore()
+    ems.async_add_listener(battery_persistence.save_if_changed)
 
     @callback
     def update_hourly(now: datetime) -> None:

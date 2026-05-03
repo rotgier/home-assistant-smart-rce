@@ -1,5 +1,9 @@
 """Battery discharge management.
 
+Pure domain — bez HA imports. Persistence (Store) trzymana w application
+service `BatteryStatePersistence` w `adapter.py`; tutaj tylko `snapshot()`
+i `restore(data)`.
+
 Monitoruje bilans godzinowy i okna pre/post-charge by decydować kiedy
 zablokować rozładowywanie baterii. Block_charge handling przeniesiony
 do GridExportManager (Etap 2 — NEGATIVE balance).
@@ -21,18 +25,11 @@ Patrz `context/target_soc_algorithm.md` dla szerszego kontekstu.
 from __future__ import annotations
 
 import logging
-from typing import Final
+from typing import Any, Final
 
 from custom_components.smart_rce.domain.input_state import InputState
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
-
-# --- persistence --- #
-
-STORAGE_VERSION: Final[int] = 1
-STORAGE_KEY: Final[str] = "smart_rce_battery_manager"
 
 # --- discharge guard (pre-charge window) --- #
 
@@ -73,20 +70,12 @@ DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
 
 
 class BatteryManager:
-    def __init__(self, hass: HomeAssistant | None = None) -> None:
+    def __init__(self) -> None:
         self.should_block_battery_discharge: bool = False
         self._last_hour_seen: int | None = None
         # Throttling dla DEBUG snapshotów
         self._last_log_snapshot: tuple | None = None
         self._last_log_ts = None  # type: ignore[var-annotated]
-        # Persistence — przeżywa HA restart, chroni przed race condition gdy
-        # template binary_sensor (np. rce_should_hold_for_peak) ładuje się
-        # 25-50ms po smart_rce. Bez restore pierwszy update widzi None i
-        # mógłby mylnie ustawić block_discharge.
-        self._hass = hass
-        self._store: Store | None = (
-            Store(hass, STORAGE_VERSION, STORAGE_KEY) if hass else None
-        )
 
     def update(self, state: InputState) -> None:  # noqa: C901
         if self._none_present(state):
@@ -99,10 +88,8 @@ class BatteryManager:
 
         exported_energy_wh = state.exported_energy_hourly * 1000  # kWh → Wh
 
-        # Snapshot poprzednich wartości dla detekcji transitions w logach
-        # i decydowania czy persistować stan na disk.
+        # Snapshot poprzednich wartości dla detekcji transitions w logach.
         prev_block_discharge = self.should_block_battery_discharge
-        prev_last_hour_seen = self._last_hour_seen
 
         # --- OVERRIDE: intencjonalne rozładowanie (np. Battery Discharge Max) ---
         # Gdy input_boolean.ems_allow_discharge_override=True, EMS "stoi z boku".
@@ -113,7 +100,6 @@ class BatteryManager:
             self._last_hour_seen = None
             self._log_transitions(prev_block_discharge, reason="override_active")
             self._maybe_log_snapshot(state, exported_energy_wh, phase="override")
-            self._maybe_save(prev_block_discharge, prev_last_hour_seen)
             return
 
         # --- block_discharge ---
@@ -223,44 +209,22 @@ class BatteryManager:
             phase = "out-of-window"
         self._log_transitions(prev_block_discharge, reason=phase)
         self._maybe_log_snapshot(state, exported_energy_wh, phase=phase)
-        self._maybe_save(prev_block_discharge, prev_last_hour_seen)
 
-    async def async_restore(self) -> None:
-        """Wywołać RAZ przed pierwszym update() w async_setup_entry."""
-        if not self._store:
-            return
-        data = await self._store.async_load()
-        if not data:
-            return
+    def snapshot(self) -> dict[str, Any]:
+        """Pure snapshot stanu — używane przez application service do persistence."""
+        return {
+            "block_discharge": self.should_block_battery_discharge,
+            "last_hour_seen": self._last_hour_seen,
+        }
+
+    def restore(self, data: dict[str, Any]) -> None:
+        """Pure restore z dict — używane przez application service przy starcie."""
         self.should_block_battery_discharge = data.get("block_discharge", False)
         self._last_hour_seen = data.get("last_hour_seen")
         _LOGGER.info(
             "BatteryManager restored: block_discharge=%s last_hour=%s",
             self.should_block_battery_discharge,
             self._last_hour_seen,
-        )
-
-    def _maybe_save(
-        self,
-        prev_block_discharge: bool,
-        prev_last_hour_seen: int | None,
-    ) -> None:
-        """Persist state on every change (no throttle — flapping rzadkie, write tani)."""
-        if not self._store or not self._hass:
-            return
-        if (
-            prev_block_discharge == self.should_block_battery_discharge
-            and prev_last_hour_seen == self._last_hour_seen
-        ):
-            return
-        self._hass.async_create_task(self._async_save())
-
-    async def _async_save(self) -> None:
-        await self._store.async_save(
-            {
-                "block_discharge": self.should_block_battery_discharge,
-                "last_hour_seen": self._last_hour_seen,
-            }
         )
 
     def _maybe_log_snapshot(

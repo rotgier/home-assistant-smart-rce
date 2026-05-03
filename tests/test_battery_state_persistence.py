@@ -1,10 +1,11 @@
-"""Tests for BatteryManager state persistence (HA Storage helper)."""
+"""Tests for BatteryStatePersistence (application service in adapter)."""
 
 import contextlib
 from datetime import datetime, time
 from unittest.mock import AsyncMock, MagicMock
 
-from custom_components.smart_rce.domain import battery as battery_module
+from custom_components.smart_rce import adapter as adapter_module
+from custom_components.smart_rce.adapter import BatteryStatePersistence
 from custom_components.smart_rce.domain.battery import BatteryManager
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE
@@ -41,30 +42,37 @@ def mock_store(monkeypatch):
     store = MagicMock()
     store.async_save = AsyncMock()
     store.async_load = AsyncMock(return_value=None)
-    monkeypatch.setattr(battery_module, "Store", lambda *args, **kwargs: store)
+    monkeypatch.setattr(adapter_module, "Store", lambda *args, **kwargs: store)
     return store
 
 
 @pytest.fixture
 def mock_hass():
-    """Minimal HA stub — captures async_create_task targets."""
-    hass = MagicMock()
+    """Minimal HA stub."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_entry():
+    """Minimal entry stub — captures async_create_task targets and drains."""
+    entry = MagicMock()
     captured: list = []
 
-    def capture(coro):
+    def capture(_hass, coro, name=None):  # signature: (hass, target, name=...)
         captured.append(coro)
-        # Drain coroutine immediately so AsyncMock awaits register the call
         with contextlib.suppress(StopIteration):
             coro.send(None)
 
-    hass.async_create_task = MagicMock(side_effect=capture)
-    hass._captured = captured
-    return hass
+    entry.async_create_task = MagicMock(side_effect=capture)
+    entry._captured = captured
+    return entry
 
 
 @pytest.mark.asyncio
-async def test_save_on_state_change(mock_hass, mock_store):
-    mgr = BatteryManager(hass=mock_hass)
+async def test_save_on_state_change(mock_hass, mock_entry, mock_store):
+    mgr = BatteryManager()
+    persistence = BatteryStatePersistence(mock_hass, mock_entry, mgr)
+    await persistence.async_restore()  # initial snapshot capture
 
     # Trigger state change: afternoon-dynamic surplus → block_discharge=True
     mgr.update(
@@ -75,6 +83,7 @@ async def test_save_on_state_change(mock_hass, mock_store):
             exported_energy_hourly=0.5,
         )
     )
+    persistence.save_if_changed()
 
     assert mgr.should_block_battery_discharge is True
     mock_store.async_save.assert_called_once()
@@ -86,8 +95,11 @@ async def test_save_on_state_change(mock_hass, mock_store):
 
 
 @pytest.mark.asyncio
-async def test_no_save_when_state_unchanged(mock_hass, mock_store):
-    mgr = BatteryManager(hass=mock_hass)
+async def test_no_save_when_state_unchanged(mock_hass, mock_entry, mock_store):
+    mgr = BatteryManager()
+    persistence = BatteryStatePersistence(mock_hass, mock_entry, mgr)
+    await persistence.async_restore()
+
     # First update — sets block_discharge=True (state change)
     mgr.update(
         _state(
@@ -97,6 +109,7 @@ async def test_no_save_when_state_unchanged(mock_hass, mock_store):
             exported_energy_hourly=0.5,
         )
     )
+    persistence.save_if_changed()
     mock_store.async_save.reset_mock()
 
     # Second update with same conditions — no state change
@@ -108,39 +121,41 @@ async def test_no_save_when_state_unchanged(mock_hass, mock_store):
             exported_energy_hourly=0.5,
         )
     )
+    persistence.save_if_changed()
 
     mock_store.async_save.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_restore_loads_state(mock_hass, mock_store):
+async def test_restore_loads_state(mock_hass, mock_entry, mock_store):
     mock_store.async_load.return_value = {
         "block_discharge": True,
         "last_hour_seen": 8,
     }
-    mgr = BatteryManager(hass=mock_hass)
+    mgr = BatteryManager()
+    persistence = BatteryStatePersistence(mock_hass, mock_entry, mgr)
 
-    await mgr.async_restore()
+    await persistence.async_restore()
 
     assert mgr.should_block_battery_discharge is True
     assert mgr._last_hour_seen == 8
 
 
 @pytest.mark.asyncio
-async def test_restore_with_no_data_keeps_defaults(mock_hass, mock_store):
+async def test_restore_with_no_data_keeps_defaults(mock_hass, mock_entry, mock_store):
     mock_store.async_load.return_value = None
-    mgr = BatteryManager(hass=mock_hass)
+    mgr = BatteryManager()
+    persistence = BatteryStatePersistence(mock_hass, mock_entry, mgr)
 
-    await mgr.async_restore()
+    await persistence.async_restore()
 
     assert mgr.should_block_battery_discharge is False
     assert mgr._last_hour_seen is None
 
 
-@pytest.mark.asyncio
-async def test_no_store_when_hass_missing():
-    """Bez hass — manager działa, save no-op."""
-    mgr = BatteryManager(hass=None)
+def test_battery_manager_pure_no_hass_arg():
+    """Domain BatteryManager nie przyjmuje hass — pure domain."""
+    mgr = BatteryManager()
     mgr.update(
         _state(
             now=_at(14, 0),
@@ -149,5 +164,18 @@ async def test_no_store_when_hass_missing():
             exported_energy_hourly=0.5,
         )
     )
-    # No exception, no store
-    assert mgr._store is None
+    assert mgr.should_block_battery_discharge is True
+
+
+def test_snapshot_returns_current_state():
+    mgr = BatteryManager()
+    mgr.should_block_battery_discharge = True
+    mgr._last_hour_seen = 7
+    assert mgr.snapshot() == {"block_discharge": True, "last_hour_seen": 7}
+
+
+def test_restore_applies_data_to_manager():
+    mgr = BatteryManager()
+    mgr.restore({"block_discharge": True, "last_hour_seen": 8})
+    assert mgr.should_block_battery_discharge is True
+    assert mgr._last_hour_seen == 8

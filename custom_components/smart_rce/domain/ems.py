@@ -15,7 +15,6 @@ from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
-from homeassistant.core import HomeAssistant
 
 type CALLBACK_TYPE = Callable[[], None]
 
@@ -29,14 +28,14 @@ SHIFT_EARLIER_THRESHOLD: Final[float] = 40.0
 
 
 class Ems:
-    def __init__(self, hass: HomeAssistant | None = None) -> None:
+    def __init__(self) -> None:
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._ha: InputState = None
         self.today: EmsDayData = EmsDayData.empty()
         self.tomorrow: EmsDayData = EmsDayData.empty()
         self.rce_data: RceData = None
         self.current_price: float = None
-        self.battery: BatteryManager = BatteryManager(hass=hass)
+        self.battery: BatteryManager = BatteryManager()
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
         self.grid_export: GridExportManager = GridExportManager()
 
