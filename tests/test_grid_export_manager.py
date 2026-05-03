@@ -1120,8 +1120,13 @@ class TestEmsOverride:
         assert mgr.recommended_ems_mode == "auto"
         assert "ems_allow_discharge_override" in mgr.last_decision_reason
 
-    def test_override_does_not_block_positive_entry(self):
-        """POSITIVE entry pozwolony nawet z override."""
+    def test_override_blocks_positive_entry(self):
+        """POSITIVE entry zablokowany przez override (parity z battery + negative).
+
+        User wymusza discharge przez ems_allow_discharge_override → smart_rce
+        nie ingeruje, nawet gdy hourly export pozytywny (DISCHARGE_BATTERY w
+        toku → naturalnie eksport rośnie, ale to intencyjne).
+        """
         mgr = GridExportManager()
         mgr.update(
             _state(
@@ -1129,8 +1134,25 @@ class TestEmsOverride:
                 ems_allow_discharge_override=True,
             )
         )
+        assert mgr.intervention_active is False
+        assert mgr.recommended_ems_mode == "auto"
+        assert "ems_allow_discharge_override" in mgr.last_decision_reason
+
+    def test_override_during_active_positive_exits(self):
+        """Override aktywuje się gdy POSITIVE intervention active → exit."""
+        mgr = GridExportManager()
+        mgr.update(_state(exported_energy_hourly=0.10))
         assert mgr.intervention_active is True
         assert mgr.intervention_direction is InterventionDirection.POSITIVE
+        # Override on
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                ems_allow_discharge_override=True,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert "ems_allow_discharge_override" in mgr.last_decision_reason
 
     def test_override_during_active_negative_exits(self):
         """Override aktywuje się gdy NEGATIVE intervention active → exit."""

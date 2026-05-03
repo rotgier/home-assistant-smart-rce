@@ -134,7 +134,14 @@ class PositiveStrategy:
 
         Pre-charge window blokuje POSITIVE — BatteryManager rządzi.
         NEGATIVE może działać w pre_charge (osobna strategia).
+
+        EMS override (`ems_allow_discharge_override=True`) blokuje POSITIVE — user
+        wymusza discharge (np. Battery Discharge Max), absorpcja eksportu do baterii
+        przez CHARGE_BATTERY przerwałaby intencjonalne rozładowanie. Parity z
+        battery.py + grid_export_negative.py — wszystkie moduły EMS stoją z boku.
         """
+        if state.ems_allow_discharge_override is True:
+            return "ems_allow_discharge_override"
         if cls._is_in_pre_charge_window(state):
             return "in_pre_charge_window"
         if state.exported_energy_hourly <= cls.BALANCE_GATE_KWH:
@@ -154,7 +161,12 @@ class PositiveStrategy:
 
     @classmethod
     def exit_reason(cls, state: InputState) -> str | None:
-        """Reason if exit fires, else None (continue)."""
+        """Reason if exit fires, else None (continue).
+
+        EMS override aktywne w trakcie POSITIVE → exit (parity z negative).
+        """
+        if state.ems_allow_discharge_override is True:
+            return "ems_allow_discharge_override"
         if cls._is_in_pre_charge_window(state):
             return "in_pre_charge_window"
         if state.exported_energy_hourly < cls.EXIT_BALANCE_KWH:
