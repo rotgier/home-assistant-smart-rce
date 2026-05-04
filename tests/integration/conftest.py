@@ -168,7 +168,7 @@ SMART_RCE_DEFAULTS: dict[str, str] = {
     "sensor.pv_power_avg_2_minutes": "0.0",
     "select.goodwe_ems_mode": "auto",
     "binary_sensor.ems_other_automation_active_this_hour": "off",
-    "input_select.smart_rce_grid_export_strategy_mode": "AUTO",
+    "input_select.smart_rce_grid_export_strategy_mode": "charge_adaptive",
 }
 
 
@@ -176,13 +176,16 @@ SMART_RCE_DEFAULTS: dict[str, str] = {
 def set_smart_rce_inputs(hass: HomeAssistant):
     """Set defaults + overrides dla wszystkich smart_rce inputs.
 
+    Argument `overrides` to dict (entity_id mają kropki, więc nie kwargs):
+        set_smart_rce_inputs({"sensor.battery_state_of_charge": "55.0"})
+
     Smart_rce listenuje 21 input entities przez `async_track_state_change_event`.
-    Setup MUSI być wywołany PRZED `init_integration(hass)` żeby `update_input_state`
-    znalazł stany.
+    Setup MUSI być wywołany PRZED `init_integration(hass)` żeby
+    `update_input_state` znalazł stany.
     """
 
-    def _set(**overrides: str) -> None:
-        for entity_id, value in {**SMART_RCE_DEFAULTS, **overrides}.items():
+    def _set(overrides: dict[str, str] | None = None) -> None:
+        for entity_id, value in {**SMART_RCE_DEFAULTS, **(overrides or {})}.items():
             hass.states.async_set(entity_id, value)
 
     return _set
