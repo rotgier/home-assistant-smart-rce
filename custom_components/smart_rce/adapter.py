@@ -1,12 +1,13 @@
 """Adapter from Hass to Domain."""
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime, time
 import logging
 from typing import Final
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_STARTED
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import (
     CoreState,
     EventStateChangedData,
@@ -282,53 +283,84 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
 
 GOODWE_EMS_MODE_SELECT = "select.goodwe_ems_mode"
 GOODWE_EMS_POWER_LIMIT_NUMBER = "number.goodwe_ems_power_limit"
-GRID_EXPORT_RECOMMENDED_MODE_SENSOR = "sensor.ems_grid_export_recommended_ems_mode"
-GRID_EXPORT_RECOMMENDED_XSET_SENSOR = "sensor.ems_grid_export_recommended_xset"
 
 
-def listen_for_grid_export_recommendations(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> None:
-    """Apply Goodwe EMS mode/Xset based on smart_rce GridExportManager outputs.
+class GridExportActuator:
+    """Apply Goodwe EMS recommendations as fire-and-forget background tasks.
 
-    Nasłuchuje na zmiany sensorów `sensor.ems_grid_export_recommended_ems_mode`
-    i `sensor.ems_grid_export_recommended_xset`. Gdy któryś się zmieni, ustawia
-    odpowiednio `select.goodwe_ems_mode` i `number.goodwe_ems_power_limit`.
+    Czyta `ems.grid_export.recommended_*` IN-MEMORY (bez round-trip przez
+    output sensors). Rejestrowany przez `ems.async_add_listener(apply_if_changed)`
+    — odpala się po każdym `ems.update_state` (state_changed / update_hourly).
 
-    Idempotent: śledzi `last_mode/last_xset` i pomija no-op calls.
-    Order: xset first (jeśli applicable), potem mode — żeby nowy mode od razu
-    używał aktualnego xset (xset jest ignorowany w trybach AUTO/STANDBY ale
-    set_value nieszkodliwy).
+    Wzorzec:
+    1. `@callback apply_if_changed` (sync) — spawn fire-and-forget background
+       task. Brak dedup tutaj — task spawn jest tani (eager_start=True +
+       uncontested asyncio.Lock.acquire = no yield, fast-path skip task
+       registration w config_entries.py:1383-1388).
+    2. `_dispatch` (async) — `async with lock` → re-read in-memory →
+       dedup vs `_last_applied` → `scene.apply`.
+
+    Lock daje:
+    - **Modbus serialization** — żaden wire interleave między concurrent
+      scene.apply calls (Goodwe lib może mieć per-connection lock, ale
+      ordering z naszej perspektywy niezdefiniowany bez tego).
+    - **Coalescing** — burst N event'ów spawnuje N tasków; lock + re-read
+      zostawia 1 actual scene.apply (vs N bez locka).
+
+    `entry.async_create_background_task` — task auto-cancels przy entry
+    unload + shutdown stage 2. Modbus mid-write przerwany jest OK
+    (hardware utrzyma prev state).
     """
-    last_mode: str | None = None
-    last_xset: str | None = None  # raw state string ("None" lub liczba)
 
-    async def _apply(mode: str, xset: str | None) -> None:
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, ems: Ems) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._ems = ems
+        self._lock = asyncio.Lock()
+        # (mode, xset) — ostatnio zaaplikowana para; None = nigdy.
+        self._last_applied: tuple[str, int | None] | None = None
+
+    @callback
+    def apply_if_changed(self) -> None:
+        """Spawn fire-and-forget background task (registered as ems listener)."""
+        self._entry.async_create_background_task(
+            self._hass,
+            self._dispatch(),
+            name="smart_rce_grid_export_apply",
+        )
+
+    async def _dispatch(self) -> None:
+        async with self._lock:
+            # Re-read in-memory INSIDE locka — między schedule a acquire
+            # mogły dojść kolejne event'y; używamy najświeższych wartości.
+            mode = self._ems.grid_export.recommended_ems_mode
+            xset = self._ems.grid_export.recommended_xset
+            target = (mode, xset)
+            if target == self._last_applied:
+                return  # coalesce: same as last apply
+            if mode is None:
+                return  # invalid, skip without caching
+            self._last_applied = target
+            await self._apply_scene(mode, xset)
+
+    async def _apply_scene(self, mode: str, xset: int | None) -> None:
+        # scene.apply wymaga state jako string (homeassistant/scene.py:58
+        # `_convert_states` raises na non-string). number/reproduce_state.py:24
+        # parsuje przez float(state.state).
+        entities: dict[str, str] = {GOODWE_EMS_MODE_SELECT: mode}
+        if xset is not None and xset >= 0:
+            entities[GOODWE_EMS_POWER_LIMIT_NUMBER] = str(xset)
         try:
-            # xset nie jest "None"/"unknown" → set_value
-            if xset is not None and xset not in ("unknown", "unavailable"):
-                try:
-                    xset_int = int(float(xset))
-                except (ValueError, TypeError):
-                    xset_int = None
-                if xset_int is not None and xset_int >= 0:
-                    await hass.services.async_call(
-                        "number",
-                        "set_value",
-                        {
-                            ATTR_ENTITY_ID: GOODWE_EMS_POWER_LIMIT_NUMBER,
-                            "value": xset_int,
-                        },
-                        blocking=True,
-                    )
-            await hass.services.async_call(
-                "select",
-                "select_option",
-                {
-                    ATTR_ENTITY_ID: GOODWE_EMS_MODE_SELECT,
-                    "option": mode,
-                },
+            await self._hass.services.async_call(
+                "scene",
+                "apply",
+                {"entities": entities},
                 blocking=True,
+            )
+            _LOGGER.info(
+                "GridExportActuator applied mode=%s xset=%s",
+                mode,
+                xset,
             )
         except Exception:
             _LOGGER.exception(
@@ -336,37 +368,6 @@ def listen_for_grid_export_recommendations(
                 mode,
                 xset,
             )
-
-    async def _on_change(event: Event[EventStateChangedData]) -> None:
-        nonlocal last_mode, last_xset
-        mode_state = hass.states.get(GRID_EXPORT_RECOMMENDED_MODE_SENSOR)
-        xset_state = hass.states.get(GRID_EXPORT_RECOMMENDED_XSET_SENSOR)
-        if mode_state is None or mode_state.state in ("unknown", "unavailable"):
-            return
-        mode = mode_state.state
-        xset = xset_state.state if xset_state else None
-        if mode == last_mode and xset == last_xset:
-            return
-        last_mode, last_xset = mode, xset
-        await _apply(mode, xset)
-
-    @callback
-    def hass_started(_=Event) -> None:
-        entry.async_on_unload(
-            async_track_state_change_event(
-                hass,
-                [
-                    GRID_EXPORT_RECOMMENDED_MODE_SENSOR,
-                    GRID_EXPORT_RECOMMENDED_XSET_SENSOR,
-                ],
-                _on_change,
-            )
-        )
-
-    if hass.state == CoreState.running:
-        hass_started()
-    else:
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hass_started)
 
 
 async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
@@ -378,6 +379,12 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     battery_persistence = BatteryStatePersistence(hass, entry, ems.battery)
     await battery_persistence.async_restore()
     ems.async_add_listener(battery_persistence.save_if_changed)
+
+    # Aktuator Goodwe EMS — czyta `ems.grid_export.recommended_*` in-memory
+    # po każdym update_state (state_changed / update_hourly), dispatcuje
+    # `scene.apply` jako fire-and-forget background task.
+    actuator = GridExportActuator(hass, entry, ems)
+    ems.async_add_listener(actuator.apply_if_changed)
 
     @callback
     def update_hourly(now: datetime) -> None:
@@ -398,6 +405,5 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     update_hourly(now_local())
 
     listen_for_state_changes(hass, entry, ems)
-    listen_for_grid_export_recommendations(hass, entry)
 
     return ems
