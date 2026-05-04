@@ -869,3 +869,34 @@ class TestDefensiveNoneHandling:
         )
         # afternoon-static → BatteryManager nie steruje, ustawia False
         assert mgr.should_block_battery_discharge is False
+
+
+# --- Pure snapshot/restore (DR-2 / ADR-018) ---
+
+
+def test_battery_manager_no_hass_arg():
+    """Domain BatteryManager nie przyjmuje hass — pure domain (ADR-018)."""
+    mgr = BatteryManager()
+    mgr.update(
+        _state(
+            now=_at(14, 0),
+            rce_should_hold_for_peak=False,
+            consumption_minus_pv_5_minutes=-1000.0,
+            exported_energy_hourly=0.5,
+        )
+    )
+    assert mgr.should_block_battery_discharge is True
+
+
+def test_snapshot_returns_current_state():
+    mgr = BatteryManager()
+    mgr.should_block_battery_discharge = True
+    mgr._last_hour_seen = 7
+    assert mgr.snapshot() == {"block_discharge": True, "last_hour_seen": 7}
+
+
+def test_restore_applies_data_to_manager():
+    mgr = BatteryManager()
+    mgr.restore({"block_discharge": True, "last_hour_seen": 8})
+    assert mgr.should_block_battery_discharge is True
+    assert mgr._last_hour_seen == 8

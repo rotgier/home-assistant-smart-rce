@@ -18,6 +18,17 @@ def auto_enable_custom_integrations(
 
 
 @pytest.fixture(autouse=True)
+async def hass_warsaw_timezone(hass: HomeAssistant) -> None:
+    """Wymuszaj Europe/Warsaw timezone w hass — smart_rce logic depends on it.
+
+    Bez tego `now_local()` zwraca czas w timezone runtime (UTC w CI, PDT
+    lokalnie u devów), state.now.hour się rozchodzi z hardcoded oknami
+    (pre-charge 7-8, afternoon 13-19, etc.).
+    """
+    await hass.config.async_set_time_zone("Europe/Warsaw")
+
+
+@pytest.fixture(autouse=True)
 def mock_weather_listener() -> Generator[None]:
     """Stub WeatherListenerCoordinator — testy actuator nie potrzebują weather.
 
