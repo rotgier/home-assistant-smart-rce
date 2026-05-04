@@ -77,10 +77,14 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.rce"))
     reload(import_module("custom_components.smart_rce.domain.input_state"))
     reload(import_module("custom_components.smart_rce.domain.battery"))
-    reload(import_module("custom_components.smart_rce.domain.water_heater"))
+    # grid_export PRZED water_heater — water_heater importuje InterventionDirection
+    # z grid_export. Reload water_heater pre-grid_export → top-level import
+    # zwraca OLD class → cross-module `is`/`==` identity break (`is` fail bo
+    # różny class object; `==` OK bo StrEnum value-based).
     reload(import_module("custom_components.smart_rce.domain.grid_export_positive"))
     reload(import_module("custom_components.smart_rce.domain.grid_export_negative"))
     reload(import_module("custom_components.smart_rce.domain.grid_export"))
+    reload(import_module("custom_components.smart_rce.domain.water_heater"))
     reload(import_module("custom_components.smart_rce.domain.ems"))
     reload(import_module("custom_components.smart_rce.domain"))
     reload(import_module("custom_components.smart_rce.adapter"))
