@@ -121,11 +121,8 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-clock",
         value_fn=lambda ems: (
-            round(
-                ems.rce_data.max_upcoming_peak(now_local()).price * GROSS_MULTIPLIER,
-                2,
-            )
-            if ems.rce_data and ems.rce_data.max_upcoming_peak(now_local())
+            round(ems.discharge_slots.max_upcoming_peak.price * GROSS_MULTIPLIER, 2)
+            if ems.discharge_slots.max_upcoming_peak
             else None
         ),
     ),
@@ -134,8 +131,8 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:clock-outline",
         value_fn=lambda ems: (
-            ems.rce_data.max_upcoming_peak(now_local()).datetime
-            if ems.rce_data and ems.rce_data.max_upcoming_peak(now_local())
+            ems.discharge_slots.max_upcoming_peak.datetime
+            if ems.discharge_slots.max_upcoming_peak
             else None
         ),
     ),
@@ -144,8 +141,8 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:weather-sunset-up",
         value_fn=lambda ems: (
-            ems.rce_data.best_morning_discharge_slot(now_local()).datetime
-            if ems.rce_data and ems.rce_data.best_morning_discharge_slot(now_local())
+            ems.discharge_slots.best_morning_discharge_slot.datetime
+            if ems.discharge_slots.best_morning_discharge_slot
             else None
         ),
     ),
@@ -156,11 +153,11 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         icon="mdi:cash-clock",
         value_fn=lambda ems: (
             round(
-                ems.rce_data.best_morning_discharge_slot(now_local()).price
+                ems.discharge_slots.best_morning_discharge_slot.price
                 * GROSS_MULTIPLIER,
                 2,
             )
-            if ems.rce_data and ems.rce_data.best_morning_discharge_slot(now_local())
+            if ems.discharge_slots.best_morning_discharge_slot
             else None
         ),
     ),
@@ -701,7 +698,6 @@ class WeatherForecastHistorySensor(RestoreSensor):
     @callback
     def _handle_weather_update(self) -> None:
         """Handle weather forecast update."""
-        from homeassistant.util.dt import now as now_local
 
         now = now_local()
         today = now.date()

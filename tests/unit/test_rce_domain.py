@@ -1,13 +1,12 @@
-"""Tests for RCE domain logic (best_morning_discharge_slot, max_upcoming_peak)."""
+"""Tests for discharge_slots domain logic (best_morning_discharge_slot, max_upcoming_peak)."""
 
 from datetime import datetime
 
-from custom_components.smart_rce.domain.rce import (
+from custom_components.smart_rce.domain.discharge_slots import (
     MORNING_DISCHARGE_TIE_BREAK_TOLERANCE_PLN_MWH_GROSS,
-    TIMEZONE,
-    RceData,
-    RceDayPrices,
+    best_morning_discharge_slot,
 )
+from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
 import pytest
 
 
@@ -49,7 +48,7 @@ def now_midnight() -> datetime:
 def test_picks_single_peak_when_others_far_below(now_midnight):
     """Brak near-peak alternatyw → wybiera najwyższy slot, niezależnie od czasu."""
     data = _data([_slot(5, 400), _slot(6, 600), _slot(7, 400)])
-    best = data.best_morning_discharge_slot(now_midnight)
+    best = best_morning_discharge_slot(data, now_midnight)
     assert best is not None
     assert best.datetime.hour == 6
     assert best.price == 600
@@ -58,7 +57,7 @@ def test_picks_single_peak_when_others_far_below(now_midnight):
 def test_picks_latest_when_all_within_tolerance(now_midnight):
     """Wszystkie sloty w tolerancji od peaku → wybiera najpóźniejszy."""
     data = _data([_slot(5, 500), _slot(6, 510), _slot(7, 505)])
-    best = data.best_morning_discharge_slot(now_midnight)
+    best = best_morning_discharge_slot(data, now_midnight)
     assert best is not None
     assert best.datetime.hour == 7
     assert best.price == 505
@@ -70,7 +69,7 @@ def test_excludes_slot_outside_tolerance(now_midnight):
     peak = 600.0
     just_outside = peak - tol_net - 1.0  # 1 PLN/MWh poza tolerance
     data = _data([_slot(5, just_outside), _slot(6, peak), _slot(7, just_outside)])
-    best = data.best_morning_discharge_slot(now_midnight)
+    best = best_morning_discharge_slot(data, now_midnight)
     assert best is not None
     assert best.datetime.hour == 6  # peak wins, 7:00 nie kwalifikuje się
 
@@ -78,7 +77,7 @@ def test_excludes_slot_outside_tolerance(now_midnight):
 def test_picks_latest_when_all_equal(now_midnight):
     """Identyczne ceny — original tie-break (najpóźniejszy) zachowany."""
     data = _data([_slot(5, 500), _slot(6, 500), _slot(7, 500)])
-    best = data.best_morning_discharge_slot(now_midnight)
+    best = best_morning_discharge_slot(data, now_midnight)
     assert best is not None
     assert best.datetime.hour == 7
 
@@ -88,7 +87,7 @@ def test_picks_latest_within_tolerance_when_peak_is_earlier(now_midnight):
     tol_net = MORNING_DISCHARGE_TIE_BREAK_TOLERANCE_PLN_MWH_GROSS / 1.23
     inside = 600.0 - tol_net + 0.5  # tuż w tolerancji
     data = _data([_slot(5, 600), _slot(6, inside), _slot(7, 400)])
-    best = data.best_morning_discharge_slot(now_midnight)
+    best = best_morning_discharge_slot(data, now_midnight)
     assert best is not None
     assert best.datetime.hour == 6
 
@@ -97,7 +96,7 @@ def test_returns_none_when_all_slots_past(now_midnight):
     """Now > MORNING_DISCHARGE_END_HOUR i tomorrow=None → None."""
     data = _data([_slot(5, 500), _slot(6, 510), _slot(7, 505)])
     after_window = datetime(2026, 4, 16, 9, 0, tzinfo=TIMEZONE)
-    assert data.best_morning_discharge_slot(after_window) is None
+    assert best_morning_discharge_slot(data, after_window) is None
 
 
 def test_uses_tomorrow_when_today_window_past(now_midnight):
@@ -110,7 +109,7 @@ def test_uses_tomorrow_when_today_window_past(now_midnight):
     ]
     data = _data(today_prices, tomorrow_prices)
     after_window = datetime(2026, 4, 16, 12, 0, tzinfo=TIMEZONE)
-    best = data.best_morning_discharge_slot(after_window)
+    best = best_morning_discharge_slot(data, after_window)
     assert best is not None
     assert best.datetime.day == 17
     # tomorrow: 700, 720, 715 — peak 720, tolerance ~16.26, 715 i 700 → 715 in, 700 out

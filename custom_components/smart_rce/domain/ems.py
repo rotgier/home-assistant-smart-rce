@@ -8,6 +8,7 @@ import logging
 
 from custom_components.smart_rce.domain.battery import BatteryManager
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots
+from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import RceData, RceDayPrices
@@ -26,6 +27,7 @@ class Ems:
         # wejściowych. Promote z prywatnego `_ha` (unused) na publiczny.
         self.last_input_state: InputState | None = None
         self.charge_slots: ChargeSlots = ChargeSlots()
+        self.discharge_slots: DischargeSlots = DischargeSlots()
         self.rce_data: RceData = None
         self.current_price: float = None
         self.battery: BatteryManager = BatteryManager()
@@ -51,6 +53,7 @@ class Ems:
 
     def update_hourly(self, now: datetime) -> None:
         self.charge_slots.rotate_if_day_changed(now)
+        self.discharge_slots.update(self.rce_data, now)
         if self.rce_data and self.rce_data.today and self.rce_data.today.prices:
             self.current_price = self.rce_data.today.prices[now.hour]["price"]
             self._async_update_listeners()
