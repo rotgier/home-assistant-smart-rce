@@ -64,10 +64,23 @@ class GridExportActuator:
         )
 
     def _read_current_goodwe_state(self) -> tuple[str, int | None] | None:
-        """Read current Goodwe (mode, xset) z hass.states dla _last_applied init."""
+        """Read current Goodwe (mode, xset) z hass.states dla _last_applied init.
+
+        W trybie 'auto' Goodwe ignoruje xset (rejestr 47512 nieużywany) —
+        normalizujemy xset do None, żeby pasowało do domain semantyki
+        (`recommended_xset=None` gdy `recommended_ems_mode='auto'`).
+        Bez tego: po poprzedniej intervention xset hardware zostaje na
+        ostatniej wartości (np. 6000), a recommendation auto+None →
+        tuple differ → spurious apply.
+        """
         mode_state = self._hass.states.get(GOODWE_EMS_MODE_SELECT)
         if mode_state is None or mode_state.state in ("unknown", "unavailable"):
             return None
+        mode = mode_state.state
+
+        if mode == "auto":
+            # Domain semantyka: auto mode = xset N/A. Ignorujemy raw hardware.
+            return (mode, None)
 
         xset: int | None = None
         xset_state = self._hass.states.get(GOODWE_EMS_POWER_LIMIT_NUMBER)
@@ -78,7 +91,7 @@ class GridExportActuator:
             with contextlib.suppress(ValueError, TypeError):
                 xset = int(float(xset_state.state))
 
-        return (mode_state.state, xset)
+        return (mode, xset)
 
     @callback
     def apply_if_changed(self) -> None:
