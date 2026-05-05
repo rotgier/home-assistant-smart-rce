@@ -15,10 +15,16 @@ def _state(
     battery_charge_toggle_on: bool | None = None,
     depth_of_discharge: float | None = None,
     battery_charge_limit: float = 18.0,
-    consumption_minus_pv_5_minutes: float | None = None,
+    pv_available_5min: float | None = None,
     rce_should_hold_for_peak: bool | None = True,
     is_workday: bool | None = True,
 ) -> InputState:
+    """Build InputState dla testów BatteryManager.
+
+    `pv_available_5min` to surplus PV (W) — analog `pv_available` z 2-min,
+    czytelniejszy niż raw `consumption_minus_pv_5_minutes` (negative=surplus).
+    Konwertujemy do InputState field przez negację.
+    """
     return InputState(
         water_heater_big_is_on=False,
         water_heater_small_is_on=False,
@@ -26,7 +32,9 @@ def _state(
         battery_charge_limit=battery_charge_limit,
         battery_power_2_minutes=0.0,
         consumption_minus_pv_2_minutes=0.0,
-        consumption_minus_pv_5_minutes=consumption_minus_pv_5_minutes,
+        consumption_minus_pv_5_minutes=(
+            -pv_available_5min if pv_available_5min is not None else None
+        ),
         exported_energy_hourly=exported_energy_hourly,
         heater_mode="BALANCED",
         depth_of_discharge=depth_of_discharge,
@@ -242,7 +250,7 @@ class TestPostChargeWindowDetection:
             _state(
                 now=_at(11, 30),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=0.0,  # dead zone default
+                pv_available_5min=0.0,  # dead zone default
             )
         )
         # In post-charge, _last_hour_seen reset to None
@@ -255,7 +263,7 @@ class TestPostChargeWindowDetection:
             _state(
                 now=_at(13, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-1000.0,  # would trigger set
+                pv_available_5min=1000.0,  # would trigger set
             )
         )
         # 13:00 poza post-charge window
@@ -268,7 +276,7 @@ class TestPostChargeWindowDetection:
             _state(
                 now=_at(9, 30),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 exported_energy_hourly=0.0,  # hour balance zero — no pre-charge set
             )
         )
@@ -292,22 +300,22 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(11, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-600.0,  # -600W surplus
+                pv_available_5min=600.0,  # surplus > 500W threshold
             )
         )
         assert mgr.should_block_battery_discharge is True
 
     def test_at_surplus_boundary(self):
-        """avg_5min = -500 not < -500 → stays."""
+        """pv_available_5min = 500 not > 500 → stays."""
         mgr = BatteryManager()
         mgr.update(
             _state(
                 now=_at(11, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-500.0,
+                pv_available_5min=500.0,
             )
         )
-        # -500 is NOT < -500 → no set → stays False (initial)
+        # 500 is NOT > 500 → no set → stays False (initial)
         assert mgr.should_block_battery_discharge is False
 
     def test_deficit_sustained_resets(self):
@@ -317,7 +325,7 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(11, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=100.0,  # deficit
+                pv_available_5min=-100.0,  # deficit
             )
         )
         assert mgr.should_block_battery_discharge is False
@@ -330,10 +338,10 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(11, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=0.0,
+                pv_available_5min=0.0,
             )
         )
-        # 0 is NOT > 0 → dead zone → stays True
+        # 0 is NOT < 0 → dead zone → stays True
         assert mgr.should_block_battery_discharge is True
 
     def test_dead_zone_keeps_true(self):
@@ -343,7 +351,7 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(11, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-300.0,  # -300W in dead zone
+                pv_available_5min=300.0,  # in dead zone 0..500
             )
         )
         assert mgr.should_block_battery_discharge is True
@@ -355,7 +363,7 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(11, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-200.0,  # dead zone
+                pv_available_5min=200.0,  # dead zone
             )
         )
         assert mgr.should_block_battery_discharge is False
@@ -368,7 +376,7 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(11, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=None,
+                pv_available_5min=None,
             )
         )
         assert mgr.should_block_battery_discharge is False
@@ -380,7 +388,7 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(11, 55),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-700.0,
+                pv_available_5min=700.0,
             )
         )
         assert mgr.should_block_battery_discharge is True
@@ -390,7 +398,7 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(12, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-600.0,
+                pv_available_5min=600.0,
             )
         )
         assert mgr.should_block_battery_discharge is True  # nie reset
@@ -406,7 +414,7 @@ class TestPostChargeHysteresis5MinAvg:
                 now=_at(9, 30),
                 start_charge_hour_override=time(10, 0),
                 exported_energy_hourly=0.0,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
             )
         )
         assert mgr._last_hour_seen == 9
@@ -415,11 +423,11 @@ class TestPostChargeHysteresis5MinAvg:
             _state(
                 now=_at(10, 0),
                 start_charge_hour_override=time(10, 0),
-                consumption_minus_pv_5_minutes=-1000.0,  # surplus
+                pv_available_5min=1000.0,  # surplus
             )
         )
         assert mgr._last_hour_seen is None
-        assert mgr.should_block_battery_discharge is True  # avg_5min < -500 set
+        assert mgr.should_block_battery_discharge is True  # pv_available_5min > 500 set
 
 
 class TestAfternoonWindowDetection:
@@ -450,7 +458,7 @@ class TestAfternoonWindowDetection:
             _state(
                 now=_at(18, 59),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-1000.0,  # surplus
+                pv_available_5min=1000.0,  # surplus
             )
         )
         # afternoon-dynamic — instant_surplus → block_discharge=True
@@ -463,7 +471,7 @@ class TestAfternoonWindowDetection:
             _state(
                 now=_at(19, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
             )
         )
         # poza afternoon — block_discharge reset to False
@@ -479,7 +487,7 @@ class TestAfternoonStaticMode:
             _state(
                 now=_at(15, 0),
                 rce_should_hold_for_peak=True,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 exported_energy_hourly=0.500,  # 500 Wh exported
             )
         )
@@ -492,7 +500,7 @@ class TestAfternoonStaticMode:
             _state(
                 now=_at(15, 0),
                 rce_should_hold_for_peak=True,
-                consumption_minus_pv_5_minutes=+500.0,  # deficit
+                pv_available_5min=-500.0,  # deficit
             )
         )
         assert mgr.should_block_battery_discharge is False
@@ -502,82 +510,82 @@ class TestAfternoonDynamicMode:
     """Low-price (hold=False) — BatteryManager dynamic na avg_5min OR exported_wh."""
 
     def test_instant_surplus_sets_regardless_of_export(self):
-        # avg_5min < -500W (surplus) → SET, niezależnie od exported_wh
+        # pv_available_5min > 500W (surplus) → SET, niezależnie od exported_wh
         mgr = BatteryManager()
         mgr.update(
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-600.0,
+                pv_available_5min=600.0,
                 exported_energy_hourly=0.0,
             )
         )
         assert mgr.should_block_battery_discharge is True
 
     def test_hourly_net_export_sets_in_dead_zone(self):
-        # avg_5min w dead zone (-200W), ale exported>0 → SET
+        # pv_available_5min w dead zone (200W), ale exported>0 → SET
         mgr = BatteryManager()
         mgr.update(
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-200.0,
+                pv_available_5min=200.0,
                 exported_energy_hourly=0.200,
             )
         )
         assert mgr.should_block_battery_discharge is True
 
     def test_dead_zone_no_export_keeps_state(self):
-        # avg_5min dead zone + exported<0 + prev=False → keep False
+        # pv_available_5min dead zone + exported<0 + prev=False → keep False
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = False
         mgr.update(
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-200.0,
+                pv_available_5min=200.0,
                 exported_energy_hourly=-0.050,
             )
         )
         assert mgr.should_block_battery_discharge is False
 
     def test_dead_zone_no_export_keeps_true(self):
-        # avg_5min dead zone + exported<0 + prev=True → keep True
+        # pv_available_5min dead zone + exported<0 + prev=True → keep True
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
         mgr.update(
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-200.0,
+                pv_available_5min=200.0,
                 exported_energy_hourly=-0.050,
             )
         )
         assert mgr.should_block_battery_discharge is True
 
     def test_deficit_with_export_keeps_state(self):
-        # avg_5min deficit ALE exported_wh>0 → keep state (nie reset)
+        # pv_available_5min deficit ALE exported_wh>0 → keep state (nie reset)
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
         mgr.update(
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=+50.0,
+                pv_available_5min=-50.0,
                 exported_energy_hourly=0.200,
             )
         )
         assert mgr.should_block_battery_discharge is True
 
     def test_deficit_no_export_resets(self):
-        # avg_5min deficit AND exported<=0 → RESET (allow discharge)
+        # pv_available_5min deficit AND exported<=0 → RESET (allow discharge)
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
         mgr.update(
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=+50.0,
+                pv_available_5min=-50.0,
                 exported_energy_hourly=-0.050,
             )
         )
@@ -591,7 +599,7 @@ class TestAfternoonDynamicMode:
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=+50.0,
+                pv_available_5min=-50.0,
                 exported_energy_hourly=0.0,
             )
         )
@@ -604,7 +612,7 @@ class TestAfternoonDynamicMode:
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=None,
+                pv_available_5min=None,
                 exported_energy_hourly=0.200,
             )
         )
@@ -622,7 +630,7 @@ class TestAfternoonHoldFlagTransitions:
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=True,
-                consumption_minus_pv_5_minutes=-600.0,
+                pv_available_5min=600.0,
                 exported_energy_hourly=0.300,
             )
         )
@@ -633,7 +641,7 @@ class TestAfternoonHoldFlagTransitions:
             _state(
                 now=_at(14, 5),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-600.0,
+                pv_available_5min=600.0,
                 exported_energy_hourly=0.300,
             )
         )
@@ -646,7 +654,7 @@ class TestAfternoonHoldFlagTransitions:
             _state(
                 now=_at(14, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-600.0,
+                pv_available_5min=600.0,
             )
         )
         assert mgr.should_block_battery_discharge is True
@@ -656,7 +664,7 @@ class TestAfternoonHoldFlagTransitions:
             _state(
                 now=_at(14, 5),
                 rce_should_hold_for_peak=True,
-                consumption_minus_pv_5_minutes=-600.0,
+                pv_available_5min=600.0,
             )
         )
         assert mgr.should_block_battery_discharge is False
@@ -732,7 +740,7 @@ class TestPostChargePassthroughWeekend:
             _state(
                 now=_at(11, 30),
                 start_charge_hour_override=time(11, 0),
-                consumption_minus_pv_5_minutes=-1000.0,  # surplus
+                pv_available_5min=1000.0,  # surplus
                 is_workday=False,
             )
         )
@@ -756,7 +764,7 @@ class TestPostChargePassthroughWeekend:
             _state(
                 now=_at(11, 30),
                 start_charge_hour_override=time(11, 0),
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 is_workday=True,
             )
         )
@@ -772,7 +780,7 @@ class TestAfternoonNotAffectedByWorkday:
             _state(
                 now=_at(15, 0),
                 rce_should_hold_for_peak=False,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 is_workday=False,
             )
         )
@@ -785,7 +793,7 @@ class TestAfternoonNotAffectedByWorkday:
             _state(
                 now=_at(15, 0),
                 rce_should_hold_for_peak=True,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 is_workday=False,
             )
         )
@@ -807,7 +815,7 @@ class TestDefensiveNoneHandling:
             _state(
                 now=_at(14, 33),
                 rce_should_hold_for_peak=None,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 exported_energy_hourly=0.5,
             )
         )
@@ -820,7 +828,7 @@ class TestDefensiveNoneHandling:
             _state(
                 now=_at(14, 33),
                 rce_should_hold_for_peak=None,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 exported_energy_hourly=0.5,
             )
         )
@@ -849,7 +857,7 @@ class TestDefensiveNoneHandling:
                 now=_at(11, 30),
                 start_charge_hour_override=time(10, 0),
                 is_workday=None,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 exported_energy_hourly=0.0,
             )
         )
@@ -863,7 +871,7 @@ class TestDefensiveNoneHandling:
             _state(
                 now=_at(14, 33),
                 rce_should_hold_for_peak=True,
-                consumption_minus_pv_5_minutes=-1000.0,
+                pv_available_5min=1000.0,
                 exported_energy_hourly=0.5,
             )
         )
@@ -881,7 +889,7 @@ def test_battery_manager_no_hass_arg():
         _state(
             now=_at(14, 0),
             rce_should_hold_for_peak=False,
-            consumption_minus_pv_5_minutes=-1000.0,
+            pv_available_5min=1000.0,
             exported_energy_hourly=0.5,
         )
     )

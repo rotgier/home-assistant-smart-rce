@@ -30,7 +30,10 @@ SHIFT_EARLIER_THRESHOLD: Final[float] = 40.0
 class Ems:
     def __init__(self) -> None:
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
-        self._ha: InputState = None
+        # Last InputState — udostępniane application services (logger,
+        # diagnostic readers) które potrzebują dostępu do bieżących wartości
+        # wejściowych. Promote z prywatnego `_ha` (unused) na publiczny.
+        self.last_input_state: InputState | None = None
         self.today: EmsDayData = EmsDayData.empty()
         self.tomorrow: EmsDayData = EmsDayData.empty()
         self.rce_data: RceData = None
@@ -40,6 +43,9 @@ class Ems:
         self.grid_export: GridExportManager = GridExportManager()
 
     def update_state(self, state: InputState) -> None:
+        # Store przed managers update — listenery (logger, etc.) czytają
+        # to po `_async_update_listeners`, więc state musi być świeży.
+        self.last_input_state = state
         # battery — oblicza should_block_battery_discharge dla binary_sensor
         # (entity diagnostic). Niezależne od innych managerów po Etap 2.
         self.battery.update(state)

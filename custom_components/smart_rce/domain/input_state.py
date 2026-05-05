@@ -94,7 +94,7 @@ class InputState:
 
     @property
     def pv_available(self) -> float | None:
-        """Surplus PV ponad dom_bez_heaters (W). None gdy sensor unavailable.
+        """Surplus PV ponad dom_bez_heaters (W) — avg 2 min. None gdy sensor unavailable.
 
         Liczone jako `-consumption_minus_pv_2_minutes`:
         - dodatnie = PV > dom_bez_heaters (surplus, hourly POSITIVE side)
@@ -105,3 +105,18 @@ class InputState:
         if self.consumption_minus_pv_2_minutes is None:
             return None
         return -self.consumption_minus_pv_2_minutes
+
+    @property
+    def pv_available_5min(self) -> float | None:
+        """Surplus PV ponad dom_bez_heaters (W) — avg 5 min. None gdy unavailable.
+
+        Wariant `pv_available` z dłuższym oknem uśredniania. Używane przez
+        BatteryManager w post-charge i afternoon-dynamic dla sustained
+        trend check (eliminuje noise 2-min, np. cykl lodówki).
+
+        - dodatnie = PV > dom_bez_heaters (surplus)
+        - ujemne   = dom_bez_heaters > PV (deficit)
+        """
+        if self.consumption_minus_pv_5_minutes is None:
+            return None
+        return -self.consumption_minus_pv_5_minutes
