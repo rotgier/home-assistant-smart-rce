@@ -24,9 +24,9 @@ from homeassistant.util.dt import now as now_local
 
 from . import SmartRceConfigEntry
 from .application.ems import Ems
+from .application.pv_forecast_service import PvForecastService
 from .const import DOMAIN, GROSS_MULTIPLIER
 from .coordinator import SmartRceDataUpdateCoordinator
-from .pv_forecast_coordinator import PvForecastCoordinator
 from .weather_forecast_history import WeatherForecastHistory
 
 CURRENCY_PLN: Final = "zł"
@@ -297,7 +297,7 @@ async def async_setup_entry(
     """Add Smart RCE sensors."""
     coordinator = entry.runtime_data.rce_coordinator
     ems = entry.runtime_data.ems
-    pv_forecast = entry.runtime_data.pv_forecast_coordinator
+    pv_forecast = entry.runtime_data.pv_forecast
 
     sensors: list[SensorEntity] = [
         SmartRceSensor(coordinator, ems, description)
@@ -587,11 +587,11 @@ class PvForecastSensor(SensorEntity):
 
     def __init__(
         self,
-        pv_forecast: PvForecastCoordinator,
+        pv_forecast: PvForecastService,
         rce_coordinator: SmartRceDataUpdateCoordinator,
         name: str,
-        value_fn: Callable[[PvForecastCoordinator], float | int | None],
-        attr_fn: Callable[[PvForecastCoordinator], dict[str, Any]],
+        value_fn: Callable[[PvForecastService], float | int | None],
+        attr_fn: Callable[[PvForecastService], dict[str, Any]],
         unit: str | None = None,
     ) -> None:
         self._pv_forecast = pv_forecast

@@ -1,4 +1,12 @@
-"""PV Forecast Coordinator — orchestrates weather-adjusted PV estimates."""
+"""PvForecastService — application service orchestrating weather-adjusted PV estimates.
+
+DDD application layer (analog Ems w application/ems.py): cached state +
+event-driven recalc on Solcast/weather changes + 05:55 daily profile refresh.
+Consumes:
+- driving adapter `infrastructure/pv_forecast_loader.py` for Solcast/weather sources
+- driven adapter `infrastructure/consumption_profile_loader.py` for HA recorder LTS
+- pure domain algorytmy z `domain/pv_forecast.py` (adjust_pv_forecast_*, calculate_target_soc)
+"""
 
 from __future__ import annotations
 
@@ -13,7 +21,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .domain.pv_forecast import (
+from ..domain.pv_forecast import (
     AdjustedPvForecast,
     ConsumptionProfile,
     TargetSocResult,
@@ -21,24 +29,24 @@ from .domain.pv_forecast import (
     adjust_pv_forecast_live,
     calculate_target_soc,
 )
-from .infrastructure.consumption_profile_loader import (
+from ..infrastructure.consumption_profile_loader import (
     PREV_DAYS_COUNT,
     fetch_consumption_profiles,
 )
-from .infrastructure.pv_forecast_loader import (
+from ..infrastructure.pv_forecast_loader import (
     SOLCAST_AT_6_ENTITY,
     SOLCAST_LIVE_ENTITY,
     SOLCAST_TOMORROW_ENTITY,
     build_weather_conditions,
     read_solcast_periods,
 )
-from .weather_forecast_history import WeatherForecastHistory
-from .weather_listener import WeatherListenerCoordinator
+from ..weather_forecast_history import WeatherForecastHistory
+from ..weather_listener import WeatherListenerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class PvForecastCoordinator:
+class PvForecastService:
     """Coordinates weather-adjusted PV forecast calculation."""
 
     def __init__(

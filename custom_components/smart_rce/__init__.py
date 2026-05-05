@@ -12,10 +12,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .application.ems import Ems
+from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .ems_factory import create_ems
 from .infrastructure.rce_api import RceApi
-from .pv_forecast_coordinator import PvForecastCoordinator
 from .weather_forecast_history import WeatherForecastHistory
 from .weather_listener import WeatherListenerCoordinator
 
@@ -31,7 +31,7 @@ class SmartRceData:
     ems: Ems
     rce_coordinator: SmartRceDataUpdateCoordinator
     weather_coordinator: WeatherListenerCoordinator
-    pv_forecast_coordinator: PvForecastCoordinator
+    pv_forecast: PvForecastService
     weather_forecast_history: WeatherForecastHistory
 
 
@@ -49,9 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     weather_coordinator = WeatherListenerCoordinator(hass, entry)
 
     weather_forecast_history = WeatherForecastHistory()
-    pv_forecast_coordinator = PvForecastCoordinator(
-        hass, weather_coordinator, weather_forecast_history
-    )
+    pv_forecast = PvForecastService(hass, weather_coordinator, weather_forecast_history)
 
     await rce_coordinator.async_config_entry_first_refresh()
 
@@ -59,13 +57,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         ems,
         rce_coordinator,
         weather_coordinator,
-        pv_forecast_coordinator,
+        pv_forecast,
         weather_forecast_history,
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    await pv_forecast_coordinator.async_start()
+    await pv_forecast.async_start()
 
     return True
 
@@ -113,7 +111,7 @@ def live_reload():
             "custom_components.smart_rce.infrastructure.consumption_profile_loader"
         )
     )
-    reload(import_module("custom_components.smart_rce.pv_forecast_coordinator"))
+    reload(import_module("custom_components.smart_rce.application.pv_forecast_service"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
