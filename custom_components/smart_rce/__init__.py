@@ -87,6 +87,9 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.water_heater"))
     reload(import_module("custom_components.smart_rce.domain.ems"))
     reload(import_module("custom_components.smart_rce.domain"))
+    # state_mapper PRZED adapter — adapter importuje listen_for_state_changes
+    # z infrastructure.state_mapper.
+    reload(import_module("custom_components.smart_rce.infrastructure.state_mapper"))
     reload(import_module("custom_components.smart_rce.adapter"))
     reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
     reload(import_module("custom_components.smart_rce.weather_forecast_history"))
