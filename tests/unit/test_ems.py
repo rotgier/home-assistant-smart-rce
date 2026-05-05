@@ -2,12 +2,13 @@ import glob
 
 from custom_components.smart_rce.domain.ems import (
     MAX_CONSECUTIVE_HOURS,
-    create_csv,
     shift_earlier_if_cheap,
 )
 from custom_components.smart_rce.domain.rce import RceDayPrices
 import orjson
 import pytest
+
+from tests.unit._csv_fixture import create_csv
 
 
 @pytest.mark.parametrize(("year", "month"), [(2024, 8), (2024, 9), (2026, 4)])
