@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 import logging
-from typing import Any, Final
+from typing import Final
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
@@ -19,60 +19,25 @@ from homeassistant.util import dt as dt_util
 from .domain.pv_forecast import (
     AdjustedPvForecast,
     ConsumptionProfile,
-    SolcastPeriod,
     TargetSocResult,
-    WeatherConditionAtHour,
     adjust_pv_forecast_at6,
     adjust_pv_forecast_live,
     calculate_target_soc,
 )
+from .infrastructure.pv_forecast_loader import (
+    SOLCAST_AT_6_ENTITY,
+    SOLCAST_LIVE_ENTITY,
+    SOLCAST_TOMORROW_ENTITY,
+    build_weather_conditions,
+    read_solcast_periods,
+)
 from .weather_forecast_history import WeatherForecastHistory
 from .weather_listener import WeatherListenerCoordinator
-
-SOLCAST_AT_6_ENTITY: Final = "sensor.solcast_forecast_at_6"
-SOLCAST_LIVE_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_dzisiaj"
-SOLCAST_TOMORROW_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_jutro"
 
 CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
 PREV_DAYS_COUNT: Final = 3
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _parse_solcast_forecast(
-    forecast_attr: list[dict[str, Any]],
-) -> list[SolcastPeriod]:
-    """Parse Solcast forecast attribute into domain objects."""
-    return [
-        SolcastPeriod(
-            period_start=str(item["period_start"]),
-            pv_estimate=item["pv_estimate"],
-            pv_estimate10=item["pv_estimate10"],
-            pv_estimate90=item["pv_estimate90"],
-        )
-        for item in forecast_attr
-    ]
-
-
-def _parse_weather_conditions(
-    forecast_hourly: list[dict[str, Any]] | None,
-) -> list[WeatherConditionAtHour]:
-    """Parse WeatherListenerCoordinator.forecast_hourly into domain objects.
-
-    Returns conditions with both hour and date, to allow matching
-    against the correct day in Solcast forecast.
-    """
-    if not forecast_hourly:
-        return []
-    return [
-        WeatherConditionAtHour(
-            hour=datetime.fromisoformat(item["datetime"]).hour,
-            condition_custom=item.get("condition_custom", "cloudy"),
-            forecast_date=datetime.fromisoformat(item["datetime"]).date(),
-        )
-        for item in forecast_hourly
-        if "datetime" in item
-    ]
 
 
 class PvForecastCoordinator:
@@ -207,11 +172,13 @@ class PvForecastCoordinator:
             attr_name = "forecast"
             source = "at_6"
 
-        solcast_periods = self._read_solcast_entity(entity_id, attr_name)
+        solcast_periods = read_solcast_periods(self._hass, entity_id, attr_name)
         if not solcast_periods:
             return
 
-        weather = self._build_weather_conditions(now.date())
+        weather = build_weather_conditions(
+            self._weather_coordinator, self._weather_forecast_history, now.date()
+        )
         self.adjusted_at_6 = adjust_pv_forecast_at6(solcast_periods, weather)
         _LOGGER.debug(
             "Adjusted at_6 (source: %s): %.1f kWh (from %d periods, %d weather conditions)",
@@ -223,21 +190,19 @@ class PvForecastCoordinator:
 
     def _recalculate_live(self) -> None:
         """Recalculate weather-adjusted forecast from live Solcast."""
-        solcast_periods = self._read_solcast_entity(
-            SOLCAST_LIVE_ENTITY, "detailedForecast"
+        solcast_periods = read_solcast_periods(
+            self._hass, SOLCAST_LIVE_ENTITY, "detailedForecast"
         )
         if not solcast_periods:
             return
 
         from homeassistant.util.dt import now as now_local
 
-        today = now_local().date()
-        weather = self._build_weather_conditions(today)
-        from homeassistant.util.dt import now as now_local
-
-        self.adjusted_live = adjust_pv_forecast_live(
-            solcast_periods, weather, now_local()
+        now = now_local()
+        weather = build_weather_conditions(
+            self._weather_coordinator, self._weather_forecast_history, now.date()
         )
+        self.adjusted_live = adjust_pv_forecast_live(solcast_periods, weather, now)
         _LOGGER.debug(
             "Adjusted live: %.1f kWh (from %d periods)",
             self.adjusted_live.total_kwh,
@@ -431,19 +396,19 @@ class PvForecastCoordinator:
                                    Used after midnight rollover comparison: aligns
                                    with tomorrow's `adjusted_live` for continuity.
         """
-        solcast_periods = self._read_solcast_entity(
-            SOLCAST_TOMORROW_ENTITY, "detailedForecast"
+        solcast_periods = read_solcast_periods(
+            self._hass, SOLCAST_TOMORROW_ENTITY, "detailedForecast"
         )
         if not solcast_periods:
             return
-
-        from datetime import timedelta
 
         from homeassistant.util.dt import now as now_local
 
         now = now_local()
         tomorrow = (now + timedelta(days=1)).date()
-        weather = self._build_weather_conditions(tomorrow)
+        weather = build_weather_conditions(
+            self._weather_coordinator, self._weather_forecast_history, tomorrow
+        )
         self.adjusted_tomorrow = adjust_pv_forecast_at6(solcast_periods, weather)
         # adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
         # For tomorrow's periods (date = tomorrow), no match → all periods use
@@ -458,54 +423,6 @@ class PvForecastCoordinator:
             len(self.adjusted_tomorrow.forecast),
             len(weather),
         )
-
-    def _build_weather_conditions(
-        self, today: date | None = None
-    ) -> list[WeatherConditionAtHour]:
-        """Build weather conditions from history (past hours) + forecast (future hours).
-
-        History has conditions for hours that already passed today.
-        Forecast has conditions for upcoming hours (possibly multiple days).
-        Both have forecast_date for correct matching.
-        """
-        # From history tracker (past hours today, already "frozen")
-        history_conditions: list[WeatherConditionAtHour] = []
-        if today:
-            history_conditions = self._weather_forecast_history.get_conditions_for_date(
-                today
-            )
-
-        # From live forecast (future hours, with date filtering via forecast_date)
-        forecast_conditions = _parse_weather_conditions(
-            self._weather_coordinator.forecast_hourly
-        )
-
-        # Combine: history first, forecast overwrites (forecast is more recent for future hours)
-        combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
-        for c in history_conditions:
-            if c.forecast_date:
-                combined[(c.forecast_date, c.hour)] = c
-        for c in forecast_conditions:
-            if c.forecast_date:
-                combined[(c.forecast_date, c.hour)] = c
-
-        return list(combined.values())
-
-    def _read_solcast_entity(
-        self, entity_id: str, attr_name: str
-    ) -> list[SolcastPeriod] | None:
-        """Read Solcast forecast from HA state machine."""
-        state = self._hass.states.get(entity_id)
-        if not state:
-            _LOGGER.debug("Entity %s not found", entity_id)
-            return None
-
-        forecast_attr = state.attributes.get(attr_name)
-        if not forecast_attr:
-            _LOGGER.debug("Entity %s has no attribute %s", entity_id, attr_name)
-            return None
-
-        return _parse_solcast_forecast(forecast_attr)
 
     # --- Listener pattern (same as Ems) ---
 
