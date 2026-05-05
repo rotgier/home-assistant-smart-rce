@@ -237,9 +237,10 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
     """Register HA state_changed listener — driving adapter for ems.update_state.
 
     Każda zmiana state'u monitored entity:
-    1. Full re-read all 21 entities → InputState
-    2. Override zmiennego entity z event.new_state (świeży, jeszcze przed
-       state machine commit może być - defensive)
+    1. Fresh InputState() + full re-read 21 entities z hass.states (defensive)
+    2. Override zmienionego entity z event.new_state (state machine commit
+       poprzedza event dispatch, więc i tak ten sam value — defensive on
+       wypadek gdyby HA core kiedyś zmienił semantykę)
     3. ems.update_state(input_state) — domain orchestration
 
     Wstrzymane do `EVENT_HOMEASSISTANT_STARTED` jeśli hass nie running
@@ -249,19 +250,22 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
 
     @callback
     def state_changed(event: Event[EventStateChangedData]) -> None:
-        # Event-only update z accumulating InputState w `ems.last_input_state`.
-        # Pełen state populated przez hass_started (initial full read), potem
-        # każdy state_changed mutuje JEDNO pole z event.new_state. Zero
-        # full hass.states re-read per event — `_async_dispatch_entity_id_event_soon`
-        # gwarantuje że state machine commit poprzedza event, ale my i tak
-        # nie potrzebujemy pełnego snapshotu (mamy accumulated state).
-        state = ems.last_input_state or InputState()
+        # Defensive dual read: full re-read 21 entities z hass.states +
+        # override zmienionego entity z event.new_state. Mikro-overhead
+        # akceptowalny (~kilka μs per event), w zamian:
+        # - Fresh InputState per call — zero shared mutable state risk
+        # - Defense-in-depth przy nowym polu bez initial populate
+        # - Brak akumulacji state'u w długo żyjącym ems.last_input_state
+        # State machine commit poprzedza event dispatch, więc hass.states
+        # już zawiera new_value — override z event jest defensive
+        # (gdyby kiedyś stało się inaczej). Patrz research DR-4.
+        input_state: InputState = InputState()
+        input_state = update_input_state(hass, input_state)
         new_state = event.data["new_state"]
-        new_value = new_state.state if new_state else None
+        new_state_value = new_state.state if new_state else None
         entity_id = event.data["entity_id"]
-        HASS_STATE_MAPPER[entity_id](entity_id, state, new_value)
-        state.now = now_local()
-        ems.update_state(state)
+        HASS_STATE_MAPPER[entity_id](entity_id, input_state, new_state_value)
+        ems.update_state(input_state)
 
     @callback
     def hass_started(_=Event) -> None:

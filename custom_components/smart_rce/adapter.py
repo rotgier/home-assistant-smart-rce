@@ -25,7 +25,7 @@ from .domain.input_state import InputState
 from .infrastructure.battery_logger import BatteryManagerLogger
 from .infrastructure.battery_persistence import BatteryStatePersistence
 from .infrastructure.grid_export_actuator import GridExportActuator
-from .infrastructure.state_mapper import listen_for_state_changes
+from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,11 +59,8 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         #   na pełnej godzinie); time-dependent NEGATIVE entry threshold
         #   przesuwa się przy minucie 45 (-0.05 → 0)
         # nawet gdy żaden z entity w HASS_STATE_MAPPER się nie zmienił.
-        # Używamy accumulated state z ostatniego state_changed — fields
-        # zaktualizowane przez event listenery, nowy timestamp z now_local().
-        state = ems.last_input_state or InputState()
-        state.now = now_local()
-        ems.update_state(state)
+        input_state = update_input_state(hass, InputState())
+        ems.update_state(input_state)
 
     entry.async_on_unload(
         async_track_time_change(hass, update_hourly, minute=0, second=0)
