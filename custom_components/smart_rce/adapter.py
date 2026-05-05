@@ -24,7 +24,7 @@ from homeassistant.util.dt import now as now_local
 from .domain.battery import BatteryManager
 from .domain.ems import Ems
 from .domain.input_state import InputState
-from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
+from .infrastructure.state_mapper import listen_for_state_changes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -327,15 +327,18 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     @callback
     def update_hourly(now: datetime) -> None:
         ems.update_hourly(now)
-        # Przelicz state — godzina ma znaczenie dla:
+        # Re-evaluate state — godzina ma znaczenie dla:
         # - battery.py: okien pre/post-charge
         # - grid_export.py: hour rollover defense (intervention zostaje
         #   ograniczona do bieżącej godziny — utility_meter resetuje hourly
         #   na pełnej godzinie); time-dependent NEGATIVE entry threshold
         #   przesuwa się przy minucie 45 (-0.05 → 0)
         # nawet gdy żaden z entity w HASS_STATE_MAPPER się nie zmienił.
-        input_state = update_input_state(hass, InputState())
-        ems.update_state(input_state)
+        # Używamy accumulated state z ostatniego state_changed — fields
+        # zaktualizowane przez event listenery, nowy timestamp z now_local().
+        state = ems.last_input_state or InputState()
+        state.now = now_local()
+        ems.update_state(state)
 
     entry.async_on_unload(
         async_track_time_change(hass, update_hourly, minute=0, second=0)

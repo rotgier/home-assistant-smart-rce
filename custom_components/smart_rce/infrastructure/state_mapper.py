@@ -79,6 +79,11 @@ def map_float(entity: str, value: str) -> float | None:
 
 
 # --- per-field setters --- #
+#
+# Explicit named funkcje (nie lambdy z setattr) — `i.field = ...` jest
+# refactor-friendly: rename pola w InputState aktualizuje wszystkie settery
+# automatycznie via IDE. Lambdas z `setattr(i, "field", ...)` traciłyby tę
+# safety bo string literal pola nie wykrywa się przez find-references.
 
 
 def set_water_heater_big_is_on(entity: str, i: InputState, state: str) -> None:
@@ -244,15 +249,19 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
 
     @callback
     def state_changed(event: Event[EventStateChangedData]) -> None:
-        input_state: InputState = InputState()
-        input_state = update_input_state(hass, input_state)
-        # TODO is it needed to fetch state from event if it is taken directly from hass.states ? :)
-        # or the other way around ... does it make sense to update_input_state on each state_changed
+        # Event-only update z accumulating InputState w `ems.last_input_state`.
+        # Pełen state populated przez hass_started (initial full read), potem
+        # każdy state_changed mutuje JEDNO pole z event.new_state. Zero
+        # full hass.states re-read per event — `_async_dispatch_entity_id_event_soon`
+        # gwarantuje że state machine commit poprzedza event, ale my i tak
+        # nie potrzebujemy pełnego snapshotu (mamy accumulated state).
+        state = ems.last_input_state or InputState()
         new_state = event.data["new_state"]
-        new_state = new_state.state if new_state else None
+        new_value = new_state.state if new_state else None
         entity_id = event.data["entity_id"]
-        HASS_STATE_MAPPER[entity_id](entity_id, input_state, new_state)
-        ems.update_state(input_state)
+        HASS_STATE_MAPPER[entity_id](entity_id, state, new_value)
+        state.now = now_local()
+        ems.update_state(state)
 
     @callback
     def hass_started(_=Event) -> None:
