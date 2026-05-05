@@ -1,9 +1,9 @@
 """Battery discharge management.
 
 Pure domain — bez HA imports, bez logowania. Persistence (Store) trzymana
-w application service `BatteryStatePersistence` w `adapter.py`; logging
-trzymane w application service `BatteryManagerLogger` (czyta
-`diagnostic_snapshot()`).
+w infrastructure adapter `BatteryStatePersistence` (driven outbound dla
+HA Storage). Logging trzymane w infrastructure adapter `BatteryManagerLogger`
+(driven outbound dla Python logging) — czyta `diagnostic_snapshot()`.
 
 Monitoruje bilans godzinowy i okna pre/post-charge by decydować kiedy
 zablokować rozładowywanie baterii. Block_charge handling przeniesiony
@@ -236,14 +236,14 @@ class BatteryManager:
     # --- public state APIs ---
 
     def snapshot(self) -> dict[str, Any]:
-        """Pure snapshot stanu — używane przez application service do persistence."""
+        """Pure snapshot stanu — używane przez infrastructure adapter do persistence."""
         return {
             "block_discharge": self.should_block_battery_discharge,
             "last_hour_seen": self._last_hour_seen,
         }
 
     def restore(self, data: dict[str, Any]) -> None:
-        """Pure restore z dict — używane przez application service przy starcie."""
+        """Pure restore z dict — używane przez infrastructure adapter przy starcie."""
         self.should_block_battery_discharge = data.get("block_discharge", False)
         self._last_hour_seen = data.get("last_hour_seen")
 
@@ -254,8 +254,8 @@ class BatteryManager:
         recomputuje klasyfikacji. `state` daje dostęp do bieżących wartości
         wejściowych dla DEBUG snapshot logu.
 
-        Używane przez `BatteryManagerLogger` w adapter.py (registered jako
-        `ems.async_add_listener`).
+        Używane przez `BatteryManagerLogger` (infrastructure/battery_logger.py)
+        — registered jako `ems.async_add_listener`.
         """
         return {
             "phase": self._phase,

@@ -15,7 +15,7 @@ Architektura:
   listener na monitored entities, triggers `ems.update_state` po każdej zmianie
 
 Wcześniej żyło w `adapter.py` (~280 linii). Wynesione żeby `adapter.py`
-zachował tylko application services + lifecycle (composition root).
+zachował tylko composition root (instancjowanie domain + adapters).
 """
 
 from collections.abc import Callable

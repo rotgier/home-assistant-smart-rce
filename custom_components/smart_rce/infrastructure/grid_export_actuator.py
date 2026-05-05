@@ -1,0 +1,105 @@
+"""GridExportActuator — driven adapter dla Goodwe EMS via scene.apply.
+
+Apply Goodwe EMS recommendations (`select.goodwe_ems_mode` +
+`number.goodwe_ems_power_limit`) as fire-and-forget background tasks.
+
+Czyta `ems.grid_export.recommended_*` IN-MEMORY (bez round-trip przez
+output sensors). Rejestrowany przez `ems.async_add_listener(apply_if_changed)`
+— odpala się po każdym `ems.update_state` (state_changed / update_hourly).
+
+Wzorzec:
+1. `@callback apply_if_changed` (sync) — spawn fire-and-forget background
+   task. Brak dedup tutaj — task spawn jest tani (eager_start=True +
+   uncontested asyncio.Lock.acquire = no yield, fast-path skip task
+   registration w config_entries.py:1383-1388).
+2. `_dispatch` (async) — `async with lock` → re-read in-memory →
+   dedup vs `_last_applied` → `scene.apply`.
+
+Lock daje:
+- **Modbus serialization** — żaden wire interleave między concurrent
+  scene.apply calls (Goodwe lib może mieć per-connection lock, ale
+  ordering z naszej perspektywy niezdefiniowany bez tego).
+- **Coalescing** — burst N event'ów spawnuje N tasków; lock + re-read
+  zostawia 1 actual scene.apply (vs N bez locka).
+
+`entry.async_create_background_task` — task auto-cancels przy entry
+unload + shutdown stage 2. Modbus mid-write przerwany jest OK
+(hardware utrzyma prev state).
+
+Wzorzec hexagonal: **driven adapter (outbound)** — domain dictates
+recommended state, konkretna impl wywołuje HA `scene.apply`. Patrz ADR-019.
+"""
+
+import asyncio
+import logging
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+
+from ..domain.ems import Ems
+
+_LOGGER = logging.getLogger(__name__)
+
+GOODWE_EMS_MODE_SELECT = "select.goodwe_ems_mode"
+GOODWE_EMS_POWER_LIMIT_NUMBER = "number.goodwe_ems_power_limit"
+
+
+class GridExportActuator:
+    """Driven adapter — Apply Goodwe EMS mode/xset via scene.apply."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, ems: Ems) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._ems = ems
+        self._lock = asyncio.Lock()
+        # (mode, xset) — ostatnio zaaplikowana para; None = nigdy.
+        self._last_applied: tuple[str, int | None] | None = None
+
+    @callback
+    def apply_if_changed(self) -> None:
+        """Spawn fire-and-forget background task (registered as ems listener)."""
+        self._entry.async_create_background_task(
+            self._hass,
+            self._dispatch(),
+            name="smart_rce_grid_export_apply",
+        )
+
+    async def _dispatch(self) -> None:
+        async with self._lock:
+            # Re-read in-memory INSIDE locka — między schedule a acquire
+            # mogły dojść kolejne event'y; używamy najświeższych wartości.
+            mode = self._ems.grid_export.recommended_ems_mode
+            xset = self._ems.grid_export.recommended_xset
+            target = (mode, xset)
+            if target == self._last_applied:
+                return  # coalesce: same as last apply
+            if mode is None:
+                return  # invalid, skip without caching
+            self._last_applied = target
+            await self._apply_scene(mode, xset)
+
+    async def _apply_scene(self, mode: str, xset: int | None) -> None:
+        # scene.apply wymaga state jako string (homeassistant/scene.py:58
+        # `_convert_states` raises na non-string). number/reproduce_state.py:24
+        # parsuje przez float(state.state).
+        entities: dict[str, str] = {GOODWE_EMS_MODE_SELECT: mode}
+        if xset is not None and xset >= 0:
+            entities[GOODWE_EMS_POWER_LIMIT_NUMBER] = str(xset)
+        try:
+            await self._hass.services.async_call(
+                "scene",
+                "apply",
+                {"entities": entities},
+                blocking=True,
+            )
+            _LOGGER.info(
+                "GridExportActuator applied mode=%s xset=%s",
+                mode,
+                xset,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to apply grid export recommendation mode=%s xset=%s",
+                mode,
+                xset,
+            )

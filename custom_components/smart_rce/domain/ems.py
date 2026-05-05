@@ -30,7 +30,7 @@ SHIFT_EARLIER_THRESHOLD: Final[float] = 40.0
 class Ems:
     def __init__(self) -> None:
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
-        # Last InputState — udostępniane application services (logger,
+        # Last InputState — udostępniane infrastructure adapters (logger,
         # diagnostic readers) które potrzebują dostępu do bieżących wartości
         # wejściowych. Promote z prywatnego `_ha` (unused) na publiczny.
         self.last_input_state: InputState | None = None

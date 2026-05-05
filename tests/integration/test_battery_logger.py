@@ -13,8 +13,10 @@ import logging
 from typing import Any
 from unittest.mock import AsyncMock
 
-from custom_components.smart_rce.adapter import BATTERY_STORAGE_KEY
 from custom_components.smart_rce.domain.rce import TIMEZONE
+from custom_components.smart_rce.infrastructure.battery_persistence import (
+    BATTERY_STORAGE_KEY,
+)
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 
