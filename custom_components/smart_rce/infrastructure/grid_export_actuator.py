@@ -31,6 +31,7 @@ recommended state, konkretna impl wywołuje HA `scene.apply`. Patrz ADR-019.
 """
 
 import asyncio
+import contextlib
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -52,8 +53,32 @@ class GridExportActuator:
         self._entry = entry
         self._ems = ems
         self._lock = asyncio.Lock()
-        # (mode, xset) — ostatnio zaaplikowana para; None = nigdy.
-        self._last_applied: tuple[str, int | None] | None = None
+        # (mode, xset) — ostatnio zaaplikowana para. Init z aktualnego stanu
+        # Goodwe entity (kalibracja po reload smart_rce — Goodwe entities
+        # persystują, ich state w hass.states jest świeży). Pierwszy dispatch
+        # dedupuje gdy recommendation == current Goodwe state, brak spurious
+        # apply. None gdy Goodwe entity unavailable (fallback: defensive
+        # apply na pierwszy dispatch).
+        self._last_applied: tuple[str, int | None] | None = (
+            self._read_current_goodwe_state()
+        )
+
+    def _read_current_goodwe_state(self) -> tuple[str, int | None] | None:
+        """Read current Goodwe (mode, xset) z hass.states dla _last_applied init."""
+        mode_state = self._hass.states.get(GOODWE_EMS_MODE_SELECT)
+        if mode_state is None or mode_state.state in ("unknown", "unavailable"):
+            return None
+
+        xset: int | None = None
+        xset_state = self._hass.states.get(GOODWE_EMS_POWER_LIMIT_NUMBER)
+        if xset_state is not None and xset_state.state not in (
+            "unknown",
+            "unavailable",
+        ):
+            with contextlib.suppress(ValueError, TypeError):
+                xset = int(float(xset_state.state))
+
+        return (mode_state.state, xset)
 
     @callback
     def apply_if_changed(self) -> None:
