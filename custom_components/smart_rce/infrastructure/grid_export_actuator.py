@@ -37,7 +37,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
-from ..domain.ems import Ems
+from ..application.ems import Ems
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -23,9 +23,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util.dt import now as now_local
 
 from . import SmartRceConfigEntry
+from .application.ems import Ems
 from .const import DOMAIN, GROSS_MULTIPLIER
 from .coordinator import SmartRceDataUpdateCoordinator
-from .domain.ems import Ems
 from .pv_forecast_coordinator import PvForecastCoordinator
 from .weather_forecast_history import WeatherForecastHistory
 

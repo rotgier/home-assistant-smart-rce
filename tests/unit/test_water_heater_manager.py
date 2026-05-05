@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from custom_components.smart_rce.domain.ems import Ems
+from custom_components.smart_rce.application.ems import Ems
 from custom_components.smart_rce.domain.grid_export import InterventionDirection
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE

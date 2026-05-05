@@ -18,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import SmartRceConfigEntry
-from .domain.ems import Ems
+from .application.ems import Ems
 
 UNIQUE_ID_PREFIX = "ems"
 

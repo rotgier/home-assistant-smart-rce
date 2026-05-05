@@ -56,7 +56,9 @@ async def test_logs_info_on_block_discharge_transition(
     await init_integration(hass)
     await hass.async_block_till_done()
 
-    with caplog.at_level(logging.INFO, logger="custom_components.smart_rce.adapter"):
+    with caplog.at_level(
+        logging.INFO, logger="custom_components.smart_rce.ems_factory"
+    ):
         # Drive transition False → True (sustained surplus + hourly export)
         set_smart_rce_inputs(BLOCK_DISCHARGE_INPUTS)
         await hass.async_block_till_done()
@@ -85,7 +87,9 @@ async def test_logs_throttled_debug_snapshot(
     freezer.move_to(datetime(2026, 5, 4, 14, 0, 0, tzinfo=TIMEZONE))
     set_smart_rce_inputs(BLOCK_DISCHARGE_INPUTS)
 
-    with caplog.at_level(logging.DEBUG, logger="custom_components.smart_rce.adapter"):
+    with caplog.at_level(
+        logging.DEBUG, logger="custom_components.smart_rce.ems_factory"
+    ):
         await init_integration(hass)
         await hass.async_block_till_done()
 
@@ -112,7 +116,9 @@ async def test_skips_log_when_none_present(
     freezer.move_to(datetime(2026, 5, 4, 14, 0, 0, tzinfo=TIMEZONE))
     set_smart_rce_inputs({"sensor.total_export_import_hourly": "unavailable"})
 
-    with caplog.at_level(logging.DEBUG, logger="custom_components.smart_rce.adapter"):
+    with caplog.at_level(
+        logging.DEBUG, logger="custom_components.smart_rce.ems_factory"
+    ):
         await init_integration(hass)
         await hass.async_block_till_done()
 
@@ -143,7 +149,9 @@ async def test_logs_restored_info_when_storage_pre_populated(
     }
     set_smart_rce_inputs(BLOCK_DISCHARGE_INPUTS)
 
-    with caplog.at_level(logging.INFO, logger="custom_components.smart_rce.adapter"):
+    with caplog.at_level(
+        logging.INFO, logger="custom_components.smart_rce.ems_factory"
+    ):
         await init_integration(hass)
         await hass.async_block_till_done()
 

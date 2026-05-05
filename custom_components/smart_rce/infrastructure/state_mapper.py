@@ -34,7 +34,7 @@ from homeassistant.core import (
 from homeassistant.helpers.event import Event, async_track_state_change_event
 from homeassistant.util.dt import now as now_local
 
-from ..domain.ems import Ems
+from ..application.ems import Ems
 from ..domain.input_state import InputState
 
 _LOGGER = logging.getLogger(__name__)

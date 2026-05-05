@@ -11,9 +11,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .adapter import create_ems
+from .application.ems import Ems
 from .coordinator import SmartRceDataUpdateCoordinator
-from .domain.ems import Ems
+from .ems_factory import create_ems
 from .infrastructure.rce_api import RceApi
 from .pv_forecast_coordinator import PvForecastCoordinator
 from .weather_forecast_history import WeatherForecastHistory
@@ -88,10 +88,11 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.charge_slots"))
     reload(import_module("custom_components.smart_rce.domain.discharge_slots"))
     reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
-    reload(import_module("custom_components.smart_rce.domain.ems"))
+    reload(import_module("custom_components.smart_rce.application.ems"))
+    reload(import_module("custom_components.smart_rce.application"))
     reload(import_module("custom_components.smart_rce.domain"))
-    # infrastructure modules PRZED adapter — adapter importuje wszystkie
-    # 3 driven adapters + state_mapper driving adapter.
+    # infrastructure modules PRZED ems_factory — composition root importuje
+    # wszystkie 3 driven adapters + state_mapper driving adapter.
     reload(import_module("custom_components.smart_rce.infrastructure.state_mapper"))
     reload(
         import_module("custom_components.smart_rce.infrastructure.battery_persistence")
@@ -100,7 +101,7 @@ def live_reload():
     reload(
         import_module("custom_components.smart_rce.infrastructure.grid_export_actuator")
     )
-    reload(import_module("custom_components.smart_rce.adapter"))
+    reload(import_module("custom_components.smart_rce.ems_factory"))
     reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
     reload(import_module("custom_components.smart_rce.weather_forecast_history"))
     reload(import_module("custom_components.smart_rce.weather_listener"))

@@ -1,10 +1,17 @@
-"""Composition root: instancjonuje domain (Ems), podpina adapters.
+"""Composition root: instancjonuje Ems application service + adapters.
 
-Mała "wiring" warstwa łącząca domain (`Ems` aggregate root) z infrastructure
-(driven + driving adapters) dla HA. Zawiera tylko `create_ems(hass, entry)`
-— factory wywoływana z `__init__.py:async_setup_entry`.
+Mała "wiring" warstwa łącząca application layer (`Ems` orchestrator) z
+infrastructure (driven + driving adapters) dla HA. Zawiera tylko
+`create_ems(hass, entry)` — factory wywoływana z `__init__.py:async_setup_entry`.
 
-Adaptery i mapping infrastructure żyją w `infrastructure/`:
+Layer responsibility (DDD):
+- domain/ — pure aggregates (battery, grid_export, water_heater, rce,
+  charge_slots, discharge_slots, ems_rce_prices)
+- application/ — Ems orchestrator (composition + listeners + use cases)
+- infrastructure/ — adapters (driven + driving)
+- ems_factory.py — composition root, wiring all layers
+
+Adaptery żyją w `infrastructure/`:
 - `state_mapper.py` — HA states → InputState (driving adapter helpers)
 - `battery_persistence.py` — BatteryStatePersistence (driven: HA Storage)
 - `battery_logger.py` — BatteryManagerLogger (driven: Python logging)
@@ -20,7 +27,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util.dt import now as now_local
 
-from .domain.ems import Ems
+from .application.ems import Ems
 from .domain.input_state import InputState
 from .infrastructure.battery_logger import BatteryManagerLogger
 from .infrastructure.battery_persistence import BatteryStatePersistence

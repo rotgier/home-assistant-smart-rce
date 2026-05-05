@@ -249,7 +249,9 @@ async def test_apply_logs_info_on_success(
     await init_integration(hass)
     mock_scene_apply.clear()
 
-    with caplog.at_level(logging.INFO, logger="custom_components.smart_rce.adapter"):
+    with caplog.at_level(
+        logging.INFO, logger="custom_components.smart_rce.ems_factory"
+    ):
         set_smart_rce_inputs(POSITIVE_INPUTS)
         await hass.async_block_till_done()
 
@@ -276,7 +278,9 @@ async def test_apply_logs_exception_on_service_failure(
     set_smart_rce_inputs()
     await init_integration(hass)
 
-    with caplog.at_level(logging.ERROR, logger="custom_components.smart_rce.adapter"):
+    with caplog.at_level(
+        logging.ERROR, logger="custom_components.smart_rce.ems_factory"
+    ):
         set_smart_rce_inputs(POSITIVE_INPUTS)
         await hass.async_block_till_done()
 
