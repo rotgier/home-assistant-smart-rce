@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Final
 
 from zoneinfo import ZoneInfo
@@ -13,10 +13,14 @@ TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
 
 @dataclass
 class RceDayPrices:
-    """RCE prices of given day."""
+    """RCE prices of given day — hour-indexed tuple + day."""
 
-    published_at: datetime
-    prices: list[dict[str, float | datetime]]
+    published_at: datetime | None
+    day: date
+    hour_price: tuple[float, ...]  # length matches available hours, indexed by hour
+
+    def datetime_at_hour(self, hour: int) -> datetime:
+        return datetime.combine(self.day, time(hour, 0), TIMEZONE)
 
     @classmethod
     def create_from_json(cls, data) -> RceDayPrices | None:
@@ -36,14 +40,33 @@ class RceDayPrices:
             hour_key = interval_start.replace(minute=0, second=0)
             hourly_groups.setdefault(hour_key, []).append(record["rce_pln"])
 
-        prices = []
-        for hour_key in sorted(hourly_groups):
-            raw_prices = hourly_groups[hour_key]
-            clamped = [max(0, p) for p in raw_prices]
-            avg_price = sum(clamped) / len(clamped)
-            prices.append({"datetime": hour_key, "price": round(avg_price, 2)})
+        if published_at is None or not hourly_groups:
+            return None
 
-        return cls(published_at, prices) if published_at else None
+        sorted_keys = sorted(hourly_groups)
+        day = sorted_keys[0].date()
+        hour_price = tuple(
+            round(sum(max(0.0, p) for p in hourly_groups[k]) / len(hourly_groups[k]), 2)
+            for k in sorted_keys
+        )
+        return cls(published_at=published_at, day=day, hour_price=hour_price)
+
+    @classmethod
+    def from_sensor_attr(cls, prices_attr: list[dict]) -> RceDayPrices | None:
+        """Build RceDayPrices z restored sensor attributes."""
+        if not prices_attr:
+            return None
+        parsed = sorted(
+            ((datetime.fromisoformat(p["datetime"]), p["price"]) for p in prices_attr),
+            key=lambda x: x[0],
+        )
+        if not parsed:
+            return None
+        return cls(
+            published_at=None,
+            day=parsed[0][0].date(),
+            hour_price=tuple(price for _, price in parsed),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

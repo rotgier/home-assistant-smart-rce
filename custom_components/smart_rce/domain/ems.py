@@ -54,8 +54,13 @@ class Ems:
     def update_hourly(self, now: datetime) -> None:
         self.charge_slots.rotate_if_day_changed(now)
         self.discharge_slots.update(self.rce_data, now)
-        if self.rce_data and self.rce_data.today and self.rce_data.today.prices:
-            self.current_price = self.rce_data.today.prices[now.hour]["price"]
+        if (
+            self.rce_data
+            and self.rce_data.today
+            and self.rce_data.today.hour_price
+            and now.hour < len(self.rce_data.today.hour_price)
+        ):
+            self.current_price = self.rce_data.today.hour_price[now.hour]
             self._async_update_listeners()
 
     def update_rce(self, now: datetime, data: RceData) -> None:
@@ -66,14 +71,14 @@ class Ems:
 
     def restore_rce_today(self, prices_attr: list[dict], now: datetime) -> None:
         """Restore today's RCE prices from sensor attributes."""
-        rce_prices = _restore_rce_day_prices(prices_attr)
+        rce_prices = RceDayPrices.from_sensor_attr(prices_attr)
         if rce_prices:
             self.charge_slots.today = ChargeSlots.compute(rce_prices)
             self.update_hourly(now)
 
     def restore_rce_tomorrow(self, prices_attr: list[dict]) -> None:
         """Restore tomorrow's RCE prices from sensor attributes."""
-        rce_prices = _restore_rce_day_prices(prices_attr)
+        rce_prices = RceDayPrices.from_sensor_attr(prices_attr)
         if rce_prices:
             self.charge_slots.tomorrow = ChargeSlots.compute(rce_prices)
 
@@ -87,14 +92,3 @@ class Ems:
     def _async_update_listeners(self) -> None:
         for update_callback in self._listeners.values():
             update_callback()
-
-
-def _restore_rce_day_prices(prices_attr: list[dict]) -> RceDayPrices | None:
-    """Build RceDayPrices from restored sensor attributes."""
-    if not prices_attr:
-        return None
-    prices = [
-        {"datetime": datetime.fromisoformat(p["datetime"]), "price": p["price"]}
-        for p in prices_attr
-    ]
-    return RceDayPrices(published_at=None, prices=prices)

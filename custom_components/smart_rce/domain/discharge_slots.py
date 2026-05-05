@@ -64,10 +64,20 @@ class DischargeSlots:
         self.best_morning_discharge_slot = best_morning_discharge_slot(rce_data, now)
 
 
+def _hourly_slots(day_prices) -> list[tuple[float, datetime]]:
+    """Build (price, datetime) pairs from RceDayPrices."""
+    if day_prices is None or not day_prices.hour_price:
+        return []
+    return [
+        (price, day_prices.datetime_at_hour(hour))
+        for hour, price in enumerate(day_prices.hour_price)
+    ]
+
+
 def max_upcoming_peak(rce_data: RceData, now: datetime) -> UpcomingPeak | None:
     """Max RCE price w nadchodzącym peak window — z time-of-day branching.
 
-    - **Do 12:00**: dzisiejszy poranny peak (today.prices 5-12).
+    - **Do 12:00**: dzisiejszy poranny peak (today 5-12).
       Use case: rano user widzi czy poranny peak już był / będzie.
     - **Od 12:00**: dzisiejszy wieczorny + jutrzejszy poranny/popołudniowy
       (today 19-24 + tomorrow 6-14). Standard "next peak" decision dla
@@ -80,25 +90,16 @@ def max_upcoming_peak(rce_data: RceData, now: datetime) -> UpcomingPeak | None:
     Tie-break: późniejsza godzina (dłużej akumulujemy energię w baterii).
     Returns None gdy brak danych dla aktywnego window.
     """
+    today_slots = _hourly_slots(rce_data.today)
     candidates: list[tuple[float, datetime]] = []
     if now.hour < 12:
         # Morning cycle: dzisiejszy peak rano (5-12)
-        candidates.extend(
-            (p["price"], p["datetime"])
-            for p in (rce_data.today.prices if rce_data.today else [])
-            if 5 <= p["datetime"].hour < 12
-        )
+        candidates.extend(s for s in today_slots if 5 <= s[1].hour < 12)
     else:
         # Afternoon/evening cycle: dziś wieczór + jutro morning/afternoon
+        candidates.extend(s for s in today_slots if 19 <= s[1].hour < 24)
         candidates.extend(
-            (p["price"], p["datetime"])
-            for p in (rce_data.today.prices if rce_data.today else [])
-            if 19 <= p["datetime"].hour < 24
-        )
-        candidates.extend(
-            (p["price"], p["datetime"])
-            for p in (rce_data.tomorrow.prices if rce_data.tomorrow else [])
-            if 6 <= p["datetime"].hour < 14
+            s for s in _hourly_slots(rce_data.tomorrow) if 6 <= s[1].hour < 14
         )
     if not candidates:
         return None
@@ -123,16 +124,12 @@ def best_morning_discharge_slot(
     Returns None gdy brak future slots w range.
     """
     candidates: list[tuple[float, datetime]] = []
-    for day in (rce_data.today, rce_data.tomorrow):
-        if not day:
-            continue
+    for day_prices in (rce_data.today, rce_data.tomorrow):
         candidates.extend(
-            (p["price"], p["datetime"])
-            for p in day.prices
-            if MORNING_DISCHARGE_START_HOUR
-            <= p["datetime"].hour
-            < MORNING_DISCHARGE_END_HOUR
-            and p["datetime"] > now
+            s
+            for s in _hourly_slots(day_prices)
+            if MORNING_DISCHARGE_START_HOUR <= s[1].hour < MORNING_DISCHARGE_END_HOUR
+            and s[1] > now
         )
     if not candidates:
         return None

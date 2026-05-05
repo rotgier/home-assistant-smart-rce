@@ -54,10 +54,9 @@ def _avg_price(ems: Ems, day: str) -> float | None:
     if not rce_data:
         return None
     day_prices = rce_data.today if day == "today" else rce_data.tomorrow
-    if not day_prices or not day_prices.prices:
+    if not day_prices or not day_prices.hour_price:
         return None
-    prices = [p["price"] for p in day_prices.prices]
-    return round(sum(prices) / len(prices), 2)
+    return round(sum(day_prices.hour_price) / len(day_prices.hour_price), 2)
 
 
 def _prices_attr(ems: Ems, day: str) -> dict[str, Any]:
@@ -65,15 +64,15 @@ def _prices_attr(ems: Ems, day: str) -> dict[str, Any]:
     if not rce_data:
         return {}
     day_prices = rce_data.today if day == "today" else rce_data.tomorrow
-    if not day_prices or not day_prices.prices:
+    if not day_prices or not day_prices.hour_price:
         return {}
     return {
         "prices": [
             {
-                "datetime": p["datetime"].isoformat(),
-                "price": p["price"],
+                "datetime": day_prices.datetime_at_hour(hour).isoformat(),
+                "price": price,
             }
-            for p in day_prices.prices
+            for hour, price in enumerate(day_prices.hour_price)
         ]
     }
 

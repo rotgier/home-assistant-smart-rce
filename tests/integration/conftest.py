@@ -113,18 +113,10 @@ def mock_rce_api(mock_rce_today_prices: list[float]) -> Generator[AsyncMock]:
     """Mock RceApi.async_get_prices — bez HTTP do api.raporty.pse.pl."""
 
     def _build_day_prices(day: datetime) -> RceDayPrices:
-        prices = [
-            {
-                "datetime": datetime(
-                    day.year, day.month, day.day, hour, 0, tzinfo=TIMEZONE
-                ),
-                "price": price,
-            }
-            for hour, price in enumerate(mock_rce_today_prices)
-        ]
         return RceDayPrices(
             published_at=datetime(day.year, day.month, day.day, 14, 0, tzinfo=TIMEZONE),
-            prices=prices,
+            day=day.date(),
+            hour_price=tuple(mock_rce_today_prices),
         )
 
     async def _fetch(day: datetime) -> RceDayPrices:

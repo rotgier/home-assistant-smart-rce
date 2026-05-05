@@ -73,9 +73,9 @@ class ChargeSlots:
     @staticmethod
     def compute(day_prices: RceDayPrices | None) -> ChargeWindow | None:
         """Algorytm: dobór najlepszego okna ładowania dla pojedynczego dnia."""
-        if day_prices is None or not day_prices.prices:
+        if day_prices is None or not day_prices.hour_price:
             return None
-        prices: list[float] = [item["price"] for item in day_prices.prices]
+        prices: list[float] = list(day_prices.hour_price)
         start_charge_hours = calculate_start_charge_hours(prices)
         best_n = find_best_consecutive_hours(prices, start_charge_hours)
         new_n, shifted_start = shift_earlier_if_cheap(
@@ -88,12 +88,11 @@ class ChargeSlots:
         else:
             start_hour = float(shifted_start)
         end_hour = float(shifted_start + new_n)
-        day = day_prices.prices[0]["datetime"].date()
         return ChargeWindow(
             start_hour=start_hour,
-            start_datetime=_hour_to_datetime(day, start_hour),
+            start_datetime=_hour_to_datetime(day_prices.day, start_hour),
             end_hour=end_hour,
-            end_datetime=_hour_to_datetime(day, end_hour),
+            end_datetime=_hour_to_datetime(day_prices.day, end_hour),
         )
 
 

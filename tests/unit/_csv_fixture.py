@@ -35,7 +35,7 @@ class CsvTextBuilder:
 
 
 def create_csv(rce_prices: RceDayPrices):
-    prices: list[float] = [item["price"] for item in rce_prices.prices]
+    prices: list[float] = list(rce_prices.hour_price)
     start_charge_hours = calculate_start_charge_hours(prices)
     best_n = find_best_consecutive_hours(prices, start_charge_hours)
     new_n, shifted_start = shift_earlier_if_cheap(
@@ -43,7 +43,7 @@ def create_csv(rce_prices: RceDayPrices):
     )
     start_charge_hours[new_n] = shifted_start
     best_consecutive_hours = new_n
-    day = rce_prices.prices[0]["datetime"].date()
+    day = rce_prices.day
 
     csv_builder = CsvTextBuilder()
     writer = csv.writer(csv_builder, delimiter="\t")
