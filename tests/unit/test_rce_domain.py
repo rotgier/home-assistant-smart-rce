@@ -6,7 +6,7 @@ from custom_components.smart_rce.domain.discharge_slots import (
     MORNING_DISCHARGE_TIE_BREAK_TOLERANCE_PLN_MWH_GROSS,
     best_morning_discharge_slot,
 )
-from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
+from custom_components.smart_rce.domain.rce import TIMEZONE, RceDayPrices, RcePrices
 import pytest
 
 
@@ -23,7 +23,7 @@ def _data(
     tomorrow_slots: list[tuple[int, float]] | None = None,
     today_day: int = 16,
     tomorrow_day: int = 17,
-) -> RceData:
+) -> RcePrices:
     today = RceDayPrices(
         published_at=datetime(2026, 4, 15, 14, 0, tzinfo=TIMEZONE),
         day=date(2026, 4, today_day),
@@ -38,7 +38,7 @@ def _data(
         if tomorrow_slots is not None
         else None
     )
-    return RceData(
+    return RcePrices(
         fetched_at=datetime(2026, 4, 16, 0, 0, tzinfo=TIMEZONE),
         today=today,
         tomorrow=tomorrow,

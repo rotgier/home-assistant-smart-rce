@@ -18,7 +18,7 @@ import logging
 from statistics import mean
 from typing import Final
 
-from .rce import TIMEZONE, RceData, RceDayPrices
+from .rce import TIMEZONE, RceDayPrices, RcePrices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class ChargeSlots:
         self.today: ChargeWindow | None = None
         self.tomorrow: ChargeWindow | None = None
 
-    def update(self, rce_data: RceData | None) -> None:
+    def update(self, rce_data: RcePrices | None) -> None:
         """Recompute charge windows z fresh RCE data — full refresh today/tomorrow."""
         if rce_data is None:
             self.today = None

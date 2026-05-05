@@ -11,7 +11,7 @@ from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
-from custom_components.smart_rce.domain.rce import RceData, RceDayPrices
+from custom_components.smart_rce.domain.rce import RceDayPrices, RcePrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 type CALLBACK_TYPE = Callable[[], None]
@@ -28,7 +28,7 @@ class Ems:
         self.last_input_state: InputState | None = None
         self.charge_slots: ChargeSlots = ChargeSlots()
         self.discharge_slots: DischargeSlots = DischargeSlots()
-        self.rce_data: RceData = None
+        self.rce_data: RcePrices = None
         self.current_price: float = None
         self.battery: BatteryManager = BatteryManager()
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
@@ -63,7 +63,7 @@ class Ems:
             self.current_price = self.rce_data.today.hour_price[now.hour]
             self._async_update_listeners()
 
-    def update_rce(self, now: datetime, data: RceData) -> None:
+    def update_rce(self, now: datetime, data: RcePrices) -> None:
         if data:
             self.rce_data = data
             self.charge_slots.update(data)

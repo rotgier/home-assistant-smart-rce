@@ -70,7 +70,7 @@ class RceDayPrices:
 
 
 @dataclass(frozen=True, kw_only=True)
-class RceData:
+class RcePrices:
     """RCE prices data."""
 
     fetched_at: datetime

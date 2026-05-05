@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Final
 
 from ..const import GROSS_MULTIPLIER
-from .rce import RceData
+from .rce import RcePrices
 
 # Morning discharge window — szukamy peak ceny rano przed startem PV.
 # Use case: niedzielny weekend morning, gdy RCE peak rano > niska niedzielna
@@ -31,7 +31,7 @@ MORNING_DISCHARGE_END_HOUR: Final[int] = 8  # tomorrow, exclusive (czyli 5,6,7)
 # Sloty z ceną ≤ tolerance od peaku traktujemy jako "remis" — wybieramy
 # najpóźniejszy z near-peak slotów (skraca czas trzymania pustej baterii
 # do startu PV). Stała wyrażona w **brutto** (myślenie konsumenckie),
-# konwertowana do netto przy porównaniu (RceData.prices są w netto).
+# konwertowana do netto przy porównaniu (RcePrices hour_price są w netto).
 # 20 zł/MWh brutto ≈ 2 grosze/kWh brutto.
 MORNING_DISCHARGE_TIE_BREAK_TOLERANCE_PLN_MWH_GROSS: Final[float] = 20.0
 
@@ -55,7 +55,7 @@ class DischargeSlots:
     max_upcoming_peak: UpcomingPeak | None = None
     best_morning_discharge_slot: UpcomingPeak | None = None
 
-    def update(self, rce_data: RceData | None, now: datetime) -> None:
+    def update(self, rce_data: RcePrices | None, now: datetime) -> None:
         if rce_data is None:
             self.max_upcoming_peak = None
             self.best_morning_discharge_slot = None
@@ -74,7 +74,7 @@ def _hourly_slots(day_prices) -> list[tuple[float, datetime]]:
     ]
 
 
-def max_upcoming_peak(rce_data: RceData, now: datetime) -> UpcomingPeak | None:
+def max_upcoming_peak(rce_data: RcePrices, now: datetime) -> UpcomingPeak | None:
     """Max RCE price w nadchodzącym peak window — z time-of-day branching.
 
     - **Do 12:00**: dzisiejszy poranny peak (today 5-12).
@@ -108,7 +108,7 @@ def max_upcoming_peak(rce_data: RceData, now: datetime) -> UpcomingPeak | None:
 
 
 def best_morning_discharge_slot(
-    rce_data: RceData, now: datetime
+    rce_data: RcePrices, now: datetime
 ) -> UpcomingPeak | None:
     """Max RCE w nadchodzących godzinach rano [5, 8) — peak przed startem PV.
 

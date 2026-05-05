@@ -14,7 +14,7 @@ from homeassistant.util.dt import now as now_local
 
 from .const import DOMAIN
 from .domain.ems import Ems
-from .domain.rce import RceData, RceDayPrices
+from .domain.rce import RceDayPrices, RcePrices
 from .infrastructure.rce_api import RceApi
 
 RCE_TOMORROW_PUBLICATION_HOUR: Final[int] = 14
@@ -25,7 +25,7 @@ MINIMUM_TIME_BETWEEN_FETCHES_SECONDS: Final[int] = 14 * 60
 _LOGGER = logging.getLogger(__name__)
 
 
-class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
+class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RcePrices]):
     """Class to manage fetching WetterOnline data."""
 
     def __init__(
@@ -34,7 +34,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
         """Initialize."""
         self._rce_api = rce_api
         self._ems = ems
-        self._last_rce_data: RceData = None
+        self._last_rce_data: RcePrices = None
         self._cancel_track_time_change_cb: CALLBACK_TYPE = None
 
         self.device_info = DeviceInfo(
@@ -45,11 +45,11 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
 
         super().__init__(hass, _LOGGER, name=entry.title, always_update=False)
 
-    async def _async_update_data(self) -> RceData:
+    async def _async_update_data(self) -> RcePrices:
         """Update data via library."""
         now = now_local()
         _LOGGER.debug("_async_update_data start")
-        updated_data: RceData = None
+        updated_data: RcePrices = None
         if not self.data or not self.data.today:
             _LOGGER.debug(
                 "_async_update_data doing full_update because data is: %s", self.data
@@ -73,7 +73,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
                     elapsed_seconds,
                     MINIMUM_TIME_BETWEEN_FETCHES_SECONDS,
                 )
-                updated_data = RceData(
+                updated_data = RcePrices(
                     fetched_at=now,
                     today=self.data.today,
                     tomorrow=await self._fetch_prices_for_day(now + timedelta(days=1)),
@@ -92,8 +92,8 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RceData]):
             return updated_data
         return self.data
 
-    async def _full_update(self, now: datetime) -> RceData:
-        return RceData(
+    async def _full_update(self, now: datetime) -> RcePrices:
+        return RcePrices(
             fetched_at=now,
             today=await self._fetch_prices_for_day(now),
             tomorrow=await self._fetch_prices_for_day(now + timedelta(days=1)),
