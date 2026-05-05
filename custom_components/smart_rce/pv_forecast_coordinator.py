@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import datetime, timedelta
 import logging
-from typing import Final
 
-from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_state_change_event,
@@ -24,6 +21,10 @@ from .domain.pv_forecast import (
     adjust_pv_forecast_live,
     calculate_target_soc,
 )
+from .infrastructure.consumption_profile_loader import (
+    PREV_DAYS_COUNT,
+    fetch_consumption_profiles,
+)
 from .infrastructure.pv_forecast_loader import (
     SOLCAST_AT_6_ENTITY,
     SOLCAST_LIVE_ENTITY,
@@ -33,9 +34,6 @@ from .infrastructure.pv_forecast_loader import (
 )
 from .weather_forecast_history import WeatherForecastHistory
 from .weather_listener import WeatherListenerCoordinator
-
-CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
-PREV_DAYS_COUNT: Final = 3
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -290,101 +288,14 @@ class PvForecastCoordinator:
     async def _refresh_profiles(self) -> None:
         """Fetch profiles + recalc target SOC + notify listeners."""
         try:
-            self.consumption_profiles = await self._fetch_all_consumption_profiles()
+            self.consumption_profiles = await fetch_consumption_profiles(
+                self._hass, dt_util.now().date()
+            )
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
             _LOGGER.exception("Failed to fetch consumption profiles")
             return
         self._recalculate_target_soc()
         self._notify_listeners()
-
-    async def _fetch_all_consumption_profiles(
-        self,
-    ) -> list[ConsumptionProfile | None]:
-        """Fetch PREV_DAYS_COUNT prev-workday profiles in a SINGLE LTS query.
-
-        Walk back N workdays (skip weekends), compute earliest..latest date span,
-        fetch 5-min stats once, then bucket per date in memory.
-        """
-        dates: list[date | None] = [
-            self._walk_back_workdays(i + 1) for i in range(PREV_DAYS_COUNT)
-        ]
-        valid_dates = [d for d in dates if d is not None]
-        if not valid_dates:
-            _LOGGER.debug("No valid prev workdays found")
-            return [None] * PREV_DAYS_COUNT
-
-        tz = dt_util.DEFAULT_TIME_ZONE
-        earliest, latest = min(valid_dates), max(valid_dates)
-        start = datetime.combine(earliest, time(6, 30), tzinfo=tz)
-        end = datetime.combine(latest, time(13, 35), tzinfo=tz)
-
-        instance = get_instance(self._hass)
-        stats = await instance.async_add_executor_job(
-            statistics_during_period,
-            self._hass,
-            start,
-            end,
-            {CONSUMPTION_SENSOR_ID},
-            "5minute",
-            None,
-            {"state"},
-        )
-        slots = stats.get(CONSUMPTION_SENSOR_ID, [])
-        _LOGGER.debug(
-            "Fetched %d 5-min slots for %s between %s and %s",
-            len(slots),
-            CONSUMPTION_SENSOR_ID,
-            start.date(),
-            end.date(),
-        )
-
-        # Utility_meter resetuje na :00 i :30 — last pre-reset slot to :25 i :55.
-        # Value state in that slot = total consumption w 30-min cyklu.
-        # Bucket (hour, 0)  = state w slocie (hour, 25)
-        # Bucket (hour, 30) = state w slocie (hour, 55)
-        by_date: dict[date, dict[tuple[int, int], float]] = {d: {} for d in valid_dates}
-        for slot in slots:
-            raw_start = slot.get("start")
-            if raw_start is None:
-                continue
-            ts = datetime.fromtimestamp(float(raw_start), tz=UTC).astimezone(tz)
-            d = ts.date()
-            if d not in by_date or ts.hour < 7 or ts.hour >= 13:
-                continue
-            state_val = slot.get("state")
-            if state_val is None:
-                continue
-            try:
-                value = float(state_val)
-            except (TypeError, ValueError):
-                continue
-            if ts.minute == 25:
-                by_date[d][(ts.hour, 0)] = value
-            elif ts.minute == 55:
-                by_date[d][(ts.hour, 30)] = value
-
-        return [
-            ConsumptionProfile(buckets=dict(by_date[d]), source_date=d)
-            if d and by_date.get(d)
-            else None
-            for d in dates
-        ]
-
-    def _walk_back_workdays(self, days_back: int) -> date | None:
-        """Return date N workdays ago (skip weekends).
-
-        TODO Etap E: replace heuristic with binary_sensor.workday_sensor (PL holidays).
-        """
-        today = dt_util.now().date()
-        target = today
-        found = 0
-        while found < days_back:
-            target -= timedelta(days=1)
-            if target.weekday() < 5:
-                found += 1
-            if (today - target).days > 14:  # safety break
-                return None
-        return target
 
     def _recalculate_tomorrow(self) -> None:
         """Recalculate weather-adjusted forecast for tomorrow — two variants.
