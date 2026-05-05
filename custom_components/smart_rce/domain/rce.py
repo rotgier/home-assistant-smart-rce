@@ -71,8 +71,8 @@ class RceDayPrices:
 
 @dataclass(frozen=True, kw_only=True)
 class RcePrices:
-    """RCE prices data."""
+    """RCE prices data — two-day snapshot from API or restored cache."""
 
     fetched_at: datetime
-    today: RceDayPrices
-    tomorrow: RceDayPrices
+    today: RceDayPrices | None = None
+    tomorrow: RceDayPrices | None = None

@@ -50,7 +50,7 @@ class SmartRceSensorDescription(SensorEntityDescription):
 
 
 def _avg_price(ems: Ems, day: str) -> float | None:
-    rce_data = ems.rce_data
+    rce_data = ems.rce_prices.rce_prices
     if not rce_data:
         return None
     day_prices = rce_data.today if day == "today" else rce_data.tomorrow
@@ -60,7 +60,7 @@ def _avg_price(ems: Ems, day: str) -> float | None:
 
 
 def _prices_attr(ems: Ems, day: str) -> dict[str, Any]:
-    rce_data = ems.rce_data
+    rce_data = ems.rce_prices.rce_prices
     if not rce_data:
         return {}
     day_prices = rce_data.today if day == "today" else rce_data.tomorrow
@@ -96,7 +96,7 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         name="Current Price",
         native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: ems.current_price,
+        value_fn=lambda ems: ems.rce_prices.current_price,
     ),
     SmartRceSensorDescription(
         name="Prices Today",

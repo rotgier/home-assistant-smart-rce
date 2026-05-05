@@ -1,4 +1,4 @@
-"""Energy Management System logic."""
+"""Energy Management System — orchestrator (composition + listeners + RCE lifecycle)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ import logging
 from custom_components.smart_rce.domain.battery import BatteryManager
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
+from custom_components.smart_rce.domain.ems_rce_prices import EmsRcePrices
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
-from custom_components.smart_rce.domain.rce import RceDayPrices, RcePrices
+from custom_components.smart_rce.domain.rce import RcePrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 type CALLBACK_TYPE = Callable[[], None]
@@ -26,10 +27,9 @@ class Ems:
         # diagnostic readers) które potrzebują dostępu do bieżących wartości
         # wejściowych. Promote z prywatnego `_ha` (unused) na publiczny.
         self.last_input_state: InputState | None = None
+        self.rce_prices: EmsRcePrices = EmsRcePrices()
         self.charge_slots: ChargeSlots = ChargeSlots()
         self.discharge_slots: DischargeSlots = DischargeSlots()
-        self.rce_data: RcePrices = None
-        self.current_price: float = None
         self.battery: BatteryManager = BatteryManager()
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
         self.grid_export: GridExportManager = GridExportManager()
@@ -51,36 +51,34 @@ class Ems:
         )
         self._async_update_listeners()
 
-    def update_hourly(self, now: datetime) -> None:
-        self.charge_slots.rotate_if_day_changed(now)
-        self.discharge_slots.update(self.rce_data, now)
-        if (
-            self.rce_data
-            and self.rce_data.today
-            and self.rce_data.today.hour_price
-            and now.hour < len(self.rce_data.today.hour_price)
-        ):
-            self.current_price = self.rce_data.today.hour_price[now.hour]
-            self._async_update_listeners()
-
     def update_rce(self, now: datetime, data: RcePrices) -> None:
-        if data:
-            self.rce_data = data
-            self.charge_slots.update(data)
-            self.update_hourly(now)
+        if not data:
+            return
+        self.rce_prices.update(now, data)
+        self.charge_slots.update(data)
+        self.update_hourly(now)
+
+    def update_hourly(self, now: datetime) -> None:
+        self.rce_prices.update_hourly(now)
+        self.charge_slots.rotate_if_day_changed(now)
+        self.discharge_slots.update(self.rce_prices.rce_prices, now)
+        if self.rce_prices.current_price is not None:
+            self._async_update_listeners()
 
     def restore_rce_today(self, prices_attr: list[dict], now: datetime) -> None:
         """Restore today's RCE prices from sensor attributes."""
-        rce_prices = RceDayPrices.from_sensor_attr(prices_attr)
-        if rce_prices:
-            self.charge_slots.today = ChargeSlots.compute(rce_prices)
-            self.update_hourly(now)
+        self.rce_prices.restore_today(prices_attr, now)
+        self.charge_slots.update(self.rce_prices.rce_prices)
+        self.update_hourly(now)
 
     def restore_rce_tomorrow(self, prices_attr: list[dict]) -> None:
         """Restore tomorrow's RCE prices from sensor attributes."""
-        rce_prices = RceDayPrices.from_sensor_attr(prices_attr)
-        if rce_prices:
-            self.charge_slots.tomorrow = ChargeSlots.compute(rce_prices)
+        # Now nie jest istotne dla tomorrow restore (current_price czyta z today).
+        # EmsRcePrices.restore_tomorrow przyjmuje now żeby utworzyć RcePrices
+        # gdy first restore (rce_prices is None) — używamy datetime.now() jako
+        # placeholder (nie wpływa na żadną logikę odczytową).
+        self.rce_prices.restore_tomorrow(prices_attr, datetime.now())
+        self.charge_slots.update(self.rce_prices.rce_prices)
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         def remove_listener() -> None:

@@ -87,6 +87,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.water_heater"))
     reload(import_module("custom_components.smart_rce.domain.charge_slots"))
     reload(import_module("custom_components.smart_rce.domain.discharge_slots"))
+    reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
     reload(import_module("custom_components.smart_rce.domain.ems"))
     reload(import_module("custom_components.smart_rce.domain"))
     # infrastructure modules PRZED adapter — adapter importuje wszystkie
