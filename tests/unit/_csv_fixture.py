@@ -5,16 +5,23 @@ Generates per-day charge-hours table from `RceDayPrices` — used by
 fixtures (`tests/fixtures/charge_hours_*.csv`). Test-only — żyło
 wcześniej w `domain/ems.py` z TODO komentarzem "this should be moved
 to a test".
+
+Buduje raw `start_charge_hours` dict per N=3..8 + best_consecutive_hours
+przez bezpośrednie wywołanie module-level helpers z `charge_slots.py` —
+ChargeWindow (output dla domain) zawiera tylko best, a CSV diagnostic
+prezentuje wszystkie opcje N=3..8 dla porównania.
 """
 
 from __future__ import annotations
 
 import csv
 
-from custom_components.smart_rce.domain.ems import (
+from custom_components.smart_rce.domain.charge_slots import (
+    INITIAL_BEST_CONSECUTIVE_HOURS,
     POSSIBLE_CONSECUTIVE_HOURS,
-    EmsDayPrices,
-    find_charge_hours,
+    calculate_start_charge_hours,
+    find_best_consecutive_hours,
+    shift_earlier_if_cheap,
 )
 from custom_components.smart_rce.domain.rce import RceDayPrices
 
@@ -28,35 +35,41 @@ class CsvTextBuilder:
 
 
 def create_csv(rce_prices: RceDayPrices):
-    ems_prices: EmsDayPrices = find_charge_hours(rce_prices)
+    prices: list[float] = [item["price"] for item in rce_prices.prices]
+    start_charge_hours = calculate_start_charge_hours(prices)
+    best_n = find_best_consecutive_hours(prices, start_charge_hours)
+    new_n, shifted_start = shift_earlier_if_cheap(
+        prices, start_charge_hours[best_n], best_n
+    )
+    start_charge_hours[new_n] = shifted_start
+    best_consecutive_hours = new_n
+    day = rce_prices.prices[0]["datetime"].date()
 
     csv_builder = CsvTextBuilder()
     writer = csv.writer(csv_builder, delimiter="\t")
 
     for hour in range(24):
-        current_price = ems_prices.hour_price[hour]
+        current_price = prices[hour]
 
-        row = [ems_prices.day] if hour == 0 else [""]
+        row = [day] if hour == 0 else [""]
         row.append(hour)
         row.append(str(current_price).replace(".", ","))
 
         for consecutive_hours in reversed(POSSIBLE_CONSECUTIVE_HOURS):
-            first_hour = ems_prices.first_hour_of_charge(consecutive_hours)
-            last_hour = ems_prices.last_hour_of_charge(consecutive_hours)
+            first_hour = start_charge_hours[consecutive_hours]
+            last_hour = first_hour + consecutive_hours - 1
             mark = ""
             if first_hour <= hour <= last_hour:
                 mark = f"H{consecutive_hours}"
-                if consecutive_hours == ems_prices.best_consecutive_hours:
-                    if consecutive_hours == 3:
-                        assert ems_prices.best_start_charge_hour() == first_hour - 0.5
-                    else:
-                        assert ems_prices.best_start_charge_hour() == first_hour
+                if consecutive_hours == best_consecutive_hours:
+                    if consecutive_hours == INITIAL_BEST_CONSECUTIVE_HOURS:
+                        assert first_hour == shifted_start
                     mark += "*"
             row.append(mark)
 
         current_price_size = max(round(current_price / 10), 0)
         row.append("*" * current_price_size if current_price_size else "|")
-        row.append(ems_prices.day)
+        row.append(day)
 
         writer.writerow(row)
 

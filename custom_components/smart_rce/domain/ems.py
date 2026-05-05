@@ -3,27 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import datetime
 import logging
-from statistics import mean
-from typing import Final
 
 from custom_components.smart_rce.domain.battery import BatteryManager
+from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
-from custom_components.smart_rce.domain.rce import TIMEZONE, RceData, RceDayPrices
+from custom_components.smart_rce.domain.rce import RceData, RceDayPrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 type CALLBACK_TYPE = Callable[[], None]
 
 _LOGGER = logging.getLogger(__name__)
-
-MAX_CONSECUTIVE_HOURS: Final[int] = 8
-INITIAL_BEST_CONSECUTIVE_HOURS: Final[int] = 3
-POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
-EARLIEST_CHARGE_HOUR: Final[int] = 7
-SHIFT_EARLIER_THRESHOLD: Final[float] = 40.0
 
 
 class Ems:
@@ -33,8 +25,7 @@ class Ems:
         # diagnostic readers) które potrzebują dostępu do bieżących wartości
         # wejściowych. Promote z prywatnego `_ha` (unused) na publiczny.
         self.last_input_state: InputState | None = None
-        self.today: EmsDayData = EmsDayData.empty()
-        self.tomorrow: EmsDayData = EmsDayData.empty()
+        self.charge_slots: ChargeSlots = ChargeSlots()
         self.rce_data: RceData = None
         self.current_price: float = None
         self.battery: BatteryManager = BatteryManager()
@@ -59,49 +50,29 @@ class Ems:
         self._async_update_listeners()
 
     def update_hourly(self, now: datetime) -> None:
-        # Rotate: jeśli today jest z innego dnia, przenieś tomorrow → today
-        if (
-            self.today.start_charge_hour_datetime
-            and self.tomorrow.hour_price
-            and self.today.start_charge_hour_datetime.date() != now.date()
-        ):
-            _LOGGER.info(
-                "Rotating RCE prices: tomorrow → today (today was %s, now is %s)",
-                self.today.start_charge_hour_datetime.date(),
-                now.date(),
-            )
-            self.today = self.tomorrow
-            self.tomorrow = EmsDayData.empty()
-
-        if self.today.hour_price:
-            self.current_price = self.today.hour_price[now.hour]
+        self.charge_slots.rotate_if_day_changed(now)
+        if self.rce_data and self.rce_data.today and self.rce_data.today.prices:
+            self.current_price = self.rce_data.today.prices[now.hour]["price"]
             self._async_update_listeners()
 
     def update_rce(self, now: datetime, data: RceData) -> None:
         if data:
             self.rce_data = data
-            if data.today:
-                self.today = EmsDayData.create(find_charge_hours(data.today))
-
-            if data.tomorrow:
-                self.tomorrow = EmsDayData.create(find_charge_hours(data.tomorrow))
-            else:
-                self.tomorrow = EmsDayData.empty()
-
+            self.charge_slots.update(data)
             self.update_hourly(now)
 
     def restore_rce_today(self, prices_attr: list[dict], now: datetime) -> None:
         """Restore today's RCE prices from sensor attributes."""
         rce_prices = _restore_rce_day_prices(prices_attr)
         if rce_prices:
-            self.today = EmsDayData.create(find_charge_hours(rce_prices))
+            self.charge_slots.today = ChargeSlots.compute(rce_prices)
             self.update_hourly(now)
 
     def restore_rce_tomorrow(self, prices_attr: list[dict]) -> None:
         """Restore tomorrow's RCE prices from sensor attributes."""
         rce_prices = _restore_rce_day_prices(prices_attr)
         if rce_prices:
-            self.tomorrow = EmsDayData.create(find_charge_hours(rce_prices))
+            self.charge_slots.tomorrow = ChargeSlots.compute(rce_prices)
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         def remove_listener() -> None:
@@ -115,67 +86,6 @@ class Ems:
             update_callback()
 
 
-class EmsDayPrices:
-    def __init__(
-        self,
-        day: date,
-        hour_price: list[float],
-        start_charge_hours: dict[int, int],
-        best_consecutive_hours: int,
-    ) -> None:
-        self.day: date = day
-        self.hour_price: tuple[float] = tuple(hour_price)
-        self._start_charge_hours: dict[int, int] = start_charge_hours
-        self.best_consecutive_hours: int = best_consecutive_hours
-
-    def first_hour_of_charge(self, consecutive_hours: int) -> int:
-        assert 1 <= consecutive_hours <= MAX_CONSECUTIVE_HOURS
-        return self._start_charge_hours[consecutive_hours]
-
-    def last_hour_of_charge(self, consecutive_hours: int) -> int:
-        assert 1 <= consecutive_hours <= MAX_CONSECUTIVE_HOURS
-        return self._start_charge_hours[consecutive_hours] + consecutive_hours - 1
-
-    def best_start_charge_hour(self) -> float:
-        best_hour = self._start_charge_hours[self.best_consecutive_hours]
-        if self.best_consecutive_hours == INITIAL_BEST_CONSECUTIVE_HOURS:
-            return best_hour - 0.5
-        return best_hour
-
-    def best_end_charge_hour(self) -> float:
-        best_consecutive = self.best_consecutive_hours
-        return self._start_charge_hours[best_consecutive] + best_consecutive
-
-    def hour_to_timestamp(self, hour: int) -> datetime:
-        minute = int(hour * 60 % 60)
-        return datetime.combine(self.day, time(int(hour), minute, 0), TIMEZONE)
-
-
-@dataclass
-class EmsDayData:
-    hour_price: tuple[float] | None
-    start_charge_hour: datetime | None
-    start_charge_hour_datetime: datetime | None
-    end_charge_hour: datetime | None
-    end_charge_hour_datetime: datetime | None
-
-    @classmethod
-    def create(cls, prices: EmsDayPrices) -> EmsDayData:
-        start_charge_hour = prices.best_start_charge_hour()
-        end_charge_hour = prices.best_end_charge_hour()
-        return cls(
-            start_charge_hour=start_charge_hour,
-            start_charge_hour_datetime=prices.hour_to_timestamp(start_charge_hour),
-            end_charge_hour=end_charge_hour,
-            end_charge_hour_datetime=prices.hour_to_timestamp(end_charge_hour),
-            hour_price=prices.hour_price,
-        )
-
-    @classmethod
-    def empty(cls) -> EmsDayData:
-        return EmsDayData(None, None, None, None, None)
-
-
 def _restore_rce_day_prices(prices_attr: list[dict]) -> RceDayPrices | None:
     """Build RceDayPrices from restored sensor attributes."""
     if not prices_attr:
@@ -185,90 +95,3 @@ def _restore_rce_day_prices(prices_attr: list[dict]) -> RceDayPrices | None:
         for p in prices_attr
     ]
     return RceDayPrices(published_at=None, prices=prices)
-
-
-def find_charge_hours(rce_prices: RceDayPrices) -> EmsDayPrices:
-    """Find start charge hour."""
-    prices: list[float] = [item["price"] for item in rce_prices.prices]
-    start_charge_hours: dict[int, int] = calculate_start_charge_hours(prices)
-    best_consecutive_hours = find_best_consecutive_hours(prices, start_charge_hours)
-    best_consecutive_hours, shifted_start = shift_earlier_if_cheap(
-        prices, start_charge_hours[best_consecutive_hours], best_consecutive_hours
-    )
-    start_charge_hours[best_consecutive_hours] = shifted_start
-    return EmsDayPrices(
-        day=rce_prices.prices[0]["datetime"].date(),
-        hour_price=prices,
-        start_charge_hours=start_charge_hours,
-        best_consecutive_hours=best_consecutive_hours,
-    )
-
-
-def shift_earlier_if_cheap(
-    prices: list[float], start: int, consecutive_hours: int
-) -> tuple[int, int]:
-    """Rozszerz okno ładowania wcześniej gdy różnica cen z kotwicą jest mała.
-
-    Zachowujemy ostatnią godzinę oryginalnego okna (nadal tania, brak powodu
-    żeby ją gubić) i dokładamy wcześniejsze godziny. Daje margines na
-    załamanie pogody po południu.
-
-    Kotwica (prices[end]) się nie zmienia między iteracjami, więc próg nie
-    kumuluje się przy kolejnych krokach.
-
-    Nie ograniczamy do MAX_CONSECUTIVE_HOURS — to limit głównego selectora
-    (find_best_consecutive_hours), a tutaj rozszerzamy okno o godziny tak
-    tanie że nie ma powodu ich nie dorzucić (przykład: weekend z cenami ~0).
-    EARLIEST_CHARGE_HOUR jest jedynym twardym hamulcem.
-
-    Zwraca (nowe_consecutive_hours, nowy_start).
-    """
-    end = start + consecutive_hours - 1
-    anchor_price = prices[end]
-    while start > EARLIEST_CHARGE_HOUR:
-        if prices[start - 1] - anchor_price > SHIFT_EARLIER_THRESHOLD:
-            break
-        start -= 1
-        consecutive_hours += 1
-    return consecutive_hours, start
-
-
-def calculate_start_charge_hours(prices: list[float]) -> dict[int, int]:
-    start_charge_hours: dict[int, int] = {}
-    for consecutive_hours in POSSIBLE_CONSECUTIVE_HOURS:
-        min_avg = float("inf")
-        best_hour = 0
-        for hour in range(6, 16):
-            avg = mean(prices[hour : hour + consecutive_hours])
-            if avg < min_avg:
-                min_avg = avg
-                best_hour = hour
-        start_charge_hours[consecutive_hours] = best_hour
-    return start_charge_hours
-
-
-def find_best_consecutive_hours(
-    prices: list[float], start_charge_hours: dict[int, int]
-) -> int:
-    best_consecutive_hours = INITIAL_BEST_CONSECUTIVE_HOURS
-    best_hour: int = start_charge_hours[best_consecutive_hours]
-
-    initial_consecutive_hours_max_price = max(
-        prices[best_hour : best_hour + best_consecutive_hours]
-    )
-    hours_to_check = filter(
-        lambda x: x > INITIAL_BEST_CONSECUTIVE_HOURS, POSSIBLE_CONSECUTIVE_HOURS
-    )
-    for consecutive_hours in hours_to_check:
-        candidate: int = start_charge_hours[consecutive_hours]
-        if (
-            candidate == best_hour
-            or candidate < best_hour
-            and (
-                prices[candidate] < 100
-                or prices[candidate] - initial_consecutive_hours_max_price < 45
-            )
-        ):
-            best_consecutive_hours = consecutive_hours
-
-    return best_consecutive_hours

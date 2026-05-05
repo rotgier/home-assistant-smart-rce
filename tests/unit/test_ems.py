@@ -1,6 +1,6 @@
 import glob
 
-from custom_components.smart_rce.domain.ems import (
+from custom_components.smart_rce.domain.charge_slots import (
     MAX_CONSECUTIVE_HOURS,
     shift_earlier_if_cheap,
 )
