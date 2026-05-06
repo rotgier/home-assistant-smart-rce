@@ -38,6 +38,7 @@ from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
+from .infrastructure.weather_diff_writer import WeatherDiffWriter
 from .infrastructure.weather_listener import WeatherForecastListener
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,12 +65,19 @@ async def create_pv_forecast_service(
 
     # Weather history write side — registered FIRST listener przed sensors,
     # żeby aggregate był zaktualizowany zanim sensory czytają state.
+    # Side effect: zapisuje formatted diff do pliku przy każdym istotnym
+    # change (initial fetch + actual condition diffs po hour rollover).
+    diff_writer = WeatherDiffWriter(hass)
+
     @callback
     def _update_weather_history() -> None:
         now = dt_util.now()
-        weather_forecast_history.update_from_forecast(
+        result = weather_forecast_history.update_from_forecast(
             weather_listener.forecast_hourly, now.date(), now
         )
+        if result:
+            diff_text, is_initial = result
+            hass.async_create_task(diff_writer.write(diff_text, is_initial, now))
 
     weather_listener.async_add_listener(_update_weather_history)
 

@@ -105,6 +105,9 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.weather_forecast_history"))
     reload(import_module("custom_components.smart_rce.infrastructure.weather_listener"))
     reload(
+        import_module("custom_components.smart_rce.infrastructure.weather_diff_writer")
+    )
+    reload(
         import_module(
             "custom_components.smart_rce.infrastructure.pv_forecast.solcast_reader"
         )
