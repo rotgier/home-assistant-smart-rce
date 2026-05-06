@@ -46,15 +46,15 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     # HA restart (template binary_sensor ładuje się 25-50ms po smart_rce).
     battery_persistence = BatteryStatePersistence(hass, entry, ems.battery)
     await battery_persistence.async_restore()
-    ems.async_add_listener(battery_persistence.save_if_changed)
+    entry.async_on_unload(ems.async_add_listener(battery_persistence.save_if_changed))
 
     # Driven adapter: BatteryManager observability (Python logging).
     battery_logger = BatteryManagerLogger(ems.battery, ems)
-    ems.async_add_listener(battery_logger.log_if_changed)
+    entry.async_on_unload(ems.async_add_listener(battery_logger.log_if_changed))
 
     # Driven adapter: Goodwe EMS via scene.apply (fire-and-forget).
     actuator = GridExportActuator(hass, entry, ems)
-    ems.async_add_listener(actuator.apply_if_changed)
+    entry.async_on_unload(ems.async_add_listener(actuator.apply_if_changed))
 
     @callback
     def update_hourly(now: datetime) -> None:

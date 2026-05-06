@@ -79,10 +79,12 @@ async def create_pv_forecast_service(
             diff_text, is_initial = result
             hass.async_create_task(diff_writer.write(diff_text, is_initial, now))
 
-    weather_listener.async_add_listener(_update_weather_history)
+    entry.async_on_unload(weather_listener.async_add_listener(_update_weather_history))
 
     # Weather forecast updates → PV forecast service recalculation.
-    weather_listener.async_add_listener(service.on_weather_update)
+    entry.async_on_unload(
+        weather_listener.async_add_listener(service.on_weather_update)
+    )
 
     # Solcast entity state_changed (3 entity ids ukryte w SolcastReader).
     at6_id, live_id, tomorrow_id = solcast.entity_ids

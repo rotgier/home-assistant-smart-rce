@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, timedelta
+import logging
 
 from homeassistant.core import CALLBACK_TYPE, Event, callback
 from homeassistant.util import dt as dt_util
@@ -33,6 +34,8 @@ from ..infrastructure.pv_forecast.consumption_profile_loader import (
 )
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
 from ..infrastructure.weather_listener import WeatherForecastListener
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PvForecastService:
@@ -134,6 +137,7 @@ class PvForecastService:
         try:
             profiles = await self._consumption_loader.fetch(now.date())
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
+            _LOGGER.exception("Failed to fetch consumption profiles")
             return
         self.forecast.update_consumption_profiles(profiles, now)
         self._notify_listeners()
