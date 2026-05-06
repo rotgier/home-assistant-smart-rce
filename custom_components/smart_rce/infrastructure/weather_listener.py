@@ -9,7 +9,7 @@ Wraps HA weather entity (`weather.wetteronline`):
   + WeatherForecastHistorySensor)
 
 Hexagonal pattern: **driving adapter (inbound)** — adapts HA push-style API
-do domain types (forecast_conditions zwraca list[WeatherConditionAtHour]).
+to domain types (forecast_conditions zwraca list[WeatherConditionAtHour]).
 Konsumenci subscribed listenerów to application/presentation: factory
 (write side hook), PvForecastService (recalculation trigger), sensor
 (state refresh).
