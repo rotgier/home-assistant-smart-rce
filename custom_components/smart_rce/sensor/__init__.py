@@ -16,7 +16,6 @@ from typing import Final
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .. import SmartRceConfigEntry
@@ -53,13 +52,8 @@ async def async_setup_entry(
         WeatherForecastHistorySensor(weather_history, weather_listener, coordinator)
     )
 
-    ems_device_info = DeviceInfo(
-        name="EMS",
-        identifiers={("ems", entry.entry_id)},
-        entry_type=DeviceEntryType.SERVICE,
-    )
     sensors.extend(
-        EmsSensor(ems_device_info, ems, description)
+        EmsSensor(entry.entry_id, ems, description)
         for description in EMS_SENSOR_DESCRIPTIONS
     )
 

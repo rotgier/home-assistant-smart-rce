@@ -14,6 +14,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import UnitOfPower
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from ..application.ems import Ems
 from ._state_writer_mixin import StateWriterMixin
@@ -31,11 +32,15 @@ class EmsSensor(StateWriterMixin):
 
     def __init__(
         self,
-        device_info,
+        entry_id: str,
         ems: Ems,
         description: EmsSensorDescription,
     ) -> None:
-        self._attr_device_info = device_info
+        self._attr_device_info = DeviceInfo(
+            name="EMS",
+            identifiers={(EMS_UNIQUE_ID_PREFIX, entry_id)},
+            entry_type=DeviceEntryType.SERVICE,
+        )
         self.ems: Ems = ems
         self.entity_description = description
         self._attr_unique_id = f"{EMS_UNIQUE_ID_PREFIX}_{description.key}"
