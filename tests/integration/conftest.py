@@ -64,14 +64,14 @@ def disable_live_reload() -> None:
 
 @pytest.fixture(autouse=True)
 def mock_pv_forecast_start() -> Generator[None]:
-    """Stub PvForecastService.async_start — bez recorder query.
+    """Stub PvForecastService.refresh_profiles — bez recorder query.
 
-    Coordinator startuje background fetch consumption profiles (recorder
-    statistics_during_period), który wymaga skomplikowanego setupu.
-    Aktuator nie potrzebuje PV forecast → no-op start.
+    pv_forecast_factory wywołuje hass.async_create_task(service.refresh_profiles())
+    przy setupie, który triggeruje recorder statistics_during_period (wymaga
+    skomplikowanego setupu). Aktuator nie potrzebuje PV forecast → no-op stub.
     """
     with patch(
-        "custom_components.smart_rce.application.pv_forecast_service.PvForecastService.async_start",
+        "custom_components.smart_rce.application.pv_forecast_service.PvForecastService.refresh_profiles",
         new=AsyncMock(),
     ):
         yield

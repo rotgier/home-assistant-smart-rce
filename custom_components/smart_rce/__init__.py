@@ -16,6 +16,7 @@ from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .ems_factory import create_ems
 from .infrastructure.rce_api import RceApi
+from .pv_forecast_factory import create_pv_forecast_service
 from .weather_forecast_history import WeatherForecastHistory
 from .weather_listener import WeatherListenerCoordinator
 
@@ -49,7 +50,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     weather_coordinator = WeatherListenerCoordinator(hass, entry)
 
     weather_forecast_history = WeatherForecastHistory()
-    pv_forecast = PvForecastService(hass, weather_coordinator, weather_forecast_history)
+    pv_forecast = await create_pv_forecast_service(
+        hass, entry, weather_coordinator, weather_forecast_history
+    )
 
     await rce_coordinator.async_config_entry_first_refresh()
 
@@ -62,8 +65,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    await pv_forecast.async_start()
 
     return True
 
@@ -120,6 +121,7 @@ def live_reload():
     )
     reload(import_module("custom_components.smart_rce.infrastructure.pv_forecast"))
     reload(import_module("custom_components.smart_rce.application.pv_forecast_service"))
+    reload(import_module("custom_components.smart_rce.pv_forecast_factory"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
