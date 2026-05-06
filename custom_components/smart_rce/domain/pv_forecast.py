@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Final
 
 CONSUMPTION_PER_30MIN: Final[float] = 0.45  # kWh (= 0.9 kWh/h / 2)
@@ -12,6 +12,12 @@ MIN_SOC_PERCENT: Final[int] = 10
 LOSS_FACTOR: Final[float] = 0.10  # 10% conversion losses
 BUFFER_PERCENT: Final[int] = 12
 CLOUDY_CAP_HOUR_7: Final[float] = 0.20  # max hourly rate at hour 7 for cloudy
+
+# Prev-workday consumption profile instrumentation (Etap A).
+# Ile dni wstecz patrzymy żeby zbudować profil zużycia jako baseline dla
+# target SOC. Domain decision (nie infrastructure detail) — semantyka
+# "bierzemy 3 ostatnie dni roboczowe".
+PREV_DAYS_COUNT: Final[int] = 3
 
 # AT6 cloudy modifiers per hour (hourly rate multiplier on est10)
 AT6_CLOUDY_MODIFIER_EARLY: Final[float] = 0.5  # hours 7-10
@@ -291,3 +297,159 @@ def calculate_target_soc(
     target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
 
     return TargetSocResult(value=max(round(target), MIN_SOC_PERCENT), buckets=buckets)
+
+
+def walk_back_workdays(today: date, days_back: int) -> date | None:
+    """Return date N workdays ago (skip weekends).
+
+    TODO Etap E: replace heuristic with binary_sensor.workday_sensor (PL holidays).
+    """
+    target = today
+    found = 0
+    while found < days_back:
+        target -= timedelta(days=1)
+        if target.weekday() < 5:
+            found += 1
+        if (today - target).days > 14:  # safety break
+            return None
+    return target
+
+
+@dataclass
+class PvForecast:
+    """Aggregate trzymający aktualne weather-adjusted PV estimates + target SoC.
+
+    Stan + zachowanie razem (rich domain model). Update methods przyjmują
+    value objects (już zbudowane przez application service z driving adapters)
+    — domain nie zna źródła danych (HA states), tylko ich semantyki.
+
+    8 forecast/SoC fields + prev-workday matrix (Etap A instrumentation):
+    - adjusted_*: weather-adjusted PV estimates (today/tomorrow × at_6/live)
+    - target_soc_*: implied battery SOC target (today/tomorrow × at_6/live)
+    - consumption_profiles: prev-workday consumption baselines (PREV_DAYS_COUNT)
+    - target_soc_*_prev_days: per-prev-workday target SOC (parallel to profiles)
+    - target_soc_max / target_soc_tomorrow_max: max(live + prev_days) — final
+      decision input dla automatyzacji.
+    """
+
+    adjusted_at_6: AdjustedPvForecast | None = None
+    adjusted_live: AdjustedPvForecast | None = None
+    adjusted_tomorrow: AdjustedPvForecast | None = None
+    adjusted_tomorrow_live: AdjustedPvForecast | None = None
+    target_soc: TargetSocResult | None = None
+    target_soc_live: TargetSocResult | None = None
+    target_soc_tomorrow: TargetSocResult | None = None
+    target_soc_tomorrow_live: TargetSocResult | None = None
+    consumption_profiles: list[ConsumptionProfile | None] = field(
+        default_factory=lambda: [None] * PREV_DAYS_COUNT
+    )
+    target_soc_prev_days: list[TargetSocResult | None] = field(
+        default_factory=lambda: [None] * PREV_DAYS_COUNT
+    )
+    target_soc_tomorrow_prev_days: list[TargetSocResult | None] = field(
+        default_factory=lambda: [None] * PREV_DAYS_COUNT
+    )
+    target_soc_max: int | None = None
+    target_soc_tomorrow_max: int | None = None
+
+    def update_at_6(
+        self,
+        solcast_periods: list[SolcastPeriod],
+        weather_conditions: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> None:
+        """Update morning (AT6) snapshot — adjusted_at_6 + downstream target SOC."""
+        self.adjusted_at_6 = adjust_pv_forecast_at6(solcast_periods, weather_conditions)
+        self._recalculate_target_soc(now)
+
+    def update_live(
+        self,
+        solcast_periods: list[SolcastPeriod],
+        weather_conditions: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> None:
+        """Update live forecast — adjusted_live + downstream target SOC."""
+        self.adjusted_live = adjust_pv_forecast_live(
+            solcast_periods, weather_conditions, now
+        )
+        self._recalculate_target_soc(now)
+
+    def update_tomorrow(
+        self,
+        solcast_periods: list[SolcastPeriod],
+        weather_conditions: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> None:
+        """Update tomorrow snapshots — adjusted_tomorrow (AT6 mods) + adjusted_tomorrow_live (LIVE mods).
+
+        Two variants z DIFFERENT adjustment semantics:
+        - adjusted_tomorrow      — AT6 modifiers (pessimistic, cloudy cap @ hour 7).
+                                   Wieczorne planowanie: safety lower-bound.
+        - adjusted_tomorrow_live — LIVE modifiers (optimistic, no cap).
+                                   Po midnight rollover: aligns z target_soc_live
+                                   na continuity (yesterday's target_soc_tomorrow_live
+                                   ~ today's target_soc_live).
+        """
+        self.adjusted_tomorrow = adjust_pv_forecast_at6(
+            solcast_periods, weather_conditions
+        )
+        # adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
+        # Dla tomorrow's periods (date = tomorrow) brak match → wszystkie periods
+        # używają standard LIVE modifiers (no special first-hour treatment).
+        self.adjusted_tomorrow_live = adjust_pv_forecast_live(
+            solcast_periods, weather_conditions, now
+        )
+        self._recalculate_target_soc(now)
+
+    def update_consumption_profiles(
+        self, profiles: list[ConsumptionProfile | None], now: datetime
+    ) -> None:
+        """Refresh prev-workday consumption baselines + downstream target SOC."""
+        self.consumption_profiles = profiles
+        self._recalculate_target_soc(now)
+
+    def _recalculate_target_soc(self, now: datetime) -> None:
+        """Calculate target SOC z aktualnych adjusted_* + consumption_profiles."""
+        if self.adjusted_at_6:
+            self.target_soc = calculate_target_soc(self.adjusted_at_6, now=now)
+        if self.adjusted_live:
+            self.target_soc_live = calculate_target_soc(self.adjusted_live, now=now)
+
+        # Tomorrow: zawsze full 7-13 window (no `now` arg → simulates entire window).
+        if self.adjusted_tomorrow:
+            self.target_soc_tomorrow = calculate_target_soc(self.adjusted_tomorrow)
+        if self.adjusted_tomorrow_live:
+            self.target_soc_tomorrow_live = calculate_target_soc(
+                self.adjusted_tomorrow_live
+            )
+
+        # Prev-workday instrumentation (Etap A) — adjusted_live + per-day profile.
+        for i, profile in enumerate(self.consumption_profiles):
+            if self.adjusted_live and profile is not None:
+                self.target_soc_prev_days[i] = calculate_target_soc(
+                    self.adjusted_live, consumption_profile=profile, now=now
+                )
+            else:
+                self.target_soc_prev_days[i] = None
+            if self.adjusted_tomorrow_live and profile is not None:
+                self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
+                    self.adjusted_tomorrow_live, consumption_profile=profile
+                )
+            else:
+                self.target_soc_tomorrow_prev_days[i] = None
+
+        today_vals = [
+            r.value
+            for r in [self.target_soc_live, *self.target_soc_prev_days]
+            if r is not None
+        ]
+        self.target_soc_max = max(today_vals) if today_vals else None
+        tmrw_vals = [
+            r.value
+            for r in [
+                self.target_soc_tomorrow_live,
+                *self.target_soc_tomorrow_prev_days,
+            ]
+            if r is not None
+        ]
+        self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None

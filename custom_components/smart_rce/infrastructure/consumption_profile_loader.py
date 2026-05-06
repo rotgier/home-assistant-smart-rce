@@ -1,21 +1,18 @@
 """Consumption profile loader — HA recorder LTS query (driven adapter).
 
 Fetches prev-workday consumption profiles z `sensor.total_consumption_minus_bi_hourly`
-przez recorder LTS API. Walks back N workdays (skip weekends), batches w jednym
-async query, buckets per (date, half-hour) — used by `PvForecastService` dla
-Etap A target_soc instrumentation.
+przez recorder LTS API. Walks back PREV_DAYS_COUNT workdays (skip weekends —
+domain decision, see `walk_back_workdays`), batches w jednym async query,
+buckets per (date, half-hour).
 
 Hexagonal pattern: **driven adapter (outbound)** — application service dictates
 "give me consumption profiles for last N workdays", konkretna impl używa HA
-recorder. Pure functions (no class state) — testable z mock hass.
-
-`walk_back_workdays(today, days_back)` — pure fn z `today` jako argumentem,
-nie `dt_util.now()`. Pozwala na unit testy bez patcha global time source.
+recorder.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 import logging
 from typing import Final
 
@@ -24,28 +21,11 @@ from homeassistant.components.recorder.statistics import statistics_during_perio
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from ..domain.pv_forecast import ConsumptionProfile
+from ..domain.pv_forecast import PREV_DAYS_COUNT, ConsumptionProfile, walk_back_workdays
 
 CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
-PREV_DAYS_COUNT: Final = 3
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def walk_back_workdays(today: date, days_back: int) -> date | None:
-    """Return date N workdays ago (skip weekends).
-
-    TODO Etap E: replace heuristic with binary_sensor.workday_sensor (PL holidays).
-    """
-    target = today
-    found = 0
-    while found < days_back:
-        target -= timedelta(days=1)
-        if target.weekday() < 5:
-            found += 1
-        if (today - target).days > 14:  # safety break
-            return None
-    return target
 
 
 async def fetch_consumption_profiles(
