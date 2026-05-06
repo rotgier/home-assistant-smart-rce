@@ -29,6 +29,7 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
+from homeassistant.util import dt as dt_util
 
 from .application.pv_forecast_service import PvForecastService
 from .domain.pv_forecast import PvForecast
@@ -61,7 +62,18 @@ async def create_pv_forecast_service(
         consumption_loader=consumption_loader,
     )
 
-    # Weather forecast updates (Wetteronline integration).
+    # Weather history write side — registered FIRST listener przed sensors,
+    # żeby aggregate był zaktualizowany zanim sensory czytają state.
+    @callback
+    def _update_weather_history() -> None:
+        now = dt_util.now()
+        weather_forecast_history.update_from_forecast(
+            weather_listener.forecast_hourly, now.date(), now
+        )
+
+    weather_listener.async_add_listener(_update_weather_history)
+
+    # Weather forecast updates → PV forecast service recalculation.
     weather_listener.async_add_listener(service.on_weather_update)
 
     # Solcast entity state_changed (3 entity ids ukryte w SolcastReader).

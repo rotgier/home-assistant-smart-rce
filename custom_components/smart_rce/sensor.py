@@ -709,22 +709,8 @@ class WeatherForecastHistorySensor(RestoreSensor):
 
     @callback
     def _handle_weather_update(self) -> None:
-        """Handle weather forecast update."""
-
-        now = now_local()
-        today = now.date()
-
-        # Update hours from forecast, get diff if changed
-        result = self._weather_history.update_from_forecast(
-            self._weather_listener.forecast_hourly, today, now
-        )
-        if result:
-            diff_text, is_initial = result
-            self.hass.loop.create_task(
-                self._async_save_diff(now, diff_text, is_initial)
-            )
-
-        self._attr_native_value = self._weather_history.current_hour_label(now)
+        """Refresh sensor state — write side managed przez factory."""
+        self._attr_native_value = self._weather_history.current_hour_label(now_local())
         self.async_write_ha_state()
 
     async def _async_save_diff(
