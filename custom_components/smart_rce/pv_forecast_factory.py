@@ -36,8 +36,8 @@ from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
+from .infrastructure.weather_listener import WeatherForecastListener
 from .weather_forecast_history import WeatherForecastHistory
-from .weather_listener import WeatherListenerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ _LOGGER = logging.getLogger(__name__)
 async def create_pv_forecast_service(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    weather_listener: WeatherListenerCoordinator,
+    weather_listener: WeatherForecastListener,
     weather_forecast_history: WeatherForecastHistory,
 ) -> PvForecastService:
     """Composition root — wire domain + adapters + service + HA listenery."""

@@ -305,7 +305,7 @@ async def async_setup_entry(
     ]
 
     weather_history = entry.runtime_data.weather_forecast_history
-    weather_coordinator = entry.runtime_data.weather_coordinator
+    weather_listener = entry.runtime_data.weather_listener
 
     sensors.extend(
         [
@@ -486,7 +486,7 @@ async def async_setup_entry(
             ),
             WeatherForecastHistorySensor(
                 weather_history,
-                weather_coordinator,
+                weather_listener,
                 coordinator,
             ),
         ]
@@ -668,11 +668,11 @@ class WeatherForecastHistorySensor(RestoreSensor):
     def __init__(
         self,
         weather_history: WeatherForecastHistory,
-        weather_coordinator: Any,
+        weather_listener: Any,
         rce_coordinator: SmartRceDataUpdateCoordinator,
     ) -> None:
         self._weather_history = weather_history
-        self._weather_coordinator = weather_coordinator
+        self._weather_listener = weather_listener
         self._attr_unique_id = f"{UNIQUE_ID_PREFIX}_weather_forecast_history"
         self._attr_device_info = rce_coordinator.device_info
         self._attr_native_value: str | None = None
@@ -698,9 +698,7 @@ class WeatherForecastHistorySensor(RestoreSensor):
         def on_weather_update() -> None:
             self._handle_weather_update()
 
-        remove_listener = self._weather_coordinator.async_add_listener(
-            on_weather_update
-        )
+        remove_listener = self._weather_listener.async_add_listener(on_weather_update)
         setattr(remove_listener, "_hass_callback", True)
         self.async_on_remove(remove_listener)
 
@@ -719,7 +717,7 @@ class WeatherForecastHistorySensor(RestoreSensor):
 
         # Update hours from forecast, get diff if changed
         result = self._weather_history.update_from_forecast(
-            self._weather_coordinator.forecast_hourly, today, now
+            self._weather_listener.forecast_hourly, today, now
         )
         if result:
             diff_text, is_initial = result

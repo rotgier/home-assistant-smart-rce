@@ -1,4 +1,16 @@
-"""Weather Listener Coordinator."""
+"""WeatherForecastListener — driving adapter dla HA weather entity.
+
+Wraps HA weather entity (`weather.wetteronline`):
+- Subscribes to forecast updates (push-style via async_subscribe_forecast)
+- Tracks entity availability (re-register on entity reappear)
+- Exposes `forecast_conditions` property — parsed domain types
+  (HA dict shape → list[WeatherConditionAtHour])
+- Listener fan-out (technical event dispatch, używane przez PvForecastService
+  + WeatherForecastHistorySensor)
+
+Hexagonal pattern: **driving adapter (inbound)** — adapts HA push-style API
+do domain consumers.
+"""
 
 from collections.abc import Callable
 from datetime import datetime
@@ -23,7 +35,7 @@ from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.event import Event, async_track_state_change_event
 from homeassistant.util.json import JsonValueType
 
-from .domain.pv_forecast import WeatherConditionAtHour
+from ..domain.pv_forecast import WeatherConditionAtHour
 
 WEATHER_ENTITY: Final[str] = "weather.wetteronline"
 UNAVAILABLE_STATES: Final[tuple[str | None]] = (
@@ -37,7 +49,7 @@ UNAVAILABLE_STATES: Final[tuple[str | None]] = (
 _LOGGER = logging.getLogger(__name__)
 
 
-class WeatherListenerCoordinator:
+class WeatherForecastListener:
     """Weather listener coordinator."""
 
     def __init__(
@@ -53,7 +65,7 @@ class WeatherListenerCoordinator:
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._unsubscribe_callback: CALLBACK_TYPE = None
 
-        _LOGGER.debug("WeatherListenerCoordinator init")
+        _LOGGER.debug("WeatherForecastListener init")
         entry.async_on_unload(self._shutdown)
 
         @callback

@@ -31,8 +31,8 @@ from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
+from ..infrastructure.weather_listener import WeatherForecastListener
 from ..weather_forecast_history import WeatherForecastHistory
-from ..weather_listener import WeatherListenerCoordinator
 
 
 class PvForecastService:
@@ -42,7 +42,7 @@ class PvForecastService:
         self,
         forecast: PvForecast,
         solcast: SolcastReader,
-        weather_listener: WeatherListenerCoordinator,
+        weather_listener: WeatherForecastListener,
         weather_history: WeatherForecastHistory,
         consumption_loader: ConsumptionProfileLoader,
     ) -> None:

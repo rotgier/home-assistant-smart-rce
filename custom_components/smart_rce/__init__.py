@@ -16,9 +16,9 @@ from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .ems_factory import create_ems
 from .infrastructure.rce_api import RceApi
+from .infrastructure.weather_listener import WeatherForecastListener
 from .pv_forecast_factory import create_pv_forecast_service
 from .weather_forecast_history import WeatherForecastHistory
-from .weather_listener import WeatherListenerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class SmartRceData:
 
     ems: Ems
     rce_coordinator: SmartRceDataUpdateCoordinator
-    weather_coordinator: WeatherListenerCoordinator
+    weather_listener: WeatherForecastListener
     pv_forecast: PvForecastService
     weather_forecast_history: WeatherForecastHistory
 
@@ -47,11 +47,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     rceApi = RceApi(websession)
     ems: Ems = await create_ems(hass, entry)
     rce_coordinator = SmartRceDataUpdateCoordinator(hass, rceApi, ems, entry)
-    weather_coordinator = WeatherListenerCoordinator(hass, entry)
+    weather_listener = WeatherForecastListener(hass, entry)
 
     weather_forecast_history = WeatherForecastHistory()
     pv_forecast = await create_pv_forecast_service(
-        hass, entry, weather_coordinator, weather_forecast_history
+        hass, entry, weather_listener, weather_forecast_history
     )
 
     await rce_coordinator.async_config_entry_first_refresh()
@@ -59,7 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     entry.runtime_data = SmartRceData(
         ems,
         rce_coordinator,
-        weather_coordinator,
+        weather_listener,
         pv_forecast,
         weather_forecast_history,
     )
@@ -103,7 +103,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.ems_factory"))
     reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
     reload(import_module("custom_components.smart_rce.weather_forecast_history"))
-    reload(import_module("custom_components.smart_rce.weather_listener"))
+    reload(import_module("custom_components.smart_rce.infrastructure.weather_listener"))
     reload(
         import_module(
             "custom_components.smart_rce.infrastructure.pv_forecast.solcast_reader"

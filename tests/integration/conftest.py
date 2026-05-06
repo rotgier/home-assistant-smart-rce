@@ -30,13 +30,13 @@ async def hass_warsaw_timezone(hass: HomeAssistant) -> None:
 
 @pytest.fixture(autouse=True)
 def mock_weather_listener() -> Generator[None]:
-    """Stub WeatherListenerCoordinator — testy actuator nie potrzebują weather.
+    """Stub WeatherForecastListener — testy actuator nie potrzebują weather.
 
     Bez tego async_setup_entry pada na `KeyError: 'weather'` w
     `_register_for_weather_updates` (weather component nieładowany w testach).
     """
     with patch(
-        "custom_components.smart_rce.weather_listener.WeatherListenerCoordinator._register_for_weather_updates",
+        "custom_components.smart_rce.infrastructure.weather_listener.WeatherForecastListener._register_for_weather_updates",
     ):
         yield
 
