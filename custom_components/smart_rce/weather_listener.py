@@ -1,6 +1,7 @@
 """Weather Listener Coordinator."""
 
 from collections.abc import Callable
+from datetime import datetime
 import logging
 from typing import Final
 
@@ -21,6 +22,8 @@ from homeassistant.core import (
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.event import Event, async_track_state_change_event
 from homeassistant.util.json import JsonValueType
+
+from .domain.pv_forecast import WeatherConditionAtHour
 
 WEATHER_ENTITY: Final[str] = "weather.wetteronline"
 UNAVAILABLE_STATES: Final[tuple[str | None]] = (
@@ -90,6 +93,16 @@ class WeatherListenerCoordinator:
                 weather_state_changed,
             )
         )
+
+    @property
+    def forecast_conditions(self) -> list[WeatherConditionAtHour]:
+        """Parsed forecast hourly — domain types z HA weather entity.
+
+        Driving adapter responsibility: parsuje raw HA-shape (`list[dict]`)
+        do domain `WeatherConditionAtHour`. Application service consumes
+        bezpośrednio bez znajomości HA dict shape.
+        """
+        return _parse_forecast_hourly(self.forecast_hourly)
 
     @callback
     def _register_for_weather_updates(self):
@@ -166,3 +179,20 @@ class WeatherListenerCoordinator:
         _LOGGER.debug("_shutdown")
         self._shutdown_requested = True
         self._unregister_weather_updates()
+
+
+def _parse_forecast_hourly(
+    forecast_hourly: list[JsonValueType] | None,
+) -> list[WeatherConditionAtHour]:
+    """Parse HA weather forecast attribute → domain WeatherConditionAtHour."""
+    if not forecast_hourly:
+        return []
+    return [
+        WeatherConditionAtHour(
+            hour=datetime.fromisoformat(item["datetime"]).hour,
+            condition_custom=item.get("condition_custom", "cloudy"),
+            forecast_date=datetime.fromisoformat(item["datetime"]).date(),
+        )
+        for item in forecast_hourly
+        if isinstance(item, dict) and "datetime" in item
+    ]

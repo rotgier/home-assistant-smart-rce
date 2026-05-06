@@ -111,11 +111,6 @@ def live_reload():
     )
     reload(
         import_module(
-            "custom_components.smart_rce.infrastructure.pv_forecast.weather_conditions_builder"
-        )
-    )
-    reload(
-        import_module(
             "custom_components.smart_rce.infrastructure.pv_forecast.consumption_profile_loader"
         )
     )

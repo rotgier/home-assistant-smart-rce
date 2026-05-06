@@ -36,9 +36,6 @@ from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
-from .infrastructure.pv_forecast.weather_conditions_builder import (
-    WeatherConditionsBuilder,
-)
 from .weather_forecast_history import WeatherForecastHistory
 from .weather_listener import WeatherListenerCoordinator
 
@@ -54,15 +51,13 @@ async def create_pv_forecast_service(
     """Composition root — wire domain + adapters + service + HA listenery."""
     forecast = PvForecast()
     solcast = SolcastReader(hass)
-    weather_builder = WeatherConditionsBuilder(
-        weather_listener, weather_forecast_history
-    )
     consumption_loader = ConsumptionProfileLoader(hass)
 
     service = PvForecastService(
         forecast=forecast,
         solcast=solcast,
-        weather_builder=weather_builder,
+        weather_listener=weather_listener,
+        weather_history=weather_forecast_history,
         consumption_loader=consumption_loader,
     )
 

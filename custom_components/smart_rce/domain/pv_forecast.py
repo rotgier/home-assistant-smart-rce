@@ -473,7 +473,30 @@ def _classify_condition(condition: str) -> str:
     return "cloudy"
 
 
-# --- Standalone domain utility --- #
+# --- Standalone domain utilities (used przez application service) --- #
+
+
+def merge_weather_conditions(
+    history: list[WeatherConditionAtHour],
+    forecast: list[WeatherConditionAtHour],
+) -> list[WeatherConditionAtHour]:
+    """Merge history (past hours, frozen) z forecast (future hours, fresh).
+
+    Forecast wins over history per (date, hour) — bardziej aktualne dane
+    dla future slots. Conditions bez forecast_date są ignorowane (nie da
+    się dopasować do konkretnego dnia).
+
+    Używane przez application service (PvForecastService._build_weather)
+    do zbudowania pełnego okna conditions dla `adjust_pv_forecast_*`.
+    """
+    combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
+    for c in history:
+        if c.forecast_date:
+            combined[(c.forecast_date, c.hour)] = c
+    for c in forecast:
+        if c.forecast_date:
+            combined[(c.forecast_date, c.hour)] = c
+    return list(combined.values())
 
 
 def walk_back_workdays(today: date, days_back: int) -> date | None:

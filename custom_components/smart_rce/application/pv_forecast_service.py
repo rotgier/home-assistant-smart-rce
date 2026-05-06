@@ -17,19 +17,22 @@ Public callbacks (`on_*`) są wired w factory:
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import date, timedelta
 
 from homeassistant.core import CALLBACK_TYPE, Event, callback
 from homeassistant.util import dt as dt_util
 
-from ..domain.pv_forecast import PvForecast
+from ..domain.pv_forecast import (
+    PvForecast,
+    WeatherConditionAtHour,
+    merge_weather_conditions,
+)
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
-from ..infrastructure.pv_forecast.weather_conditions_builder import (
-    WeatherConditionsBuilder,
-)
+from ..weather_forecast_history import WeatherForecastHistory
+from ..weather_listener import WeatherListenerCoordinator
 
 
 class PvForecastService:
@@ -39,12 +42,14 @@ class PvForecastService:
         self,
         forecast: PvForecast,
         solcast: SolcastReader,
-        weather_builder: WeatherConditionsBuilder,
+        weather_listener: WeatherListenerCoordinator,
+        weather_history: WeatherForecastHistory,
         consumption_loader: ConsumptionProfileLoader,
     ) -> None:
         self.forecast = forecast
         self._solcast = solcast
-        self._weather_builder = weather_builder
+        self._weather_listener = weather_listener
+        self._weather_history = weather_history
         self._consumption_loader = consumption_loader
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
 
@@ -68,7 +73,7 @@ class PvForecastService:
             solcast_periods = self._solcast.read_at_6()
         if not solcast_periods:
             return
-        weather = self._weather_builder.build(now.date())
+        weather = self._build_weather(now.date())
         self.forecast.update_at_6(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
@@ -77,7 +82,7 @@ class PvForecastService:
         if not solcast_periods:
             return
         now = dt_util.now()
-        weather = self._weather_builder.build(now.date())
+        weather = self._build_weather(now.date())
         self.forecast.update_live(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
@@ -87,8 +92,18 @@ class PvForecastService:
             return
         now = dt_util.now()
         tomorrow = (now + timedelta(days=1)).date()
-        weather = self._weather_builder.build(tomorrow)
+        weather = self._build_weather(tomorrow)
         self.forecast.update_tomorrow(solcast_periods, weather, now)
+
+    def _build_weather(self, day: date) -> list[WeatherConditionAtHour]:
+        """Combine weather history (past hours) + live forecast (future hours).
+
+        Multi-caller helper — używane przez 3× `_recalculate_*`. Pure orchestration:
+        read 2 sources + delegate merge do domain `merge_weather_conditions`.
+        """
+        history = self._weather_history.get_conditions_for_date(day)
+        forecast = self._weather_listener.forecast_conditions
+        return merge_weather_conditions(history, forecast)
 
     @callback
     def on_weather_update(self) -> None:
