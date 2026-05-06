@@ -50,13 +50,12 @@ class SmartRceSensorDescription(SensorEntityDescription):
 
 
 def _avg_price(ems: Ems, day: str) -> float | None:
+    """Thin wrapper — delegate do RceDayPrices.avg_price domain property."""
     rce_data = ems.rce_prices.rce_prices
     if not rce_data:
         return None
     day_prices = rce_data.today if day == "today" else rce_data.tomorrow
-    if not day_prices or not day_prices.hour_price:
-        return None
-    return round(sum(day_prices.hour_price) / len(day_prices.hour_price), 2)
+    return day_prices.avg_price if day_prices else None
 
 
 def _prices_attr(ems: Ems, day: str) -> dict[str, Any]:
@@ -725,13 +724,7 @@ class WeatherForecastHistorySensor(RestoreSensor):
                 self._async_save_diff(now, diff_text, is_initial)
             )
 
-        # Check if state should change (new hour)
-        current_hour_str = f"{now.hour:02d}:00"
-        current_value = self._attr_native_value or ""
-        if not current_value.startswith(current_hour_str):
-            condition = self._weather_history.get_condition(now.hour)
-            self._attr_native_value = f"{current_hour_str} {condition}"
-
+        self._attr_native_value = self._weather_history.current_hour_label(now)
         self.async_write_ha_state()
 
     async def _async_save_diff(

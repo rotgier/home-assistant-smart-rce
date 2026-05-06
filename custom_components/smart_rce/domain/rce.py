@@ -19,6 +19,13 @@ class RceDayPrices:
     day: date
     hour_price: tuple[float, ...]  # length matches available hours, indexed by hour
 
+    @property
+    def avg_price(self) -> float | None:
+        """Average price for the day (rounded to 2 decimals). None for empty hour_price."""
+        if not self.hour_price:
+            return None
+        return round(sum(self.hour_price) / len(self.hour_price), 2)
+
     def datetime_at_hour(self, hour: int) -> datetime:
         return datetime.combine(self.day, time(hour, 0), TIMEZONE)
 

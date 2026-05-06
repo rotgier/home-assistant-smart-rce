@@ -116,6 +116,10 @@ class WeatherForecastHistory:
         """Get condition for given hour. Fallback to cloudy."""
         return self._hours.get(hour, "cloudy")
 
+    def current_hour_label(self, now: datetime) -> str:
+        """Sensor state value: 'HH:00 condition' dla bieżącej godziny."""
+        return f"{now.hour:02d}:00 {self.get_condition(now.hour)}"
+
     def get_conditions_for_date(
         self, target_date: date
     ) -> list[WeatherConditionAtHour]:
