@@ -27,9 +27,13 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from ..domain.pv_forecast import PvForecast
-from ..infrastructure.consumption_profile_loader import fetch_consumption_profiles
+from ..infrastructure.pv_forecast.consumption_profile_loader import (
+    ConsumptionProfileLoader,
+)
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
-from ..infrastructure.pv_forecast_loader import build_weather_conditions
+from ..infrastructure.pv_forecast.weather_conditions_builder import (
+    WeatherConditionsBuilder,
+)
 from ..weather_forecast_history import WeatherForecastHistory
 from ..weather_listener import WeatherListenerCoordinator
 
@@ -47,8 +51,11 @@ class PvForecastService:
     ) -> None:
         self._hass = hass
         self._weather_coordinator = weather_coordinator
-        self._weather_forecast_history = weather_forecast_history
         self._solcast = SolcastReader(hass)
+        self._weather_builder = WeatherConditionsBuilder(
+            weather_coordinator, weather_forecast_history
+        )
+        self._consumption_loader = ConsumptionProfileLoader(hass)
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._cancel_solcast_listeners: list[CALLBACK_TYPE] = []
         self._cancel_profile_refresh: CALLBACK_TYPE | None = None
@@ -119,9 +126,7 @@ class PvForecastService:
         if not solcast_periods:
             return
 
-        weather = build_weather_conditions(
-            self._weather_coordinator, self._weather_forecast_history, now.date()
-        )
+        weather = self._weather_builder.build(now.date())
         self.forecast.update_at_6(solcast_periods, weather, now)
         _LOGGER.debug(
             "Adjusted at_6 (source: %s): %.1f kWh (from %d periods, %d weather conditions)",
@@ -137,9 +142,7 @@ class PvForecastService:
         if not solcast_periods:
             return
         now = dt_util.now()
-        weather = build_weather_conditions(
-            self._weather_coordinator, self._weather_forecast_history, now.date()
-        )
+        weather = self._weather_builder.build(now.date())
         self.forecast.update_live(solcast_periods, weather, now)
         _LOGGER.debug(
             "Adjusted live: %.1f kWh (from %d periods)",
@@ -154,9 +157,7 @@ class PvForecastService:
             return
         now = dt_util.now()
         tomorrow = (now + timedelta(days=1)).date()
-        weather = build_weather_conditions(
-            self._weather_coordinator, self._weather_forecast_history, tomorrow
-        )
+        weather = self._weather_builder.build(tomorrow)
         self.forecast.update_tomorrow(solcast_periods, weather, now)
         _LOGGER.debug(
             "Adjusted tomorrow: AT6=%.1f kWh, LIVE=%.1f kWh (from %d periods, %d weather conditions)",
@@ -196,7 +197,7 @@ class PvForecastService:
         """Fetch profiles + update aggregate + notify listeners."""
         now = dt_util.now()
         try:
-            profiles = await fetch_consumption_profiles(self._hass, now.date())
+            profiles = await self._consumption_loader.fetch(now.date())
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
             _LOGGER.exception("Failed to fetch consumption profiles")
             return

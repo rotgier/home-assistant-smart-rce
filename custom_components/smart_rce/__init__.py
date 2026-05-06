@@ -108,15 +108,17 @@ def live_reload():
             "custom_components.smart_rce.infrastructure.pv_forecast.solcast_reader"
         )
     )
-    reload(import_module("custom_components.smart_rce.infrastructure.pv_forecast"))
     reload(
-        import_module("custom_components.smart_rce.infrastructure.pv_forecast_loader")
+        import_module(
+            "custom_components.smart_rce.infrastructure.pv_forecast.weather_conditions_builder"
+        )
     )
     reload(
         import_module(
-            "custom_components.smart_rce.infrastructure.consumption_profile_loader"
+            "custom_components.smart_rce.infrastructure.pv_forecast.consumption_profile_loader"
         )
     )
+    reload(import_module("custom_components.smart_rce.infrastructure.pv_forecast"))
     reload(import_module("custom_components.smart_rce.application.pv_forecast_service"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor"))
