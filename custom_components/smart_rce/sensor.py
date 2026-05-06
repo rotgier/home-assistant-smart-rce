@@ -506,6 +506,23 @@ async def async_setup_entry(
     async_add_entities(sensors)
 
 
+def _register_state_writer(sensor: SensorEntity, source: Any) -> None:
+    """Register listener który invoke async_write_ha_state on każdy notify.
+
+    `source` musi mieć `async_add_listener(callback) -> Callable[[], None]`.
+    Common pattern dla sensors subscribed to Ems/PvForecastService.
+    Eliminuje 5-line duplikację w `async_added_to_hass` per klasa.
+    """
+
+    @callback
+    def listener() -> None:
+        sensor.async_write_ha_state()
+
+    remove_listener = source.async_add_listener(listener)
+    setattr(remove_listener, "_hass_callback", True)
+    sensor.async_on_remove(remove_listener)
+
+
 def _pv_forecast_attrs(forecast) -> dict[str, Any]:
     if not forecast:
         return {}
@@ -570,14 +587,7 @@ class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], RestoreSe
             if last_state:
                 self.entity_description.restore_fn(self.ems, last_state.attributes)
 
-        @callback
-        def listener() -> None:
-            self.async_write_ha_state()
-
-        remove_listener = self.ems.async_add_listener(listener)
-        setattr(remove_listener, "_hass_callback", True)
-        self.async_on_remove(remove_listener)
-
+        _register_state_writer(self, self.ems)
         self._handle_coordinator_update()
         _LOGGER.debug(
             "Setup of RCE Smart sensor %s (%s, unique_id: %s)",
@@ -624,15 +634,7 @@ class PvForecastSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-
-        @callback
-        def listener() -> None:
-            self.async_write_ha_state()
-
-        remove_listener = self._pv_forecast.async_add_listener(listener)
-        setattr(remove_listener, "_hass_callback", True)
-        self.async_on_remove(remove_listener)
-
+        _register_state_writer(self, self._pv_forecast)
         _LOGGER.debug(
             "Setup of PV Forecast sensor %s (%s, unique_id: %s)",
             self.name,
@@ -741,15 +743,7 @@ class EmsSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-
-        @callback
-        def listener() -> None:
-            self.async_write_ha_state()
-
-        remove_listener = self.ems.async_add_listener(listener)
-        setattr(remove_listener, "_hass_callback", True)
-        self.async_on_remove(remove_listener)
-
+        _register_state_writer(self, self.ems)
         self.async_write_ha_state()
         _LOGGER.debug(
             "Setup of EMS sensor %s (%s, unique_id: %s)",
