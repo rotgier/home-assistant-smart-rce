@@ -1,48 +1,22 @@
-"""PV Forecast loader — Solcast/weather sources (driving adapter).
+"""PV Forecast loader — weather conditions builder (driving adapter).
 
-Reads Solcast forecast attributes from HA state machine + builds combined
-weather conditions (history + forecast) for matching against PV periods.
-
-Hexagonal pattern: **driving adapter (inbound)** — infrastructure boundary
-adapting HA `states` API + WeatherListenerCoordinator/WeatherForecastHistory
-into pure domain types (`SolcastPeriod`, `WeatherConditionAtHour`) consumed
-by `application.pv_forecast_service.PvForecastService`.
+Po Chunku 2 zostaje tylko `build_weather_conditions` — Solcast reading
+przeniesione do `infrastructure/pv_forecast/solcast_reader.py`. W Chunku 3
+ta funkcja też migruje do `infrastructure/pv_forecast/weather_conditions_builder.py`
+i ten plik znika.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
 import logging
-from typing import Any, Final
+from typing import Any
 
-from homeassistant.core import HomeAssistant
-
-from ..domain.pv_forecast import SolcastPeriod, WeatherConditionAtHour
+from ..domain.pv_forecast import WeatherConditionAtHour
 from ..weather_forecast_history import WeatherForecastHistory
 from ..weather_listener import WeatherListenerCoordinator
 
-SOLCAST_AT_6_ENTITY: Final = "sensor.solcast_forecast_at_6"
-SOLCAST_LIVE_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_dzisiaj"
-SOLCAST_TOMORROW_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_jutro"
-
 _LOGGER = logging.getLogger(__name__)
-
-
-def read_solcast_periods(
-    hass: HomeAssistant, entity_id: str, attr_name: str
-) -> list[SolcastPeriod] | None:
-    """Read Solcast forecast from HA state machine."""
-    state = hass.states.get(entity_id)
-    if not state:
-        _LOGGER.debug("Entity %s not found", entity_id)
-        return None
-
-    forecast_attr = state.attributes.get(attr_name)
-    if not forecast_attr:
-        _LOGGER.debug("Entity %s has no attribute %s", entity_id, attr_name)
-        return None
-
-    return _parse_solcast_forecast(forecast_attr)
 
 
 def build_weather_conditions(
@@ -74,29 +48,10 @@ def build_weather_conditions(
     return list(combined.values())
 
 
-def _parse_solcast_forecast(
-    forecast_attr: list[dict[str, Any]],
-) -> list[SolcastPeriod]:
-    """Parse Solcast forecast attribute into domain objects."""
-    return [
-        SolcastPeriod(
-            period_start=str(item["period_start"]),
-            pv_estimate=item["pv_estimate"],
-            pv_estimate10=item["pv_estimate10"],
-            pv_estimate90=item["pv_estimate90"],
-        )
-        for item in forecast_attr
-    ]
-
-
 def _parse_weather_conditions(
     forecast_hourly: list[dict[str, Any]] | None,
 ) -> list[WeatherConditionAtHour]:
-    """Parse WeatherListenerCoordinator.forecast_hourly into domain objects.
-
-    Returns conditions with both hour and date, to allow matching
-    against the correct day in Solcast forecast.
-    """
+    """Parse WeatherListenerCoordinator.forecast_hourly into domain objects."""
     if not forecast_hourly:
         return []
     return [

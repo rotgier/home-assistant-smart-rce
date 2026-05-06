@@ -28,13 +28,8 @@ from homeassistant.util import dt as dt_util
 
 from ..domain.pv_forecast import PvForecast
 from ..infrastructure.consumption_profile_loader import fetch_consumption_profiles
-from ..infrastructure.pv_forecast_loader import (
-    SOLCAST_AT_6_ENTITY,
-    SOLCAST_LIVE_ENTITY,
-    SOLCAST_TOMORROW_ENTITY,
-    build_weather_conditions,
-    read_solcast_periods,
-)
+from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
+from ..infrastructure.pv_forecast_loader import build_weather_conditions
 from ..weather_forecast_history import WeatherForecastHistory
 from ..weather_listener import WeatherListenerCoordinator
 
@@ -53,6 +48,7 @@ class PvForecastService:
         self._hass = hass
         self._weather_coordinator = weather_coordinator
         self._weather_forecast_history = weather_forecast_history
+        self._solcast = SolcastReader(hass)
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._cancel_solcast_listeners: list[CALLBACK_TYPE] = []
         self._cancel_profile_refresh: CALLBACK_TYPE | None = None
@@ -62,14 +58,15 @@ class PvForecastService:
         """Start listening for weather and Solcast changes."""
         self._weather_coordinator.async_add_listener(self._on_weather_update)
 
+        at6_id, live_id, tomorrow_id = self._solcast.entity_ids
         cancel_at6 = async_track_state_change_event(
-            self._hass, [SOLCAST_AT_6_ENTITY], self._on_solcast_at6_change
+            self._hass, [at6_id], self._on_solcast_at6_change
         )
         cancel_live = async_track_state_change_event(
-            self._hass, [SOLCAST_LIVE_ENTITY], self._on_solcast_live_change
+            self._hass, [live_id], self._on_solcast_live_change
         )
         cancel_tomorrow = async_track_state_change_event(
-            self._hass, [SOLCAST_TOMORROW_ENTITY], self._on_solcast_tomorrow_change
+            self._hass, [tomorrow_id], self._on_solcast_tomorrow_change
         )
         self._cancel_solcast_listeners = [cancel_at6, cancel_live, cancel_tomorrow]
 
@@ -113,15 +110,12 @@ class PvForecastService:
         """
         now = dt_util.now()
         if now.hour < 6 or (now.hour == 6 and now.minute < 2):
-            entity_id = SOLCAST_LIVE_ENTITY
-            attr_name = "detailedForecast"
+            solcast_periods = self._solcast.read_live()
             source = "live (pre-6:01)"
         else:
-            entity_id = SOLCAST_AT_6_ENTITY
-            attr_name = "forecast"
+            solcast_periods = self._solcast.read_at_6()
             source = "at_6"
 
-        solcast_periods = read_solcast_periods(self._hass, entity_id, attr_name)
         if not solcast_periods:
             return
 
@@ -139,9 +133,7 @@ class PvForecastService:
 
     def _recalculate_live(self) -> None:
         """Recalculate weather-adjusted forecast from live Solcast."""
-        solcast_periods = read_solcast_periods(
-            self._hass, SOLCAST_LIVE_ENTITY, "detailedForecast"
-        )
+        solcast_periods = self._solcast.read_live()
         if not solcast_periods:
             return
         now = dt_util.now()
@@ -157,9 +149,7 @@ class PvForecastService:
 
     def _recalculate_tomorrow(self) -> None:
         """Recalculate tomorrow forecast — both AT6 and LIVE variants."""
-        solcast_periods = read_solcast_periods(
-            self._hass, SOLCAST_TOMORROW_ENTITY, "detailedForecast"
-        )
+        solcast_periods = self._solcast.read_tomorrow()
         if not solcast_periods:
             return
         now = dt_util.now()
