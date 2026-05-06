@@ -14,11 +14,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
+from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .infrastructure.rce_api import RceApi
 from .infrastructure.weather_listener import WeatherForecastListener
 from .pv_forecast_factory import create_pv_forecast_service
-from .weather_forecast_history import WeatherForecastHistory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def live_reload():
     )
     reload(import_module("custom_components.smart_rce.ems_factory"))
     reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
-    reload(import_module("custom_components.smart_rce.weather_forecast_history"))
+    reload(import_module("custom_components.smart_rce.domain.weather_forecast_history"))
     reload(import_module("custom_components.smart_rce.infrastructure.weather_listener"))
     reload(
         import_module(

@@ -32,12 +32,12 @@ from homeassistant.helpers.event import (
 
 from .application.pv_forecast_service import PvForecastService
 from .domain.pv_forecast import PvForecast
+from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
 from .infrastructure.weather_listener import WeatherForecastListener
-from .weather_forecast_history import WeatherForecastHistory
 
 _LOGGER = logging.getLogger(__name__)
 

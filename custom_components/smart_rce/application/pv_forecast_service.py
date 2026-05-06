@@ -27,12 +27,12 @@ from ..domain.pv_forecast import (
     WeatherConditionAtHour,
     merge_weather_conditions,
 )
+from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
 from ..infrastructure.weather_listener import WeatherForecastListener
-from ..weather_forecast_history import WeatherForecastHistory
 
 
 class PvForecastService:

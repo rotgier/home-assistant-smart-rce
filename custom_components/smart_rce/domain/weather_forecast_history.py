@@ -1,11 +1,21 @@
-"""Weather Forecast History — tracks hourly forecast conditions throughout the day."""
+"""WeatherForecastHistory — domain aggregate trzymający hourly weather conditions w ciągu dnia.
+
+Pure domain (zero HA imports). Trzyma per-hour `condition_custom` dict
+(state + reset at midnight + restore from sensor cache). Hours które już
+minęły są "frozen" (nie nadpisywane przez świeże forecasty).
+
+Konsumowane przez:
+- application service (`PvForecastService._build_weather` — czyta past hours)
+- HA sensor (`WeatherForecastHistorySensor` — write side: zapisuje przy każdym
+  weather forecast update; plus restore at startup)
+"""
 
 from __future__ import annotations
 
 from datetime import date, datetime
 import logging
 
-from .domain.pv_forecast import WeatherConditionAtHour
+from .pv_forecast import WeatherConditionAtHour
 
 _LOGGER = logging.getLogger(__name__)
 

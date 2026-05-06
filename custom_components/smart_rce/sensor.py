@@ -27,7 +27,7 @@ from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
 from .const import DOMAIN, GROSS_MULTIPLIER
 from .coordinator import SmartRceDataUpdateCoordinator
-from .weather_forecast_history import WeatherForecastHistory
+from .domain.weather_forecast_history import WeatherForecastHistory
 
 CURRENCY_PLN: Final = "zł"
 UNIQUE_ID_PREFIX = DOMAIN
