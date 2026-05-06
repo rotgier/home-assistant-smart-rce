@@ -21,7 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .. import SmartRceConfigEntry
 from .ems_sensor import EMS_SENSOR_DESCRIPTIONS, EmsSensor
-from .pv_forecast_sensor import build_pv_forecast_sensors
+from .pv_forecast_sensor import PV_FORECAST_DESCRIPTIONS, PvForecastSensor
 from .rce_sensor import SENSOR_DESCRIPTIONS, SmartRceSensor
 from .weather_history_sensor import WeatherForecastHistorySensor
 
@@ -45,7 +45,10 @@ async def async_setup_entry(
         for description in SENSOR_DESCRIPTIONS
     ]
 
-    sensors.extend(build_pv_forecast_sensors(pv_forecast, coordinator))
+    sensors.extend(
+        PvForecastSensor(pv_forecast, coordinator, description)
+        for description in PV_FORECAST_DESCRIPTIONS
+    )
     sensors.append(
         WeatherForecastHistorySensor(weather_history, weather_listener, coordinator)
     )

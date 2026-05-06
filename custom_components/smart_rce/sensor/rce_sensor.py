@@ -21,7 +21,7 @@ from homeassistant.util.dt import now as now_local
 from ..application.ems import Ems
 from ..const import DOMAIN, GROSS_MULTIPLIER
 from ..coordinator import SmartRceDataUpdateCoordinator
-from ._helpers import register_state_writer
+from ._state_writer_mixin import StateWriterMixin
 
 CURRENCY_PLN: Final = "zł"
 UNIQUE_ID_PREFIX = DOMAIN
@@ -29,7 +29,9 @@ UNIQUE_ID_PREFIX = DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
-class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], RestoreSensor):
+class SmartRceSensor(
+    CoordinatorEntity[SmartRceDataUpdateCoordinator], StateWriterMixin, RestoreSensor
+):
     """Sensor reading current/historical RCE prices + charge/discharge slots from Ems."""
 
     _attr_has_entity_name = True
@@ -55,7 +57,7 @@ class SmartRceSensor(CoordinatorEntity[SmartRceDataUpdateCoordinator], RestoreSe
             if last_state:
                 self.entity_description.restore_fn(self.ems, last_state.attributes)
 
-        register_state_writer(self, self.ems)
+        self._register_state_writer(self.ems)
         self._handle_coordinator_update()
         _LOGGER.debug(
             "Setup of RCE Smart sensor %s (%s, unique_id: %s)",
