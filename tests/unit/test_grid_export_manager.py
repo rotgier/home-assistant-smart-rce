@@ -60,7 +60,7 @@ def _state(
 
 
 class TestStandby:
-    """STANDBY entry/avg fallback (PV<200W → discharge_battery xset=0)."""
+    """STANDBY entry/avg fallback (PV<200W → charge_battery xset=0)."""
 
     def test_standby_when_pv_low(self):
         """PV<200W → STANDBY (pv_power_avg_2_minutes=None → fallback to pv_power)."""
@@ -73,7 +73,7 @@ class TestStandby:
             )
         )
         assert mgr.intervention_active is True
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0
         assert mgr.last_decision_reason == "low_pv_standby"
 
@@ -102,7 +102,7 @@ class TestStandby:
                 pv_power_avg_2_minutes=80,  # mean steadily low
             )
         )
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0
         assert mgr.last_decision_reason == "low_pv_standby"
 
@@ -130,7 +130,7 @@ class TestStrategyOverride:
             )
         )
         assert mgr.intervention_active is True
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0
         assert mgr.last_decision_reason == "low_pv_standby"
 
@@ -695,7 +695,7 @@ class TestStrategyModeChargeAdaptive:
             )
         )
         # PV<200 → STANDBY (krok 1 ma priority nad charge_adaptive)
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
 
 
 class TestIdempotency:
@@ -836,7 +836,7 @@ class TestNegativeEntry:
             )
         )
         assert mgr.intervention_active is True
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0  # clamped to STOP
         assert "negative_stop_xset_0" in mgr.last_decision_reason
 
@@ -925,7 +925,7 @@ class TestNegativeEntry:
         )
         assert mgr.intervention_active is True
         assert mgr.intervention_direction is InterventionDirection.NEGATIVE
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0  # clamped from charge to stop
 
 
@@ -989,7 +989,7 @@ class TestNegativeExit:
         # Continue intervention (clamp), NIE exit
         assert mgr.intervention_active is True
         assert mgr.recommended_xset == 0  # clamped to stop bucket
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
 
     def test_exit_end_of_hour(self):
         mgr = GridExportManager()
@@ -1046,7 +1046,7 @@ class TestNegativeAdaptiveBuckets:
                 consumption_minus_pv_2_minutes=-1500,  # pv_avail = 1500
             )
         )
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0
 
     def test_pv_zero_to_1000_discharge_1000(self):
@@ -1179,7 +1179,7 @@ class TestChargeToggleClamp:
             )
         )
         assert mgr.intervention_active is True
-        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0  # clamped
 
     def test_discharge_bucket_unaffected_by_toggle(self):

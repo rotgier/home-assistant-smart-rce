@@ -8,7 +8,11 @@ YAML automation `Inverter grid export to avoid NEGATIVE balance` (Sell Power
 Strategy: 10 buckets on `pv_available` (= PV − house_without_heaters). Each
 bucket maps pv_available to signed xset:
 - xset > 0  → CHARGE_BATTERY (PV surplus, charge battery, export ~1500W)
-- xset = 0  → DISCHARGE_BATTERY xset=0 (bucket STOP, battery idle, export = pv_avail)
+- xset = 0  → CHARGE_BATTERY xset=0 (bucket STOP, battery idle, export = pv_avail).
+              Empirically verified: DISCHARGE_BATTERY xset=0 is silently ignored
+              when DoD=0 (battery keeps charging from PV surplus). Only
+              CHARGE_BATTERY xset=0 actually parks the battery at zero power
+              regardless of DoD.
 - xset < 0  → DISCHARGE_BATTERY (PV deficit, draw from battery, export ~1500W)
 
 Hysteresis ±300W on bucket boundaries (analog to POSITIVE). SoC clamp:
@@ -67,9 +71,19 @@ from custom_components.smart_rce.domain.grid_export.intervention import (
 )
 from custom_components.smart_rce.domain.input_state import InputState
 
-# Mode constants (Goodwe EMS)
+# Mode constants (Goodwe EMS).
+#
+# STANDBY uses CHARGE_BATTERY (not DISCHARGE_BATTERY) because empirically
+# DISCHARGE_BATTERY xset=0 is silently ignored by the inverter when DoD=0
+# (PV surplus still charges the battery). CHARGE_BATTERY xset=0 reliably
+# parks the battery at zero power regardless of DoD, AND also works when
+# battery_charge_toggle_on is OFF — despite the misleading "CHARGE" label,
+# with xset=0 the inverter does not actually charge, just enforces zero
+# net battery power. Same string as _CHARGE_MODE — kept as a separate
+# constant to preserve conceptual naming (STANDBY vs CHARGE differ by xset
+# value, not by EMS mode).
 _CHARGE_MODE: Final[str] = "charge_battery"
-_STANDBY_MODE: Final[str] = "discharge_battery"  # bucket STOP (xset=0)
+_STANDBY_MODE: Final[str] = "charge_battery"  # bucket STOP (xset=0)
 _DISCHARGE_MODE: Final[str] = "discharge_battery"  # bucket DISCHARGE (xset>0)
 
 # Entry threshold dynamic — pre-45min: -0.05 (tolerate moderate negative,
@@ -311,7 +325,8 @@ class NegativeIntervention:
         """Translate signed bucket value → (mode, xset, reason) and mutate self.
 
         - xset_signed > 0 → charge_battery with xset = xset_signed
-        - xset_signed = 0 → discharge_battery with xset = 0 (bucket STOP)
+        - xset_signed = 0 → charge_battery with xset = 0 (bucket STOP — see
+          module docstring for why STANDBY uses CHARGE_BATTERY, not DISCHARGE)
         - xset_signed < 0 → discharge_battery with xset = abs(xset_signed)
         """
         prefix = "negative_stay" if is_stay else "negative"

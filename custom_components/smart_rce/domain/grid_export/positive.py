@@ -5,8 +5,10 @@ Activated by manager when hourly balance is excessively positive (export
 of feeding it back to the grid).
 
 Internal strategies:
-- STANDBY (discharge_battery xset=0) — when pv_power_avg_2_minutes < 200W
+- STANDBY (charge_battery xset=0) — when pv_power_avg_2_minutes < 200W
   (night, battery target=0, house from grid — consumes POSITIVE balance).
+  Empirically verified: DISCHARGE_BATTERY xset=0 is silently ignored when
+  DoD=0; CHARGE_BATTERY xset=0 reliably parks the battery at zero power.
 - charge_adaptive — Xset from lookup on `state.pv_available`. 6 buckets
   (threshold → Xset). Lower threshold pv_available > -1000 → AUTO but stay
   in intervention (block_discharge in battery.py takes over when hourly
@@ -69,9 +71,19 @@ from custom_components.smart_rce.domain.grid_export.intervention import (
 )
 from custom_components.smart_rce.domain.input_state import InputState
 
-# Mode constants (Goodwe EMS)
+# Mode constants (Goodwe EMS).
+#
+# STANDBY uses CHARGE_BATTERY (not DISCHARGE_BATTERY) because empirically
+# DISCHARGE_BATTERY xset=0 is silently ignored by the inverter when DoD=0
+# (PV surplus still charges the battery). CHARGE_BATTERY xset=0 reliably
+# parks the battery at zero power regardless of DoD, AND also works when
+# battery_charge_toggle_on is OFF — despite the misleading "CHARGE" label,
+# with xset=0 the inverter does not actually charge, just enforces zero
+# net battery power. Same string as _CHARGE_MODE — kept as a separate
+# constant to preserve conceptual naming (STANDBY vs CHARGE differ by xset
+# value, not by EMS mode).
 _AUTO_MODE: Final[str] = "auto"
-_STANDBY_MODE: Final[str] = "discharge_battery"
+_STANDBY_MODE: Final[str] = "charge_battery"
 _CHARGE_MODE: Final[str] = "charge_battery"
 
 # Entry gate — balance > 0.06 (compromise YAML trigger 0.07 / condition 0.04).
