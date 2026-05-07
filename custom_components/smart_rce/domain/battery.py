@@ -53,11 +53,13 @@ Coordination matrix with GridExportManager (POSITIVE / NEGATIVE intervention):
     | post-charge       | instant_surplus OR hourly ≥ 100 SET;   | yes            | yes      |
     |                   | instant_deficit AND hourly < 50 RESET; |                |          |
     |                   | else keep                              |                |          |
-    | afternoon-static  | False (DoD=0 until 19:00 by automation)| yes (mode=AUTO)| yes      |
+    | afternoon-static  | False (DoD=0 until 19:00 by automation)| typically      | yes      |
+    |                   |                                        | blocked by SoC |          |
+    |                   |                                        | ceiling        |          |
     | afternoon-dynamic | instant_surplus OR hourly > 0 SET;     | yes            | yes      |
     |                   | instant_deficit AND NOT hourly RESET;  |                |          |
     |                   | else keep                              |                |          |
-    | out-of-window     | False (always)                         | yes (mode=AUTO)| yes      |
+    | out-of-window     | False (always)                         | yes (rare)     | yes      |
 
 Two-tier defense (post-charge, afternoon-dynamic):
 - POSITIVE first line — `try_enter` at balance > 60 Wh, tries to absorb the
@@ -69,14 +71,16 @@ Two-tier defense (post-charge, afternoon-dynamic):
 - Threshold hierarchy: POSITIVE entry 60 Wh, battery SET 100 Wh — clear
   precedence (POSITIVE acts first, battery.py reinforces).
 
-Out-of-window / afternoon-static (POSITIVE active with mode=AUTO):
-- POSITIVE may stay active with mode=AUTO (e.g. pv_avail ≤ -1000W fallback).
-  Goodwe EMS in AUTO decides battery behavior dynamically.
-- Battery.block=False — BatteryManager "stays out of the way":
-  - afternoon-static: Set Min SOC=100 automation holds DoD=0 (no discharge
-    physically possible).
-  - out-of-window (≥19:00): evening discharge automations rule (peak discharge,
-    Set SOC 90 at 19:00).
+Out-of-window / afternoon-static — BatteryManager "stays out of the way":
+- afternoon-static: Set Min SOC=100 automation holds DoD=0; battery typically
+  full → POSITIVE entry blocked by `soc_at_entry_ceiling` (rare to be active).
+  When active, POSITIVE may have any mode (CHARGE/STANDBY/AUTO) — physical
+  discharge prevented by DoD=0 anyway.
+- out-of-window (≥19:00): evening discharge automations rule (peak discharge,
+  Set SOC 90 at 19:00). Battery.block=False (always). POSITIVE rare here
+  (hourly export > 0.06 unusual at night/evening) — when active, any mode.
+- mode=AUTO is a specific POSITIVE fallback (`pv_available ≤ -1000W` in
+  `_resolve_charge_adaptive`) — can occur in any phase, not phase-specific.
 
 Pre-charge (POSITIVE blocked, NEGATIVE allowed):
 - POSITIVE explicitly blocked by `in_pre_charge_window` gate (BatteryManager
