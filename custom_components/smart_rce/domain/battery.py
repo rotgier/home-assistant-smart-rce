@@ -108,6 +108,31 @@ Pre-charge (POSITIVE blocked, NEGATIVE allowed):
 - NEGATIVE may activate if balance < entry_threshold (independent concern —
   battery can discharge into deficit if SoC > min_soc).
 
+Downstream — DoD propagation (how block_discharge becomes inverter setting):
+
+`should_block_battery_discharge` is exposed as
+`binary_sensor.ems_block_battery_discharge` (via SensorEntityDescription in
+custom_components/smart_rce/binary_sensor.py). HA-side automation
+`ems-set-dod-from-block-discharge` translates state changes into
+`number.goodwe_depth_of_discharge_on_grid`:
+- block=True  → DoD=0  (min_SoC=100%, battery cannot discharge)
+- block=False → DoD=90 (min_SoC=10%,  battery may discharge to 10%)
+
+In phases where BatteryManager intentionally "stays out of the way", dedicated
+HA automations rule the DoD setting instead:
+
+    | Phase             | block_discharge | DoD setter                                  |
+    |-------------------|-----------------|---------------------------------------------|
+    | override          | False (always)  | other automations (BatteryManager off)      |
+    | pre-charge        | hysteresis      | ems-set-dod-from-block-discharge            |
+    | post-charge       | dual-trigger    | ems-set-dod-from-block-discharge            |
+    | afternoon-static  | False (off)     | "Set DoD 0 at 13:00 if hold_for_peak"       |
+    | afternoon-dynamic | dual-trigger    | ems-set-dod-from-block-discharge            |
+    | out-of-window     | False (always)  | evening automations (Set SOC 90 at 19:00)   |
+
+One-way flow (read-only consumer): smart_rce declares intent via the binary
+sensor; HA automations map intent to inverter registers. No feedback loop.
+
 See `context/target_soc_algorithm.md` for broader context.
 """
 
