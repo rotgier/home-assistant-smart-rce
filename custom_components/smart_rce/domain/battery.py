@@ -1,45 +1,49 @@
 """Battery discharge management.
 
-Pure domain — bez HA imports, bez logowania. Persistence (Store) trzymana
-w infrastructure adapter `BatteryStatePersistence` (driven outbound dla
-HA Storage). Logging trzymane w infrastructure adapter `BatteryManagerLogger`
-(driven outbound dla Python logging) — czyta `diagnostic_snapshot()`.
+Pure domain — no HA imports, no logging. Persistence (Store) lives in
+infrastructure adapter `BatteryStatePersistence` (driven outbound for
+HA Storage). Logging lives in infrastructure adapter `BatteryManagerLogger`
+(driven outbound for Python logging) — reads `diagnostic_snapshot()`.
 
-Monitoruje bilans godzinowy i okna pre/post-charge/afternoon by decydować
-kiedy zablokować rozładowywanie baterii. Block_charge handling przeniesiony
-do GridExportManager (Etap 2 — NEGATIVE balance).
+Monitors hourly balance and pre/post-charge/afternoon windows to decide
+when to block battery discharge. Block_charge handling moved to
+GridExportManager (Stage 2 — NEGATIVE balance).
 
-Phase classification + decyzje (`update()` thin dispatcher → sub-method
-per phase, każda mutuje `should_block_battery_discharge` + `_phase`):
+Phase classification + decisions (`update()` thin dispatcher → sub-method
+per phase, each mutates `should_block_battery_discharge` + `_phase`):
 
-- **override** (`ems_allow_discharge_override=True`): block=False bezwzględnie.
-  EMS "stoi z boku" — pozwalamy innym automations swobodnie sterować baterią.
+- **override** (`ems_allow_discharge_override=True`): block=False unconditionally.
+  EMS "stays out of the way" — lets other automations control battery freely.
 - **pre-charge** (7:00 → `start_charge_hour_override`): workday only.
-  Hour-start reset + hysteresis 100/50 na `exported_energy_hourly`. SET
-  block=True gdy hour netto export ≥ 100 Wh, RESET gdy < 50 Wh, dead zone
-  50-100 keep state.
+  Hysteresis 100/50 on `exported_energy_hourly` with `instant_surplus`
+  extending keep-state zone. SET block=True when exported ≥ 100 Wh; forced
+  reset when exported < 0 (hourly net import — NEGATIVE may take over);
+  default reset when exported < 50 Wh AND no PV surplus; else keep state.
+  instant_surplus (pv_5min > +500W) extends keep-state zone from dead zone
+  (50-100 Wh) down to 0-100 Wh, avoiding DoD 0↔90 cycling at hour boundary
+  when PV stays strong across transition (utility_meter resets exported
+  each hour but PV surplus is continuous).
 - **post-charge** (`start_charge_hour_override` → 13:00): workday only.
-  Dual-trigger hysteresis: SET block=True gdy `instant_surplus` (PV trend
-  +500W) OR `hourly_export ≥ 100 Wh`; RESET block=False gdy `instant_deficit`
+  Dual-trigger hysteresis: SET block=True when `instant_surplus` (PV trend
+  +500W) OR `hourly_export ≥ 100 Wh`; RESET block=False when `instant_deficit`
   (PV trend <0W) AND `hourly_export < 50 Wh`; else keep state. Two-tier
-  defense z POSITIVE intervention (POSITIVE first line przy 60 Wh, battery.py
-  second line przy 100 Wh) — unika cycling baterii podczas dodatniego hourly
-  bilansu mimo chwilowych deficitów.
+  defense with POSITIVE intervention (POSITIVE first line at 60 Wh, battery.py
+  second line at 100 Wh) — avoids battery cycling during positive hourly
+  balance despite short-term deficits.
 - **afternoon-static** (13:00 → 19:00, `rce_should_hold_for_peak=True`):
-  block=False, automation Set Min SOC to 100 trzyma DoD=0 do 19:00.
+  block=False, automation Set Min SOC to 100 holds DoD=0 until 19:00.
 - **afternoon-dynamic** (13:00 → 19:00, `rce_should_hold_for_peak=False`):
-  Dual-trigger: SET block=True gdy `instant_surplus` OR `hourly_export > 0`;
-  RESET block=False gdy `instant_deficit` AND NOT `hourly_export`; else keep.
-  Aggressive thresholds (`> 0` Wh hourly) bo czas po PV peak.
+  Dual-trigger: SET block=True when `instant_surplus` OR `hourly_export > 0`;
+  RESET block=False when `instant_deficit` AND NOT `hourly_export`; else keep.
+  Aggressive thresholds (`> 0` Wh hourly) since we are past PV peak.
 - **out-of-window** (<7:00, ≥19:00): block=False, evening discharge
-  automations decydują.
+  automations decide.
 
-Każda sub-method ustawia `self._phase` (str label dla diagnostic) ORAZ
-mutuje `should_block_battery_discharge` / `_last_hour_seen` zgodnie z
-logiką gałęzi. `diagnostic_snapshot(state)` czyta `_phase` field — nie
-recomputuje klasyfikacji (single source of truth).
+Each sub-method sets `self._phase` (str label for diagnostic) AND mutates
+`should_block_battery_discharge` per branch logic. `diagnostic_snapshot(state)`
+reads `_phase` field — does not recompute classification (single source of truth).
 
-Patrz `context/target_soc_algorithm.md` dla szerszego kontekstu.
+See `context/target_soc_algorithm.md` for broader context.
 """
 
 from __future__ import annotations
@@ -53,28 +57,28 @@ from custom_components.smart_rce.domain.input_state import InputState
 # Pre-charge window start (hour).
 PRE_CHARGE_WINDOW_START_HOUR: Final[int] = 7
 
-# Hysteresis MINE dla block_discharge: set przy >=100 Wh, reset przy <50 Wh.
-# Dead zone 50..100 zachowuje poprzedni stan.
+# Hysteresis MINE for block_discharge: SET at >=100 Wh, RESET at <50 Wh.
+# Dead zone 50..100 keeps previous state.
 DISCHARGE_HYSTERESIS_SET_WH: Final[int] = 100
 DISCHARGE_HYSTERESIS_RESET_WH: Final[int] = 50
 
 # --- discharge guard (post-charge window) --- #
 
-# Post-charge window end (hour). Okno start_charge_hour_override → 13:00.
+# Post-charge window end (hour). Window: start_charge_hour_override → 13:00.
 POST_CHARGE_WINDOW_END_HOUR: Final[int] = 13
 
 # --- discharge guard (afternoon window) --- #
 
-# Afternoon window: 13:00 → 19:00. Po 19:00 przejmują dotychczasowe automations
-# (Set SOC 90 at 19, evening discharge). Dynamic block_discharge active tylko
-# gdy state.rce_should_hold_for_peak=False (low-price upcoming peaks).
+# Afternoon window: 13:00 → 19:00. After 19:00 existing automations take over
+# (Set SOC 90 at 19, evening discharge). Dynamic block_discharge active only
+# when state.rce_should_hold_for_peak=False (low-price upcoming peaks).
 AFTERNOON_WINDOW_START_HOUR: Final[int] = 13
 AFTERNOON_WINDOW_END_HOUR: Final[int] = 19
 
-# Continuous check na `pv_available_5min` (W; = -consumption_minus_pv_5_minutes):
-# dodatnie = PV > cons (surplus), ujemne = cons > PV (deficit).
-# Hysteresis wyzwala block_discharge gdy sustained surplus >500W,
-# resetuje gdy sustained deficit <0W. Dead zone 0..500 → keep state.
+# Continuous check on `pv_available_5min` (W; = -consumption_minus_pv_5_minutes):
+# positive = PV > cons (surplus), negative = cons > PV (deficit).
+# Hysteresis triggers block_discharge on sustained surplus >500W,
+# resets on sustained deficit <0W. Dead zone 0..500 → keep state.
 PV_AVAIL_5MIN_SURPLUS_W: Final[int] = 500
 PV_AVAIL_5MIN_DEFICIT_W: Final[int] = 0
 
@@ -82,18 +86,16 @@ PV_AVAIL_5MIN_DEFICIT_W: Final[int] = 0
 class BatteryManager:
     def __init__(self) -> None:
         self.should_block_battery_discharge: bool = False
-        self._last_hour_seen: int | None = None
-        # _phase ustawiany przez update() (thin dispatcher → sub-method).
-        # Initial "none-present" — dopóki nie ma pierwszego update z full state.
+        # _phase set by update() (thin dispatcher → sub-method).
+        # Initial "none-present" — until first update with full state.
         self._phase: str = "none-present"
 
     def update(self, state: InputState) -> None:
-        """Thin dispatcher — klasyfikuje phase, deleguje do sub-method.
+        """Thin dispatcher — classifies phase, delegates to sub-method.
 
-        Każda sub-method jest odpowiedzialna za:
-        1. Ustawienie `self._phase` (label dla diagnostic)
-        2. Mutację `should_block_battery_discharge` zgodnie z logiką okna
-        3. Reset `_last_hour_seen` jeśli okno tego wymaga
+        Each sub-method is responsible for:
+        1. Setting `self._phase` (diagnostic label)
+        2. Mutating `should_block_battery_discharge` per window logic
         """
         if self._none_present(state):
             self._phase = "none-present"
@@ -111,53 +113,68 @@ class BatteryManager:
             self._update_out_of_window()
 
     def _update_override(self) -> None:
-        """OVERRIDE: intencjonalne rozładowanie (np. Battery Discharge Max).
+        """OVERRIDE: intentional discharge (e.g. Battery Discharge Max).
 
-        Gdy input_boolean.ems_allow_discharge_override=True, EMS "stoi z boku".
-        block_discharge wymuszone na False — pozwalamy innym automations
-        swobodnie sterować baterią bez interferencji.
+        When input_boolean.ems_allow_discharge_override=True, EMS "stays out
+        of the way". block_discharge forced to False — lets other automations
+        control battery freely without interference.
         """
         self._phase = "override"
         self.should_block_battery_discharge = False
-        self._last_hour_seen = None
 
     def _update_pre_charge(self, state: InputState) -> None:
-        """Pre-charge (7:00 → start_charge_hour): hour-start reset + hysteresis."""
+        """Pre-charge (7:00 → start_charge_hour): hysteresis with instant_surplus extension.
+
+        Decision tree (no separate hour-boundary branch — hysteresis handles
+        all cases including hour boundary):
+        - exported ≥ 100 Wh → SET block=True (sustained export, hold battery)
+        - exported < 0 → forced reset (hourly net import, NEGATIVE may handle)
+        - exported < 50 AND no PV surplus → reset (default below-threshold)
+        - else (50..100 dead zone OR 0..50 with PV surplus) → keep state
+
+        instant_surplus (pv_5min > +500W) extends keep-state zone from dead
+        zone (50-100 Wh) to 0-100 Wh — avoids DoD 0↔90 cycling at hour
+        boundary when PV stays strong across transition (utility_meter
+        resets exported each hour but PV surplus is continuous).
+        """
         if state.is_workday is None:
-            # Defensive: workday sensor jeszcze niezaładowany (typowo
-            # 25-50ms po HA restart). Keep state — czekamy aż sensor się
-            # ustabilizuje. Bez tego mógłby się zdarzyć fałszywy reset.
+            # Defensive: workday sensor not loaded yet (typically 25-50ms
+            # after HA restart). Keep state — wait for sensor to settle.
+            # Without this a spurious reset could happen.
             self._phase = "pre-charge-keep-state"
             return
         if state.is_workday is False:
-            # Weekend/święto — passthrough (RCE płaski, brak drogich godzin)
+            # Weekend/holiday — passthrough (RCE flat, no expensive hours)
             self._phase = "pre-charge-passthrough"
             self.should_block_battery_discharge = False
-            self._last_hour_seen = None
             return
 
         self._phase = "pre-charge"
         exported_wh = state.exported_energy_hourly * 1000  # kWh → Wh
-        if self._last_hour_seen != state.now.hour:
-            self._last_hour_seen = state.now.hour
-            self.should_block_battery_discharge = False  # hour-start reset
-        elif exported_wh >= DISCHARGE_HYSTERESIS_SET_WH:
+        pv_5min = state.pv_available_5min
+        instant_surplus = pv_5min is not None and pv_5min > PV_AVAIL_5MIN_SURPLUS_W
+
+        if exported_wh >= DISCHARGE_HYSTERESIS_SET_WH:
             self.should_block_battery_discharge = True
-        elif exported_wh < DISCHARGE_HYSTERESIS_RESET_WH:
+        elif exported_wh < 0:
+            # Forced reset — hourly net import (NEGATIVE may take over)
             self.should_block_battery_discharge = False
-        # Dead zone 50..100 — zachowuje poprzedni stan
+        elif exported_wh < DISCHARGE_HYSTERESIS_RESET_WH and not instant_surplus:
+            # Default below-threshold reset (no PV surplus to extend keep zone)
+            self.should_block_battery_discharge = False
+        # else: keep state (dead zone 50..100 OR 0..50 with instant_surplus)
 
     def _update_post_charge(self, state: InputState) -> None:
         """Post-charge (start_charge_hour → 13:00): dual-trigger (instant + hourly).
 
-        Two-tier defense z POSITIVE intervention (`grid_export/positive.py`):
-        - POSITIVE first line — try_enter przy `balance > 60 Wh`, próbuje zbić
-          balance przez CHARGE_BATTERY xset.
-        - Battery.py second line — gdy POSITIVE nie radzi (np. SoC=100% / BMS
-          clamp / sustained surplus), block=True przy `hourly_export ≥ 100 Wh`
-          zapobiega rozładowaniu baterii podczas dodatniego hourly bilansu.
+        Two-tier defense with POSITIVE intervention (`grid_export/positive.py`):
+        - POSITIVE first line — try_enter at `balance > 60 Wh`, tries to reduce
+          balance via CHARGE_BATTERY xset.
+        - Battery.py second line — when POSITIVE cannot handle (e.g. SoC=100% /
+          BMS clamp / sustained surplus), block=True at `hourly_export ≥ 100 Wh`
+          prevents battery discharge during positive hourly balance.
 
-        Triggers (analog pre-charge thresholds + afternoon-dynamic dual-trigger):
+        Triggers (analog of pre-charge thresholds + afternoon-dynamic dual-trigger):
         - SET (block=True): `instant_surplus` (pv_5min > +500W) OR
           `hourly_export ≥ 100 Wh`
         - RESET (block=False): `instant_deficit` (pv_5min < 0W) AND
@@ -165,13 +182,11 @@ class BatteryManager:
         - Else keep state (dead zone instant 0-500 / hourly 50-100)
         """
         if state.is_workday is None:
-            # Defensive — patrz pre-charge.
+            # Defensive — see pre-charge.
             self._phase = "post-charge-keep-state"
             return
-
-        self._last_hour_seen = None
         if state.is_workday is False:
-            # Weekend/święto — passthrough
+            # Weekend/holiday — passthrough
             self._phase = "post-charge-passthrough"
             self.should_block_battery_discharge = False
             return
@@ -193,28 +208,27 @@ class BatteryManager:
         # else: keep state (dead zone in either dimension)
 
     def _update_afternoon(self, state: InputState) -> None:
-        """Afternoon (13:00 → 19:00): static (high-price) lub dynamic (low-price)."""
+        """Afternoon (13:00 → 19:00): static (high-price) or dynamic (low-price)."""
         if state.rce_should_hold_for_peak is None:
-            # Defensive: hold sensor jeszcze niezaładowany. Bez tego guard
-            # bug 14:33 — pierwszy update widzi None, wpada w dynamic
-            # branch, ustawia block_discharge=True; ~22ms później sensor
-            # ładuje się jako on, BatteryManager przechodzi do static i
-            # ustawia False; automation reaguje na on→off i ustawia DoD=90.
+            # Defensive: hold sensor not loaded yet. Without this guard the
+            # 14:33 bug returns — first update sees None, falls into dynamic
+            # branch, sets block_discharge=True; ~22ms later sensor loads
+            # as on, BatteryManager switches to static and sets False;
+            # automation reacts to on→off and sets DoD=90.
             self._phase = "afternoon-keep-state"
             return
 
-        self._last_hour_seen = None
         if state.rce_should_hold_for_peak is True:
             # High-price mode — status quo, automation Set Min SOC to 100
-            # Afternoon trzyma DoD=0 do 19:00. BatteryManager nie steruje.
+            # Afternoon holds DoD=0 until 19:00. BatteryManager does not steer.
             self._phase = "afternoon-static"
             self.should_block_battery_discharge = False
             return
 
-        # Low-price mode — dynamic na pv_available_5min OR exported_wh.
+        # Low-price mode — dynamic on pv_available_5min OR exported_wh.
         # SET (hold): instant_surplus OR hourly_net_export
         # RESET (allow): instant_deficit AND NOT hourly_net_export
-        # Inne kombinacje (dead zone) → keep state
+        # Other combinations (dead zone) → keep state
         self._phase = "afternoon-dynamic"
         pv_available_5min = state.pv_available_5min
         exported_wh = state.exported_energy_hourly * 1000
@@ -231,19 +245,18 @@ class BatteryManager:
         # else: keep state
 
     def _update_out_of_window(self) -> None:
-        """Poza wszystkich okien (przed 7:00 lub po 19:00): reset."""
+        """Outside all windows (before 7:00 or after 19:00): reset."""
         self._phase = "out-of-window"
         self.should_block_battery_discharge = False
-        self._last_hour_seen = None
 
     @staticmethod
     def _is_in_pre_charge_window(state: InputState) -> bool:
-        """Pre-charge: 7:00 ≤ now < start_charge_hour_override (precyzja do minuty)."""
+        """Pre-charge: 7:00 ≤ now < start_charge_hour_override (minute precision)."""
         if state.start_charge_hour_override is None or state.now is None:
             return False
         if state.now.hour < PRE_CHARGE_WINDOW_START_HOUR:
             return False
-        # Porównanie time (hh:mm:ss) żeby obsłużyć override np. 10:30
+        # Compare time (hh:mm:ss) to handle override like 10:30
         return state.now.time() < state.start_charge_hour_override
 
     @staticmethod
@@ -269,32 +282,33 @@ class BatteryManager:
     # --- public state APIs ---
 
     def snapshot(self) -> dict[str, Any]:
-        """Pure snapshot stanu — używane przez infrastructure adapter do persistence."""
+        """Pure state snapshot — used by infrastructure adapter for persistence."""
         return {
             "block_discharge": self.should_block_battery_discharge,
-            "last_hour_seen": self._last_hour_seen,
         }
 
     def restore(self, data: dict[str, Any]) -> None:
-        """Pure restore z dict — używane przez infrastructure adapter przy starcie."""
+        """Pure restore from dict — used by infrastructure adapter at startup.
+
+        Ignores legacy "last_hour_seen" key from older persisted snapshots
+        (field removed; safe to drop silently).
+        """
         self.should_block_battery_discharge = data.get("block_discharge", False)
-        self._last_hour_seen = data.get("last_hour_seen")
 
     def diagnostic_snapshot(self, state: InputState) -> dict[str, Any]:
         """Log-relevant view: phase (FIELD set by update) + decision + key inputs.
 
-        Reads `self._phase` field (set przez ostatni `update()`) — NIE
-        recomputuje klasyfikacji. `state` daje dostęp do bieżących wartości
-        wejściowych dla DEBUG snapshot logu.
+        Reads `self._phase` field (set by last `update()`) — does not
+        recompute classification. `state` provides current input values
+        for DEBUG snapshot log.
 
-        Używane przez `BatteryManagerLogger` (infrastructure/battery_logger.py)
-        — registered jako `ems.async_add_listener`.
+        Used by `BatteryManagerLogger` (infrastructure/battery_logger.py)
+        — registered as `ems.async_add_listener`.
         """
         return {
             "phase": self._phase,
             "block_discharge": self.should_block_battery_discharge,
-            "last_hour_seen": self._last_hour_seen,
-            # InputState fields — selektywne (te pola które są wypisywane w DEBUG)
+            # InputState fields — selective (those printed in DEBUG)
             "now": state.now,
             "exported_energy_hourly": state.exported_energy_hourly,
             "pv_available_5min": state.pv_available_5min,

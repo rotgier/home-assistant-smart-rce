@@ -77,36 +77,22 @@ class BatteryManagerLogger:
             )
             return
 
-        # Pierwszy "real" snapshot po starcie — log restored state jeśli
-        # block_discharge=True (był persisted z poprzedniej sesji).
+        # First "real" snapshot after start — log restored state when
+        # block_discharge=True (persisted from previous session).
         if not self._restored_logged:
             self._restored_logged = True
             _LOGGER.info(
-                "BatteryManager restored: block_discharge=%s last_hour=%s",
+                "BatteryManager restored: block_discharge=%s",
                 curr["block_discharge"],
-                curr["last_hour_seen"],
             )
 
-        # INFO transition gdy block_discharge się flipuje
+        # INFO transition when block_discharge flips
         if prev is not None and prev["block_discharge"] != curr["block_discharge"]:
             _LOGGER.info(
                 "BatteryManager: block_discharge %s → %s (reason: %s)",
                 prev["block_discharge"],
                 curr["block_discharge"],
                 curr["phase"],
-            )
-
-        # DEBUG hour-start reset (pre-charge specific)
-        if (
-            curr["phase"] == "pre-charge"
-            and prev is not None
-            and prev["last_hour_seen"] != curr["last_hour_seen"]
-            and curr["now"] is not None
-        ):
-            _LOGGER.debug(
-                "BatteryManager[pre-charge]: hour-start reset (hour=%d) "
-                "→ block_discharge=False",
-                curr["now"].hour,
             )
 
         self._maybe_log_snapshot(curr)

@@ -22,13 +22,13 @@ if TYPE_CHECKING:
 
 
 class InterventionDirection(StrEnum):
-    """Kierunek aktywnej interwencji GridExportManager.
+    """Direction of active GridExportManager intervention.
 
-    POSITIVE — bilans hourly nadmiernie pozytywny (eksport > 0.06 kWh),
-    manager wymusza CHARGE_BATTERY (lub STANDBY przy niskim PV) by zjeść saldo.
+    POSITIVE — hourly balance excessively positive (export > 0.06 kWh),
+    manager forces CHARGE_BATTERY (or STANDBY at low PV) to consume balance.
 
-    NEGATIVE — bilans hourly negatywny (import netto), manager wymusza
-    adaptive charge/discharge by ustabilizować meter ≈ +1500W eksport.
+    NEGATIVE — hourly balance negative (net import), manager forces adaptive
+    charge/discharge to stabilize meter at ≈ +1500W export.
     """
 
     POSITIVE = "POSITIVE"
@@ -39,15 +39,15 @@ class Intervention(Protocol):
     """Active intervention session — common interface POSITIVE / NEGATIVE.
 
     Lifecycle:
-    1. Manager wywołuje `Cls.try_enter(state)` → EntryResult (factory)
-    2. Active intervention: manager wywołuje `instance.continue_or_exit(state)`
-       → ContinueResult na każdym update
-    3. Exit: manager ustawia `self._active = None`
+    1. Manager calls `Cls.try_enter(state)` → EntryResult (factory)
+    2. Active intervention: manager calls `instance.continue_or_exit(state)`
+       → ContinueResult on every update
+    3. Exit: manager sets `self._active = None`
 
-    Manager ma kontrakt: PRZED wywołaniem try_enter / continue_or_exit
-    sprawdza global guards (balance range, ems_override, hour rollover,
-    end_of_hour, too_late_in_hour, other_automation_active). Intervention
-    sprawdza tylko intervention-specific preconditions.
+    Manager contract: BEFORE calling try_enter / continue_or_exit it checks
+    global guards (balance range, ems_override, hour rollover, end_of_hour,
+    too_late_in_hour, other_automation_active). Intervention only checks
+    intervention-specific preconditions.
     """
 
     direction: ClassVar[InterventionDirection]
@@ -64,10 +64,10 @@ class Intervention(Protocol):
 
 @dataclass(frozen=True)
 class EntryResult:
-    """Wynik try_enter — albo nowa intervention, albo block reason.
+    """try_enter result — either new intervention, or block reason.
 
-    Factory result: intervention=None gdy intervention-specific gate blokuje
-    entry (np. SoC poza zakresem, toggle off, pre_charge_window).
+    Factory result: intervention=None when intervention-specific gate blocks
+    entry (e.g. SoC out of range, toggle off, pre_charge_window).
     """
 
     intervention: Intervention | None
@@ -88,14 +88,14 @@ class EntryResult:
 
 @dataclass(frozen=True)
 class ContinueResult:
-    """Wynik continue_or_exit — None exit_reason oznacza continue.
+    """continue_or_exit result — None exit_reason means continue.
 
-    Continue case: intervention sam zmutował swoje pola in-place
-    (recommended_mode, recommended_xset, last_reason). Manager tylko
-    sync'uje last_decision_reason z self._active.last_reason.
+    Continue case: intervention has mutated its fields in-place
+    (recommended_mode, recommended_xset, last_reason). Manager only syncs
+    last_decision_reason from self._active.last_reason.
 
-    Exit case: manager ustawia self._active = None i zapisuje exit_reason
-    do last_decision_reason.
+    Exit case: manager sets self._active = None and writes exit_reason
+    to last_decision_reason.
     """
 
     exit_reason: str | None

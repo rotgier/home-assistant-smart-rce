@@ -1,4 +1,4 @@
-"""Tests for BatteryManager discharge guard (pre-charge window) + toggle-guard."""
+"""Tests for BatteryManager discharge guard (pre/post/afternoon windows) + toggle-guard."""
 
 from datetime import datetime, time
 
@@ -19,11 +19,11 @@ def _state(
     rce_should_hold_for_peak: bool | None = True,
     is_workday: bool | None = True,
 ) -> InputState:
-    """Build InputState dla testów BatteryManager.
+    """Build InputState for BatteryManager tests.
 
-    `pv_available_5min` to surplus PV (W) — analog `pv_available` z 2-min,
-    czytelniejszy niż raw `consumption_minus_pv_5_minutes` (negative=surplus).
-    Konwertujemy do InputState field przez negację.
+    `pv_available_5min` is PV surplus (W) — analog of `pv_available` from 2-min,
+    clearer than raw `consumption_minus_pv_5_minutes` (negative=surplus).
+    Converted to InputState field via negation.
     """
     return InputState(
         water_heater_big_is_on=False,
@@ -56,33 +56,27 @@ class TestPreChargeWindowDetection:
     def test_inside_window_hour_only(self):
         mgr = BatteryManager()
         mgr.update(_state(now=_at(7, 30), start_charge_hour_override=time(10, 0)))
-        # block_discharge set only via hysteresis; first tick sets _last_hour_seen
-        assert mgr._last_hour_seen == 7
 
     def test_before_7_am(self):
         mgr = BatteryManager()
         mgr.update(_state(now=_at(6, 59), start_charge_hour_override=time(10, 0)))
         assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen is None
 
     def test_exact_start_charge_hour(self):
         mgr = BatteryManager()
         mgr.update(_state(now=_at(10, 0), start_charge_hour_override=time(10, 0)))
         assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen is None
 
     def test_override_with_minutes_inside(self):
         """Override 10:30, now 09:45 → still in pre-charge."""
         mgr = BatteryManager()
         mgr.update(_state(now=_at(9, 45), start_charge_hour_override=time(10, 30)))
-        assert mgr._last_hour_seen == 9  # inside window
 
     def test_override_with_minutes_after(self):
         """Override 10:30, now 10:31 → out of pre-charge."""
         mgr = BatteryManager()
         mgr.update(_state(now=_at(10, 31), start_charge_hour_override=time(10, 30)))
         assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen is None
 
     def test_override_none(self):
         mgr = BatteryManager()
@@ -90,34 +84,138 @@ class TestPreChargeWindowDetection:
         assert mgr.should_block_battery_discharge is False
 
 
-class TestHourStartReset:
-    """Każda nowa godzina w pre-charge startuje z block_discharge=False."""
+class TestPreChargeHourBoundary:
+    """Pre-charge hour boundary: instant_surplus extends keep-state zone.
 
-    def test_hour_transition_resets_flag(self):
+    Hysteresis handles all cases (no separate hour-boundary reset branch).
+    instant_surplus (pv_5min > +500W) extends keep-state from dead zone (50-100)
+    to 0-100 Wh — avoids DoD 0↔90 cycling on hour boundary when PV strong.
+    Forced reset on exported < 0 (hourly net import, NEGATIVE may handle).
+    """
+
+    def test_hour_boundary_with_surplus_keeps_block(self):
+        """block=True before, hour boundary with surplus + low export → keep True.
+
+        Simulates hour boundary when utility_meter reset exported_wh to ~0 but PV
+        surplus is continuous — without the fix unconditional reset would cycle DoD.
+        """
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
-        mgr._last_hour_seen = 7
         mgr.update(
             _state(
                 now=_at(8, 0),
-                exported_energy_hourly=0.2,  # 200 Wh — byłoby set normalnie
+                exported_energy_hourly=0.005,  # 5 Wh — just after hour reset
                 start_charge_hour_override=time(10, 0),
+                pv_available_5min=800.0,  # sustained surplus > 500W
             )
         )
-        # Hour transition 7→8: reset PRZED hysteresis
-        assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen == 8
+        # Extended keep-state zone (0-50 with surplus) → keep block=True
+        assert mgr.should_block_battery_discharge is True
 
-    def test_first_update_in_window(self):
+    def test_hour_boundary_no_surplus_resets(self):
+        """block=True before, hour boundary without surplus + low export → reset."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(8, 0),
+                exported_energy_hourly=0.005,
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=200.0,  # dead zone (no surplus)
+            )
+        )
+        # < 50 AND no surplus → default below-threshold reset
+        assert mgr.should_block_battery_discharge is False
+
+    def test_hour_boundary_negative_export_forces_reset(self):
+        """block=True before, surplus active but exported < 0 → forced reset.
+
+        Hourly net import dominates over surplus — NEGATIVE may take over.
+        """
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(8, 0),
+                exported_energy_hourly=-0.010,  # -10 Wh — net import
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=800.0,  # surplus, but forced reset still applies
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_hour_boundary_no_pv_data_resets(self):
+        """block=True before, pv_available_5min=None (defensive) + low export → reset."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(8, 0),
+                exported_energy_hourly=0.005,
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=None,
+            )
+        )
+        # None pv_5min → instant_surplus=False → default reset
+        assert mgr.should_block_battery_discharge is False
+
+    def test_mid_hour_low_export_with_surplus_keeps(self):
+        """Mid-hour, exported in 0-50 + surplus → keep state (extended zone)."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(8, 30),
+                exported_energy_hourly=0.030,  # 30 Wh — below RESET threshold
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=700.0,  # surplus
+            )
+        )
+        # Extended keep-state via instant_surplus → True kept
+        assert mgr.should_block_battery_discharge is True
+
+    def test_mid_hour_low_export_no_surplus_resets(self):
+        """Mid-hour, exported < 50 + no surplus → reset (default behavior)."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(8, 30),
+                exported_energy_hourly=0.030,
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=200.0,  # dead zone (no surplus)
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_set_threshold_overrides_no_surplus(self):
+        """Exported >= 100 Wh → SET regardless of pv_5min (sustained export)."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(8, 30),
+                exported_energy_hourly=0.150,
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=None,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_first_update_in_window_with_surplus_keeps_initial_false(self):
+        """First update (initial block=False), low export + surplus → stays False.
+
+        Initial state default is False — extended keep-state holds it.
+        """
         mgr = BatteryManager()
         mgr.update(
             _state(
                 now=_at(7, 1),
-                exported_energy_hourly=0.5,  # 500 Wh
+                exported_energy_hourly=0.030,  # below RESET threshold
                 start_charge_hour_override=time(10, 0),
+                pv_available_5min=700.0,  # surplus, but no SET trigger
             )
         )
-        # Pierwsza iteracja w nowej godzinie: reset, flag stays False
+        # Keep state: initial False → stays False (no SET trigger from exported)
         assert mgr.should_block_battery_discharge is False
 
 
@@ -126,7 +224,6 @@ class TestHysteresisMine100_50:
 
     def _set_hour_seen(self, mgr: BatteryManager, hour: int) -> None:
         """Pre-seed _last_hour_seen so following update skips reset branch."""
-        mgr._last_hour_seen = hour
 
     def test_below_set_threshold_stays_false(self):
         mgr = BatteryManager()
@@ -238,7 +335,6 @@ class TestEdgeCases:
             )
         )
         assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen is None
 
 
 class TestPostChargeWindowDetection:
@@ -253,8 +349,6 @@ class TestPostChargeWindowDetection:
                 pv_available_5min=0.0,  # dead zone default
             )
         )
-        # In post-charge, _last_hour_seen reset to None
-        assert mgr._last_hour_seen is None
         assert mgr.should_block_battery_discharge is False  # default / dead zone
 
     def test_exactly_13_is_out(self):
@@ -270,7 +364,7 @@ class TestPostChargeWindowDetection:
         assert mgr.should_block_battery_discharge is False
 
     def test_before_start_not_post_charge(self):
-        """Now=09:00, override=10:00 → pre-charge, nie post-charge."""
+        """Now=09:00, override=10:00 → pre-charge, not post-charge."""
         mgr = BatteryManager()
         mgr.update(
             _state(
@@ -280,8 +374,6 @@ class TestPostChargeWindowDetection:
                 exported_energy_hourly=0.0,  # hour balance zero — no pre-charge set
             )
         )
-        # In pre-charge, _last_hour_seen set, block via exported hysteresis (not avg_5min)
-        assert mgr._last_hour_seen == 9
         # exported=0 → dead zone for pre-charge hysteresis, False
         assert mgr.should_block_battery_discharge is False
 
@@ -382,7 +474,7 @@ class TestPostChargeHysteresis5MinAvg:
         assert mgr.should_block_battery_discharge is False
 
     def test_continuous_across_hour_boundary(self):
-        """Post-charge nie resetuje per-hour — flow przez granicę."""
+        """Post-charge does not reset per-hour — flow across the boundary."""
         mgr = BatteryManager()
         mgr.update(
             _state(
@@ -401,12 +493,10 @@ class TestPostChargeHysteresis5MinAvg:
                 pv_available_5min=600.0,
             )
         )
-        assert mgr.should_block_battery_discharge is True  # nie reset
-        # _last_hour_seen nadal None (post-charge)
-        assert mgr._last_hour_seen is None
+        assert mgr.should_block_battery_discharge is True  # no reset
 
     def test_pre_to_post_transition(self):
-        """Przejście pre-charge → post-charge (crossing start_charge_hour)."""
+        """Transition pre-charge → post-charge (crossing start_charge_hour)."""
         mgr = BatteryManager()
         # Pre-charge: 09:30, override=10:00
         mgr.update(
@@ -417,8 +507,6 @@ class TestPostChargeHysteresis5MinAvg:
                 pv_available_5min=1000.0,
             )
         )
-        assert mgr._last_hour_seen == 9
-        # Przejście na 10:00 — post-charge now. _last_hour_seen resetuje się do None.
         mgr.update(
             _state(
                 now=_at(10, 0),
@@ -426,12 +514,11 @@ class TestPostChargeHysteresis5MinAvg:
                 pv_available_5min=1000.0,  # surplus
             )
         )
-        assert mgr._last_hour_seen is None
         assert mgr.should_block_battery_discharge is True  # pv_available_5min > 500 set
 
 
 class TestPostChargeHourlyDualTrigger:
-    """Post-charge: hourly_export trigger uzupełnia instant trend.
+    """Post-charge: hourly_export trigger complements instant trend.
 
     Two-tier defense z POSITIVE intervention.
     SET when instant_surplus OR hourly_export ≥ 100 Wh.
@@ -545,7 +632,7 @@ class TestAfternoonWindowDetection:
     def test_just_before_afternoon(self):
         mgr = BatteryManager()
         mgr.update(_state(now=_at(12, 59)))
-        # 12:59 jest poza afternoon (a także poza pre/post bo brak override)
+        # 12:59 is outside afternoon (also outside pre/post since no override)
         # → out-of-window, block_discharge=False
         assert mgr.should_block_battery_discharge is False
 
@@ -588,7 +675,7 @@ class TestAfternoonWindowDetection:
 
 
 class TestAfternoonStaticMode:
-    """High-price (hold=True) — BatteryManager nie steruje, status quo."""
+    """High-price (hold=True) — BatteryManager does not steer, status quo."""
 
     def test_surplus_does_not_set(self):
         mgr = BatteryManager()
@@ -601,7 +688,6 @@ class TestAfternoonStaticMode:
             )
         )
         assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen is None
 
     def test_deficit_does_not_set(self):
         mgr = BatteryManager()
@@ -619,7 +705,7 @@ class TestAfternoonDynamicMode:
     """Low-price (hold=False) — BatteryManager dynamic na avg_5min OR exported_wh."""
 
     def test_instant_surplus_sets_regardless_of_export(self):
-        # pv_available_5min > 500W (surplus) → SET, niezależnie od exported_wh
+        # pv_available_5min > 500W (surplus) → SET, regardless of exported_wh
         mgr = BatteryManager()
         mgr.update(
             _state(
@@ -632,7 +718,7 @@ class TestAfternoonDynamicMode:
         assert mgr.should_block_battery_discharge is True
 
     def test_hourly_net_export_sets_in_dead_zone(self):
-        # pv_available_5min w dead zone (200W), ale exported>0 → SET
+        # pv_available_5min in dead zone (200W), but exported>0 → SET
         mgr = BatteryManager()
         mgr.update(
             _state(
@@ -673,7 +759,7 @@ class TestAfternoonDynamicMode:
         assert mgr.should_block_battery_discharge is True
 
     def test_deficit_with_export_keeps_state(self):
-        # pv_available_5min deficit ALE exported_wh>0 → keep state (nie reset)
+        # pv_available_5min deficit BUT exported_wh>0 → keep state (no reset)
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
         mgr.update(
@@ -701,7 +787,7 @@ class TestAfternoonDynamicMode:
         assert mgr.should_block_battery_discharge is False
 
     def test_deficit_zero_export_resets_at_boundary(self):
-        # exported=0 jest <=0, też RESET przy deficit
+        # exported=0 is <=0, also RESET at deficit
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
         mgr.update(
@@ -730,7 +816,7 @@ class TestAfternoonDynamicMode:
 
 
 class TestAfternoonHoldFlagTransitions:
-    """Hold flag może się zmienić mid-window gdy świeże RCE prices przyszły."""
+    """Hold flag may change mid-window when fresh RCE prices arrive."""
 
     def test_hold_true_to_false_enables_dynamic(self):
         mgr = BatteryManager()
@@ -780,11 +866,10 @@ class TestAfternoonHoldFlagTransitions:
 
 
 class TestPreChargePassthroughWeekend:
-    """W weekend (is_workday=False) BatteryManager nie steruje block_discharge."""
+    """On weekend (is_workday=False) BatteryManager does not steer block_discharge."""
 
     def test_weekend_pre_charge_export_does_not_set(self):
         mgr = BatteryManager()
-        mgr._last_hour_seen = 8  # already in hour, post-reset state
         mgr.update(
             _state(
                 now=_at(8, 30),
@@ -794,12 +879,10 @@ class TestPreChargePassthroughWeekend:
             )
         )
         assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen is None  # weekend nie trackuje hour
 
     def test_weekend_clears_leftover_state(self):
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
-        mgr._last_hour_seen = 7
         mgr.update(
             _state(
                 now=_at(8, 0),
@@ -808,11 +891,9 @@ class TestPreChargePassthroughWeekend:
             )
         )
         assert mgr.should_block_battery_discharge is False
-        assert mgr._last_hour_seen is None
 
     def test_workday_logic_unchanged_export_sets(self):
         mgr = BatteryManager()
-        mgr._last_hour_seen = 8
         mgr.update(
             _state(
                 now=_at(8, 30),
@@ -825,11 +906,10 @@ class TestPreChargePassthroughWeekend:
         assert mgr.should_block_battery_discharge is True
 
     def test_is_workday_none_keeps_state(self):
-        # Defensive None handling — sensor jeszcze niezaładowany, keep state.
-        # Patrz TestDefensiveNoneHandling dla pełnego pokrycia.
+        # Defensive None handling — sensor not loaded yet, keep state.
+        # See TestDefensiveNoneHandling for full coverage.
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True  # restored prev state
-        mgr._last_hour_seen = 8
         mgr.update(
             _state(
                 now=_at(8, 30),
@@ -839,7 +919,6 @@ class TestPreChargePassthroughWeekend:
             )
         )
         assert mgr.should_block_battery_discharge is True
-        assert mgr._last_hour_seen == 8
 
 
 class TestPostChargePassthroughWeekend:
@@ -881,7 +960,7 @@ class TestPostChargePassthroughWeekend:
 
 
 class TestAfternoonNotAffectedByWorkday:
-    """Afternoon używa rce_should_hold_for_peak, niezależnie od is_workday."""
+    """Afternoon uses rce_should_hold_for_peak, regardless of is_workday."""
 
     def test_weekend_afternoon_dynamic_still_works(self):
         mgr = BatteryManager()
@@ -906,7 +985,7 @@ class TestAfternoonNotAffectedByWorkday:
                 is_workday=False,
             )
         )
-        # hold=True → afternoon-static, BatteryManager nie steruje
+        # hold=True → afternoon-static, BatteryManager does not steer
         assert mgr.should_block_battery_discharge is False
 
 
@@ -946,7 +1025,6 @@ class TestDefensiveNoneHandling:
     def test_pre_charge_workday_none_keeps_state(self):
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
-        mgr._last_hour_seen = 7
         mgr.update(
             _state(
                 now=_at(8, 30),
@@ -956,7 +1034,6 @@ class TestDefensiveNoneHandling:
             )
         )
         assert mgr.should_block_battery_discharge is True
-        assert mgr._last_hour_seen == 7
 
     def test_post_charge_workday_none_keeps_state(self):
         mgr = BatteryManager()
@@ -973,7 +1050,7 @@ class TestDefensiveNoneHandling:
         assert mgr.should_block_battery_discharge is True
 
     def test_afternoon_hold_explicit_true_static_works(self):
-        """Sanity: explicit True wciąż triggers static branch."""
+        """Sanity: explicit True still triggers static branch."""
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True
         mgr.update(
@@ -984,7 +1061,7 @@ class TestDefensiveNoneHandling:
                 exported_energy_hourly=0.5,
             )
         )
-        # afternoon-static → BatteryManager nie steruje, ustawia False
+        # afternoon-static → BatteryManager does not steer, sets False
         assert mgr.should_block_battery_discharge is False
 
 
@@ -992,7 +1069,7 @@ class TestDefensiveNoneHandling:
 
 
 def test_battery_manager_no_hass_arg():
-    """Domain BatteryManager nie przyjmuje hass — pure domain (ADR-018)."""
+    """Domain BatteryManager does not accept hass — pure domain (ADR-018)."""
     mgr = BatteryManager()
     mgr.update(
         _state(
@@ -1008,12 +1085,17 @@ def test_battery_manager_no_hass_arg():
 def test_snapshot_returns_current_state():
     mgr = BatteryManager()
     mgr.should_block_battery_discharge = True
-    mgr._last_hour_seen = 7
-    assert mgr.snapshot() == {"block_discharge": True, "last_hour_seen": 7}
+    assert mgr.snapshot() == {"block_discharge": True}
 
 
 def test_restore_applies_data_to_manager():
     mgr = BatteryManager()
+    mgr.restore({"block_discharge": True})
+    assert mgr.should_block_battery_discharge is True
+
+
+def test_restore_ignores_legacy_last_hour_seen():
+    """Older persisted snapshots may include last_hour_seen — restore drops silently."""
+    mgr = BatteryManager()
     mgr.restore({"block_discharge": True, "last_hour_seen": 8})
     assert mgr.should_block_battery_discharge is True
-    assert mgr._last_hour_seen == 8

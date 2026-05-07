@@ -1,32 +1,34 @@
 """PositiveIntervention — active POSITIVE intervention session.
 
-Aktywowana przez manager gdy bilans hourly nadmiernie pozytywny (eksport >
-0.06 kWh) — manager wymusza CHARGE_BATTERY by zjeść saldo (zamiast oddawać
-do grida).
+Activated by manager when hourly balance is excessively positive (export
+> 0.06 kWh) — manager forces CHARGE_BATTERY to consume the balance (instead
+of feeding it back to the grid).
 
-Strategie wewnętrzne:
-- STANDBY (discharge_battery xset=0) — gdy pv_power_avg_2_minutes < 200W (noc,
-  bateria target=0, house z grida — zjada saldo POSITIVE).
-- charge_adaptive — Xset z lookup na `state.pv_available`. 6 bucketów (próg → Xset).
-  Dolny próg pv_available > -1000 → AUTO ale stay in intervention (block_discharge
-  w battery.py przejmuje gdy hourly idzie negative).
+Internal strategies:
+- STANDBY (discharge_battery xset=0) — when pv_power_avg_2_minutes < 200W
+  (night, battery target=0, house from grid — consumes POSITIVE balance).
+- charge_adaptive — Xset from lookup on `state.pv_available`. 6 buckets
+  (threshold → Xset). Lower threshold pv_available > -1000 → AUTO but stay
+  in intervention (block_discharge in battery.py takes over when hourly
+  goes negative).
 
-Low BMS shortcut — gdy battery_charge_limit ≤ 7A, BMS clamp na ~2 kW, więc lookup
-nie ma sensu. Stałe Xset 3500W (+1.5 kW margines, BMS i tak ograniczy).
+Low BMS shortcut — when battery_charge_limit ≤ 7A, BMS clamps to ~2 kW so
+the lookup is irrelevant. Fixed Xset 3500W (+1.5 kW margin, BMS will limit
+anyway).
 
-Hysteresis ±300W na granicach bucketów — eliminuje flap'owanie gdy pv_available
-oscyluje na granicy.
+Hysteresis ±300W on bucket boundaries — eliminates flapping when pv_available
+oscillates near the boundary.
 
-Pre_charge window blokuje POSITIVE entry/continue (BatteryManager rządzi przez
-block_discharge hysteresis). NEGATIVE działa w pre_charge (osobna strategia).
+Pre_charge window blocks POSITIVE entry/continue (BatteryManager rules via
+block_discharge hysteresis). NEGATIVE works in pre_charge (separate strategy).
 
-Target meter (charge_limit > 7, reserved=3500W w water_heater, battery cap 5300W
-przy xset=6000) — meter = pv_avail − heaters − battery_actual. Top bucket xset=6000
-rozbity na 4 podrange wg progów water_heatera (heater_budget = pv_avail - 3500,
-SMALL≥1500, BIG≥3000, BOTH≥4500):
+Target meter (charge_limit > 7, reserved=3500W in water_heater, battery cap
+5300W at xset=6000) — meter = pv_avail − heaters − battery_actual. Top
+bucket xset=6000 split into 4 sub-ranges by water_heater thresholds
+(heater_budget = pv_avail - 3500, SMALL≥1500, BIG≥3000, BOTH≥4500):
 
     ┌─────────────────┬──────┬─────────┬────────┬────────────┬──────────┐
-    │ Active pv_avail │ xset │ battery │ środek │ heater     │ meter    │
+    │ Active pv_avail │ xset │ battery │ center │ heater     │ meter    │
     ├─────────────────┼──────┼─────────┼────────┼────────────┼──────────┤
     │ 8000–9000       │ 6000 │  5300   │ 8500   │ BOTH 4.5k  │ ≈ -1300  │
     │ 6500–8000       │ 6000 │  5300   │ 7250   │ BIG 3k     │ ≈ -1050  │
@@ -40,12 +42,12 @@ SMALL≥1500, BIG≥3000, BOTH≥4500):
     │ ≤ -1000         │ AUTO │    0    │   —    │     —      │    —     │
     └─────────────────┴──────┴─────────┴────────┴────────────┴──────────┘
 
-    Niższe buckety (xset≤5000): meter = środek - xset = -1500 fixed.
-    Top bucket (xset=6000, battery cap 5300W): meter zależy od grzałek
-    włączonych przez water_heater — średnio ≈ -1000W (import 1 kW).
-    ≤ -1000: AUTO mode, block_discharge w battery.py przejmuje.
+    Lower buckets (xset≤5000): meter = center - xset = -1500 fixed.
+    Top bucket (xset=6000, battery cap 5300W): meter depends on heaters
+    enabled by water_heater — average ≈ -1000W (1 kW import).
+    ≤ -1000: AUTO mode, block_discharge in battery.py takes over.
 
-Cross-cutting checks (manager handles, NIE w try_enter / continue_or_exit):
+Cross-cutting checks (manager handles, NOT in try_enter / continue_or_exit):
 - ems_allow_discharge_override (global block)
 - balance range (manager routes by `BALANCE_GATE_KWH`)
 - too_late_in_hour entry block (manager: now ≥ XX:59:40)
@@ -72,45 +74,45 @@ _AUTO_MODE: Final[str] = "auto"
 _STANDBY_MODE: Final[str] = "discharge_battery"
 _CHARGE_MODE: Final[str] = "charge_battery"
 
-# Entry gate — balance > 0.06 (kompromis YAML trigger 0.07 / condition 0.04).
-# Public — manager używa do balance range routing.
+# Entry gate — balance > 0.06 (compromise YAML trigger 0.07 / condition 0.04).
+# Public — manager uses for balance range routing.
 BALANCE_GATE_KWH: Final[float] = 0.06
 
-# Exit < 0.05 (jak YAML wait_template). Deadzone 0.05-0.06 — akceptowalna oscylacja.
+# Exit < 0.05 (like YAML wait_template). Deadzone 0.05-0.06 — acceptable oscillation.
 EXIT_BALANCE_KWH: Final[float] = 0.05
 
-# SoC ceilings — entry niższy niż exit żeby uniknąć flap'owania gdy bateria
-# oscyluje 99↔100 (mała ilość energii do wtłoczenia, intervention nie ma sensu).
-# Exit zostaje na 100 — gdy intervention już aktywne, czekamy aż faktycznie
-# naładujemy do końca.
+# SoC ceilings — entry lower than exit to avoid flapping when battery oscillates
+# 99↔100 (small amount of energy to push in, intervention pointless). Exit
+# stays at 100 — once intervention is active, we wait until actually fully
+# charged.
 SOC_ENTRY_CEILING: Final[int] = 99
 SOC_CEILING: Final[int] = 100
 
-# Pre-charge window: 7:00 → start_charge_hour_override (BatteryManager rządzi).
+# Pre-charge window: 7:00 → start_charge_hour_override (BatteryManager rules).
 PRE_CHARGE_WINDOW_START_HOUR: Final[int] = 7
 
-# PV niskie → STANDBY (noc, brak surplus).
+# PV low → STANDBY (night, no surplus).
 PV_STANDBY_THRESHOLD_W: Final[int] = 200
 
 # battery_charge_limit ≤ 7A → low BMS shortcut.
 BMS_LOW_LIMIT_A: Final[int] = 7
-# Low BMS shortcut — BMS clamp na ~2 kW, lookup zbędny.
+# Low BMS shortcut — BMS clamp at ~2 kW, lookup unnecessary.
 LOW_BMS_XSET_W: Final[int] = 3500
 
-# Hysteresis dla bucket transitions
+# Hysteresis for bucket transitions
 HYSTERESIS_W: Final[int] = 300
 
-# Adaptive charge lookup — `(lower, upper, xset)` (analog NEGATIVE).
-# Aktywuje się gdy `lower < pv_available <= upper` (top: upper=None=+inf).
-# Bucket centrum daje meter ≈ -1500W (xset = środek + 1500).
-# pv_available ≤ -1000 → AUTO (block_discharge w battery.py przejmuje).
+# Adaptive charge lookup — `(lower, upper, xset)` (analog to NEGATIVE).
+# Activates when `lower < pv_available <= upper` (top: upper=None=+inf).
+# Bucket center yields meter ≈ -1500W (xset = center + 1500).
+# pv_available ≤ -1000 → AUTO (block_discharge in battery.py takes over).
 _ADAPTIVE_BUCKETS: Final[tuple[tuple[int, int | None, int], ...]] = (
     (4000, None, 6000),  # > 4000 W → charge 6000 (top, BMS practical max)
-    (3000, 4000, 5000),  # charge 5000 (meter ~-1500 w środku)
+    (3000, 4000, 5000),  # charge 5000 (meter ~-1500 in center)
     (2000, 3000, 4000),
     (1000, 2000, 3000),
     (0, 1000, 2000),
-    (-1000, 0, 1000),  # discharge zbliża się; pv_avail ≤ -1000 → AUTO
+    (-1000, 0, 1000),  # discharge approaching; pv_avail ≤ -1000 → AUTO
 )
 
 
@@ -118,8 +120,8 @@ _ADAPTIVE_BUCKETS: Final[tuple[tuple[int, int | None, int], ...]] = (
 class PositiveIntervention:
     """Active POSITIVE intervention session.
 
-    Mutable entity — `_continue` mutuje recommended_*/last_reason via
-    `_commit` helper. Manager nie tworzy nowych instancji per tick.
+    Mutable entity — `_continue` mutates recommended_*/last_reason via
+    `_commit` helper. Manager does not create new instances per tick.
     """
 
     direction: ClassVar[InterventionDirection] = InterventionDirection.POSITIVE
@@ -129,7 +131,7 @@ class PositiveIntervention:
     recommended_xset: int | None = None
     last_reason: str = ""
     _current_xset_for_hysteresis: int | None = field(default=None, repr=False)
-    """Tracks last positive xset for hysteresis lookup. None gdy STANDBY/AUTO."""
+    """Tracks last positive xset for hysteresis lookup. None when STANDBY/AUTO."""
 
     @classmethod
     def try_enter(cls, state: InputState) -> EntryResult:
@@ -158,7 +160,7 @@ class PositiveIntervention:
 
         Initial _current_xset_for_hysteresis=None default → fresh lookup
         (no hysteresis on entry). _continue may signal exit if no real
-        intervention possible (e.g. pv_available is None) — propagated
+        intervention is possible (e.g. pv_available is None) — propagated
         as EntryResult.blocked.
         """
         intervention = cls(started_hour=state.now.hour)
@@ -189,8 +191,8 @@ class PositiveIntervention:
     def _is_in_pre_charge_window(state: InputState) -> bool:
         """Pre-charge: 7:00 ≤ now < start_charge_hour_override.
 
-        Multi-caller helper (try_enter + continue_or_exit) — umieszczone po
-        ostatnim caller-ze (continue_or_exit).
+        Multi-caller helper (try_enter + continue_or_exit) — placed after
+        the last caller (continue_or_exit).
         """
         if state.start_charge_hour_override is None:
             return False
@@ -209,8 +211,8 @@ class PositiveIntervention:
         2. Low BMS shortcut — battery_charge_limit ≤ 7A
         3. charge_adaptive — hysteresis → fresh lookup → AUTO fallback
         """
-        # 1. PV niskie → STANDBY (chwilowy pv_power flapuje, używamy avg 2min;
-        # fallback do chwilowego gdy avg=None — np. po restart HA).
+        # 1. PV low → STANDBY (instantaneous pv_power flaps, use 2-min avg;
+        # fallback to instantaneous when avg=None — e.g. after HA restart).
         pv_for_standby = (
             state.pv_power_avg_2_minutes
             if state.pv_power_avg_2_minutes is not None
@@ -219,8 +221,8 @@ class PositiveIntervention:
         if pv_for_standby < PV_STANDBY_THRESHOLD_W:
             return self._commit(_STANDBY_MODE, 0, "low_pv_standby", None)
 
-        # 2. Low BMS shortcut — bateria clamp ~2 kW, lookup zbędny.
-        # NIE wymaga pv_available, więc shortcut przed guard'em.
+        # 2. Low BMS shortcut — battery clamp ~2 kW, lookup unnecessary.
+        # Does NOT require pv_available, so shortcut runs before that guard.
         if (
             state.battery_charge_limit is not None
             and state.battery_charge_limit <= BMS_LOW_LIMIT_A
@@ -232,7 +234,7 @@ class PositiveIntervention:
                 None,
             )
 
-        # 3. charge_adaptive lookup — wymaga pv_available.
+        # 3. charge_adaptive lookup — requires pv_available.
         if state.pv_available is None:
             return ContinueResult.exit_with("none_pv_available")
         return self._resolve_charge_adaptive(state.pv_available)
@@ -240,11 +242,11 @@ class PositiveIntervention:
     def _resolve_charge_adaptive(self, pv_available: float) -> ContinueResult:
         """Hysteresis stay → fresh lookup → AUTO fallback (pv_avail ≤ -1000).
 
-        Initial state z try_enter: _current_xset_for_hysteresis=None → range=None
-        → hysteresis skip → fresh lookup. Continue: hysteresis stabilizuje
-        oscylacje na granicach bucketów.
+        Initial state from try_enter: _current_xset_for_hysteresis=None →
+        range=None → hysteresis skip → fresh lookup. Continue: hysteresis
+        stabilizes oscillation at bucket boundaries.
         """
-        # Hysteresis — current Xset stable jeśli pv_available w rozszerzonym range.
+        # Hysteresis — current Xset stable when pv_available is in extended range.
         current_range = self._xset_range(self._current_xset_for_hysteresis)
         if current_range is not None:
             lower, upper = current_range
@@ -267,10 +269,10 @@ class PositiveIntervention:
                 xset,
             )
 
-        # pv_available ≤ -1000 → mode=AUTO ale stay in intervention (NIE exit).
-        # Two-tier defense: POSITIVE first line (try CHARGE_BATTERY przy balance
+        # pv_available ≤ -1000 → mode=AUTO but stay in intervention (NOT exit).
+        # Two-tier defense: POSITIVE first line (tries CHARGE_BATTERY at balance
         # > 60 Wh), battery.py second line (post-charge dual-trigger / afternoon-
-        # dynamic) — block_discharge takes over when hourly balance positive
+        # dynamic) — block_discharge takes over when hourly balance is positive
         # despite POSITIVE failing to reduce it via CHARGE_BATTERY.
         return self._commit(
             _AUTO_MODE,
@@ -281,11 +283,11 @@ class PositiveIntervention:
 
     @staticmethod
     def _xset_range(xset: int | None) -> tuple[float, float] | None:
-        """Range pv_available który aktywowałby dany Xset.
+        """Range of pv_available that would activate given Xset.
 
-        Zwraca (lower, upper) lub None gdy xset nie jest w _ADAPTIVE_BUCKETS
-        (np. low_bms_shortcut 3500 — fallback do plain lookup).
-        Najwyższy bucket ma upper=inf.
+        Returns (lower, upper) or None when xset is not in _ADAPTIVE_BUCKETS
+        (e.g. low_bms_shortcut 3500 — fallback to plain lookup).
+        Top bucket has upper=inf.
         """
         if xset is None:
             return None
@@ -297,10 +299,10 @@ class PositiveIntervention:
 
     @staticmethod
     def _lookup_xset(pv_available: float) -> int | None:
-        """Znajdź Xset dla pv_available z _ADAPTIVE_BUCKETS.
+        """Find Xset for pv_available in _ADAPTIVE_BUCKETS.
 
-        Returns None gdy pv_available ≤ -1000 (poza najniższym bucket'em) —
-        caller przełącza na AUTO mode (stay in intervention).
+        Returns None when pv_available ≤ -1000 (outside the lowest bucket) —
+        caller switches to AUTO mode (stay in intervention).
         """
         for lower, upper, xset in _ADAPTIVE_BUCKETS:
             if upper is None:
@@ -319,8 +321,8 @@ class PositiveIntervention:
     ) -> ContinueResult:
         """Mutate self with new decision and return CONTINUE.
 
-        Multi-caller helper (_continue + _resolve_charge_adaptive) — umieszczone
-        po ostatnim caller-ze (_resolve_charge_adaptive) plus jego sub-helpers.
+        Multi-caller helper (_continue + _resolve_charge_adaptive) — placed
+        after the last caller (_resolve_charge_adaptive) plus its sub-helpers.
         """
         self.recommended_mode = mode
         self.recommended_xset = xset

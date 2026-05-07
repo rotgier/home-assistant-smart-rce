@@ -1,6 +1,6 @@
-"""GridExportManager — orchestrator dla POSITIVE / NEGATIVE intervention sessions.
+"""GridExportManager — orchestrator for POSITIVE / NEGATIVE intervention sessions.
 
-Wystawia 4 read-only properties czytane przez sensory:
+Exposes 4 read-only properties consumed by sensors:
 - intervention_active (bool, diagnostic)
 - intervention_direction (POSITIVE/NEGATIVE/None)
 - recommended_ems_mode (str: "auto" | "discharge_battery" | "charge_battery")
@@ -9,32 +9,32 @@ Wystawia 4 read-only properties czytane przez sensory:
 Plus mutable field:
 - last_decision_reason (str | None)
 
-Listener w infrastructure/grid_export_actuator.py reaguje na zmiany sensorów
-i wywołuje number.goodwe_ems_power_limit + select.goodwe_ems_mode.
+Listener in infrastructure/grid_export_actuator.py reacts to sensor changes
+and calls number.goodwe_ems_power_limit + select.goodwe_ems_mode.
 
-Active window: post_charge → next day 7:00 (POSITIVE skip pre_charge — tam
-BatteryManager rządzi; NEGATIVE działa w pre_charge).
+Active window: post_charge → next day 7:00 (POSITIVE skips pre_charge —
+BatteryManager rules there; NEGATIVE works in pre_charge).
 
-Architektura — two-layer separation of concerns:
+Architecture — two-layer separation of concerns:
 1. **Manager (this class)** — global cross-cutting concerns:
    - none_present_core (defensive — required state fields are None)
-   - ems_allow_discharge_override (global block dla obu kierunków)
+   - ems_allow_discharge_override (global block for both directions)
    - hour_rollover (continue lifecycle)
    - end_of_hour_cleanup (continue lifecycle, exit ≥ XX:59:50)
    - too_late_in_hour (entry block, ≥ XX:59:40)
    - other_ems_automation_active_this_hour (entry block)
    - balance range routing (POSITIVE: > BALANCE_GATE_KWH, NEGATIVE: < entry_threshold)
 2. **Intervention (PositiveIntervention / NegativeIntervention)** — intervention-
-   specific preconditions (SoC progi, toggle, pre_charge_window, balance recovery
-   exit, feasibility per bucket type).
+   specific preconditions (SoC thresholds, toggle, pre_charge_window, balance
+   recovery exit, feasibility per bucket type).
 
 Decision tree (`grid_export_strategy_mode`):
-- "charge_adaptive" → domyślne aktywne (POSITIVE i NEGATIVE)
-- "disabled"        → manager evaluuje, ale intervention off (diagnostic only)
+- "charge_adaptive" → default active (POSITIVE and NEGATIVE)
+- "disabled"        → manager evaluates but intervention off (diagnostic only)
 
-Defensive: gdy `state.pv_available` lub `battery_charge_limit` są None
-(np. po HA restart, sensory unavailable przez ~25-50ms) → no-op, manager
-wraca do AUTO, listener wraca rejestry do AUTO.
+Defensive: when `state.pv_available` or `battery_charge_limit` is None
+(e.g. after HA restart, sensors unavailable for ~25-50ms) → no-op, manager
+returns to AUTO, listener restores registers to AUTO.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class GridExportManager:
-    """Orchestrator — global guards + range routing + delegacja do active intervention."""
+    """Orchestrator — global guards + range routing + delegation to active intervention."""
 
     AUTO_MODE: Final[str] = "auto"
 
@@ -69,7 +69,7 @@ class GridExportManager:
     LATE_HOUR_ENTRY_SECOND: Final[int] = 40  # too_late_in_hour entry block
     LATE_HOUR_EXIT_SECOND: Final[int] = 50  # end_of_hour_cleanup exit
 
-    # Logowanie — throttle DEBUG snapshot gdy nic się nie zmienia (60s).
+    # Logging — throttle DEBUG snapshot when nothing changes (60s).
     DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
 
     def __init__(self) -> None:
@@ -79,7 +79,7 @@ class GridExportManager:
         # forces AUTO regardless of computed intervention. Field tracks if
         # current state is forced override (for sensors).
         self._disabled_override_active: bool = False
-        # Throttling dla DEBUG snapshotów (jak w BatteryManager)
+        # Throttling for DEBUG snapshots (same as BatteryManager)
         self._last_log_snapshot: tuple | None = None
         self._last_log_ts: datetime | None = None
 
@@ -111,10 +111,10 @@ class GridExportManager:
         return self._active.started_hour if self._active else None
 
     def get_active_intervention(self) -> InterventionDirection | None:
-        """Aktualny kierunek interwencji (POSITIVE/NEGATIVE/None).
+        """Return current intervention direction (POSITIVE/NEGATIVE/None).
 
-        Używane przez WaterHeaterManager do dyfferencjacji reserved (większy
-        reserved przy NEGATIVE — grzałki off priorytetowo).
+        Used by WaterHeaterManager to differentiate reserved (higher reserved
+        for NEGATIVE — heaters preferred off).
         """
         return self.intervention_direction
 
@@ -136,8 +136,8 @@ class GridExportManager:
 
         # --- Global guards (cross-cutting both directions) ---
         if self._none_present_core(state):
-            # Skip disabled_override — bez core inputs override nie ma sensu
-            # (state.grid_export_strategy_mode też może być None).
+            # Skip disabled_override — without core inputs the override has
+            # no meaning (state.grid_export_strategy_mode may also be None).
             self._set_neutral("none_present")
             self._disabled_override_active = False
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
@@ -160,10 +160,10 @@ class GridExportManager:
 
     @staticmethod
     def _none_present_core(state: InputState) -> bool:
-        """Pola wymagane do podjęcia DECYZJI o entry/exit (gates).
+        """Fields required to decide on entry/exit (gates).
 
-        Gdy któryś None → manager nie może działać, update robi set_neutral
-        i skip disabled_override (override też nie ma sensu bez core inputs).
+        When any is None → manager cannot operate; update calls set_neutral
+        and skips disabled_override (override also pointless without core inputs).
         """
         return (
             state.now is None
@@ -174,8 +174,8 @@ class GridExportManager:
 
     def _tick_active(self, state: InputState) -> None:
         """Continue path — global exit checks first, then delegate to intervention."""
-        # Hour rollover (utility_meter resetuje balans hourly o pełnej godzinie,
-        # każda godzina = osobna decyzja czy intervention).
+        # Hour rollover (utility_meter resets hourly balance on the full hour,
+        # each hour = a separate intervention decision).
         if state.now.hour != self._active.started_hour:
             self._set_neutral("hour_rollover")
             return
@@ -203,9 +203,9 @@ class GridExportManager:
             return
 
         # Balance range routing — mutually exclusive.
-        # POSITIVE: balance > +0.06 (eksport nadmierny → CHARGE_BATTERY)
+        # POSITIVE: balance > +0.06 (excessive export → CHARGE_BATTERY)
         # NEGATIVE: balance < entry_threshold (-0.05 pre-45min, 0.0 post-45min)
-        # Deadzone (-0.05..+0.06): żadna intervencja nie aplikuje.
+        # Deadzone (-0.05..+0.06): no intervention applies.
         balance = state.exported_energy_hourly
         if balance > positive.BALANCE_GATE_KWH:
             result = PositiveIntervention.try_enter(state)
@@ -243,20 +243,20 @@ class GridExportManager:
         self.last_decision_reason = reason
 
     def _apply_disabled_override_if_needed(self, state: InputState) -> None:
-        """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.
+        """If strategy_mode = 'disabled' (or None) → override main outputs.
 
-        Manager już wystawił recommended_* via properties. Properties sprawdzają
-        `_disabled_override_active` flag — jeśli aktywny, zwracają AUTO/None
-        regardless of self._active. Tutaj ustawiamy flagę i wzbogacamy reason
-        o diagnostic info "what would have been".
+        Manager already exposed recommended_* via properties. Properties check
+        the `_disabled_override_active` flag — when active, they return
+        AUTO/None regardless of self._active. Here we set the flag and enrich
+        reason with diagnostic info "what would have been".
 
-        Defensive: None → traktuj jak "disabled" (safe default gdy helper
-        jeszcze nieskonfigurowany).
+        Defensive: None → treat as "disabled" (safe default when helper not
+        yet configured).
         """
         mode = state.grid_export_strategy_mode
         if mode == self.STRATEGY_MODE_CHARGE_ADAPTIVE:
             self._disabled_override_active = False
-            return  # active mode — main outputs zostają
+            return  # active mode — main outputs preserved
 
         # mode is "disabled" or None — override
         # Capture would-be values BEFORE setting flag (properties depend on it).
@@ -304,7 +304,7 @@ class GridExportManager:
         self._maybe_log_snapshot(state)
 
     def _maybe_log_snapshot(self, state: InputState) -> None:
-        """Log DEBUG snapshot gdy key fields się zmienią LUB minął throttle interval."""
+        """Log DEBUG snapshot when key fields change OR throttle interval elapsed."""
         snapshot = (
             self.intervention_active,
             self.recommended_ems_mode,
