@@ -95,12 +95,37 @@ class GridExportActuator:
 
     @callback
     def apply_if_changed(self) -> None:
-        """Spawn fire-and-forget background task (registered as ems listener)."""
+        """Spawn fire-and-forget background task (registered as ems listener).
+
+        Skips dispatch when external EMS automation is managing Goodwe this
+        hour (`other_ems_automation_active_this_hour=True`). Resets
+        `_last_applied` to (auto, None) on the first such tick — assumes the
+        external automation will return Goodwe to AUTO at the end of its run.
+        Without this reset, after the automation finishes smart_rce would
+        compare against a stale `_last_applied` (e.g. last intervention
+        values from before the automation) and re-apply that obsolete state.
+        """
+        if self._is_other_automation_active():
+            # External automation manages Goodwe — assume it will reset to AUTO.
+            # Skip dispatch + sync `_last_applied` so smart_rce does not push
+            # stale recommendation when intervention reactivates.
+            self._last_applied = ("auto", None)
+            return
         self._entry.async_create_background_task(
             self._hass,
             self._dispatch(),
             name="smart_rce_grid_export_apply",
         )
+
+    def _is_other_automation_active(self) -> bool:
+        """Read `other_ems_automation_active_this_hour` flag from last InputState.
+
+        Uses `Ems.last_input_state` (in-memory snapshot updated by
+        `Ems.update_state`) — consistent with rest of architecture (input
+        state propagation, no extra HA entity_id lookups).
+        """
+        last = self._ems.last_input_state
+        return last is not None and last.other_ems_automation_active_this_hour is True
 
     async def _dispatch(self) -> None:
         async with self._lock:

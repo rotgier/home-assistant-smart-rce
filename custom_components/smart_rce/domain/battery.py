@@ -72,6 +72,14 @@ GridExport intervention activation thresholds (hourly net export, in Wh):
 - Manager-level deadzone (-50..+60 Wh pre-45min, 0..+60 Wh post-45min):
   no intervention applies; last_decision_reason = "balance_in_deadzone_*".
 
+- Manager-level global guards (cross-cutting, both entry and continue paths):
+  - `ems_allow_discharge_override=True` → exit/block (`ems_allow_discharge_override`)
+  - `other_ems_automation_active_this_hour=True` → exit/block
+    (`other_automation_active`). Listener (`grid_export_actuator`) also skips
+    physical apply during automation and resets `_last_applied=(auto, None)`
+    so smart_rce does not push stale recommendation when intervention
+    reactivates after automation finishes.
+
 Coordination matrix with GridExportManager (POSITIVE / NEGATIVE intervention):
 
     | Phase             | block_discharge trigger                | POSITIVE       | NEGATIVE |

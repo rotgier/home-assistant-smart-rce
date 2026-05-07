@@ -216,6 +216,22 @@ class TestEntryGates:
         assert mgr.intervention_active is False
         assert "other_automation_active" in mgr.last_decision_reason
 
+    def test_other_automation_active_exits_during_intervention(self):
+        """Mid-intervention automation start → exit (cross-cutting global guard)."""
+        mgr = GridExportManager()
+        # Step 1: enter POSITIVE intervention (no automation yet)
+        mgr.update(_state(exported_energy_hourly=0.10))
+        assert mgr.intervention_active is True
+        # Step 2: external automation activates mid-intervention → exit
+        mgr.update(
+            _state(
+                exported_energy_hourly=0.10,
+                other_ems_automation_active_this_hour=True,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.last_decision_reason == "other_automation_active"
+
 
 class TestExitGates:
     """Exit from intervention when exit conditions are met."""

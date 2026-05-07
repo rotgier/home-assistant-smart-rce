@@ -149,6 +149,15 @@ class GridExportManager:
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
+        # External EMS automation managing Goodwe — exit any active intervention
+        # and stay neutral (entry + continue path). Listener guards the physical
+        # apply (does not overwrite automation's Goodwe settings).
+        if state.other_ems_automation_active_this_hour is True:
+            self._set_neutral("other_automation_active")
+            self._apply_disabled_override_if_needed(state)
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
+            return
+
         # --- Continue / Entry routing ---
         if self._active is not None:
             self._tick_active(state)
@@ -192,14 +201,15 @@ class GridExportManager:
             self.last_decision_reason = self._active.last_reason
 
     def _try_enter(self, state: InputState) -> None:
-        """Entry path — global entry blocks first, then balance range routing."""
+        """Entry path — global entry blocks first, then balance range routing.
+
+        Note: `other_ems_automation_active_this_hour` is handled by the global
+        guard in `update()` (cross-cutting, applies to both entry and continue
+        paths) — no need to re-check here.
+        """
         # Late hour entry block (now ≥ XX:59:40).
         if self._is_too_late_for_entry(state):
             self.last_decision_reason = "too_late_in_hour"
-            return
-        # Other EMS automation active this hour (e.g. peak hour discharge).
-        if state.other_ems_automation_active_this_hour is True:
-            self.last_decision_reason = "other_automation_active"
             return
 
         # Balance range routing — mutually exclusive.
