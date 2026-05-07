@@ -43,6 +43,26 @@ Each sub-method sets `self._phase` (str label for diagnostic) AND mutates
 `should_block_battery_discharge` per branch logic. `diagnostic_snapshot(state)`
 reads `_phase` field — does not recompute classification (single source of truth).
 
+GridExport intervention activation thresholds (hourly net export, in Wh):
+
+- POSITIVE (excessive export → CHARGE_BATTERY/STANDBY to absorb surplus)
+  - Entry: hourly > +60 Wh (BALANCE_GATE_KWH = 0.06)
+  - Exit:  hourly < +50 Wh (EXIT_BALANCE_KWH  = 0.05)
+  - Hourly deadband: +50..+60 Wh (avoid flapping at boundary)
+  - Plus SoC entry ceiling: blocked when battery_soc ≥ 99 (SOC_ENTRY_CEILING)
+  - Plus SoC exit ceiling:  exits when battery_soc ≥ 100 (SOC_CEILING)
+
+- NEGATIVE (net import → adaptive charge/discharge to stabilize +1500W export)
+  - Entry pre-45min:  hourly < -50 Wh (ENTRY_THRESHOLD_EARLY_KWH = -0.05)
+  - Entry post-45min: hourly <   0 Wh (ENTRY_THRESHOLD_LATE_KWH  =  0.00)
+  - Exit:             hourly >   0 Wh (EXIT_BALANCE_KWH          =  0.00)
+  - Plus SoC hard floor:        entry blocked when battery_soc ≤ 10 (SOC_HARD_FLOOR)
+  - Plus discharge feasibility: entry blocked when discharge bucket would
+        fire AND battery_soc ≤ (100 - depth_of_discharge%)
+
+- Manager-level deadzone (-50..+60 Wh pre-45min, 0..+60 Wh post-45min):
+  no intervention applies; last_decision_reason = "balance_in_deadzone_*".
+
 Coordination matrix with GridExportManager (POSITIVE / NEGATIVE intervention):
 
     | Phase             | block_discharge trigger                | POSITIVE       | NEGATIVE |
