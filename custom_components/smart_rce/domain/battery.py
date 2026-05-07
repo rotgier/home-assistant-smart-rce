@@ -57,7 +57,7 @@ Coordination matrix with GridExportManager (POSITIVE / NEGATIVE intervention):
     |                   |                                        | blocked by SoC |          |
     |                   |                                        | ceiling        |          |
     | afternoon-dynamic | instant_surplus OR hourly > 0 SET;     | yes            | yes      |
-    |                   | instant_deficit AND NOT hourly RESET;  |                |          |
+    |                   | instant_deficit AND hourly <= 0 RESET; |                |          |
     |                   | else keep                              |                |          |
     | out-of-window     | False (always)                         | yes (rare)     | yes      |
 
