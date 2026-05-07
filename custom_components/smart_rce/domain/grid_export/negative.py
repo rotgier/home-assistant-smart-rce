@@ -87,6 +87,12 @@ SOC_CEILING: Final[int] = 100  # bucket charge clamp (= battery full)
 # Hysteresis for bucket transitions
 HYSTERESIS_W: Final[int] = 300
 
+# Hysteresis at SoC DoD floor: clamp discharge bucket to STOP when PV surplus
+# OR mild deficit (pv_available >= -200W); exit only on deep deficit
+# (pv_available < -200W). Asymmetric vs entry gate (strict pv_available >= 0)
+# — prevents entry/exit flap near boundary while in intervention.
+DISCHARGE_FLOOR_HYSTERESIS_W: Final[int] = 200
+
 # Adaptive buckets — `(lower, upper, xset_signed)`.
 # Activates when `lower < pv_available <= upper` (top bucket: upper=None=+inf).
 # Bucket center yields export ~1500W (Xset = lower - 1000).
@@ -155,12 +161,20 @@ class NegativeIntervention:
             return EntryResult.blocked("none_depth_of_discharge")
         if state.pv_available is None:
             return EntryResult.blocked("none_pv_available")
-        # Entry feasibility — discharge bucket requires SoC > min_soc.
-        # Charge bucket at SoC=100 does NOT block (clamp to bucket STOP in _continue).
-        if cls._lookup_xset(state.pv_available) < 0 and state.battery_soc <= (
-            100 - state.depth_of_discharge
+        # Entry at DoD floor: only enter when PV surplus available.
+        # - pv_available >= 0: discharge bucket would clamp to STOP via
+        #   `_clamp_bucket_per_soc` in `_continue`, redirecting PV surplus to
+        #   grid as export (helps NEGATIVE balance).
+        # - pv_available < 0: no surplus to redirect; AUTO/load-following more
+        #   efficient than STOP intervention. Block strictly.
+        # Charge bucket at SoC=100 does NOT block (clamp to STOP in `_continue`).
+        at_floor = state.battery_soc <= (100 - state.depth_of_discharge)
+        if (
+            at_floor
+            and cls._lookup_xset(state.pv_available) < 0
+            and state.pv_available < 0
         ):
-            return EntryResult.blocked("soc_at_dod_floor_no_discharge")
+            return EntryResult.blocked("soc_at_dod_floor_no_pv_surplus")
         return cls._enter(state)
 
     @classmethod
@@ -201,8 +215,10 @@ class NegativeIntervention:
         Flow: hysteresis lookup → SoC clamp → post-clamp DoD check → commit.
         """
         xset_signed, is_stay = self._resolve_xset_with_hysteresis(state.pv_available)
-        xset_signed, is_stay = self._clamp_charge_bucket(xset_signed, is_stay, state)
-        # Post-clamp SoC floor check — discharge bucket requires SoC > min_soc.
+        xset_signed, is_stay = self._clamp_bucket_per_soc(xset_signed, is_stay, state)
+        # Post-clamp: discharge bucket at DoD floor only persists when clamp
+        # did not activate (pv_available < -200W). Exit on deep deficit —
+        # load-following more efficient than STOP when no PV surplus.
         if xset_signed < 0 and state.battery_soc <= (100 - state.depth_of_discharge):
             return ContinueResult.exit_with("soc_at_dod_floor_exit")
         return self._commit(xset_signed, is_stay, state.pv_available)
@@ -252,24 +268,44 @@ class NegativeIntervention:
         return _ADAPTIVE_BUCKETS[-1][2]
 
     @staticmethod
-    def _clamp_charge_bucket(
+    def _clamp_bucket_per_soc(
         xset_signed: int, is_stay: bool, state: InputState
     ) -> tuple[int, bool]:
-        """Clamp charge bucket (xset>0) to bucket STOP when battery full or toggle off.
+        """Clamp bucket to STOP when SoC limits prevent execution.
 
-        - SoC = 100 → battery full, cannot charge, but PV export offsets NEGATIVE
-          (bucket STOP yields pv_avail export).
+        Charge bucket (xset > 0):
+        - SoC = 100 → battery full, cannot charge, but PV export still offsets
+          NEGATIVE (bucket STOP yields pv_avail export).
         - battery_charge_toggle_on = False → user disabled charging, manager
           respects (bucket STOP). NEGATIVE branch still active — pv_avail
           export saves the balance.
+
+        Discharge bucket (xset < 0):
+        - SoC at DoD floor AND pv_available >= -DISCHARGE_FLOOR_HYSTERESIS_W
+          (= -200W) → clamp to STOP. PV surplus (or mild deficit) redirects
+          to grid as export, helping balance recovery even though battery
+          cannot discharge further. Hysteresis -200W prevents flap with
+          entry gate (which blocks strictly when pv_available < 0).
+        - SoC at DoD floor AND pv_available < -200W → no clamp. Post-clamp
+          check in `_continue` exits intervention — load-following more
+          efficient on deep deficit when no PV surplus to redirect.
+
+        Bucket STOP (xset = 0): no clamp needed.
         """
-        if xset_signed <= 0:
+        if xset_signed > 0:
+            if state.battery_soc is not None and state.battery_soc >= SOC_CEILING:
+                return 0, False
+            if state.battery_charge_toggle_on is False:
+                return 0, False
             return xset_signed, is_stay
-        if state.battery_soc is not None and state.battery_soc >= SOC_CEILING:
-            return 0, False
-        if state.battery_charge_toggle_on is False:
-            return 0, False
-        return xset_signed, is_stay
+        if xset_signed < 0:
+            if state.depth_of_discharge is None:
+                return xset_signed, is_stay  # defensive — caller verified not None
+            at_floor = state.battery_soc <= (100 - state.depth_of_discharge)
+            if at_floor and state.pv_available >= -DISCHARGE_FLOOR_HYSTERESIS_W:
+                return 0, False  # clamp to STOP, PV surplus / mild deficit
+            return xset_signed, is_stay
+        return xset_signed, is_stay  # bucket STOP — no clamp needed
 
     def _commit(self, xset_signed: int, is_stay: bool, pv: float) -> ContinueResult:
         """Translate signed bucket value → (mode, xset, reason) and mutate self.

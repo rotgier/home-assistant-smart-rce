@@ -56,9 +56,18 @@ GridExport intervention activation thresholds (hourly net export, in Wh):
   - Entry pre-45min:  hourly < -50 Wh (ENTRY_THRESHOLD_EARLY_KWH = -0.05)
   - Entry post-45min: hourly <   0 Wh (ENTRY_THRESHOLD_LATE_KWH  =  0.00)
   - Exit:             hourly >   0 Wh (EXIT_BALANCE_KWH          =  0.00)
-  - Plus SoC hard floor:        entry blocked when battery_soc ≤ 10 (SOC_HARD_FLOOR)
-  - Plus discharge feasibility: entry blocked when discharge bucket would
-        fire AND battery_soc ≤ (100 - depth_of_discharge%)
+  - Plus SoC hard floor: entry blocked when battery_soc ≤ 10 (SOC_HARD_FLOOR)
+  - DoD floor handling (asymmetric entry/continue with hysteresis):
+    - Entry: discharge bucket + SoC ≤ (100 - DoD%) AND pv_available < 0
+        → blocked (`soc_at_dod_floor_no_pv_surplus`). No surplus to redirect;
+        AUTO/load-following more efficient than STOP.
+    - Entry: discharge bucket + SoC at floor AND pv_available ≥ 0 → enters
+        with bucket clamped to STOP (PV surplus redirects to grid as export).
+    - Continue: discharge bucket + SoC at floor AND pv_available ≥ -200W
+        → clamp to STOP (`DISCHARGE_FLOOR_HYSTERESIS_W`). Avoids flap when
+        pv_available oscillates near zero.
+    - Continue: discharge bucket + SoC at floor AND pv_available < -200W
+        → exits (`soc_at_dod_floor_exit`). Deep deficit, STOP useless.
 
 - Manager-level deadzone (-50..+60 Wh pre-45min, 0..+60 Wh post-45min):
   no intervention applies; last_decision_reason = "balance_in_deadzone_*".

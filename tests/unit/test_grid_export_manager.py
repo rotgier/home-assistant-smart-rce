@@ -800,8 +800,12 @@ class TestNegativeEntry:
         mgr.update(_state(now=late, exported_energy_hourly=-0.10))
         assert mgr.intervention_active is False
 
-    def test_no_entry_discharge_bucket_at_dod_floor(self):
-        """Bucket discharge (pv_avail < 1500) + SoC = floor → entry blocked."""
+    def test_no_entry_discharge_bucket_at_dod_floor_no_surplus(self):
+        """SoC=floor + pv_available < 0 (deficit) → entry blocked.
+
+        No PV surplus to redirect; AUTO/load-following more efficient than
+        STOP intervention. Strict pv_available < 0 entry block.
+        """
         mgr = GridExportManager()
         # consumption_minus_pv = +500 (deficit) → pv_avail = -500 → bucket discharge
         mgr.update(
@@ -813,7 +817,100 @@ class TestNegativeEntry:
             )
         )
         assert mgr.intervention_active is False
-        assert "soc_at_dod_floor_no_discharge" in mgr.last_decision_reason
+        assert "soc_at_dod_floor_no_pv_surplus" in mgr.last_decision_reason
+
+    def test_entry_at_dod_floor_with_pv_surplus_clamps_to_stop(self):
+        """SoC=floor + pv_available >= 0 → entry allowed, discharge clamps to STOP.
+
+        PV surplus redirects to grid as export, helping NEGATIVE balance
+        recovery even though battery cannot discharge further.
+        """
+        mgr = GridExportManager()
+        # consumption_minus_pv = -500 (surplus) → pv_avail = 500 → bucket discharge -1000
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-500,
+                battery_soc=22,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_ems_mode == "discharge_battery"
+        assert mgr.recommended_xset == 0  # clamped to STOP
+        assert "negative_stop_xset_0" in mgr.last_decision_reason
+
+    def test_entry_at_dod_floor_with_mild_deficit_blocks(self):
+        """SoC=floor + pv_available = -100 (mild deficit) → entry STILL blocked.
+
+        Entry uses strict pv_available < 0 threshold (asymmetric with
+        continue's -200W hysteresis).
+        """
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=100,  # pv_avail = -100
+                battery_soc=22,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert "soc_at_dod_floor_no_pv_surplus" in mgr.last_decision_reason
+
+    def test_continue_at_dod_floor_mild_deficit_keeps_stop(self):
+        """In intervention, SoC drops to floor + pv_available in (-200, 0] → keep STOP.
+
+        Hysteresis prevents flap when pv_available oscillates near zero with
+        deficit balance.
+        """
+        mgr = GridExportManager()
+        # Enter at SoC=50 with PV surplus
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-500,
+                battery_soc=50,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is True
+        # SoC drops to floor, PV mild deficit (within -200W hysteresis)
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=100,  # pv_avail = -100
+                battery_soc=22,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is True
+        assert mgr.recommended_xset == 0
+        assert "negative_stop_xset_0" in mgr.last_decision_reason
+
+    def test_continue_at_dod_floor_deep_deficit_exits(self):
+        """In intervention, SoC=floor + pv_available < -200 → exit (deep deficit)."""
+        mgr = GridExportManager()
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=-500,
+                battery_soc=50,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is True
+        # SoC drops to floor, PV deep deficit (beyond -200W hysteresis)
+        mgr.update(
+            _state(
+                exported_energy_hourly=-0.10,
+                consumption_minus_pv_2_minutes=300,  # pv_avail = -300
+                battery_soc=22,
+                depth_of_discharge=78,
+            )
+        )
+        assert mgr.intervention_active is False
+        assert mgr.last_decision_reason == "soc_at_dod_floor_exit"
 
     def test_entry_charge_bucket_at_soc_ceiling(self):
         """Bucket charge (pv_avail > 1000) + SoC = 100 → entry pozwolony, clamp do STOP."""
