@@ -1,0 +1,347 @@
+"""GridExportManager — orchestrator dla POSITIVE / NEGATIVE intervention sessions.
+
+Wystawia 4 read-only properties czytane przez sensory:
+- intervention_active (bool, diagnostic)
+- intervention_direction (POSITIVE/NEGATIVE/None)
+- recommended_ems_mode (str: "auto" | "discharge_battery" | "charge_battery")
+- recommended_xset (int | None) — W
+
+Plus mutable field:
+- last_decision_reason (str | None)
+
+Listener w infrastructure/grid_export_actuator.py reaguje na zmiany sensorów
+i wywołuje number.goodwe_ems_power_limit + select.goodwe_ems_mode.
+
+Active window: post_charge → next day 7:00 (POSITIVE skip pre_charge — tam
+BatteryManager rządzi; NEGATIVE działa w pre_charge).
+
+Architektura — two-layer separation of concerns:
+1. **Manager (this class)** — global cross-cutting concerns:
+   - none_present_core (defensive — required state fields are None)
+   - ems_allow_discharge_override (global block dla obu kierunków)
+   - hour_rollover (continue lifecycle)
+   - end_of_hour_cleanup (continue lifecycle, exit ≥ XX:59:50)
+   - too_late_in_hour (entry block, ≥ XX:59:40)
+   - other_ems_automation_active_this_hour (entry block)
+   - balance range routing (POSITIVE: > BALANCE_GATE_KWH, NEGATIVE: < entry_threshold)
+2. **Intervention (PositiveIntervention / NegativeIntervention)** — intervention-
+   specific preconditions (SoC progi, toggle, pre_charge_window, balance recovery
+   exit, feasibility per bucket type).
+
+Decision tree (`grid_export_strategy_mode`):
+- "charge_adaptive" → domyślne aktywne (POSITIVE i NEGATIVE)
+- "disabled"        → manager evaluuje, ale intervention off (diagnostic only)
+
+Defensive: gdy `state.pv_available` lub `battery_charge_limit` są None
+(np. po HA restart, sensory unavailable przez ~25-50ms) → no-op, manager
+wraca do AUTO, listener wraca rejestry do AUTO.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+import logging
+from typing import Final
+
+from custom_components.smart_rce.domain.grid_export import negative, positive
+from custom_components.smart_rce.domain.grid_export.intervention import (
+    Intervention,
+    InterventionDirection,
+)
+from custom_components.smart_rce.domain.grid_export.negative import NegativeIntervention
+from custom_components.smart_rce.domain.grid_export.positive import PositiveIntervention
+from custom_components.smart_rce.domain.input_state import InputState
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class GridExportManager:
+    """Orchestrator — global guards + range routing + delegacja do active intervention."""
+
+    AUTO_MODE: Final[str] = "auto"
+
+    # Strategy modes (input_select.smart_rce_grid_export_strategy_mode)
+    STRATEGY_MODE_DISABLED: Final[str] = "disabled"
+    STRATEGY_MODE_CHARGE_ADAPTIVE: Final[str] = "charge_adaptive"
+
+    # Global lifecycle thresholds (cross-cutting both interventions)
+    LATE_HOUR_MINUTE: Final[int] = 59
+    LATE_HOUR_ENTRY_SECOND: Final[int] = 40  # too_late_in_hour entry block
+    LATE_HOUR_EXIT_SECOND: Final[int] = 50  # end_of_hour_cleanup exit
+
+    # Logowanie — throttle DEBUG snapshot gdy nic się nie zmienia (60s).
+    DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
+
+    def __init__(self) -> None:
+        self._active: Intervention | None = None
+        self.last_decision_reason: str | None = None
+        # Disabled override — when strategy_mode != charge_adaptive, manager
+        # forces AUTO regardless of computed intervention. Field tracks if
+        # current state is forced override (for sensors).
+        self._disabled_override_active: bool = False
+        # Throttling dla DEBUG snapshotów (jak w BatteryManager)
+        self._last_log_snapshot: tuple | None = None
+        self._last_log_ts: datetime | None = None
+
+    @property
+    def intervention_active(self) -> bool:
+        return self._active is not None and not self._disabled_override_active
+
+    @property
+    def intervention_direction(self) -> InterventionDirection | None:
+        if self._active is None or self._disabled_override_active:
+            return None
+        return self._active.direction
+
+    @property
+    def recommended_ems_mode(self) -> str:
+        if self._active is None or self._disabled_override_active:
+            return self.AUTO_MODE
+        return self._active.recommended_mode
+
+    @property
+    def recommended_xset(self) -> int | None:
+        if self._active is None or self._disabled_override_active:
+            return None
+        return self._active.recommended_xset
+
+    @property
+    def _intervention_started_hour(self) -> int | None:
+        """Backward-compat read API (tests). Started hour of active intervention."""
+        return self._active.started_hour if self._active else None
+
+    def get_active_intervention(self) -> InterventionDirection | None:
+        """Aktualny kierunek interwencji (POSITIVE/NEGATIVE/None).
+
+        Używane przez WaterHeaterManager do dyfferencjacji reserved (większy
+        reserved przy NEGATIVE — grzałki off priorytetowo).
+        """
+        return self.intervention_direction
+
+    def update(self, state: InputState) -> None:
+        """Re-evaluate intervention state from current InputState.
+
+        Called reactively by Ems on every state change.
+
+        Flow:
+        1. Global guards (none_present_core, ems_override) → set_neutral + return
+        2. Active intervention: tick (hour_rollover, end_of_hour, delegate)
+           Or: try_enter (too_late_in_hour, other_automation, balance routing)
+        3. Apply disabled_override if strategy_mode != charge_adaptive
+        4. Log
+        """
+        prev_active = self.intervention_active
+        prev_mode = self.recommended_ems_mode
+        prev_xset = self.recommended_xset
+
+        # --- Global guards (cross-cutting both directions) ---
+        if self._none_present_core(state):
+            # Skip disabled_override — bez core inputs override nie ma sensu
+            # (state.grid_export_strategy_mode też może być None).
+            self._set_neutral("none_present")
+            self._disabled_override_active = False
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
+            return
+
+        if state.ems_allow_discharge_override is True:
+            self._set_neutral("ems_allow_discharge_override")
+            self._apply_disabled_override_if_needed(state)
+            self._log_after_update(state, prev_active, prev_mode, prev_xset)
+            return
+
+        # --- Continue / Entry routing ---
+        if self._active is not None:
+            self._tick_active(state)
+        else:
+            self._try_enter(state)
+
+        self._apply_disabled_override_if_needed(state)
+        self._log_after_update(state, prev_active, prev_mode, prev_xset)
+
+    @staticmethod
+    def _none_present_core(state: InputState) -> bool:
+        """Pola wymagane do podjęcia DECYZJI o entry/exit (gates).
+
+        Gdy któryś None → manager nie może działać, update robi set_neutral
+        i skip disabled_override (override też nie ma sensu bez core inputs).
+        """
+        return (
+            state.now is None
+            or state.exported_energy_hourly is None
+            or state.battery_soc is None
+            or state.pv_power is None
+        )
+
+    def _tick_active(self, state: InputState) -> None:
+        """Continue path — global exit checks first, then delegate to intervention."""
+        # Hour rollover (utility_meter resetuje balans hourly o pełnej godzinie,
+        # każda godzina = osobna decyzja czy intervention).
+        if state.now.hour != self._active.started_hour:
+            self._set_neutral("hour_rollover")
+            return
+        # End of hour cleanup (now ≥ XX:59:50).
+        if self._is_end_of_hour(state):
+            self._set_neutral("end_of_hour_cleanup")
+            return
+        # Delegate to intervention — intervention-specific exits + recompute.
+        result = self._active.continue_or_exit(state)
+        if result.is_exit:
+            self._set_neutral(result.exit_reason)
+        else:
+            # self._active mutated in place — sync last_decision_reason.
+            self.last_decision_reason = self._active.last_reason
+
+    def _try_enter(self, state: InputState) -> None:
+        """Entry path — global entry blocks first, then balance range routing."""
+        # Late hour entry block (now ≥ XX:59:40).
+        if self._is_too_late_for_entry(state):
+            self.last_decision_reason = "too_late_in_hour"
+            return
+        # Other EMS automation active this hour (e.g. peak hour discharge).
+        if state.other_ems_automation_active_this_hour is True:
+            self.last_decision_reason = "other_automation_active"
+            return
+
+        # Balance range routing — mutually exclusive.
+        # POSITIVE: balance > +0.06 (eksport nadmierny → CHARGE_BATTERY)
+        # NEGATIVE: balance < entry_threshold (-0.05 pre-45min, 0.0 post-45min)
+        # Deadzone (-0.05..+0.06): żadna intervencja nie aplikuje.
+        balance = state.exported_energy_hourly
+        if balance > positive.BALANCE_GATE_KWH:
+            result = PositiveIntervention.try_enter(state)
+        elif balance < negative.entry_threshold(state):
+            result = NegativeIntervention.try_enter(state)
+        else:
+            self.last_decision_reason = f"balance_in_deadzone_{balance:.3f}"
+            return
+
+        if result.is_blocked:
+            self.last_decision_reason = result.block_reason
+        else:
+            self._active = result.intervention
+            self.last_decision_reason = result.intervention.last_reason
+
+    @classmethod
+    def _is_end_of_hour(cls, state: InputState) -> bool:
+        return (
+            state.now.minute >= cls.LATE_HOUR_MINUTE
+            and state.now.second >= cls.LATE_HOUR_EXIT_SECOND
+        )
+
+    @classmethod
+    def _is_too_late_for_entry(cls, state: InputState) -> bool:
+        return (
+            state.now.minute >= cls.LATE_HOUR_MINUTE
+            and state.now.second >= cls.LATE_HOUR_ENTRY_SECOND
+        )
+
+    # --- common helpers ---
+
+    def _set_neutral(self, reason: str) -> None:
+        """Reset to neutral (no active intervention) with given reason. Idempotent."""
+        self._active = None
+        self.last_decision_reason = reason
+
+    def _apply_disabled_override_if_needed(self, state: InputState) -> None:
+        """Jeśli strategy_mode = 'disabled' (lub None) → override main outputs.
+
+        Manager już wystawił recommended_* via properties. Properties sprawdzają
+        `_disabled_override_active` flag — jeśli aktywny, zwracają AUTO/None
+        regardless of self._active. Tutaj ustawiamy flagę i wzbogacamy reason
+        o diagnostic info "what would have been".
+
+        Defensive: None → traktuj jak "disabled" (safe default gdy helper
+        jeszcze nieskonfigurowany).
+        """
+        mode = state.grid_export_strategy_mode
+        if mode == self.STRATEGY_MODE_CHARGE_ADAPTIVE:
+            self._disabled_override_active = False
+            return  # active mode — main outputs zostają
+
+        # mode is "disabled" or None — override
+        # Capture would-be values BEFORE setting flag (properties depend on it).
+        would_be_mode = self.recommended_ems_mode
+        would_be_xset = self.recommended_xset
+        would_be_reason = self.last_decision_reason
+        prefix = (
+            "disabled" if mode == self.STRATEGY_MODE_DISABLED else "no_strategy_mode"
+        )
+        if would_be_mode == self.AUTO_MODE:
+            self.last_decision_reason = f"{prefix} ({would_be_reason})"
+        else:
+            xset_str = f" {would_be_xset}W" if would_be_xset else ""
+            self.last_decision_reason = (
+                f"{prefix} (would: {would_be_mode}{xset_str}, {would_be_reason})"
+            )
+        self._disabled_override_active = True
+
+    # --- logging ---
+
+    def _log_after_update(
+        self,
+        state: InputState,
+        prev_active: bool,
+        prev_mode: str,
+        prev_xset: int | None,
+    ) -> None:
+        """INFO transition + DEBUG snapshot (throttled)."""
+        if (
+            prev_active != self.intervention_active
+            or prev_mode != self.recommended_ems_mode
+            or prev_xset != self.recommended_xset
+        ):
+            _LOGGER.info(
+                "GridExportManager transition: active %s→%s, mode %s→%s, "
+                "xset %s→%s, reason=%s",
+                prev_active,
+                self.intervention_active,
+                prev_mode,
+                self.recommended_ems_mode,
+                prev_xset,
+                self.recommended_xset,
+                self.last_decision_reason,
+            )
+        self._maybe_log_snapshot(state)
+
+    def _maybe_log_snapshot(self, state: InputState) -> None:
+        """Log DEBUG snapshot gdy key fields się zmienią LUB minął throttle interval."""
+        snapshot = (
+            self.intervention_active,
+            self.recommended_ems_mode,
+            self.recommended_xset,
+            self.last_decision_reason,
+        )
+        now = state.now
+        should_log = (
+            self._last_log_snapshot is None
+            or snapshot != self._last_log_snapshot
+            or self._last_log_ts is None
+            or (
+                now is not None
+                and (now - self._last_log_ts).total_seconds()
+                >= self.DEBUG_LOG_THROTTLE_SEC
+            )
+        )
+        if not should_log:
+            return
+        pv_avail = state.pv_available
+        _LOGGER.debug(
+            "GridExportManager: now=%s active=%s mode=%s xset=%s reason=%s | "
+            "strategy=%s hourly=%s soc=%s pv=%s pv_avg2m=%s pv_avail=%s "
+            "charge_limit=%s toggle=%s",
+            now.strftime("%H:%M:%S") if now else "?",
+            self.intervention_active,
+            self.recommended_ems_mode,
+            self.recommended_xset,
+            self.last_decision_reason,
+            state.grid_export_strategy_mode,
+            state.exported_energy_hourly,
+            state.battery_soc,
+            state.pv_power,
+            state.pv_power_avg_2_minutes,
+            int(pv_avail) if pv_avail is not None else None,
+            state.battery_charge_limit,
+            state.battery_charge_toggle_on,
+        )
+        self._last_log_snapshot = snapshot
+        self._last_log_ts = now

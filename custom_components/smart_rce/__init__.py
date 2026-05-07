@@ -80,8 +80,12 @@ def live_reload():
     # z grid_export. Reload water_heater pre-grid_export → top-level import
     # zwraca OLD class → cross-module `is`/`==` identity break (`is` fail bo
     # różny class object; `==` OK bo StrEnum value-based).
-    reload(import_module("custom_components.smart_rce.domain.grid_export_positive"))
-    reload(import_module("custom_components.smart_rce.domain.grid_export_negative"))
+    # Order in package: intervention (Protocol/VOs base) → positive/negative
+    # → manager → __init__ (re-exports).
+    reload(import_module("custom_components.smart_rce.domain.grid_export.intervention"))
+    reload(import_module("custom_components.smart_rce.domain.grid_export.positive"))
+    reload(import_module("custom_components.smart_rce.domain.grid_export.negative"))
+    reload(import_module("custom_components.smart_rce.domain.grid_export.manager"))
     reload(import_module("custom_components.smart_rce.domain.grid_export"))
     reload(import_module("custom_components.smart_rce.domain.water_heater"))
     reload(import_module("custom_components.smart_rce.domain.charge_slots"))

@@ -152,11 +152,11 @@ class TestEntryGates:
         assert "in_pre_charge_window" in mgr.last_decision_reason
 
     def test_balance_below_threshold(self):
-        """Hourly ≤ 0.06 → no entry (entry threshold > 0.06)."""
+        """Hourly ≤ 0.06 i ≥ -0.05 → deadzone (no entry, manager routes by range)."""
         mgr = GridExportManager()
         mgr.update(_state(exported_energy_hourly=0.05))
         assert mgr.intervention_active is False
-        assert "balance_below_threshold" in mgr.last_decision_reason
+        assert "balance_in_deadzone" in mgr.last_decision_reason
 
     def test_balance_just_above_threshold(self):
         """Hourly = 0.061 → entry."""
@@ -396,18 +396,18 @@ class TestStrategyMode:
         assert "charge_battery" in mgr.last_decision_reason
 
     def test_disabled_when_no_intervention_pure_diagnostic(self):
-        """Disabled + balance below threshold → reason = 'disabled (balance_below_threshold)'."""
+        """Disabled + balance in deadzone → reason = 'disabled (balance_in_deadzone_X.XXX)'."""
         mgr = GridExportManager()
         mgr.update(
             _state(
-                exported_energy_hourly=0.03,  # below entry threshold
+                exported_energy_hourly=0.03,  # in deadzone (-0.05 < 0.03 ≤ 0.06)
                 grid_export_strategy_mode="disabled",
             )
         )
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
         assert "disabled" in mgr.last_decision_reason
-        assert "balance_below_threshold" in mgr.last_decision_reason
+        assert "balance_in_deadzone" in mgr.last_decision_reason
 
     def test_none_strategy_mode_defaults_to_disabled(self):
         """grid_export_strategy_mode=None (helper niegotowy) → traktuj jak disabled."""
