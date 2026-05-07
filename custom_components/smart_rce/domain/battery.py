@@ -43,6 +43,47 @@ Each sub-method sets `self._phase` (str label for diagnostic) AND mutates
 `should_block_battery_discharge` per branch logic. `diagnostic_snapshot(state)`
 reads `_phase` field — does not recompute classification (single source of truth).
 
+Coordination matrix with GridExportManager (POSITIVE / NEGATIVE intervention):
+
+    | Phase             | block_discharge trigger                | POSITIVE       | NEGATIVE |
+    |-------------------|----------------------------------------|----------------|----------|
+    | override          | False (always — EMS off)               | manager exits  | exits    |
+    | pre-charge        | hourly ≥ 100 SET, < 0 forced reset,    | blocked        | yes      |
+    |                   | < 50 + no surplus reset, else keep     | (in_pre_charge)|          |
+    | post-charge       | instant_surplus OR hourly ≥ 100 SET;   | yes            | yes      |
+    |                   | instant_deficit AND hourly < 50 RESET; |                |          |
+    |                   | else keep                              |                |          |
+    | afternoon-static  | False (DoD=0 until 19:00 by automation)| yes (mode=AUTO)| yes      |
+    | afternoon-dynamic | instant_surplus OR hourly > 0 SET;     | yes            | yes      |
+    |                   | instant_deficit AND NOT hourly RESET;  |                |          |
+    |                   | else keep                              |                |          |
+    | out-of-window     | False (always)                         | yes (mode=AUTO)| yes      |
+
+Two-tier defense (post-charge, afternoon-dynamic):
+- POSITIVE first line — `try_enter` at balance > 60 Wh, tries to absorb the
+  surplus via CHARGE_BATTERY xset.
+- battery.py second line — block=True at `hourly_export ≥ 100 Wh` prevents
+  battery discharge during sustained positive balance, even when PV deficit
+  is transient. Kicks in when POSITIVE cannot reduce balance (SoC=100% / BMS
+  clamp / sustained surplus).
+- Threshold hierarchy: POSITIVE entry 60 Wh, battery SET 100 Wh — clear
+  precedence (POSITIVE acts first, battery.py reinforces).
+
+Out-of-window / afternoon-static (POSITIVE active with mode=AUTO):
+- POSITIVE may stay active with mode=AUTO (e.g. pv_avail ≤ -1000W fallback).
+  Goodwe EMS in AUTO decides battery behavior dynamically.
+- Battery.block=False — BatteryManager "stays out of the way":
+  - afternoon-static: Set Min SOC=100 automation holds DoD=0 (no discharge
+    physically possible).
+  - out-of-window (≥19:00): evening discharge automations rule (peak discharge,
+    Set SOC 90 at 19:00).
+
+Pre-charge (POSITIVE blocked, NEGATIVE allowed):
+- POSITIVE explicitly blocked by `in_pre_charge_window` gate (BatteryManager
+  rules via block_discharge hysteresis on hourly export).
+- NEGATIVE may activate if balance < entry_threshold (independent concern —
+  battery can discharge into deficit if SoC > min_soc).
+
 See `context/target_soc_algorithm.md` for broader context.
 """
 
