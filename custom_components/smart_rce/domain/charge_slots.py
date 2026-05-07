@@ -28,6 +28,17 @@ POSSIBLE_CONSECUTIVE_HOURS: Final[range] = range(3, MAX_CONSECUTIVE_HOURS + 1)
 EARLIEST_CHARGE_HOUR: Final[int] = 7
 SHIFT_EARLIER_THRESHOLD: Final[float] = 40.0
 
+# Default heater RCE threshold (net zł/MWh) — must match heater automations
+# in home-assistant-config/automations.yaml. Used as fallback when
+# input_number.heater_rce_threshold state is unavailable.
+DEFAULT_HEATER_RCE_THRESHOLD: Final[float] = 350.0
+
+# Skip shift_earlier_if_cheap when heaters are effectively blocked all day
+# (≤ this many hours below threshold). Rationale: if heaters can't fire,
+# the local sink for surplus PV reduces to battery capacity (fixed) — widening
+# the charge window doesn't increase total PV absorbed locally.
+MAX_HEATERS_OFF_TOLERANCE: Final[int] = 3
+
 
 @dataclass(frozen=True)
 class ChargeWindow:
@@ -46,14 +57,18 @@ class ChargeSlots:
         self.today: ChargeWindow | None = None
         self.tomorrow: ChargeWindow | None = None
 
-    def update(self, rce_data: RcePrices | None) -> None:
+    def update(
+        self,
+        rce_data: RcePrices | None,
+        heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,
+    ) -> None:
         """Recompute charge windows z fresh RCE data — full refresh today/tomorrow."""
         if rce_data is None:
             self.today = None
             self.tomorrow = None
             return
-        self.today = self.compute(rce_data.today)
-        self.tomorrow = self.compute(rce_data.tomorrow)
+        self.today = self.compute(rce_data.today, heater_threshold)
+        self.tomorrow = self.compute(rce_data.tomorrow, heater_threshold)
 
     def rotate_if_day_changed(self, now: datetime) -> None:
         """Move tomorrow → today gdy data się zmieniła (wywoływane z update_hourly)."""
@@ -71,7 +86,10 @@ class ChargeSlots:
             self.tomorrow = None
 
     @staticmethod
-    def compute(day_prices: RceDayPrices | None) -> ChargeWindow | None:
+    def compute(
+        day_prices: RceDayPrices | None,
+        heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,
+    ) -> ChargeWindow | None:
         """Algorytm: dobór najlepszego okna ładowania dla pojedynczego dnia."""
         if day_prices is None or not day_prices.hour_price:
             return None
@@ -79,7 +97,7 @@ class ChargeSlots:
         start_charge_hours = calculate_start_charge_hours(prices)
         best_n = find_best_consecutive_hours(prices, start_charge_hours)
         new_n, shifted_start = shift_earlier_if_cheap(
-            prices, start_charge_hours[best_n], best_n
+            prices, start_charge_hours[best_n], best_n, heater_threshold
         )
         # Half-hour shift dla N=3: bateria startuje w połowie pierwszej godziny.
         # Dla N>3 (po shift) start_hour to plain integer.
@@ -143,13 +161,18 @@ def find_best_consecutive_hours(
 
 
 def shift_earlier_if_cheap(
-    prices: list[float], start: int, consecutive_hours: int
+    prices: list[float],
+    start: int,
+    consecutive_hours: int,
+    heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,
 ) -> tuple[int, int]:
     """Rozszerz okno ładowania wcześniej gdy różnica cen z kotwicą jest mała.
 
     Zachowujemy ostatnią godzinę oryginalnego okna (nadal tania, brak powodu
     żeby ją gubić) i dokładamy wcześniejsze godziny. Daje margines na
-    załamanie pogody po południu.
+    załamanie pogody po południu oraz pozwala grzałkom dłużej drink'ować PV
+    surplus (heater automation requires `battery_charge_current > 0`,
+    czyli aktywne charge window).
 
     Kotwica (prices[end]) się nie zmienia między iteracjami, więc próg nie
     kumuluje się przy kolejnych krokach.
@@ -159,8 +182,16 @@ def shift_earlier_if_cheap(
     tanie że nie ma powodu ich nie dorzucić (przykład: weekend z cenami ~0).
     EARLIEST_CHARGE_HOUR jest jedynym twardym hamulcem.
 
+    Skip-shift on high-RCE days: when ≤ MAX_HEATERS_OFF_TOLERANCE hours have
+    price below `heater_threshold`, heaters are effectively blocked all day.
+    Local sink for surplus PV reduces to battery capacity (fixed) — widening
+    the window doesn't increase total PV absorbed. Skip the shift.
+
     Zwraca (nowe_consecutive_hours, nowy_start).
     """
+    heater_hours = sum(1 for p in prices if p < heater_threshold)
+    if heater_hours <= MAX_HEATERS_OFF_TOLERANCE:
+        return consecutive_hours, start
     end = start + consecutive_hours - 1
     anchor_price = prices[end]
     while start > EARLIEST_CHARGE_HOUR:

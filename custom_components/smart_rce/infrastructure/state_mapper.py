@@ -187,6 +187,10 @@ def set_grid_export_strategy_mode(entity: str, i: InputState, state: str) -> Non
     i.grid_export_strategy_mode = state
 
 
+def set_heater_rce_threshold(entity: str, i: InputState, state: str) -> None:
+    i.heater_rce_threshold = map_float(entity, state)
+
+
 # --- dispatch table: entity_id → setter --- #
 
 HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
@@ -211,6 +215,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "select.goodwe_ems_mode": set_goodwe_ems_mode,
     "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
     "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
+    "input_number.heater_rce_threshold": set_heater_rce_threshold,
 }
 
 

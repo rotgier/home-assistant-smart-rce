@@ -7,7 +7,10 @@ from datetime import datetime
 import logging
 
 from custom_components.smart_rce.domain.battery import BatteryManager
-from custom_components.smart_rce.domain.charge_slots import ChargeSlots
+from custom_components.smart_rce.domain.charge_slots import (
+    DEFAULT_HEATER_RCE_THRESHOLD,
+    ChargeSlots,
+)
 from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
 from custom_components.smart_rce.domain.ems_rce_prices import EmsRcePrices
 from custom_components.smart_rce.domain.grid_export import GridExportManager
@@ -55,7 +58,7 @@ class Ems:
         if not data:
             return
         self.rce_prices.update(now, data)
-        self.charge_slots.update(data)
+        self.charge_slots.update(data, self._heater_threshold())
         self.update_hourly(now)
 
     def update_hourly(self, now: datetime) -> None:
@@ -68,7 +71,7 @@ class Ems:
     def restore_rce_today(self, prices_attr: list[dict], now: datetime) -> None:
         """Restore today's RCE prices from sensor attributes."""
         self.rce_prices.restore_today(prices_attr, now)
-        self.charge_slots.update(self.rce_prices.rce_prices)
+        self.charge_slots.update(self.rce_prices.rce_prices, self._heater_threshold())
         self.update_hourly(now)
 
     def restore_rce_tomorrow(self, prices_attr: list[dict]) -> None:
@@ -78,7 +81,20 @@ class Ems:
         # gdy first restore (rce_prices is None) — używamy datetime.now() jako
         # placeholder (nie wpływa na żadną logikę odczytową).
         self.rce_prices.restore_tomorrow(prices_attr, datetime.now())
-        self.charge_slots.update(self.rce_prices.rce_prices)
+        self.charge_slots.update(self.rce_prices.rce_prices, self._heater_threshold())
+
+    def _heater_threshold(self) -> float:
+        """Read input_number.heater_rce_threshold from last InputState (with fallback).
+
+        Used by `charge_slots.update` callsites. None when state hasn't been
+        received yet (early startup) → DEFAULT_HEATER_RCE_THRESHOLD.
+        """
+        if (
+            self.last_input_state is not None
+            and self.last_input_state.heater_rce_threshold is not None
+        ):
+            return self.last_input_state.heater_rce_threshold
+        return DEFAULT_HEATER_RCE_THRESHOLD
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         def remove_listener() -> None:

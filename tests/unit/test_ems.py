@@ -92,6 +92,79 @@ def test_shift_earlier_extends_past_max_when_floor_zero() -> None:
     assert (new_consec, new_start) == (MAX_CONSECUTIVE_HOURS + 1, 9)
 
 
+def test_shift_earlier_skipped_when_heaters_blocked_all_day() -> None:
+    # Wszystkie godziny ≥ 350 PLN/MWh → grzałki off cały dzień. Sink dla
+    # surplus PV = tylko bateria (fixed cap) → szersze okno nie dodaje
+    # absorpcji. Skip shift, zostaw oryginalne (start, n).
+    prices = [400.0] * 24  # all hours >= 350
+    new_consec, new_start = shift_earlier_if_cheap(
+        prices, start=11, consecutive_hours=4
+    )
+    assert (new_consec, new_start) == (4, 11)
+
+
+def test_shift_earlier_runs_when_3_hours_below_threshold() -> None:
+    # Tolerance = 3: dokładnie 3h poniżej 350 → wciąż skip (≤ tolerance).
+    prices = [400.0] * 24
+    prices[12] = 100.0
+    prices[13] = 100.0
+    prices[14] = 100.0  # 3h below 350 → still skip
+    new_consec, new_start = shift_earlier_if_cheap(
+        prices, start=12, consecutive_hours=3
+    )
+    assert (new_consec, new_start) == (3, 12)
+
+
+def test_shift_earlier_runs_when_4_hours_below_threshold() -> None:
+    # 4h below 350 → above tolerance → standard shift logic kicks in.
+    prices = [400.0] * 24
+    for h in (11, 12, 13, 14):
+        prices[h] = 100.0
+    # Anchor = prices[14] = 100. prices[10] = 400 → diff 300 > 40 → no extend.
+    # But heater_hours=4 > tolerance=3 → original logic runs (no early skip).
+    new_consec, new_start = shift_earlier_if_cheap(
+        prices, start=11, consecutive_hours=4
+    )
+    assert (new_consec, new_start) == (4, 11)
+
+
+def test_shift_earlier_skipped_today_2026_05_07() -> None:
+    # Real prices from 2026-05-07: min=459.94 (h13), all 24h >= 459 (>= 350).
+    # Heater_hours = 0 → skip shift. Without skip, algorithm extends start
+    # 10 → 8 (h8=613 within 40 of anchor h17=573), giving 08:00-18:00 window.
+    # With skip: 10:00-18:00 (start_charge_hours[8] = 10, no extension).
+    prices = [
+        533.17,
+        497.57,
+        493.23,
+        501.55,
+        513.33,
+        542.94,
+        622.16,
+        635.20,
+        613.11,
+        586.81,
+        506.17,
+        481.31,
+        465.55,
+        459.94,
+        479.02,
+        479.97,
+        528.30,
+        573.54,
+        660.36,
+        833.89,
+        943.73,
+        754.32,
+        655.47,
+        591.48,
+    ]
+    new_consec, new_start = shift_earlier_if_cheap(
+        prices, start=10, consecutive_hours=8
+    )
+    assert (new_consec, new_start) == (8, 10)
+
+
 @pytest.mark.skip
 @pytest.mark.parametrize(("year", "month"), [(2024, 8), (2024, 9), (2026, 4)])
 def test_snapshot_charge_hours(year, month) -> None:

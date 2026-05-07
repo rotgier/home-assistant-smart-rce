@@ -90,6 +90,14 @@ class InputState:
     # gdy PV<200W, lookup-based Xset gdy PV≥200W).
     # Defensive: gdy None → manager traktuje jako "disabled" (safe default).
 
+    heater_rce_threshold: float | None = None
+    # input_number.heater_rce_threshold (net zł/MWh) — RCE price below which
+    # heater automations may turn ON. Mirrors automation conditions on
+    # `sensor.rce_current_price`. ChargeSlots uses it to skip
+    # shift_earlier_if_cheap on days where heaters are effectively blocked
+    # (sink for surplus PV reduces to battery capacity → no benefit from
+    # widening charge window).
+
     now: datetime | None = None
 
     @property

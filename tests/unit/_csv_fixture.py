@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 
 from custom_components.smart_rce.domain.charge_slots import (
+    DEFAULT_HEATER_RCE_THRESHOLD,
     INITIAL_BEST_CONSECUTIVE_HOURS,
     POSSIBLE_CONSECUTIVE_HOURS,
     calculate_start_charge_hours,
@@ -39,7 +40,7 @@ def create_csv(rce_prices: RceDayPrices):
     start_charge_hours = calculate_start_charge_hours(prices)
     best_n = find_best_consecutive_hours(prices, start_charge_hours)
     new_n, shifted_start = shift_earlier_if_cheap(
-        prices, start_charge_hours[best_n], best_n
+        prices, start_charge_hours[best_n], best_n, DEFAULT_HEATER_RCE_THRESHOLD
     )
     start_charge_hours[new_n] = shifted_start
     best_consecutive_hours = new_n
