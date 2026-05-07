@@ -430,6 +430,115 @@ class TestPostChargeHysteresis5MinAvg:
         assert mgr.should_block_battery_discharge is True  # pv_available_5min > 500 set
 
 
+class TestPostChargeHourlyDualTrigger:
+    """Post-charge: hourly_export trigger uzupełnia instant trend.
+
+    Two-tier defense z POSITIVE intervention.
+    SET when instant_surplus OR hourly_export ≥ 100 Wh.
+    RESET when instant_deficit AND hourly_export < 50 Wh.
+    """
+
+    def test_hourly_set_with_instant_deficit_overrides(self):
+        """Hourly export ≥ 100 Wh trumps instant deficit → SET block.
+
+        Battery.py is second line of defense when POSITIVE cannot reduce balance.
+        """
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=-200.0,  # instant deficit
+                exported_energy_hourly=0.150,  # 150 Wh — hourly SET threshold
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_hourly_set_with_instant_dead_zone(self):
+        """Hourly ≥ 100 Wh + instant in dead zone (0..500) → SET via hourly."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=200.0,  # dead zone
+                exported_energy_hourly=0.110,  # 110 Wh — hourly SET
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_hourly_dead_zone_with_instant_deficit_keeps(self):
+        """Hourly in dead zone (50-100 Wh) + instant_deficit → keep state."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True  # previous state
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=-200.0,  # instant deficit
+                exported_energy_hourly=0.070,  # 70 Wh — hourly dead zone
+            )
+        )
+        # RESET requires instant_deficit AND hourly_reset (< 50 Wh)
+        # Hourly in dead zone → keep state → True
+        assert mgr.should_block_battery_discharge is True
+
+    def test_instant_deficit_with_hourly_reset_resets(self):
+        """instant_deficit AND hourly < 50 Wh → RESET block=False."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=-200.0,  # instant deficit
+                exported_energy_hourly=0.030,  # 30 Wh — hourly reset
+            )
+        )
+        assert mgr.should_block_battery_discharge is False
+
+    def test_instant_surplus_overrides_hourly_reset(self):
+        """instant_surplus → SET regardless of hourly (works even at 30 Wh)."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=600.0,  # instant surplus
+                exported_energy_hourly=0.030,  # 30 Wh — hourly low
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_hourly_set_boundary_100wh_triggers(self):
+        """Hourly = 100 Wh → SET (>= threshold)."""
+        mgr = BatteryManager()
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=300.0,  # dead zone
+                exported_energy_hourly=0.100,  # exactly 100 Wh
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_hourly_reset_boundary_50wh_does_not_reset(self):
+        """Hourly = 50 Wh → NOT < 50 → no reset (dead zone)."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(11, 30),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=-200.0,  # instant deficit
+                exported_energy_hourly=0.050,  # exactly 50 Wh — boundary
+            )
+        )
+        # 50 not < 50 → hourly_reset=False → RESET not triggered → keep True
+        assert mgr.should_block_battery_discharge is True
+
+
 class TestAfternoonWindowDetection:
     """Afternoon: 13:00 ≤ now < 19:00."""
 

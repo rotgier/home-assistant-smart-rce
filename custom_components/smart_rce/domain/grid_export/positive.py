@@ -268,7 +268,10 @@ class PositiveIntervention:
             )
 
         # pv_available ≤ -1000 → mode=AUTO ale stay in intervention (NIE exit).
-        # block_discharge w battery.py przejmuje gdy hourly idzie negative.
+        # Two-tier defense: POSITIVE first line (try CHARGE_BATTERY przy balance
+        # > 60 Wh), battery.py second line (post-charge dual-trigger / afternoon-
+        # dynamic) — block_discharge takes over when hourly balance positive
+        # despite POSITIVE failing to reduce it via CHARGE_BATTERY.
         return self._commit(
             _AUTO_MODE,
             None,
