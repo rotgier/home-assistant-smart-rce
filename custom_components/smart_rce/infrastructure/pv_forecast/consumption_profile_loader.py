@@ -53,7 +53,7 @@ class ConsumptionProfileLoader:
             return [None] * PREV_DAYS_COUNT
 
         slots = await self._fetch_5min_slots(valid_dates)
-        return _bucket_profiles_by_date(slots, dates, valid_dates)
+        return self._bucket_profiles_by_date(slots, dates, valid_dates)
 
     async def _fetch_5min_slots(self, valid_dates: list[date]) -> list[dict]:
         tz = dt_util.DEFAULT_TIME_ZONE
@@ -82,42 +82,42 @@ class ConsumptionProfileLoader:
         )
         return slots
 
+    @staticmethod
+    def _bucket_profiles_by_date(
+        slots: list[dict], dates: list[date | None], valid_dates: list[date]
+    ) -> list[ConsumptionProfile | None]:
+        """Bucket 5-min slots by (date, half-hour) → ConsumptionProfile per date.
 
-def _bucket_profiles_by_date(
-    slots: list[dict], dates: list[date | None], valid_dates: list[date]
-) -> list[ConsumptionProfile | None]:
-    """Bucket 5-min slots by (date, half-hour) → ConsumptionProfile per date.
+        Utility_meter resetuje na :00 i :30 — last pre-reset slot to :25 i :55.
+        Value state w tym slocie = total consumption w 30-min cyklu.
+        Bucket (hour, 0)  = state w slocie (hour, 25)
+        Bucket (hour, 30) = state w slocie (hour, 55)
+        """
+        tz = dt_util.DEFAULT_TIME_ZONE
+        by_date: dict[date, dict[tuple[int, int], float]] = {d: {} for d in valid_dates}
+        for slot in slots:
+            raw_start = slot.get("start")
+            if raw_start is None:
+                continue
+            ts = datetime.fromtimestamp(float(raw_start), tz=UTC).astimezone(tz)
+            d = ts.date()
+            if d not in by_date or ts.hour < 7 or ts.hour >= 13:
+                continue
+            state_val = slot.get("state")
+            if state_val is None:
+                continue
+            try:
+                value = float(state_val)
+            except (TypeError, ValueError):
+                continue
+            if ts.minute == 25:
+                by_date[d][(ts.hour, 0)] = value
+            elif ts.minute == 55:
+                by_date[d][(ts.hour, 30)] = value
 
-    Utility_meter resetuje na :00 i :30 — last pre-reset slot to :25 i :55.
-    Value state w tym slocie = total consumption w 30-min cyklu.
-    Bucket (hour, 0)  = state w slocie (hour, 25)
-    Bucket (hour, 30) = state w slocie (hour, 55)
-    """
-    tz = dt_util.DEFAULT_TIME_ZONE
-    by_date: dict[date, dict[tuple[int, int], float]] = {d: {} for d in valid_dates}
-    for slot in slots:
-        raw_start = slot.get("start")
-        if raw_start is None:
-            continue
-        ts = datetime.fromtimestamp(float(raw_start), tz=UTC).astimezone(tz)
-        d = ts.date()
-        if d not in by_date or ts.hour < 7 or ts.hour >= 13:
-            continue
-        state_val = slot.get("state")
-        if state_val is None:
-            continue
-        try:
-            value = float(state_val)
-        except (TypeError, ValueError):
-            continue
-        if ts.minute == 25:
-            by_date[d][(ts.hour, 0)] = value
-        elif ts.minute == 55:
-            by_date[d][(ts.hour, 30)] = value
-
-    return [
-        ConsumptionProfile(buckets=dict(by_date[d]), source_date=d)
-        if d and by_date.get(d)
-        else None
-        for d in dates
-    ]
+        return [
+            ConsumptionProfile(buckets=dict(by_date[d]), source_date=d)
+            if d and by_date.get(d)
+            else None
+            for d in dates
+        ]

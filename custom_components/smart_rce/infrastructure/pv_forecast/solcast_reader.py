@@ -56,18 +56,18 @@ class SolcastReader:
         forecast_attr = state.attributes.get(attr_name)
         if not forecast_attr:
             return None
-        return _parse_solcast_forecast(forecast_attr)
+        return self._parse_solcast_forecast(forecast_attr)
 
-
-def _parse_solcast_forecast(
-    forecast_attr: list[dict[str, Any]],
-) -> list[SolcastPeriod]:
-    return [
-        SolcastPeriod(
-            period_start=str(item["period_start"]),
-            pv_estimate=item["pv_estimate"],
-            pv_estimate10=item["pv_estimate10"],
-            pv_estimate90=item["pv_estimate90"],
-        )
-        for item in forecast_attr
-    ]
+    @staticmethod
+    def _parse_solcast_forecast(
+        forecast_attr: list[dict[str, Any]],
+    ) -> list[SolcastPeriod]:
+        return [
+            SolcastPeriod(
+                period_start=str(item["period_start"]),
+                pv_estimate=item["pv_estimate"],
+                pv_estimate10=item["pv_estimate10"],
+                pv_estimate90=item["pv_estimate90"],
+            )
+            for item in forecast_attr
+        ]

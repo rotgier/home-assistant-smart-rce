@@ -117,7 +117,24 @@ class WeatherForecastListener:
         do domain `WeatherConditionAtHour`. Application service consumes
         bezpośrednio bez znajomości HA dict shape.
         """
-        return _parse_forecast_hourly(self.forecast_hourly)
+        return self._parse_forecast_hourly(self.forecast_hourly)
+
+    @staticmethod
+    def _parse_forecast_hourly(
+        forecast_hourly: list[JsonValueType] | None,
+    ) -> list[WeatherConditionAtHour]:
+        """Parse HA weather forecast attribute → domain WeatherConditionAtHour."""
+        if not forecast_hourly:
+            return []
+        return [
+            WeatherConditionAtHour(
+                hour=datetime.fromisoformat(item["datetime"]).hour,
+                condition_custom=item.get("condition_custom", "cloudy"),
+                forecast_date=datetime.fromisoformat(item["datetime"]).date(),
+            )
+            for item in forecast_hourly
+            if isinstance(item, dict) and "datetime" in item
+        ]
 
     @callback
     def _register_for_weather_updates(self):
@@ -194,20 +211,3 @@ class WeatherForecastListener:
         _LOGGER.debug("_shutdown")
         self._shutdown_requested = True
         self._unregister_weather_updates()
-
-
-def _parse_forecast_hourly(
-    forecast_hourly: list[JsonValueType] | None,
-) -> list[WeatherConditionAtHour]:
-    """Parse HA weather forecast attribute → domain WeatherConditionAtHour."""
-    if not forecast_hourly:
-        return []
-    return [
-        WeatherConditionAtHour(
-            hour=datetime.fromisoformat(item["datetime"]).hour,
-            condition_custom=item.get("condition_custom", "cloudy"),
-            forecast_date=datetime.fromisoformat(item["datetime"]).date(),
-        )
-        for item in forecast_hourly
-        if isinstance(item, dict) and "datetime" in item
-    ]
