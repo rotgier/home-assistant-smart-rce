@@ -301,18 +301,27 @@ class BatteryManager:
         self._phase = "post-charge"
         pv_available_5min = state.pv_available_5min
         exported_wh = state.exported_energy_hourly * 1000  # kWh → Wh
-        if pv_available_5min is None:
-            self.should_block_battery_discharge = False
-            return
-        instant_surplus = pv_available_5min > PV_AVAIL_5MIN_SURPLUS_W
-        instant_deficit = pv_available_5min < PV_AVAIL_5MIN_DEFICIT_W
+        # pv_5min=None handling: treat as no instant signal (not as forced
+        # reset). Mirrors _update_pre_charge — runtime transient sensor
+        # unavailability (e.g. tuya-local relays going unavailable for ~5s)
+        # would otherwise spuriously reset block_discharge to False, causing
+        # 0↔90 DoD flicker. With None-safe checks both instant_surplus and
+        # instant_deficit are False → only hourly hysteresis decides.
+        instant_surplus = (
+            pv_available_5min is not None
+            and pv_available_5min > PV_AVAIL_5MIN_SURPLUS_W
+        )
+        instant_deficit = (
+            pv_available_5min is not None
+            and pv_available_5min < PV_AVAIL_5MIN_DEFICIT_W
+        )
         hourly_set = exported_wh >= DISCHARGE_HYSTERESIS_SET_WH
         hourly_reset = exported_wh < DISCHARGE_HYSTERESIS_RESET_WH
         if instant_surplus or hourly_set:
             self.should_block_battery_discharge = True
         elif instant_deficit and hourly_reset:
             self.should_block_battery_discharge = False
-        # else: keep state (dead zone in either dimension)
+        # else: keep state (dead zone in either dimension, or pv=None)
 
     def _update_afternoon(self, state: InputState) -> None:
         """Afternoon (13:00 → 19:00): static (high-price) or dynamic (low-price)."""
@@ -339,17 +348,23 @@ class BatteryManager:
         self._phase = "afternoon-dynamic"
         pv_available_5min = state.pv_available_5min
         exported_wh = state.exported_energy_hourly * 1000
-        if pv_available_5min is None:
-            self.should_block_battery_discharge = False
-            return
-        instant_surplus = pv_available_5min > PV_AVAIL_5MIN_SURPLUS_W
-        instant_deficit = pv_available_5min < PV_AVAIL_5MIN_DEFICIT_W
+        # pv_5min=None handling: treat as no instant signal (see _update_post_charge
+        # comment). Hourly_net_export alone can still SET; only RESET requires
+        # instant_deficit, so transient sensor None preserves block state.
+        instant_surplus = (
+            pv_available_5min is not None
+            and pv_available_5min > PV_AVAIL_5MIN_SURPLUS_W
+        )
+        instant_deficit = (
+            pv_available_5min is not None
+            and pv_available_5min < PV_AVAIL_5MIN_DEFICIT_W
+        )
         hourly_net_export = exported_wh > 0
         if instant_surplus or hourly_net_export:
             self.should_block_battery_discharge = True
         elif instant_deficit and not hourly_net_export:
             self.should_block_battery_discharge = False
-        # else: keep state
+        # else: keep state (dead zone, or pv=None with no hourly export)
 
     def _update_out_of_window(self) -> None:
         """Outside all windows (before 7:00 or after 19:00): reset."""

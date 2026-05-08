@@ -460,8 +460,14 @@ class TestPostChargeHysteresis5MinAvg:
         )
         assert mgr.should_block_battery_discharge is False
 
-    def test_none_avg_5min_safe_default(self):
-        """Brak danych avg_5min → False (safe default)."""
+    def test_none_avg_5min_keeps_state(self):
+        """Transient pv_avg_5min=None (sensor unavailable mid-running) → keep state.
+
+        Regression: previously a forced reset to False here caused a 0↔90 DoD
+        flicker when sensors briefly went unavailable (e.g. tuya-local relays).
+        Now: pv=None → no instant signal, only hourly hysteresis decides; with
+        no hourly export either, state is preserved.
+        """
         mgr = BatteryManager()
         mgr.should_block_battery_discharge = True  # previous
         mgr.update(
@@ -471,7 +477,62 @@ class TestPostChargeHysteresis5MinAvg:
                 pv_available_5min=None,
             )
         )
-        assert mgr.should_block_battery_discharge is False
+        assert mgr.should_block_battery_discharge is True  # state preserved
+
+    def test_none_avg_5min_with_hourly_set_still_blocks(self):
+        """pv=None but exported >= 100 Wh → SET block=True (hourly signal alone)."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = False
+        mgr.update(
+            _state(
+                now=_at(11, 0),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=None,
+                exported_energy_hourly=0.150,  # 150 Wh >= SET threshold
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+    def test_transient_pv_none_does_not_flicker(self):
+        """Regression: 10:04 incident — block True, pv goes None for 1 tick, recovers.
+
+        Old bug: pv=None forced reset block→False, next tick (pv recovered with
+        instant_surplus) re-set True → 0↔90 DoD flicker on inverter.
+        Fix: pv=None preserves state, no flicker.
+        """
+        mgr = BatteryManager()
+        # Established state: block=True from earlier sustained export
+        mgr.update(
+            _state(
+                now=_at(10, 0),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=2000.0,
+                exported_energy_hourly=0.200,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
+
+        # Transient unavailability (5s sensor outage): pv=None, exported drops
+        mgr.update(
+            _state(
+                now=_at(10, 4),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=None,
+                exported_energy_hourly=0.010,  # 10 Wh — dead zone
+            )
+        )
+        assert mgr.should_block_battery_discharge is True  # NO flicker
+
+        # Sensor recovers, normal continued
+        mgr.update(
+            _state(
+                now=_at(10, 5),
+                start_charge_hour_override=time(10, 0),
+                pv_available_5min=2067.0,
+                exported_energy_hourly=0.020,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True  # still blocked
 
     def test_continuous_across_hour_boundary(self):
         """Post-charge does not reset per-hour — flow across the boundary."""
@@ -800,9 +861,14 @@ class TestAfternoonDynamicMode:
         )
         assert mgr.should_block_battery_discharge is False
 
-    def test_avg_5min_none_safe_default(self):
+    def test_avg_5min_none_with_hourly_export_sets(self):
+        """Afternoon dynamic, pv=None but hourly_net_export>0 → SET block=True.
+
+        Previously pv=None forced False (ignoring hourly). Now: hourly export
+        alone sets block, just like in post-charge.
+        """
         mgr = BatteryManager()
-        mgr.should_block_battery_discharge = True
+        mgr.should_block_battery_discharge = False
         mgr.update(
             _state(
                 now=_at(14, 0),
@@ -811,8 +877,21 @@ class TestAfternoonDynamicMode:
                 exported_energy_hourly=0.200,
             )
         )
-        # None → safe default False, ignore exported
-        assert mgr.should_block_battery_discharge is False
+        assert mgr.should_block_battery_discharge is True
+
+    def test_avg_5min_none_no_hourly_keeps_state(self):
+        """Afternoon dynamic, pv=None and exported=0 → keep state (no flicker)."""
+        mgr = BatteryManager()
+        mgr.should_block_battery_discharge = True
+        mgr.update(
+            _state(
+                now=_at(14, 0),
+                rce_should_hold_for_peak=False,
+                pv_available_5min=None,
+                exported_energy_hourly=0.0,
+            )
+        )
+        assert mgr.should_block_battery_discharge is True
 
 
 class TestAfternoonHoldFlagTransitions:
