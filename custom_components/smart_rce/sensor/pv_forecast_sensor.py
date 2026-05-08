@@ -148,6 +148,17 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_tomorrow_live),
     ),
+    # --- Extrapolated live variants (per-minute tick) ---
+    # Whole-day remaining PV (mirrors existing _live whole-day sum) with the
+    # in-progress 30-min bucket scaled (forecast prorate or live 5-min rate).
+    PvForecastSensorDescription(
+        name="Weather Adjusted PV Live Extrapolated",
+        value_fn=lambda pv: pv.forecast.adjusted_live_remaining_kwh,
+    ),
+    PvForecastSensorDescription(
+        name="Weather Adjusted PV Live Extrapolated 5min",
+        value_fn=lambda pv: pv.forecast.adjusted_live_remaining_kwh_5min,
+    ),
     # --- Target SOC (%) ---
     PvForecastSensorDescription(
         name="Target Battery SOC At 6",
@@ -181,6 +192,27 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_live
+        ),
+    ),
+    # --- Target SOC live extrapolated (per-minute tick, in-progress bucket scaled) ---
+    PvForecastSensorDescription(
+        name="Target Battery SOC Live Extrapolated",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.target_soc_live_extrapolated.value
+        if pv.forecast.target_soc_live_extrapolated
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.target_soc_live_extrapolated
+        ),
+    ),
+    PvForecastSensorDescription(
+        name="Target Battery SOC Live Extrapolated 5min",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.target_soc_live_extrapolated_5min.value
+        if pv.forecast.target_soc_live_extrapolated_5min
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.target_soc_live_extrapolated_5min
         ),
     ),
     # --- Prev-workday instrumentation (Etap A) — today ---

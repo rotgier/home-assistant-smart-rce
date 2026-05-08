@@ -39,6 +39,7 @@ from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
+from .infrastructure.pv_forecast.live_rate_reader import LiveRateReader
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
 from .infrastructure.weather_diff_writer import WeatherDiffWriter
 from .infrastructure.weather_listener import WeatherForecastListener
@@ -56,6 +57,7 @@ async def create_pv_forecast_service(
     forecast = PvForecast()
     solcast = SolcastReader(hass)
     consumption_loader = ConsumptionProfileLoader(hass)
+    live_rates = LiveRateReader(hass)
 
     service = PvForecastService(
         forecast=forecast,
@@ -63,6 +65,7 @@ async def create_pv_forecast_service(
         weather_listener=weather_listener,
         weather_history=weather_forecast_history,
         consumption_loader=consumption_loader,
+        live_rates=live_rates,
     )
 
     # Weather history write side — registered FIRST listener przed sensors,
@@ -112,6 +115,14 @@ async def create_pv_forecast_service(
     entry.async_on_unload(
         async_track_time_change(hass, _on_daily_refresh, hour=5, minute=55, second=0)
     )
+
+    # Per-minute tick — refresh extrapolated variants so sensors reflect
+    # shrinking remaining_fraction within the in-progress 30-min bucket.
+    @callback
+    def _on_minute_tick(_now: datetime) -> None:
+        service.on_minute_tick()
+
+    entry.async_on_unload(async_track_time_change(hass, _on_minute_tick, second=0))
 
     # Initial calculation + background profile fetch.
     service.recalculate_all()

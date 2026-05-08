@@ -121,6 +121,11 @@ def live_reload():
             "custom_components.smart_rce.infrastructure.pv_forecast.consumption_profile_loader"
         )
     )
+    reload(
+        import_module(
+            "custom_components.smart_rce.infrastructure.pv_forecast.live_rate_reader"
+        )
+    )
     reload(import_module("custom_components.smart_rce.infrastructure.pv_forecast"))
     reload(import_module("custom_components.smart_rce.application.pv_forecast_service"))
     reload(import_module("custom_components.smart_rce.pv_forecast_factory"))

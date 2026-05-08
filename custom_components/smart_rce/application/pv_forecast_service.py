@@ -29,6 +29,7 @@ from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
+from ..infrastructure.pv_forecast.live_rate_reader import LiveRateReader
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
 from ..infrastructure.weather_listener import WeatherForecastListener
 
@@ -45,20 +46,30 @@ class PvForecastService:
         weather_listener: WeatherForecastListener,
         weather_history: WeatherForecastHistory,
         consumption_loader: ConsumptionProfileLoader,
+        live_rates: LiveRateReader,
     ) -> None:
         self.forecast = forecast
         self._solcast = solcast
         self._weather_listener = weather_listener
         self._weather_history = weather_history
         self._consumption_loader = consumption_loader
+        self._live_rates = live_rates
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
 
     def recalculate_all(self) -> None:
-        """Recalculate all forecasts (at_6, live, tomorrow) + notify listeners."""
+        """Recalculate all forecasts (at_6, live, tomorrow) + extrapolated + notify."""
         self._recalculate_at6()
         self._recalculate_live()
         self._recalculate_tomorrow()
+        self._recalculate_extrapolated()
         self._notify_listeners()
+
+    def _recalculate_extrapolated(self) -> None:
+        """Recompute extrapolated live variants — called every minute + after forecast updates."""
+        now = dt_util.now()
+        pv_w = self._live_rates.read_pv_power_w()
+        cons_w = self._live_rates.read_consumption_w()
+        self.forecast.update_extrapolated(now, pv_w, cons_w)
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.
@@ -118,14 +129,21 @@ class PvForecastService:
 
     @callback
     def on_solcast_live_change(self, event: Event) -> None:
-        """Solcast live changed — recalculate live."""
+        """Solcast live changed — recalculate live + extrapolated."""
         self._recalculate_live()
+        self._recalculate_extrapolated()
         self._notify_listeners()
 
     @callback
     def on_solcast_tomorrow_change(self, event: Event) -> None:
         """Solcast tomorrow changed — recalculate tomorrow."""
         self._recalculate_tomorrow()
+        self._notify_listeners()
+
+    @callback
+    def on_minute_tick(self) -> None:
+        """Per-minute cron — refresh extrapolated variants (remaining_fraction shrinks)."""
+        self._recalculate_extrapolated()
         self._notify_listeners()
 
     async def refresh_profiles(self) -> None:
