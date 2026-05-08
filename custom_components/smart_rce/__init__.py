@@ -106,6 +106,9 @@ def live_reload():
     )
     reload(import_module("custom_components.smart_rce.ems_factory"))
     reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
+    reload(
+        import_module("custom_components.smart_rce.domain.pv_forecast_extrapolation")
+    )
     reload(import_module("custom_components.smart_rce.domain.weather_forecast_history"))
     reload(import_module("custom_components.smart_rce.infrastructure.weather_listener"))
     reload(
@@ -124,6 +127,11 @@ def live_reload():
     reload(
         import_module(
             "custom_components.smart_rce.infrastructure.pv_forecast.live_rate_reader"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.infrastructure.pv_forecast.realized_pv_loader"
         )
     )
     reload(import_module("custom_components.smart_rce.infrastructure.pv_forecast"))

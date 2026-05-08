@@ -40,6 +40,7 @@ from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from .infrastructure.pv_forecast.live_rate_reader import LiveRateReader
+from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
 from .infrastructure.weather_diff_writer import WeatherDiffWriter
 from .infrastructure.weather_listener import WeatherForecastListener
@@ -58,6 +59,7 @@ async def create_pv_forecast_service(
     solcast = SolcastReader(hass)
     consumption_loader = ConsumptionProfileLoader(hass)
     live_rates = LiveRateReader(hass)
+    realized_pv_loader = RealizedPvLoader(hass)
 
     service = PvForecastService(
         forecast=forecast,
@@ -66,6 +68,7 @@ async def create_pv_forecast_service(
         weather_history=weather_forecast_history,
         consumption_loader=consumption_loader,
         live_rates=live_rates,
+        realized_pv_loader=realized_pv_loader,
     )
 
     # Weather history write side — registered FIRST listener przed sensors,
@@ -116,16 +119,26 @@ async def create_pv_forecast_service(
         async_track_time_change(hass, _on_daily_refresh, hour=5, minute=55, second=0)
     )
 
-    # Per-minute tick — refresh extrapolated variants so sensors reflect
-    # shrinking remaining_fraction within the in-progress 30-min bucket.
+    # Per-minute tick — refresh extrapolated variants. Cached realized-PV
+    # history is refreshed on bucket boundaries (every 30 min at :00/:30, +30s
+    # offset to let the utility meter settle past reset).
     @callback
     def _on_minute_tick(_now: datetime) -> None:
         service.on_minute_tick()
 
     entry.async_on_unload(async_track_time_change(hass, _on_minute_tick, second=0))
 
-    # Initial calculation + background profile fetch.
+    @callback
+    def _on_bucket_boundary(_now: datetime) -> None:
+        hass.async_create_task(service.refresh_realized_pv())
+
+    entry.async_on_unload(
+        async_track_time_change(hass, _on_bucket_boundary, minute=[0, 30], second=30)
+    )
+
+    # Initial calculation + background fetches (consumption profiles, realized PV).
     service.recalculate_all()
     hass.async_create_task(service.refresh_profiles())
+    hass.async_create_task(service.refresh_realized_pv())
 
     return service

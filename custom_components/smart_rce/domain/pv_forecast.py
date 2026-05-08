@@ -103,6 +103,29 @@ class TargetSocResult:
     buckets: list[TargetSocBucket]
 
 
+@dataclass(frozen=True)
+class ExtrapolatedLive:
+    """One extrapolation strategy applied to today's live forecast.
+
+    Bundle of three correlated outputs computed from the same in-progress
+    bucket assumption (see pv_forecast_extrapolation.py for strategies):
+    - adjusted: full per-period AdjustedPvForecast (chart attribute)
+    - remaining_kwh: scalar kWh remaining today, past excluded (sensor state)
+    - target_soc: SOC % needed for 7-13 deficit window (sensor value)
+
+    Any field can be None when source data is unavailable; ExtrapolatedLive.empty()
+    represents "no data — sensor → unknown".
+    """
+
+    adjusted: AdjustedPvForecast | None
+    remaining_kwh: float | None
+    target_soc: TargetSocResult | None
+
+    @classmethod
+    def empty(cls) -> ExtrapolatedLive:
+        return cls(adjusted=None, remaining_kwh=None, target_soc=None)
+
+
 # --- Aggregate (rich domain model) --- #
 
 
@@ -142,29 +165,27 @@ class PvForecast:
     )
     target_soc_max: int | None = None
     target_soc_tomorrow_max: int | None = None
-    # Extrapolated live variants — recomputed every minute, account for the
-    # in-progress 30-min bucket. Two flavours per metric:
-    #   - "_extrapolated"      : realized prorate (utility meter so-far × 30/elapsed)
-    #     using sensor.total_pv_generation_bi_hourly +
-    #     sensor.total_consumption_minus_bi_hourly. Same logic as the dashboard
-    #     PV Gen / Cons -Water chart series.
-    #   - "_extrapolated_5min" : live rate from 5-min average power sensors
-    #     (current bucket pv = pv_5min_w/1000 kW; cons = cons_5min_w/1000 × remaining_min/60)
-    # adjusted_live_extrapolated*: full per-period AdjustedPvForecast (all day)
-    #   with current bucket's pv_estimate_adjusted replaced by the live rate.
-    #   Other periods unchanged. Used by sensors as `forecast` attribute →
-    #   dashboard plots per-period curve in proper kWh/h units.
-    # adjusted_live_remaining_kwh*: scalar sum from now to end-of-day (past excluded,
-    #   current bucket = remaining contribution). Used as the sensor's state value.
-    # target_soc_*_extrapolated*: pre-charge window (7-13). None after 13:00.
-    # Future buckets (both variants): forecast PV + CONSUMPTION_PER_30MIN constant
-    # (= 0.9 kWh/h, same baseline as target_soc_live → consumption_profile=None).
-    adjusted_live_extrapolated: AdjustedPvForecast | None = None
-    adjusted_live_extrapolated_5min: AdjustedPvForecast | None = None
-    target_soc_live_extrapolated: TargetSocResult | None = None
-    target_soc_live_extrapolated_5min: TargetSocResult | None = None
-    adjusted_live_remaining_kwh: float | None = None
-    adjusted_live_remaining_kwh_5min: float | None = None
+    # Raw Solcast live periods (preserved alongside adjusted_live) — needed by
+    # the calibrated_pattern extrapolation variant which uses pv_estimate +
+    # pv_estimate10 (raw range, not weather-adjusted) as the projection axis.
+    solcast_live: list[SolcastPeriod] = field(default_factory=list)
+    # Extrapolated live variants — recomputed every minute. Three strategies
+    # for the in-progress 30-min bucket + future projection (see
+    # domain/pv_forecast_extrapolation.py):
+    #   - extrapolated_live         : realized prorate (utility meter so-far)
+    #   - extrapolated_live_5min    : 5-min average power sensors
+    #   - extrapolated_live_pattern : weighted realization factor → projected
+    #                                 onto future buckets via [p10, estimate]
+    # Each ExtrapolatedLive bundles adjusted (chart), remaining_kwh (state), and
+    # target_soc (SOC% for 7-13 deficit). All variants use CONSUMPTION_PER_30MIN
+    # constant baseline for consumption (matching target_soc_live).
+    extrapolated_live: ExtrapolatedLive = field(default_factory=ExtrapolatedLive.empty)
+    extrapolated_live_5min: ExtrapolatedLive = field(
+        default_factory=ExtrapolatedLive.empty
+    )
+    extrapolated_live_pattern: ExtrapolatedLive = field(
+        default_factory=ExtrapolatedLive.empty
+    )
 
     def update_at_6(
         self,
@@ -184,7 +205,8 @@ class PvForecast:
         weather_conditions: list[WeatherConditionAtHour],
         now: datetime,
     ) -> None:
-        """Update live forecast — adjusted_live + downstream target SOC."""
+        """Update live forecast — adjusted_live + raw solcast_live + downstream target SOC."""
+        self.solcast_live = solcast_periods
         self.adjusted_live = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
@@ -223,171 +245,6 @@ class PvForecast:
         """Refresh prev-workday consumption baselines + downstream target SOC."""
         self.consumption_profiles = profiles
         self._recalculate_target_soc(now)
-
-    # Minimum minutes elapsed before we trust the realized-prorate extrapolation.
-    # Below this threshold, division by tiny `elapsed_min` produces noise spikes
-    # (utility meter just reset → small kWh value, large 30/elapsed multiplier).
-    # Same threshold (3 min) as the dashboard's extrapolate_current_bucket_js.
-    _MIN_ELAPSED_FOR_REALIZED_PRORATE: int = 3
-
-    def update_extrapolated(
-        self,
-        now: datetime,
-        pv_power_w: float | None,
-        consumption_w: float | None,
-        pv_bucket_so_far_kwh: float | None,
-        consumption_bucket_so_far_kwh: float | None,
-    ) -> None:
-        """Recompute the four extrapolated live variants.
-
-        Called every minute (and after Solcast/weather updates). Two flavours:
-        - realized prorate: current bucket = utility-meter so-far / elapsed_fraction
-          (same logic as the dashboard PV Gen / Cons -Water chart series).
-          Skipped during the first 3 min after bucket reset (division by near-zero
-          produces noise) or if either utility meter is unavailable → 'unknown'.
-        - 5-min live rate: current bucket replaced by 5-min average power sensor
-          reading. PV: `pv_w / 1000` kWh/h rate; consumption: `cons_w / 1000`
-          (kW) × remaining_min / 60 (kWh remaining). Skipped if either sensor
-          unavailable → 'unknown'.
-        """
-        if not self.adjusted_live:
-            self.adjusted_live_extrapolated = None
-            self.adjusted_live_extrapolated_5min = None
-            self.target_soc_live_extrapolated = None
-            self.target_soc_live_extrapolated_5min = None
-            self.adjusted_live_remaining_kwh = None
-            self.adjusted_live_remaining_kwh_5min = None
-            return
-
-        elapsed_min = now.minute % 30
-        remaining_min = 30 - elapsed_min
-
-        # Variant 1: realized prorate (utility meter so-far / elapsed).
-        if (
-            elapsed_min < self._MIN_ELAPSED_FOR_REALIZED_PRORATE
-            or pv_bucket_so_far_kwh is None
-            or consumption_bucket_so_far_kwh is None
-        ):
-            self.adjusted_live_extrapolated = None
-            self.target_soc_live_extrapolated = None
-            self.adjusted_live_remaining_kwh = None
-        else:
-            # Full-bucket projection if current rate continues:
-            #   rate kWh/h = realized × 60 / elapsed_min
-            #   remaining kWh = realized × remaining_min / elapsed_min
-            current_pv_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
-            current_pv_remaining_kwh = (
-                pv_bucket_so_far_kwh * remaining_min / elapsed_min
-            )
-            current_cons_remaining_kwh = (
-                consumption_bucket_so_far_kwh * remaining_min / elapsed_min
-            )
-            self.adjusted_live_extrapolated = self._build_extrapolated_forecast(
-                self.adjusted_live, now, current_bucket_pv_kwh_per_h=current_pv_rate
-            )
-            self.adjusted_live_remaining_kwh = self._sum_remaining_kwh(
-                self.adjusted_live_extrapolated, now
-            )
-            self.target_soc_live_extrapolated = self._calculate_target_soc(
-                self.adjusted_live,
-                consumption_profile=None,
-                now=now,
-                current_bucket_override=(
-                    current_pv_remaining_kwh,
-                    current_cons_remaining_kwh,
-                ),
-            )
-
-        # Variant 2: 5-min live rate. Skipped if either sensor unavailable.
-        if pv_power_w is None or consumption_w is None:
-            self.adjusted_live_extrapolated_5min = None
-            self.target_soc_live_extrapolated_5min = None
-            self.adjusted_live_remaining_kwh_5min = None
-            return
-
-        pv_rate_kwh_per_h = pv_power_w / 1000  # W → kWh/h rate (= kW)
-        self.adjusted_live_extrapolated_5min = self._build_extrapolated_forecast(
-            self.adjusted_live, now, current_bucket_pv_kwh_per_h=pv_rate_kwh_per_h
-        )
-        self.adjusted_live_remaining_kwh_5min = self._sum_remaining_kwh(
-            self.adjusted_live_extrapolated_5min, now
-        )
-        current_pv_kwh = pv_power_w / 1000 * remaining_min / 60
-        current_cons_kwh = consumption_w / 1000 * remaining_min / 60
-        self.target_soc_live_extrapolated_5min = self._calculate_target_soc(
-            self.adjusted_live,
-            consumption_profile=None,
-            now=now,
-            current_bucket_override=(current_pv_kwh, current_cons_kwh),
-        )
-
-    @staticmethod
-    def _build_extrapolated_forecast(
-        forecast: AdjustedPvForecast,
-        now: datetime,
-        current_bucket_pv_kwh_per_h: float | None = None,
-    ) -> AdjustedPvForecast:
-        """Build an AdjustedPvForecast copy with the in-progress bucket rescaled.
-
-        - current_bucket_pv_kwh_per_h is None → forecast prorate: current bucket's
-          pv_estimate_adjusted multiplied by remaining_fraction
-        - current_bucket_pv_kwh_per_h is float → 5-min live rate: current bucket's
-          pv_estimate_adjusted replaced by the given rate (kWh/h)
-
-        All other periods (past + future) unchanged. total_kwh recomputed as
-        sum across all periods (whole-day with current bucket adjusted).
-        """
-        start_hour = now.hour
-        start_minute = 0 if now.minute < 30 else 30
-        elapsed = now.minute % 30
-        remaining_fraction = (30 - elapsed) / 30
-
-        new_periods: list[AdjustedPeriod] = []
-        total_kwh = 0.0
-        for period in forecast.forecast:
-            dt = datetime.fromisoformat(period.period_start)
-            is_current = dt.hour == start_hour and dt.minute == start_minute
-            if is_current:
-                if current_bucket_pv_kwh_per_h is not None:
-                    adj_rate = current_bucket_pv_kwh_per_h
-                else:
-                    adj_rate = period.pv_estimate_adjusted * remaining_fraction
-            else:
-                adj_rate = period.pv_estimate_adjusted
-            new_periods.append(
-                AdjustedPeriod(
-                    period_start=period.period_start,
-                    pv_estimate_adjusted=round(adj_rate, 4),
-                )
-            )
-            total_kwh += adj_rate / 2
-
-        return AdjustedPvForecast(forecast=new_periods, total_kwh=round(total_kwh, 4))
-
-    @staticmethod
-    def _sum_remaining_kwh(forecast: AdjustedPvForecast, now: datetime) -> float:
-        """Sum kWh from current bucket onwards (past excluded).
-
-        Operates on an already-extrapolated forecast (current bucket already
-        rescaled). Used to compute the 'kWh remaining today' sensor state.
-        """
-        start_hour = now.hour
-        start_minute = 0 if now.minute < 30 else 30
-        total = 0.0
-        for period in forecast.forecast:
-            dt = datetime.fromisoformat(period.period_start)
-            if dt.hour < start_hour or (
-                dt.hour == start_hour and dt.minute < start_minute
-            ):
-                continue
-            total += period.pv_estimate_adjusted / 2
-        return round(total, 4)
-
-    @staticmethod
-    def _remaining_minutes_in_bucket(now: datetime) -> int:
-        """Minutes remaining in the current 30-min bucket. Range: (0, 30]."""
-        elapsed = now.minute % 30
-        return 30 - elapsed
 
     def _recalculate_target_soc(self, now: datetime) -> None:
         """Calculate target SOC from current adjusted_* + consumption_profiles."""

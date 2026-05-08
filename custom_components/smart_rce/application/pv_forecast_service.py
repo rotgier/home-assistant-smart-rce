@@ -23,13 +23,14 @@ import logging
 from homeassistant.core import CALLBACK_TYPE, Event, callback
 from homeassistant.util import dt as dt_util
 
-from ..domain import pv_forecast
+from ..domain import pv_forecast, pv_forecast_extrapolation
 from ..domain.pv_forecast import PvForecast, WeatherConditionAtHour
 from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
 from ..infrastructure.pv_forecast.live_rate_reader import LiveRateReader
+from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
 from ..infrastructure.weather_listener import WeatherForecastListener
 
@@ -47,6 +48,7 @@ class PvForecastService:
         weather_history: WeatherForecastHistory,
         consumption_loader: ConsumptionProfileLoader,
         live_rates: LiveRateReader,
+        realized_pv_loader: RealizedPvLoader,
     ) -> None:
         self.forecast = forecast
         self._solcast = solcast
@@ -54,6 +56,8 @@ class PvForecastService:
         self._weather_history = weather_history
         self._consumption_loader = consumption_loader
         self._live_rates = live_rates
+        self._realized_pv_loader = realized_pv_loader
+        self._realized_pv_today: dict[tuple[int, int], float] = {}
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
 
     def recalculate_all(self) -> None:
@@ -65,15 +69,54 @@ class PvForecastService:
         self._notify_listeners()
 
     def _recalculate_extrapolated(self) -> None:
-        """Recompute extrapolated live variants — called every minute + after forecast updates."""
+        """Recompute extrapolated live variants — called every minute + after forecast updates.
+
+        Synchronous — operates on cached `_realized_pv_today` (refreshed by
+        `refresh_realized_pv` async path on minute tick / startup).
+        """
+        if not self.forecast.adjusted_live:
+            self.forecast.extrapolated_live = pv_forecast.ExtrapolatedLive.empty()
+            self.forecast.extrapolated_live_5min = pv_forecast.ExtrapolatedLive.empty()
+            self.forecast.extrapolated_live_pattern = (
+                pv_forecast.ExtrapolatedLive.empty()
+            )
+            return
+
         now = dt_util.now()
         pv_w = self._live_rates.read_pv_power_w()
         cons_w = self._live_rates.read_consumption_w()
         pv_so_far_kwh = self._live_rates.read_pv_bucket_so_far_kwh()
         cons_so_far_kwh = self._live_rates.read_consumption_bucket_so_far_kwh()
-        self.forecast.update_extrapolated(
-            now, pv_w, cons_w, pv_so_far_kwh, cons_so_far_kwh
+
+        self.forecast.extrapolated_live = (
+            pv_forecast_extrapolation.extrapolate_realized_prorate(
+                self.forecast.adjusted_live, now, pv_so_far_kwh, cons_so_far_kwh
+            )
         )
+        self.forecast.extrapolated_live_5min = (
+            pv_forecast_extrapolation.extrapolate_5min_rate(
+                self.forecast.adjusted_live, now, pv_w, cons_w
+            )
+        )
+        self.forecast.extrapolated_live_pattern = (
+            pv_forecast_extrapolation.extrapolate_calibrated_pattern(
+                self.forecast.adjusted_live,
+                self.forecast.solcast_live,
+                now,
+                pv_so_far_kwh,
+                cons_so_far_kwh,
+                self._realized_pv_today,
+            )
+        )
+
+    async def refresh_realized_pv(self) -> None:
+        """Fetch today's realized PV per bucket from recorder; cache for next recalc."""
+        try:
+            self._realized_pv_today = await self._realized_pv_loader.fetch_today(
+                dt_util.now().date()
+            )
+        except Exception:  # noqa: BLE001 — defensive, don't crash integration
+            _LOGGER.exception("Failed to fetch realized PV history")
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.

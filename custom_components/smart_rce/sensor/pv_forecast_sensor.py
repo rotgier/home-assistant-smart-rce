@@ -154,14 +154,21 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # (chart-friendly — same shape as Adj PV Live so adjusted_pv() helper works)
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated",
-        value_fn=lambda pv: pv.forecast.adjusted_live_remaining_kwh,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_live_extrapolated),
+        value_fn=lambda pv: pv.forecast.extrapolated_live.remaining_kwh,
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.extrapolated_live.adjusted),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated 5min",
-        value_fn=lambda pv: pv.forecast.adjusted_live_remaining_kwh_5min,
+        value_fn=lambda pv: pv.forecast.extrapolated_live_5min.remaining_kwh,
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecast.adjusted_live_extrapolated_5min
+            pv.forecast.extrapolated_live_5min.adjusted
+        ),
+    ),
+    PvForecastSensorDescription(
+        name="Weather Adjusted PV Live Extrapolated Pattern",
+        value_fn=lambda pv: pv.forecast.extrapolated_live_pattern.remaining_kwh,
+        attr_fn=lambda pv: _pv_forecast_attrs(
+            pv.forecast.extrapolated_live_pattern.adjusted
         ),
     ),
     # --- Target SOC (%) ---
@@ -203,21 +210,31 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.target_soc_live_extrapolated.value
-        if pv.forecast.target_soc_live_extrapolated
+        value_fn=lambda pv: pv.forecast.extrapolated_live.target_soc.value
+        if pv.forecast.extrapolated_live.target_soc
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.target_soc_live_extrapolated
+            pv.forecast.extrapolated_live.target_soc
         ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated 5min",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.target_soc_live_extrapolated_5min.value
-        if pv.forecast.target_soc_live_extrapolated_5min
+        value_fn=lambda pv: pv.forecast.extrapolated_live_5min.target_soc.value
+        if pv.forecast.extrapolated_live_5min.target_soc
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.target_soc_live_extrapolated_5min
+            pv.forecast.extrapolated_live_5min.target_soc
+        ),
+    ),
+    PvForecastSensorDescription(
+        name="Target Battery SOC Live Extrapolated Pattern",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.extrapolated_live_pattern.target_soc.value
+        if pv.forecast.extrapolated_live_pattern.target_soc
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.extrapolated_live_pattern.target_soc
         ),
     ),
     # --- Prev-workday instrumentation (Etap A) — today ---
