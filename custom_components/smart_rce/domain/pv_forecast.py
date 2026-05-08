@@ -1,17 +1,13 @@
 """Weather-adjusted PV forecast logic.
 
-Plik czytaj top-down:
+Read top-down:
   1. Constants — domain rules (battery capacity, MIN_SOC, modifiers, conditions)
   2. Value objects — vocabulary (SolcastPeriod, AdjustedPeriod, AdjustedPvForecast,
      WeatherConditionAtHour, ConsumptionProfile, TargetSocBucket, TargetSocResult)
-  3. PvForecast aggregate — głowa publicznego API (state + zachowanie)
-  4. Domain functions — algorytmy wywoływane przez aggregate update_* methods
-     (adjust_pv_forecast_at6 + _adjust_at6_period, adjust_pv_forecast_live +
-     _adjust_live_period, calculate_target_soc)
-  5. Common helpers — multi-caller infrastructure (_get_condition_for_hour,
-     _classify_condition)
-  6. Standalone domain utility — walk_back_workdays (używane przez infrastructure
-     ConsumptionProfileLoader, nie przez aggregate)
+  3. PvForecast aggregate — public API head (state + behavior + per-class helpers
+     as @staticmethod, see Reguła 2b — pure helpers in stateful class)
+  4. Standalone domain utilities — multi-class users (merge_weather_conditions,
+     walk_back_workdays) used by application service / infrastructure loader
 """
 
 from __future__ import annotations
@@ -30,9 +26,9 @@ BUFFER_PERCENT: Final[int] = 12
 CLOUDY_CAP_HOUR_7: Final[float] = 0.20  # max hourly rate at hour 7 for cloudy
 
 # Prev-workday consumption profile instrumentation (Etap A).
-# Ile dni wstecz patrzymy żeby zbudować profil zużycia jako baseline dla
-# target SOC. Domain decision (nie infrastructure detail) — semantyka
-# "bierzemy 3 ostatnie dni roboczowe".
+# How many days back we look to build a consumption profile baseline for
+# target SOC. Domain decision (not infrastructure detail) — semantics
+# "take the last 3 workdays".
 PREV_DAYS_COUNT: Final[int] = 3
 
 # AT6 cloudy modifiers per hour (hourly rate multiplier on est10)
@@ -43,7 +39,7 @@ AT6_CLOUDY_MODIFIER_LATE: Final[float] = 0.7  # hours 11+
 SUNNY_CONDITIONS = frozenset({"sunny", "clear-night"})
 PARTLY_VARIABLE_CONDITIONS = frozenset({"partlycloudy-variable"})
 PARTLY_CONDITIONS = frozenset({"partlycloudy"})
-# Everything else = cloudy/inne
+# Everything else = cloudy/other
 
 
 # --- Value objects --- #
@@ -81,7 +77,7 @@ class ConsumptionProfile:
     """Consumption per 30-min bucket, keyed by (hour, minute) -> kWh."""
 
     buckets: dict[tuple[int, int], float]
-    source_date: date | None = None  # workday z którego profile został wziety
+    source_date: date | None = None  # workday the profile was taken from
 
     def get(self, hour: int, minute: int) -> float | None:
         return self.buckets.get((hour, minute))
@@ -112,11 +108,11 @@ class TargetSocResult:
 
 @dataclass
 class PvForecast:
-    """Aggregate trzymający aktualne weather-adjusted PV estimates + target SoC.
+    """Aggregate holding current weather-adjusted PV estimates + target SoC.
 
-    Stan + zachowanie razem (rich domain model). Update methods przyjmują
-    value objects (już zbudowane przez application service z driving adapters)
-    — domain nie zna źródła danych (HA states), tylko ich semantyki.
+    State + behavior together (rich domain model). Update methods take value
+    objects (already built by application service from driving adapters) —
+    domain knows nothing about data sources (HA states), only their semantics.
 
     8 forecast/SoC fields + prev-workday matrix (Etap A instrumentation):
     - adjusted_*: weather-adjusted PV estimates (today/tomorrow × at_6/live)
@@ -124,7 +120,7 @@ class PvForecast:
     - consumption_profiles: prev-workday consumption baselines (PREV_DAYS_COUNT)
     - target_soc_*_prev_days: per-prev-workday target SOC (parallel to profiles)
     - target_soc_max / target_soc_tomorrow_max: max(live + prev_days) — final
-      decision input dla automatyzacji.
+      decision input for automations.
     """
 
     adjusted_at_6: AdjustedPvForecast | None = None
@@ -154,7 +150,9 @@ class PvForecast:
         now: datetime,
     ) -> None:
         """Update morning (AT6) snapshot — adjusted_at_6 + downstream target SOC."""
-        self.adjusted_at_6 = adjust_pv_forecast_at6(solcast_periods, weather_conditions)
+        self.adjusted_at_6 = self._adjust_pv_forecast_at6(
+            solcast_periods, weather_conditions
+        )
         self._recalculate_target_soc(now)
 
     def update_live(
@@ -164,7 +162,7 @@ class PvForecast:
         now: datetime,
     ) -> None:
         """Update live forecast — adjusted_live + downstream target SOC."""
-        self.adjusted_live = adjust_pv_forecast_live(
+        self.adjusted_live = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
         self._recalculate_target_soc(now)
@@ -177,21 +175,21 @@ class PvForecast:
     ) -> None:
         """Update tomorrow snapshots — adjusted_tomorrow (AT6 mods) + adjusted_tomorrow_live (LIVE mods).
 
-        Two variants z DIFFERENT adjustment semantics:
+        Two variants with DIFFERENT adjustment semantics:
         - adjusted_tomorrow      — AT6 modifiers (pessimistic, cloudy cap @ hour 7).
-                                   Wieczorne planowanie: safety lower-bound.
+                                   Evening planning: safety lower-bound.
         - adjusted_tomorrow_live — LIVE modifiers (optimistic, no cap).
-                                   Po midnight rollover: aligns z target_soc_live
-                                   na continuity (yesterday's target_soc_tomorrow_live
+                                   After midnight rollover: aligns with target_soc_live
+                                   for continuity (yesterday's target_soc_tomorrow_live
                                    ~ today's target_soc_live).
         """
-        self.adjusted_tomorrow = adjust_pv_forecast_at6(
+        self.adjusted_tomorrow = self._adjust_pv_forecast_at6(
             solcast_periods, weather_conditions
         )
-        # adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
-        # Dla tomorrow's periods (date = tomorrow) brak match → wszystkie periods
-        # używają standard LIVE modifiers (no special first-hour treatment).
-        self.adjusted_tomorrow_live = adjust_pv_forecast_live(
+        # _adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
+        # For tomorrow's periods (date = tomorrow) no match → all periods use
+        # standard LIVE modifiers (no special first-hour treatment).
+        self.adjusted_tomorrow_live = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
         self._recalculate_target_soc(now)
@@ -204,30 +202,34 @@ class PvForecast:
         self._recalculate_target_soc(now)
 
     def _recalculate_target_soc(self, now: datetime) -> None:
-        """Calculate target SOC z aktualnych adjusted_* + consumption_profiles."""
+        """Calculate target SOC from current adjusted_* + consumption_profiles."""
         if self.adjusted_at_6:
-            self.target_soc = calculate_target_soc(self.adjusted_at_6, now=now)
+            self.target_soc = self._calculate_target_soc(self.adjusted_at_6, now=now)
         if self.adjusted_live:
-            self.target_soc_live = calculate_target_soc(self.adjusted_live, now=now)
+            self.target_soc_live = self._calculate_target_soc(
+                self.adjusted_live, now=now
+            )
 
-        # Tomorrow: zawsze full 7-13 window (no `now` arg → simulates entire window).
+        # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
         if self.adjusted_tomorrow:
-            self.target_soc_tomorrow = calculate_target_soc(self.adjusted_tomorrow)
+            self.target_soc_tomorrow = self._calculate_target_soc(
+                self.adjusted_tomorrow
+            )
         if self.adjusted_tomorrow_live:
-            self.target_soc_tomorrow_live = calculate_target_soc(
+            self.target_soc_tomorrow_live = self._calculate_target_soc(
                 self.adjusted_tomorrow_live
             )
 
         # Prev-workday instrumentation (Etap A) — adjusted_live + per-day profile.
         for i, profile in enumerate(self.consumption_profiles):
             if self.adjusted_live and profile is not None:
-                self.target_soc_prev_days[i] = calculate_target_soc(
+                self.target_soc_prev_days[i] = self._calculate_target_soc(
                     self.adjusted_live, consumption_profile=profile, now=now
                 )
             else:
                 self.target_soc_prev_days[i] = None
             if self.adjusted_tomorrow_live and profile is not None:
-                self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
+                self.target_soc_tomorrow_prev_days[i] = self._calculate_target_soc(
                     self.adjusted_tomorrow_live, consumption_profile=profile
                 )
             else:
@@ -249,245 +251,247 @@ class PvForecast:
         ]
         self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
 
+    @staticmethod
+    def _calculate_target_soc(
+        forecast: AdjustedPvForecast,
+        consumption_profile: ConsumptionProfile | None = None,
+        now: datetime | None = None,
+    ) -> TargetSocResult:
+        """Calculate target battery SOC + per-bucket trace.
 
-# --- Domain functions (callees PvForecast.update_*) --- #
+        Simulates cumulative energy deficit from now (or 7:00) to 13:00.
+        Before 7:00 or no now: simulates full 7:00-13:00 window.
+        After 7:00: simulates from current 30min period to 13:00.
+        consumption_profile: per-bucket overrides; fallback to CONSUMPTION_PER_30MIN.
+        Returns TargetSocResult with .value (SOC percent) and .buckets (trace).
+        """
+        # Determine start: current 30min period or 7:00
+        start_hour = 7
+        start_minute = 0
+        if now and now.hour >= 7:
+            start_hour = now.hour
+            start_minute = 0 if now.minute < 30 else 30
 
+        buckets: list[TargetSocBucket] = []
+        cumulative_balance = 0.0
+        min_balance = 0.0
+        min_idx = -1
 
-def adjust_pv_forecast_at6(
-    solcast_periods: list[SolcastPeriod],
-    weather_conditions: list[WeatherConditionAtHour],
-) -> AdjustedPvForecast:
-    """Adjust morning Solcast forecast (snapshot from 6:05) using weather."""
-    forecast = []
-    total_kwh = 0.0
+        for period in forecast.forecast:
+            dt = datetime.fromisoformat(period.period_start)
+            hour = dt.hour
+            minute = dt.minute
+            if hour < start_hour or (hour == start_hour and minute < start_minute):
+                continue
+            if hour >= 13:
+                continue
 
-    for period in solcast_periods:
-        dt = datetime.fromisoformat(period.period_start)
-        hour = dt.hour
-        target_date = dt.date()
-        condition = _get_condition_for_hour(hour, weather_conditions, target_date)
-        adj_rate = _adjust_at6_period(period, condition, hour)
-
-        forecast.append(
-            AdjustedPeriod(
-                period_start=period.period_start,
-                pv_estimate_adjusted=round(adj_rate, 4),
+            pv_kwh_30min = period.pv_estimate_adjusted / 2  # rate -> kWh per 30min
+            consumption = (
+                consumption_profile.get(hour, minute) if consumption_profile else None
             )
-        )
-        total_kwh += adj_rate / 2  # rate -> kWh per 30min
-
-    return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
-
-
-def _adjust_at6_period(period: SolcastPeriod, condition: str, hour: int) -> float:
-    """Apply AT6 weather adjustment. Returns adjusted hourly rate."""
-    cat = _classify_condition(condition)
-
-    if cat == "sunny":
-        return period.pv_estimate * 1.0
-    if cat == "partly-variable":
-        return period.pv_estimate * 0.8
-    if cat == "partly":
-        return period.pv_estimate * 0.7
-
-    # cloudy/inne
-    if hour <= 10:
-        modifier = AT6_CLOUDY_MODIFIER_EARLY
-    else:
-        modifier = AT6_CLOUDY_MODIFIER_LATE
-
-    adj = period.pv_estimate10 * modifier
-
-    if hour == 7:
-        adj = min(adj, CLOUDY_CAP_HOUR_7)
-
-    return adj
-
-
-def adjust_pv_forecast_live(
-    solcast_periods: list[SolcastPeriod],
-    weather_conditions: list[WeatherConditionAtHour],
-    now: datetime,
-) -> AdjustedPvForecast:
-    """Adjust live Solcast forecast using weather. First hour treated differently."""
-    forecast = []
-    total_kwh = 0.0
-    current_hour = now.hour
-
-    for period in solcast_periods:
-        dt = datetime.fromisoformat(period.period_start)
-        hour = dt.hour
-        target_date = dt.date()
-        is_first_hour = hour == current_hour
-        condition = _get_condition_for_hour(hour, weather_conditions, target_date)
-        adj_rate = _adjust_live_period(period, condition, is_first_hour)
-
-        forecast.append(
-            AdjustedPeriod(
-                period_start=period.period_start,
-                pv_estimate_adjusted=round(adj_rate, 4),
+            if consumption is None:
+                consumption = CONSUMPTION_PER_30MIN
+            balance = pv_kwh_30min - consumption
+            cumulative_balance += balance
+            if cumulative_balance < min_balance:
+                min_balance = cumulative_balance
+                min_idx = len(buckets)
+            buckets.append(
+                TargetSocBucket(
+                    period=f"{hour:02d}:{minute:02d}",
+                    pv_kwh=round(pv_kwh_30min, 3),
+                    cons_kwh=round(consumption, 3),
+                    balance=round(balance, 3),
+                    cumulative=round(cumulative_balance, 3),
+                    is_min=False,  # set below
+                )
             )
-        )
-        total_kwh += adj_rate / 2
 
-    return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
-
-
-def _adjust_live_period(
-    period: SolcastPeriod, condition: str, is_first_hour: bool
-) -> float:
-    """Apply LIVE weather adjustment. Returns adjusted hourly rate."""
-    cat = _classify_condition(condition)
-
-    if is_first_hour:
-        # Trust Solcast for the next hour, only swap est->est10 for cloudy
-        if cat == "cloudy":
-            return period.pv_estimate10 * 1.0
-        return period.pv_estimate * 1.0
-
-    # Remaining hours
-    if cat == "sunny":
-        return period.pv_estimate * 1.0
-    if cat == "partly-variable":
-        return period.pv_estimate * 0.8
-    if cat == "partly":
-        return period.pv_estimate * 0.7
-
-    # cloudy/inne — est10 without additional modifier (Solcast live already corrected)
-    return period.pv_estimate10 * 1.0
-
-
-def calculate_target_soc(
-    forecast: AdjustedPvForecast,
-    consumption_profile: ConsumptionProfile | None = None,
-    now: datetime | None = None,
-) -> TargetSocResult:
-    """Calculate target battery SOC + per-bucket trace.
-
-    Simulates cumulative energy deficit from now (or 7:00) to 13:00.
-    Before 7:00 or no now: simulates full 7:00-13:00 window.
-    After 7:00: simulates from current 30min period to 13:00.
-    consumption_profile: per-bucket overrides; fallback to CONSUMPTION_PER_30MIN.
-    Returns TargetSocResult with .value (SOC percent) and .buckets (trace).
-    """
-    # Determine start: current 30min period or 7:00
-    start_hour = 7
-    start_minute = 0
-    if now and now.hour >= 7:
-        start_hour = now.hour
-        start_minute = 0 if now.minute < 30 else 30
-
-    buckets: list[TargetSocBucket] = []
-    cumulative_balance = 0.0
-    min_balance = 0.0
-    min_idx = -1
-
-    for period in forecast.forecast:
-        dt = datetime.fromisoformat(period.period_start)
-        hour = dt.hour
-        minute = dt.minute
-        if hour < start_hour or (hour == start_hour and minute < start_minute):
-            continue
-        if hour >= 13:
-            continue
-
-        pv_kwh_30min = period.pv_estimate_adjusted / 2  # rate -> kWh per 30min
-        consumption = (
-            consumption_profile.get(hour, minute) if consumption_profile else None
-        )
-        if consumption is None:
-            consumption = CONSUMPTION_PER_30MIN
-        balance = pv_kwh_30min - consumption
-        cumulative_balance += balance
-        if cumulative_balance < min_balance:
-            min_balance = cumulative_balance
-            min_idx = len(buckets)
-        buckets.append(
-            TargetSocBucket(
-                period=f"{hour:02d}:{minute:02d}",
-                pv_kwh=round(pv_kwh_30min, 3),
-                cons_kwh=round(consumption, 3),
-                balance=round(balance, 3),
-                cumulative=round(cumulative_balance, 3),
-                is_min=False,  # set below
+        if min_idx >= 0:
+            # Replace min bucket with is_min=True (dataclass is frozen → rebuild)
+            m = buckets[min_idx]
+            buckets[min_idx] = TargetSocBucket(
+                period=m.period,
+                pv_kwh=m.pv_kwh,
+                cons_kwh=m.cons_kwh,
+                balance=m.balance,
+                cumulative=m.cumulative,
+                is_min=True,
             )
+
+        if min_balance >= 0:
+            return TargetSocResult(value=MIN_SOC_PERCENT, buckets=buckets)
+
+        deficit_kwh = abs(min_balance)
+        deficit_percent = deficit_kwh / (BATTERY_CAPACITY_KWH / 100)
+        target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
+
+        return TargetSocResult(
+            value=max(round(target), MIN_SOC_PERCENT), buckets=buckets
         )
 
-    if min_idx >= 0:
-        # Replace min bucket with is_min=True (dataclass is frozen → rebuild)
-        m = buckets[min_idx]
-        buckets[min_idx] = TargetSocBucket(
-            period=m.period,
-            pv_kwh=m.pv_kwh,
-            cons_kwh=m.cons_kwh,
-            balance=m.balance,
-            cumulative=m.cumulative,
-            is_min=True,
-        )
+    @staticmethod
+    def _adjust_pv_forecast_at6(
+        solcast_periods: list[SolcastPeriod],
+        weather_conditions: list[WeatherConditionAtHour],
+    ) -> AdjustedPvForecast:
+        """Adjust morning Solcast forecast (snapshot from 6:05) using weather."""
+        forecast = []
+        total_kwh = 0.0
 
-    if min_balance >= 0:
-        return TargetSocResult(value=MIN_SOC_PERCENT, buckets=buckets)
+        for period in solcast_periods:
+            dt = datetime.fromisoformat(period.period_start)
+            hour = dt.hour
+            target_date = dt.date()
+            condition = PvForecast._get_condition_for_hour(
+                hour, weather_conditions, target_date
+            )
+            adj_rate = PvForecast._adjust_at6_period(period, condition, hour)
 
-    deficit_kwh = abs(min_balance)
-    deficit_percent = deficit_kwh / (BATTERY_CAPACITY_KWH / 100)
-    target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
+            forecast.append(
+                AdjustedPeriod(
+                    period_start=period.period_start,
+                    pv_estimate_adjusted=round(adj_rate, 4),
+                )
+            )
+            total_kwh += adj_rate / 2  # rate -> kWh per 30min
 
-    return TargetSocResult(value=max(round(target), MIN_SOC_PERCENT), buckets=buckets)
+        return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
 
+    @staticmethod
+    def _adjust_at6_period(period: SolcastPeriod, condition: str, hour: int) -> float:
+        """Apply AT6 weather adjustment. Returns adjusted hourly rate."""
+        cat = PvForecast._classify_condition(condition)
 
-# --- Common helpers (multi-caller — Reguła 2a) --- #
+        if cat == "sunny":
+            return period.pv_estimate * 1.0
+        if cat == "partly-variable":
+            return period.pv_estimate * 0.8
+        if cat == "partly":
+            return period.pv_estimate * 0.7
 
+        # cloudy/other
+        if hour <= 10:
+            modifier = AT6_CLOUDY_MODIFIER_EARLY
+        else:
+            modifier = AT6_CLOUDY_MODIFIER_LATE
 
-def _get_condition_for_hour(
-    hour: int,
-    weather_conditions: list[WeatherConditionAtHour],
-    target_date: date | None = None,
-) -> str:
-    """Find weather condition for given hour and date. Fallback to cloudy.
+        adj = period.pv_estimate10 * modifier
 
-    Multi-caller: adjust_pv_forecast_at6, adjust_pv_forecast_live.
-    """
-    # Exact match: date + hour
-    if target_date:
+        if hour == 7:
+            adj = min(adj, CLOUDY_CAP_HOUR_7)
+
+        return adj
+
+    @staticmethod
+    def _adjust_pv_forecast_live(
+        solcast_periods: list[SolcastPeriod],
+        weather_conditions: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> AdjustedPvForecast:
+        """Adjust live Solcast forecast using weather. First hour treated differently."""
+        forecast = []
+        total_kwh = 0.0
+        current_hour = now.hour
+
+        for period in solcast_periods:
+            dt = datetime.fromisoformat(period.period_start)
+            hour = dt.hour
+            target_date = dt.date()
+            is_first_hour = hour == current_hour
+            condition = PvForecast._get_condition_for_hour(
+                hour, weather_conditions, target_date
+            )
+            adj_rate = PvForecast._adjust_live_period(period, condition, is_first_hour)
+
+            forecast.append(
+                AdjustedPeriod(
+                    period_start=period.period_start,
+                    pv_estimate_adjusted=round(adj_rate, 4),
+                )
+            )
+            total_kwh += adj_rate / 2
+
+        return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
+
+    @staticmethod
+    def _adjust_live_period(
+        period: SolcastPeriod, condition: str, is_first_hour: bool
+    ) -> float:
+        """Apply LIVE weather adjustment. Returns adjusted hourly rate."""
+        cat = PvForecast._classify_condition(condition)
+
+        if is_first_hour:
+            # Trust Solcast for the next hour, only swap est->est10 for cloudy
+            if cat == "cloudy":
+                return period.pv_estimate10 * 1.0
+            return period.pv_estimate * 1.0
+
+        # Remaining hours
+        if cat == "sunny":
+            return period.pv_estimate * 1.0
+        if cat == "partly-variable":
+            return period.pv_estimate * 0.8
+        if cat == "partly":
+            return period.pv_estimate * 0.7
+
+        # cloudy/other — est10 without additional modifier (Solcast live already corrected)
+        return period.pv_estimate10 * 1.0
+
+    # --- common helpers (multi-caller — Reguła 2a) --- #
+
+    @staticmethod
+    def _get_condition_for_hour(
+        hour: int,
+        weather_conditions: list[WeatherConditionAtHour],
+        target_date: date | None = None,
+    ) -> str:
+        """Find weather condition for given hour and date. Fallback to cloudy.
+
+        Multi-caller: _adjust_pv_forecast_at6, _adjust_pv_forecast_live.
+        """
+        # Exact match: date + hour
+        if target_date:
+            for w in weather_conditions:
+                if w.forecast_date == target_date and w.hour == hour:
+                    return w.condition_custom
+        # Fallback: hour only (for conditions without date)
         for w in weather_conditions:
-            if w.forecast_date == target_date and w.hour == hour:
+            if w.hour == hour and w.forecast_date is None:
                 return w.condition_custom
-    # Fallback: hour only (for conditions without date)
-    for w in weather_conditions:
-        if w.hour == hour and w.forecast_date is None:
-            return w.condition_custom
-    return "cloudy"  # pessimistic fallback
+        return "cloudy"  # pessimistic fallback
+
+    @staticmethod
+    def _classify_condition(condition: str) -> str:
+        """Classify condition into: sunny, partly-variable, partly, cloudy.
+
+        Multi-caller: _adjust_at6_period, _adjust_live_period.
+        """
+        if condition in SUNNY_CONDITIONS:
+            return "sunny"
+        if condition in PARTLY_VARIABLE_CONDITIONS:
+            return "partly-variable"
+        if condition in PARTLY_CONDITIONS:
+            return "partly"
+        return "cloudy"
 
 
-def _classify_condition(condition: str) -> str:
-    """Classify condition into: sunny, partly-variable, partly, cloudy.
-
-    Multi-caller: _adjust_at6_period, _adjust_live_period.
-    """
-    if condition in SUNNY_CONDITIONS:
-        return "sunny"
-    if condition in PARTLY_VARIABLE_CONDITIONS:
-        return "partly-variable"
-    if condition in PARTLY_CONDITIONS:
-        return "partly"
-    return "cloudy"
-
-
-# --- Standalone domain utilities (used przez application service) --- #
+# --- Standalone domain utilities (multi-class users) --- #
 
 
 def merge_weather_conditions(
     history: list[WeatherConditionAtHour],
     forecast: list[WeatherConditionAtHour],
 ) -> list[WeatherConditionAtHour]:
-    """Merge history (past hours, frozen) z forecast (future hours, fresh).
+    """Merge history (past hours, frozen) with forecast (future hours, fresh).
 
-    Forecast wins over history per (date, hour) — bardziej aktualne dane
-    dla future slots. Conditions bez forecast_date są ignorowane (nie da
-    się dopasować do konkretnego dnia).
+    Forecast wins over history per (date, hour) — more current data for future
+    slots. Conditions without forecast_date are ignored (cannot be matched to
+    a specific day).
 
-    Używane przez application service (PvForecastService._build_weather)
-    do zbudowania pełnego okna conditions dla `adjust_pv_forecast_*`.
+    Used by application service (PvForecastService._build_weather) to assemble
+    the full conditions window for `PvForecast._adjust_pv_forecast_*`.
     """
     combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
     for c in history:
@@ -502,9 +506,9 @@ def merge_weather_conditions(
 def walk_back_workdays(today: date, days_back: int) -> date | None:
     """Return date N workdays ago (skip weekends).
 
-    Używane przez infrastructure/pv_forecast/consumption_profile_loader.py
-    do iteracji po PREV_DAYS_COUNT prev workdays. Pure domain (semantyka
-    "skip weekends") — nie wycieka do infrastructure.
+    Used by infrastructure/pv_forecast/consumption_profile_loader.py to iterate
+    over PREV_DAYS_COUNT prev workdays. Pure domain (semantics "skip weekends")
+    — does not leak into infrastructure.
 
     TODO Etap E: replace heuristic with binary_sensor.workday_sensor (PL holidays).
     """

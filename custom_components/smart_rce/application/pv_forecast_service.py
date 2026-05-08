@@ -1,14 +1,14 @@
 """PvForecastService — application service orchestrating weather-adjusted PV estimates.
 
-DDD application layer (analog Ems w application/ems.py): read from driving
+DDD application layer (analog Ems in application/ems.py): read from driving
 adapters (Solcast, weather) → call domain `PvForecast.update_*` → notify
-listeners. State + algorytmy żyją w domain — Service czyste orchestration.
+listeners. State + algorithms live in domain — Service is pure orchestration.
 
-HASS-FREE: dependencies injected przez `pv_forecast_factory.py` (composition
-root). Service nie wie o HomeAssistant — sync→async wrapping (`hass.async_create_task`
-dla daily refresh) robi factory.
+HASS-FREE: dependencies injected by `pv_forecast_factory.py` (composition
+root). Service does not know about HomeAssistant — sync→async wrapping
+(`hass.async_create_task` for daily refresh) is done in the factory.
 
-Public callbacks (`on_*`) są wired w factory:
+Public callbacks (`on_*`) are wired in the factory:
 - weather_listener.async_add_listener(service.on_weather_update)
 - async_track_state_change_event(SOLCAST_*, service.on_solcast_*_change)
 - async_track_time_change(05:55, factory wrapper → service.refresh_profiles)
@@ -23,11 +23,8 @@ import logging
 from homeassistant.core import CALLBACK_TYPE, Event, callback
 from homeassistant.util import dt as dt_util
 
-from ..domain.pv_forecast import (
-    PvForecast,
-    WeatherConditionAtHour,
-    merge_weather_conditions,
-)
+from ..domain import pv_forecast
+from ..domain.pv_forecast import PvForecast, WeatherConditionAtHour
 from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -101,12 +98,12 @@ class PvForecastService:
     def _build_weather(self, day: date) -> list[WeatherConditionAtHour]:
         """Combine weather history (past hours) + live forecast (future hours).
 
-        Multi-caller helper — używane przez 3× `_recalculate_*`. Pure orchestration:
-        read 2 sources + delegate merge do domain `merge_weather_conditions`.
+        Multi-caller helper — used by 3× `_recalculate_*`. Pure orchestration:
+        read 2 sources + delegate merge to domain `merge_weather_conditions`.
         """
         history = self._weather_history.get_conditions_for_date(day)
         forecast = self._weather_listener.forecast_conditions
-        return merge_weather_conditions(history, forecast)
+        return pv_forecast.merge_weather_conditions(history, forecast)
 
     @callback
     def on_weather_update(self) -> None:

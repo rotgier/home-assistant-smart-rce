@@ -1,21 +1,23 @@
-"""Composition root: instancjonuje PvForecastService + adapters + wires HA listenery.
+"""Composition root: instantiates PvForecastService + adapters + wires HA listeners.
 
-Mała "wiring" warstwa łącząca application layer (`PvForecastService` orchestrator)
-z infrastructure (driven + driving adapters) dla HA. Wywoływana z
-`__init__.py::async_setup_entry`.
+Small "wiring" layer connecting the application layer (`PvForecastService`
+orchestrator) with infrastructure (driven + driving adapters) for HA. Called
+from `__init__.py::async_setup_entry`.
 
 Layer responsibility (DDD):
-- domain/pv_forecast.py — PvForecast aggregate (state + zachowanie),
-  pure algorytmy (adjust_pv_forecast_*, calculate_target_soc), value objects
+- domain/pv_forecast.py — PvForecast aggregate (state + behavior), per-class
+  pure algorithms (PvForecast._adjust_pv_forecast_*, PvForecast._calculate_target_soc),
+  value objects, plus standalone domain utilities (merge_weather_conditions,
+  walk_back_workdays) shared across application + infrastructure
 - application/pv_forecast_service.py — PvForecastService orchestrator
   (read from adapters → call domain update → notify listeners). HASS-FREE.
 - infrastructure/pv_forecast/ — driving/driven adapters (SolcastReader,
   WeatherConditionsBuilder, ConsumptionProfileLoader)
 - pv_forecast_factory.py — composition root, wires hass + adapters + service
-  + HA listenery + initial task
+  + HA listeners + initial task
 
-Service nie wie o `hass` — factory wraps sync→async gdzie trzeba
-(`hass.async_create_task` dla daily profile refresh).
+Service does not know about `hass` — factory wraps sync→async where needed
+(`hass.async_create_task` for daily profile refresh).
 """
 
 from __future__ import annotations
