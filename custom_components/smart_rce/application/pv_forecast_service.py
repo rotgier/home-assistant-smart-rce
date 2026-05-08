@@ -69,7 +69,11 @@ class PvForecastService:
         now = dt_util.now()
         pv_w = self._live_rates.read_pv_power_w()
         cons_w = self._live_rates.read_consumption_w()
-        self.forecast.update_extrapolated(now, pv_w, cons_w)
+        pv_so_far_kwh = self._live_rates.read_pv_bucket_so_far_kwh()
+        cons_so_far_kwh = self._live_rates.read_consumption_bucket_so_far_kwh()
+        self.forecast.update_extrapolated(
+            now, pv_w, cons_w, pv_so_far_kwh, cons_so_far_kwh
+        )
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.
