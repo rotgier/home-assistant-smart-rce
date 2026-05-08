@@ -149,15 +149,20 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_tomorrow_live),
     ),
     # --- Extrapolated live variants (per-minute tick) ---
-    # Whole-day remaining PV (mirrors existing _live whole-day sum) with the
-    # in-progress 30-min bucket scaled (forecast prorate or live 5-min rate).
+    # state = kWh remaining today (past excluded, current scaled)
+    # forecast attribute = full per-period day with current bucket rescaled
+    # (chart-friendly — same shape as Adj PV Live so adjusted_pv() helper works)
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated",
         value_fn=lambda pv: pv.forecast.adjusted_live_remaining_kwh,
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_live_extrapolated),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated 5min",
         value_fn=lambda pv: pv.forecast.adjusted_live_remaining_kwh_5min,
+        attr_fn=lambda pv: _pv_forecast_attrs(
+            pv.forecast.adjusted_live_extrapolated_5min
+        ),
     ),
     # --- Target SOC (%) ---
     PvForecastSensorDescription(
