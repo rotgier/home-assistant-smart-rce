@@ -18,22 +18,31 @@ Pliki:
 
 Kroki:
 
-1. Dla każdego daylight bucketu (past + current) oblicz **factor realizacji**:
+1. Dla każdego daylight bucketu (past + current) oblicz **score realizacji**
+   na 4-zone normalized scale używając trzech kwantyli Solcast (p10, estimate=p50, p90):
    ```
-   factor = (realized_kWh − pv_estimate10_kWh) / (pv_estimate_kWh − pv_estimate10_kWh)
+   S < 0      : realized < p10        S = realized/p10 − 1     (range −1..0)
+   S in 0..1  : p10 ≤ real ≤ est      S = (real−p10)/(est−p10)
+   S in 1..2  : est < real ≤ p90      S = 1 + (real−est)/(p90−est)
+   S > 2      : real > p90            S = 2 + (real−p90)/p90  (unbounded)
    ```
-   - factor = 0 → realized = p10 (worst case Solcast)
-   - factor = 1 → realized = estimate (median Solcast)
-   - factor < 0 → poniżej p10 (gorzej niż pessimistic)
-   - factor > 1 → powyżej estimate (sunnier than median — dozwolone, brak cap)
+   - S = −1 → zero PV; S = 0 → p10; S = 1 → estimate; S = 2 → p90
+   - Score continuous across zones; below-p10 i above-p90 używają **ratio**
+     (nie linear extrapolation) — zapobiega clamping do 0 lub unbounded growth
+   - Edge: `est − p10 < 0.05 kWh/h` (collapsed zone) → fallback do ratio
+     przeciw wider quantile. p10 < 0.05 → ratio przeciw estimate.
 
-2. **Weighted average** factor — current bucket waga 1.0, każdy krok wstecz
-   `× PATTERN_DECAY = 0.7` (po 3 bucketach ≈ 0.34). Buckets z `pv_estimate < 0.05`
-   kWh/30min są pomijane (pre-dawn / post-dusk noise).
+2. **Weighted average score** — current bucket waga 1.0, każdy krok wstecz
+   `× PATTERN_DECAY = 0.7` (po 3 bucketach ≈ 0.34). Buckets z `pv_estimate / 2 <
+   PATTERN_MIN_FORECAST_KWH = 0.05` kWh/30min są pomijane (pre-dawn / post-dusk noise).
 
-3. Dla każdego future bucketa projekcja:
+3. Dla każdego future bucketa projekcja przez **inverse score mapping**
+   (`_project_rate_from_score`):
    ```
-   projected_kWh_per_h = pv_estimate10 + factor × (pv_estimate − pv_estimate10)
+   S < 0      → projected = p10 × (1 + S)               # ratio, never < 0 unless S=−1
+   S in 0..1  → projected = p10 + S × (est − p10)
+   S in 1..2  → projected = est + (S−1) × (p90 − est)
+   S > 2      → projected = p90 × (1 + (S−2))           # ratio, may exceed p90
    ```
 
 4. Wynik:
@@ -47,6 +56,33 @@ Kroki:
 
 Edge case: `elapsed_min < 3` → variant = unknown (utility meter just-reset
 noise). Threshold zgodny z dashboard `extrapolate_current_bucket_js`.
+
+### Why the 4-zone scale (vs simple linear factor)
+
+**Original formula** `factor = (realized − p10) / (estimate − p10)` używała tylko
+2 kwantyli. Dla bucketu z realized < p10 (np. early morning ramp-up gdzie PV ledwo
+się rozkręcił), `factor < 0`. Linear extrapolation dla future bucketu z szerokim
+zakresem `(estimate − p10)`:
+
+```
+factor = −0.6
+Future bucket: p10=0.5, estimate=3.0
+projected = 0.5 + (−0.6) × (3.0 − 0.5) = 0.5 − 1.5 = −1.0  → clamped to 0  ❌
+```
+
+**Nierealistyczna prognoza "0 kWh przez resztę dnia"** bazując na jednym słabym
+porannym bucket (incident 2026-05-09 07:10).
+
+**4-zone scale** używa ratio dla S < 0:
+
+```
+S = −0.6 (taka sama observation)
+Future bucket: p10=0.5, est=3.0
+projected = 0.5 × (1 + (−0.6)) = 0.5 × 0.4 = 0.20 kWh/h  ✓ (40% z p10, pessimistic ale realistic)
+```
+
+Powyżej p90 podobnie — zamiast unbounded linear growth, ratio daje bounded
+extrapolation: realized = 1.2× p90 → projection 1.2× future p90.
 
 ## Use case: decyzja o rozładowaniu baterii rano
 
