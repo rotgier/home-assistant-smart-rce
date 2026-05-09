@@ -62,6 +62,15 @@ class DodPolicyActuator:
             target = self._ems.dod_policy.target_dod
             current = self._read_inverter_dod()
 
+            if current is None:
+                # Goodwe integration not yet loaded (typical at HA startup —
+                # smart_rce loads before goodwe). Skip without alert; next
+                # ems tick will retry once goodwe entity is ready.
+                _LOGGER.debug(
+                    "DodPolicyActuator: skipping — inverter entity unavailable"
+                )
+                return
+
             if current == target:
                 return  # Inverter already at target — no write needed
 
@@ -77,6 +86,14 @@ class DodPolicyActuator:
             # scene.apply blocking=True → after await, inverter state MUST reflect
             # the new value. If not, silent failure (Modbus reject, integration bug).
             post_write = self._read_inverter_dod()
+            if post_write is None:
+                # Defensive: state momentarily unavailable post-write. Don't
+                # alert — next tick will re-verify.
+                _LOGGER.warning(
+                    "DodPolicyActuator: post_write read returned None for target=%d",
+                    target,
+                )
+                return
             if post_write != target:
                 _LOGGER.error(
                     "DodPolicyActuator: silent fail — target=%d post_write=%s",
