@@ -52,9 +52,9 @@ class Ems:
         # DodPolicy maps phase + hysteresis + override → target_dod (numeric).
         # Owns _prev_block (hysteresis keep-state) — delegating phases call
         # block_pre_charge / block_post_charge / block_afternoon_dynamic
-        # directly. DischargeSlots feeds night-preserve dispatch.
-        # DodPolicyActuator listens and writes to inverter via scene.apply.
-        self.dod_policy.update(state, self.discharge_slots)
+        # directly. DodPolicyActuator listens and writes to inverter via
+        # scene.apply.
+        self.dod_policy.update(state)
         self._async_update_listeners()
 
     def update_rce(self, now: datetime, data: RcePrices) -> None:

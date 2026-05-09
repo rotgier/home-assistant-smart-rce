@@ -33,11 +33,15 @@ Phase classification + decisions:
 - **AFTERNOON_DYNAMIC** (13:00 → 19:00, peak=False): delegates to
   `block_afternoon_dynamic` — aggressive thresholds (>0 Wh hourly) since
   past PV peak.
-- **EVENING** (19:00 → 22:00): direct DoD=90 — evening discharge automations
-  rule; smart_rce stays out of the way.
-- **NIGHT_PRESERVE** (22:00 → 07:00, workday tomorrow OR expensive morning):
-  direct DoD=0 — preserve battery for tomorrow.
-- **NIGHT_FREE** (22:00 → 07:00, cheap morning ahead): direct DoD=90 — free
+- **EVENING_DISCHARGE** (19:00 → 22:00, workday today OR weekend without
+  preserve): direct DoD=90. Workday: cover expensive evening consumption;
+  explicit discharge automations use `ems_allow_discharge_override` for fast
+  discharge windows. Weekend: free when no peak ahead and tomorrow=weekend.
+- **EVENING_PRESERVE** (19:00 → 22:00, weekend today AND (peak ahead OR
+  workday tomorrow)): direct DoD=0 — protect battery for upcoming load.
+- **NIGHT_PRESERVE** (22:00 → 07:00, workday tomorrow): direct DoD=0 —
+  preserve for tomorrow morning load.
+- **NIGHT_FREE** (22:00 → 07:00, weekend tomorrow): direct DoD=90 — free
   discharge.
 - **WEEKEND_MORNING** (7:00 → 13:00, weekend): direct DoD=0 — passive PV
   capture (RCE typically flat, no expensive hours to protect surplus).
@@ -45,17 +49,18 @@ Phase classification + decisions:
 
 Coordination with GridExportManager (POSITIVE / NEGATIVE intervention):
 
-    | Phase             | block_discharge       | POSITIVE         | NEGATIVE |
-    |-------------------|-----------------------|------------------|----------|
-    | EMS_ALLOW         | False (always)        | exits            | exits    |
-    | WORKDAY_PRE       | hysteresis            | blocked          | yes      |
-    | WORKDAY_POST      | dual-trigger          | yes (1st line)   | yes      |
-    | AFTERNOON_STATIC  | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
-    | AFTERNOON_DYNAMIC | dual-trigger          | yes (1st line)   | yes      |
-    | EVENING           | False (always)        | rare             | yes      |
-    | NIGHT_PRESERVE    | False (DoD=0 direct)  | rare             | yes      |
-    | NIGHT_FREE        | False (always)        | rare             | yes      |
-    | WEEKEND_MORNING   | False (DoD=0 direct)  | yes              | yes      |
+    | Phase              | block_discharge       | POSITIVE         | NEGATIVE |
+    |--------------------|-----------------------|------------------|----------|
+    | EMS_ALLOW          | False (always)        | exits            | exits    |
+    | WORKDAY_PRE        | hysteresis            | blocked          | yes      |
+    | WORKDAY_POST       | dual-trigger          | yes (1st line)   | yes      |
+    | AFTERNOON_STATIC   | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
+    | AFTERNOON_DYNAMIC  | dual-trigger          | yes (1st line)   | yes      |
+    | EVENING_DISCHARGE  | False (DoD=90 direct) | rare             | yes      |
+    | EVENING_PRESERVE   | False (DoD=0 direct)  | rare             | yes      |
+    | NIGHT_PRESERVE     | False (DoD=0 direct)  | rare             | yes      |
+    | NIGHT_FREE         | False (DoD=90 direct) | rare             | yes      |
+    | WEEKEND_MORNING    | False (DoD=0 direct)  | yes              | yes      |
 
 GridExport intervention thresholds (hourly net export, Wh; details in
 `grid_export/positive.py` + `negative.py`):
@@ -79,7 +84,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from ..const import GROSS_MULTIPLIER
 from .block_discharge import (
     block_afternoon_dynamic,
     block_post_charge,
@@ -87,7 +91,6 @@ from .block_discharge import (
 )
 
 if TYPE_CHECKING:
-    from .discharge_slots import DischargeSlots
     from .input_state import InputState
 
 
@@ -100,9 +103,10 @@ class Phase(Enum):
     WORKDAY_POST_CHARGE = "workday_post_charge"  # start_charge..13:00, workday
     AFTERNOON_STATIC = "afternoon_static"  # 13:00..19:00, peak=True (any day)
     AFTERNOON_DYNAMIC = "afternoon_dynamic"  # 13:00..19:00, peak=False (any day)
-    EVENING = "evening"  # 19:00..22:00 (any day)
-    NIGHT_PRESERVE = "night_preserve"  # 22:00..07:00, preserve trigger
-    NIGHT_FREE = "night_free"  # 22:00..07:00, no preserve
+    EVENING_DISCHARGE = "evening_discharge"  # 19:00..22:00, workday OR weekend free
+    EVENING_PRESERVE = "evening_preserve"  # 19:00..22:00, weekend with peak/preserve
+    NIGHT_PRESERVE = "night_preserve"  # 22:00..07:00, workday tomorrow
+    NIGHT_FREE = "night_free"  # 22:00..07:00, weekend tomorrow
     WEEKEND_MORNING = "weekend_morning"  # 7:00..13:00, weekend
     UNKNOWN = "unknown"  # fallback (missing inputs)
 
@@ -121,9 +125,10 @@ DELEGATING_PHASES: frozenset[Phase] = frozenset(
 DIRECT_PHASE_DOD: dict[Phase, int] = {
     Phase.EMS_ALLOW_DISCHARGE: 90,  # smart_rce off — let other automations rule
     Phase.AFTERNOON_STATIC: 0,  # peak today — preserve for evening
-    Phase.EVENING: 90,  # 19:00..22:00 — allow evening discharge
-    Phase.NIGHT_PRESERVE: 0,  # preserve for tomorrow's expensive morning
-    Phase.NIGHT_FREE: 90,  # cheap morning ahead — battery free
+    Phase.EVENING_DISCHARGE: 90,  # workday evening (cover peak) OR weekend free
+    Phase.EVENING_PRESERVE: 0,  # weekend evening — peak ahead OR workday tomorrow
+    Phase.NIGHT_PRESERVE: 0,  # workday tomorrow — preserve for morning load
+    Phase.NIGHT_FREE: 90,  # weekend tomorrow — battery free
     Phase.WEEKEND_MORNING: 0,  # weekend rano — passive PV capture
 }
 
@@ -153,18 +158,18 @@ class DodPolicy:
     _override_set_phase: Phase | None = None
     _prev_block: bool = False
 
-    def update(self, state: InputState, discharge_slots: DischargeSlots) -> None:
+    def update(self, state: InputState) -> None:
         """Compute target_dod for this tick.
 
-        Reads InputState (time, peak, override, exported_energy, pv_5min) +
-        DischargeSlots (best_morning_discharge_slot for night-preserve dispatch).
-        Mutates target_dod + current_phase + _override_set_phase + _prev_block.
+        Reads InputState (time, peak, override, exported_energy, pv_5min,
+        is_workday, is_workday_tomorrow). Mutates target_dod + current_phase
+        + _override_set_phase + _prev_block.
 
         UNKNOWN phase (inputs missing — typically <50ms post-restart) keeps
         persisted state intact; we don't overwrite target_dod or current_phase
         until phase computation has complete inputs.
         """
-        new_phase = self._compute_phase(state, discharge_slots)
+        new_phase = self._compute_phase(state)
 
         if new_phase == Phase.UNKNOWN:
             return
@@ -211,9 +216,7 @@ class DodPolicy:
             return True
         return current_phase == self._override_set_phase
 
-    def _compute_phase(
-        self, state: InputState, discharge_slots: DischargeSlots
-    ) -> Phase:
+    def _compute_phase(self, state: InputState) -> Phase:
         """Dispatch to phase by priority — first match wins.
 
         Priority: 1) EMS allow discharge override (smart_rce off), 2) time +
@@ -230,11 +233,11 @@ class DodPolicy:
 
         # Night phases 22:00..07:00 (next day)
         if hour >= 22 or hour < 7:
-            return self._night_phase(state, discharge_slots)
+            return self._night_phase(state)
 
-        # Evening 19:00..22:00 — allow discharge regardless of weekday/peak
+        # Evening 19:00..22:00 — workday vs weekend distinction
         if 19 <= hour < 22:
-            return Phase.EVENING
+            return self._evening_phase(state)
 
         # Afternoon 13:00..19:00 — peak preserve OR dynamic hysteresis
         if 13 <= hour < 19:
@@ -256,20 +259,44 @@ class DodPolicy:
         return Phase.WORKDAY_POST_CHARGE
 
     @staticmethod
-    def _night_phase(state: InputState, discharge_slots: DischargeSlots) -> Phase:
-        """22:00..07:00 — preserve (workday tomorrow OR expensive morning) or free.
+    def _evening_phase(state: InputState) -> Phase:
+        """19:00..22:00 — workday discharge OR weekend preserve/free.
 
-        Morning discharge price comes from `discharge_slots.best_morning_discharge_slot`
-        (smart_rce-computed, netto) × GROSS_MULTIPLIER → gross gr/kWh, compared
-        with `input_number.rce_high_price_threshold_gross` (user UI).
+        - Workday today → DISCHARGE (DoD=90): cover expensive evening peak load.
+          Other automations (`Battery Discharge in the evening`) flip
+          `ems_allow_discharge_override` for explicit fast discharge windows;
+          when off, smart_rce keeps DoD=90 so battery can serve consumption.
+        - Weekend today + hold_for_peak=True → PRESERVE (DoD=0): peak ahead
+          (today evening or tomorrow morning).
+        - Weekend today + workday_tomorrow=True → PRESERVE: morning load ahead.
+        - Weekend today + weekend_tomorrow + no peak → DISCHARGE.
+        """
+        if state.is_workday is None:
+            return Phase.UNKNOWN
+        if state.is_workday is True:
+            return Phase.EVENING_DISCHARGE
+        # Weekend today
+        if state.rce_should_hold_for_peak is True:
+            return Phase.EVENING_PRESERVE
+        if state.is_workday_tomorrow is True:
+            return Phase.EVENING_PRESERVE
+        if state.is_workday_tomorrow is None:
+            return Phase.UNKNOWN
+        return Phase.EVENING_DISCHARGE
+
+    @staticmethod
+    def _night_phase(state: InputState) -> Phase:
+        """22:00..07:00 — preserve when workday tomorrow, else free.
+
+        Simplified rule: only `is_workday_tomorrow` decides. Morning RCE-price
+        check (`discharge_slots.best_morning_discharge_slot`) intentionally
+        dropped — that slot is computed for emergency morning discharge only
+        (5:00..7:00 window) and not reliable as preservation trigger.
         """
         if state.is_workday_tomorrow is True:
             return Phase.NIGHT_PRESERVE
-        slot = discharge_slots.best_morning_discharge_slot
-        if slot is not None and state.rce_high_price_threshold_gross is not None:
-            morning_gross = slot.price * GROSS_MULTIPLIER
-            if morning_gross > state.rce_high_price_threshold_gross:
-                return Phase.NIGHT_PRESERVE
+        if state.is_workday_tomorrow is None:
+            return Phase.UNKNOWN
         return Phase.NIGHT_FREE
 
     # --- Persistence (cross HA restart) --- #
