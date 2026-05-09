@@ -12,6 +12,7 @@ from custom_components.smart_rce.domain.charge_slots import (
     ChargeSlots,
 )
 from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
+from custom_components.smart_rce.domain.dod_policy import DodPolicy
 from custom_components.smart_rce.domain.ems_rce_prices import EmsRcePrices
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
@@ -36,6 +37,7 @@ class Ems:
         self.battery: BatteryManager = BatteryManager()
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
         self.grid_export: GridExportManager = GridExportManager()
+        self.dod_policy: DodPolicy = DodPolicy()
 
     def update_state(self, state: InputState) -> None:
         # Store przed managers update — listenery (logger, etc.) czytają
@@ -52,6 +54,11 @@ class Ems:
             state,
             self.grid_export.get_active_intervention(),
         )
+        # DodPolicy maps phase + battery.block + override → target_dod (numeric).
+        # Composes BatteryManager (delegating phases use its block_discharge) +
+        # DischargeSlots (night-preserve reads best_morning_discharge_slot).
+        # DodPolicyActuator listens and writes to inverter via scene.apply.
+        self.dod_policy.update(state, self.battery, self.discharge_slots)
         self._async_update_listeners()
 
     def update_rce(self, now: datetime, data: RcePrices) -> None:

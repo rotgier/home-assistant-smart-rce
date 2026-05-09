@@ -109,11 +109,6 @@ class InputState:
     # to preserve battery (workday tomorrow → True → preserve) or allow free
     # discharge.
 
-    rce_morning_discharge_price: float | None = None
-    # sensor.rce_morning_discharge_price (gross, gr/kWh) — predicted highest
-    # morning hour price for tomorrow. Used by DodPolicy night-preserve
-    # alongside is_workday_tomorrow (preserve when expensive morning ahead).
-
     rce_high_price_threshold_gross: float | None = None
     # input_number.rce_high_price_threshold_gross (gr/kWh, default ~350) —
     # threshold above which morning_discharge_price triggers preserve.

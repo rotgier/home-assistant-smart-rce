@@ -121,4 +121,16 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: ems.grid_export.last_decision_reason,
         icon="mdi:information-outline",
     ),
+    EmsSensorDescription(
+        name="Target DoD",
+        native_unit_of_measurement="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: ems.dod_policy.target_dod,
+        icon="mdi:battery-charging-50",
+    ),
+    EmsSensorDescription(
+        name="DoD Policy Phase",
+        value_fn=lambda ems: ems.dod_policy.current_phase.value,
+        icon="mdi:state-machine",
+    ),
 )

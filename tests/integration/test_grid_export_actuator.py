@@ -19,6 +19,8 @@ from homeassistant.core import HomeAssistant, ServiceCall
 
 from . import init_integration
 
+from tests.integration.conftest import grid_export_scene_calls
+
 # Bazowy stan dający POSITIVE entry: PV surplus 3000W, bateria niepełna,
 # toggle on, hourly export 0.10 kWh > 0.06 BALANCE_GATE.
 POSITIVE_INPUTS: dict[str, str] = {
@@ -73,8 +75,9 @@ async def test_apply_on_positive_intervention_entry(
     set_smart_rce_inputs(POSITIVE_INPUTS)
     await hass.async_block_till_done()
 
-    assert len(mock_scene_apply) >= 1, "Expected scene.apply after POSITIVE entry"
-    entities = mock_scene_apply[-1].data["entities"]
+    ge = grid_export_scene_calls(mock_scene_apply)
+    assert len(ge) >= 1, "Expected scene.apply after POSITIVE entry"
+    entities = ge[-1].data["entities"]
     assert entities["select.goodwe_ems_mode"] == "charge_battery"
     assert int(entities["number.goodwe_ems_power_limit"]) > 0
 
@@ -94,8 +97,9 @@ async def test_apply_on_negative_intervention_entry(
     set_smart_rce_inputs(NEGATIVE_INPUTS)
     await hass.async_block_till_done()
 
-    assert len(mock_scene_apply) >= 1, "Expected scene.apply after NEGATIVE entry"
-    entities = mock_scene_apply[-1].data["entities"]
+    ge = grid_export_scene_calls(mock_scene_apply)
+    assert len(ge) >= 1, "Expected scene.apply after NEGATIVE entry"
+    entities = ge[-1].data["entities"]
     # Bucket dla pv_avail=500 to (0, 1000, -1000) → DISCHARGE 1000W
     assert entities["select.goodwe_ems_mode"] == "discharge_battery"
     assert int(entities["number.goodwe_ems_power_limit"]) == 1000
@@ -121,8 +125,9 @@ async def test_apply_returning_to_auto_on_exit(
     set_smart_rce_inputs(POSITIVE_INPUTS | {"sensor.battery_state_of_charge": "100.0"})
     await hass.async_block_till_done()
 
-    assert len(mock_scene_apply) >= 1, "Expected scene.apply on intervention exit"
-    entities = mock_scene_apply[-1].data["entities"]
+    ge = grid_export_scene_calls(mock_scene_apply)
+    assert len(ge) >= 1, "Expected scene.apply on intervention exit"
+    entities = ge[-1].data["entities"]
     assert entities["select.goodwe_ems_mode"] == "auto"
     # Auto mode — xset is None → number entity nieuwzględniony w scene.apply
     assert "number.goodwe_ems_power_limit" not in entities
@@ -151,9 +156,8 @@ async def test_no_dispatch_when_recommended_unchanged(
     set_smart_rce_inputs({"sensor.pv_power": "200"})
     await hass.async_block_till_done()
 
-    assert (
-        len(mock_scene_apply) == 0
-    ), f"Expected 0 scene.apply, got {len(mock_scene_apply)}: {mock_scene_apply}"
+    ge = grid_export_scene_calls(mock_scene_apply)
+    assert len(ge) == 0, f"Expected 0 grid_export scene.apply, got {len(ge)}: {ge}"
 
 
 async def test_burst_changes_coalesce_apply(
@@ -197,11 +201,12 @@ async def test_burst_changes_coalesce_apply(
     # ostatni task widzi ten sam in-memory state co poprzedni → dedup.
     # Akceptujemy 1-3 apply (idealnie 1 jeśli wszystkie taski wejdą w lock
     # po pierwszym apply; gorszy case 3 jeśli każdy apply nadąży osobno).
+    ge = grid_export_scene_calls(mock_scene_apply)
     assert (
-        1 <= len(mock_scene_apply) <= 3
-    ), f"Expected 1-3 apply (coalesced from 3 events), got {len(mock_scene_apply)}"
+        1 <= len(ge) <= 3
+    ), f"Expected 1-3 grid_export apply (coalesced), got {len(ge)}"
     # Final state — pv_avail=3500W → bucket (3000, 4000) → xset=5000.
-    final_entities = mock_scene_apply[-1].data["entities"]
+    final_entities = ge[-1].data["entities"]
     assert final_entities["select.goodwe_ems_mode"] == "charge_battery"
     assert int(final_entities["number.goodwe_ems_power_limit"]) == 5000
 
@@ -232,7 +237,7 @@ async def test_skip_when_strategy_mode_disabled(
     await hass.async_block_till_done()
 
     # Wszystkie apply z mode=auto (bo disabled override). Dedup po pierwszym → 0-1.
-    for call in mock_scene_apply:
+    for call in grid_export_scene_calls(mock_scene_apply):
         assert call.data["entities"]["select.goodwe_ems_mode"] == "auto"
 
 
@@ -315,6 +320,7 @@ async def test_actuator_unregistered_on_entry_unload(
     set_smart_rce_inputs(POSITIVE_INPUTS)
     await hass.async_block_till_done()
 
+    ge = grid_export_scene_calls(mock_scene_apply)
     assert (
-        len(mock_scene_apply) == 0
-    ), f"Expected 0 scene.apply post-unload, got {len(mock_scene_apply)}"
+        len(ge) == 0
+    ), f"Expected 0 grid_export scene.apply post-unload, got {len(ge)}"

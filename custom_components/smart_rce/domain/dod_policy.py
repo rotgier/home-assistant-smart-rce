@@ -3,28 +3,29 @@
 Maps phase (time + flags) + BatteryManager hysteresis + user override → target_dod
 (0..100). Replaces 4 fragile time-triggered HA automations:
 
-- `Set SOC 90 at 7 and at 19`           → phases WORKDAY_PRE_CHARGE entry + EVENING
+- `Set SOC 90 at 7 and at 19`           → phases delegate to BatteryManager.block
 - `Set Min SOC to 100 Afternoon`        → phase AFTERNOON_STATIC (direct 0)
 - `Set Min SOC to 100 Evening`          → phase NIGHT_PRESERVE (direct 0)
-- `ems-set-dod-from-block-discharge`    → replaced by `ems-set-dod-from-target-dod`
-                                          (event-driven sensor → number copy)
+- `ems-set-dod-from-block-discharge`    → replaced by DodPolicyActuator
+                                          (driven adapter, ADR-019 pattern)
 
 Self-healing on restart: each tick reads time + flags, computes phase from
-scratch. No timing-sensitive trigger is needed — phase entry initial DoD is
-emitted only when the computed phase differs from persisted `_last_phase`.
+scratch. No timing-sensitive trigger needed — DodPolicy is event-driven via
+EMS update flow.
 
 Compose-with-BatteryManager: phases WORKDAY_PRE_CHARGE / WORKDAY_POST_CHARGE /
 AFTERNOON_DYNAMIC delegate DoD = `0 if battery.block else 90` (BatteryManager
 keeps its hysteresis — DodPolicy just maps block→DoD). Other phases use
 direct rules (fixed 0/90 based on time + RCE flags).
 
-Phase entry initial DoD (only PRE_CHARGE @ 07:00 and AFTERNOON_DYNAMIC @ 13:00):
-emitted on first tick of new phase to avoid jarring DoD jump from
-BatteryManager's stale state. Subsequent ticks delegate normally.
+No entry-initial special case: BatteryManager hysteresis recomputes block on
+every tick from instantaneous export + pv_5min state. At phase boundaries
+(7:00 sharp, 13:00 sharp) the FIRST tick of new phase yields correct block
+naturally — no need to override with arbitrary initial value.
 
-Override: input_number.ems_dod_override ≥ 0 takes priority. Active until
-phase boundary — when current phase ≠ phase at override-set, override expires
-and normal logic resumes (with new phase's entry initial if applicable).
+Override: input_number.ems_dod_override ≥ 0 takes priority over phase logic.
+Active until phase boundary — when current phase ≠ phase at override-set,
+override expires and normal logic resumes.
 """
 
 from __future__ import annotations
@@ -33,8 +34,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from ..const import GROSS_MULTIPLIER
+
 if TYPE_CHECKING:
     from .battery import BatteryManager
+    from .discharge_slots import DischargeSlots
     from .input_state import InputState
 
 
@@ -64,25 +68,7 @@ DELEGATING_PHASES: frozenset[Phase] = frozenset(
     }
 )
 
-# Phase entry initial DoD — emitted on first tick of new phase only when
-# transition timing matters (replaces 'Set SOC X at HH' YAML automations).
-# Phases not in this dict: no initial, immediate delegate / direct rule.
-PHASE_ENTRY_INITIAL_DOD: dict[Phase, int] = {
-    # mimics 'Set SOC 90 at 7' — allow morning discharge gambit at 07:00.
-    # BatteryManager hysteresis takes over from tick 2 (block=True if export
-    # > 100 Wh sustained → DoD=0).
-    Phase.WORKDAY_PRE_CHARGE: 90,
-    # 13:00 transition — preserve battery (DoD=0) regardless of static/dynamic
-    # variant. Static stays at 0 (direct rule); dynamic gives BatteryManager
-    # hysteresis room to release to 90 if hourly export < 0 (deficit). Safer
-    # default than 90 — preserves capacity for evening peak even when peak
-    # flag is False but afternoon develops actual peak signal later.
-    Phase.AFTERNOON_DYNAMIC: 0,
-    # WORKDAY_POST_CHARGE: NO entry initial. BatteryManager's first tick
-    # cleanly catches up via hysteresis (no jarring transition).
-}
-
-# Phases with direct (non-delegating, non-initial) DoD rule.
+# Phases with direct (non-delegating) DoD rule.
 DIRECT_PHASE_DOD: dict[Phase, int] = {
     Phase.EMS_ALLOW_DISCHARGE: 90,  # smart_rce off — let other automations rule
     Phase.AFTERNOON_STATIC: 0,  # peak today — preserve for evening
@@ -100,53 +86,51 @@ class DodPolicy:
     """Computes target_dod per tick based on phase + battery + override.
 
     Persistent state (across HA restart):
-    - target_dod: last emitted value
-    - _last_phase: detect phase transitions for entry initial DoD
+    - target_dod: last emitted value (informational)
+    - current_phase: phase computed at last tick (diagnostic + override expiry)
     - _override_set_phase: phase in which override was activated (for expiry)
     """
 
     target_dod: int = DEFAULT_DOD
-    _last_phase: Phase = Phase.UNKNOWN
+    current_phase: Phase = Phase.UNKNOWN
     _override_set_phase: Phase | None = None
 
-    def update(self, state: InputState, battery_mgr: BatteryManager) -> None:
+    def update(
+        self,
+        state: InputState,
+        battery_mgr: BatteryManager,
+        discharge_slots: DischargeSlots,
+    ) -> None:
         """Compute target_dod for this tick.
 
-        Reads InputState (time, peak, override, etc.) + BatteryManager.block.
-        Mutates self.target_dod and self._last_phase.
+        Reads InputState (time, peak, override) + BatteryManager.block +
+        DischargeSlots (best_morning_discharge_slot for night-preserve dispatch).
+        Mutates self.target_dod + self.current_phase + self._override_set_phase.
         """
-        new_phase = self._compute_phase(state)
+        new_phase = self._compute_phase(state, discharge_slots)
+        self.current_phase = new_phase
 
-        # Override path takes priority over phase entry / delegation.
+        # Override priority — record activation phase on first detection.
         if self._is_override_active(state, new_phase):
             override_value = state.dod_override
             assert override_value is not None  # _is_override_active guarantees
             self.target_dod = int(override_value)
             if self._override_set_phase is None:
                 self._override_set_phase = new_phase
-            self._last_phase = new_phase
             return
 
         # Override expired or never active — clear tracker.
         self._override_set_phase = None
 
-        # Phase transition — emit entry initial if defined for the new phase.
-        if new_phase != self._last_phase:
-            initial = PHASE_ENTRY_INITIAL_DOD.get(new_phase)
-            if initial is not None:
-                self.target_dod = initial
-                self._last_phase = new_phase
-                return
-
-        # Same phase OR phase without entry initial → delegate or direct rule.
+        # Delegate or direct rule. BatteryManager hysteresis recomputes on every
+        # tick (including phase transition tick) — yields correct block naturally,
+        # no entry-initial special case needed.
         if new_phase in DELEGATING_PHASES:
             self.target_dod = 0 if battery_mgr.should_block_battery_discharge else 90
         elif new_phase in DIRECT_PHASE_DOD:
             self.target_dod = DIRECT_PHASE_DOD[new_phase]
         else:
             self.target_dod = DEFAULT_DOD
-
-        self._last_phase = new_phase
 
     def _is_override_active(self, state: InputState, current_phase: Phase) -> bool:
         """Check if user override applies right now.
@@ -162,7 +146,9 @@ class DodPolicy:
             return True
         return current_phase == self._override_set_phase
 
-    def _compute_phase(self, state: InputState) -> Phase:
+    def _compute_phase(
+        self, state: InputState, discharge_slots: DischargeSlots
+    ) -> Phase:
         """Dispatch to phase by priority — first match wins.
 
         Priority: 1) EMS allow discharge override (smart_rce off), 2) time +
@@ -179,7 +165,7 @@ class DodPolicy:
 
         # Night phases 22:00..07:00 (next day)
         if hour >= 22 or hour < 7:
-            return self._night_phase(state)
+            return self._night_phase(state, discharge_slots)
 
         # Evening 19:00..22:00 — allow discharge regardless of weekday/peak
         if 19 <= hour < 22:
@@ -205,16 +191,20 @@ class DodPolicy:
         return Phase.WORKDAY_POST_CHARGE
 
     @staticmethod
-    def _night_phase(state: InputState) -> Phase:
-        """22:00..07:00 — preserve (workday tomorrow OR expensive morning) or free."""
+    def _night_phase(state: InputState, discharge_slots: DischargeSlots) -> Phase:
+        """22:00..07:00 — preserve (workday tomorrow OR expensive morning) or free.
+
+        Morning discharge price comes from `discharge_slots.best_morning_discharge_slot`
+        (smart_rce-computed, netto) × GROSS_MULTIPLIER → gross gr/kWh, compared
+        with `input_number.rce_high_price_threshold_gross` (user UI).
+        """
         if state.is_workday_tomorrow is True:
             return Phase.NIGHT_PRESERVE
-        if (
-            state.rce_morning_discharge_price is not None
-            and state.rce_high_price_threshold_gross is not None
-            and state.rce_morning_discharge_price > state.rce_high_price_threshold_gross
-        ):
-            return Phase.NIGHT_PRESERVE
+        slot = discharge_slots.best_morning_discharge_slot
+        if slot is not None and state.rce_high_price_threshold_gross is not None:
+            morning_gross = slot.price * GROSS_MULTIPLIER
+            if morning_gross > state.rce_high_price_threshold_gross:
+                return Phase.NIGHT_PRESERVE
         return Phase.NIGHT_FREE
 
     # --- Persistence (cross HA restart) --- #
@@ -222,7 +212,7 @@ class DodPolicy:
     def to_dict(self) -> dict[str, Any]:
         return {
             "target_dod": self.target_dod,
-            "_last_phase": self._last_phase.value,
+            "current_phase": self.current_phase.value,
             "_override_set_phase": (
                 self._override_set_phase.value if self._override_set_phase else None
             ),
@@ -232,7 +222,7 @@ class DodPolicy:
     def from_dict(cls, data: dict[str, Any]) -> DodPolicy:
         return cls(
             target_dod=int(data.get("target_dod", DEFAULT_DOD)),
-            _last_phase=Phase(data.get("_last_phase", Phase.UNKNOWN.value)),
+            current_phase=Phase(data.get("current_phase", Phase.UNKNOWN.value)),
             _override_set_phase=(
                 Phase(data["_override_set_phase"])
                 if data.get("_override_set_phase")

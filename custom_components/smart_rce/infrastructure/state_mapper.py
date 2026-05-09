@@ -191,6 +191,18 @@ def set_heater_rce_threshold(entity: str, i: InputState, state: str) -> None:
     i.heater_rce_threshold = map_float(entity, state)
 
 
+def set_dod_override(entity: str, i: InputState, state: str) -> None:
+    i.dod_override = map_float(entity, state)
+
+
+def set_is_workday_tomorrow(entity: str, i: InputState, state: str) -> None:
+    i.is_workday_tomorrow = map_on_off(entity, state)
+
+
+def set_rce_high_price_threshold_gross(entity: str, i: InputState, state: str) -> None:
+    i.rce_high_price_threshold_gross = map_float(entity, state)
+
+
 # --- dispatch table: entity_id → setter --- #
 
 HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
@@ -216,6 +228,9 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
     "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
     "input_number.heater_rce_threshold": set_heater_rce_threshold,
+    "input_number.ems_dod_override": set_dod_override,
+    "binary_sensor.workday_tomorrow": set_is_workday_tomorrow,
+    "input_number.rce_high_price_threshold_gross": set_rce_high_price_threshold_gross,
 }
 
 

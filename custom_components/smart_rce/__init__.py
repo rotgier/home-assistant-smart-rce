@@ -91,6 +91,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.charge_slots"))
     reload(import_module("custom_components.smart_rce.domain.discharge_slots"))
     reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
+    reload(import_module("custom_components.smart_rce.domain.dod_policy"))
     reload(import_module("custom_components.smart_rce.application.ems"))
     reload(import_module("custom_components.smart_rce.application"))
     reload(import_module("custom_components.smart_rce.domain"))

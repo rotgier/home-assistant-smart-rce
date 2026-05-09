@@ -131,20 +131,47 @@ def mock_rce_api(mock_rce_today_prices: list[float]) -> Generator[AsyncMock]:
 
 @pytest.fixture
 async def mock_scene_apply(hass: HomeAssistant) -> list[ServiceCall]:
-    """Capture scene.apply service calls.
+    """Capture scene.apply service calls + propagate states (for read-back actuators).
 
     Zamiast mockowania goodwe custom_component (overkill — wymagałoby
     inverter library mock + USB serial), interceptujemy `scene.apply`
     i record'ujemy wszystkie invocations. Testy asercyjne na contenct
     `entities` dict.
+
+    Also propagate the written entity state (DodPolicyActuator reads back
+    `number.goodwe_depth_of_discharge_on_grid` after each apply to verify
+    propagation; without state update mock would always trigger silent_fail).
     """
     captured: list[ServiceCall] = []
 
     async def handler(call: ServiceCall) -> None:
         captured.append(call)
+        # NOTE: We deliberately don't propagate state to entities via
+        # async_set — it would trigger smart_rce state listener feedback
+        # loop (DoD apply → state_changed → ems.update_state → another
+        # apply tick). Tests using DodPolicyActuator may see silent_fail
+        # logs (post_write read returns stale state); script.turn_on no-op
+        # below absorbs the notify_alert call without exception.
 
     hass.services.async_register("scene", "apply", handler)
+
+    # script.turn_on no-op — DodPolicyActuator calls notify_alert on silent_fail.
+    async def script_handler(call: ServiceCall) -> None:
+        pass
+
+    hass.services.async_register("script", "turn_on", script_handler)
     return captured
+
+
+def grid_export_scene_calls(scene_calls: list[ServiceCall]) -> list[ServiceCall]:
+    """Filter scene.apply calls to grid_export-related ones.
+
+    DodPolicyActuator also uses scene.apply (writes DoD register). Tests for
+    GridExportActuator should filter to calls touching `select.goodwe_ems_mode`.
+    """
+    return [
+        c for c in scene_calls if "select.goodwe_ems_mode" in c.data.get("entities", {})
+    ]
 
 
 # Pełna lista smart_rce inputs z HASS_STATE_MAPPER (adapter.py:164-186).
