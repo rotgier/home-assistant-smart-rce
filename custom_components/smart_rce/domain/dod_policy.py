@@ -35,9 +35,13 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from ..const import GROSS_MULTIPLIER
+from .block_discharge import (
+    block_afternoon_dynamic,
+    block_post_charge,
+    block_pre_charge,
+)
 
 if TYPE_CHECKING:
-    from .battery import BatteryManager
     from .discharge_slots import DischargeSlots
     from .input_state import InputState
 
@@ -80,34 +84,46 @@ DIRECT_PHASE_DOD: dict[Phase, int] = {
 
 DEFAULT_DOD: int = 90  # safe fallback when inputs incomplete
 
+# Mapping delegating phase → stateless hysteresis function.
+_PHASE_TO_BLOCK_FN = {
+    Phase.WORKDAY_PRE_CHARGE: block_pre_charge,
+    Phase.WORKDAY_POST_CHARGE: block_post_charge,
+    Phase.AFTERNOON_DYNAMIC: block_afternoon_dynamic,
+}
+
 
 @dataclass
 class DodPolicy:
-    """Computes target_dod per tick based on phase + battery + override.
+    """Computes target_dod per tick based on phase + hysteresis + override.
 
     Persistent state (across HA restart):
-    - target_dod: last emitted value (informational)
+    - target_dod: last emitted value (informational + UNKNOWN keep-state source)
     - current_phase: phase computed at last tick (diagnostic + override expiry)
     - _override_set_phase: phase in which override was activated (for expiry)
+    - _prev_block: hysteresis keep-state for delegating phases (block_discharge)
     """
 
     target_dod: int = DEFAULT_DOD
     current_phase: Phase = Phase.UNKNOWN
     _override_set_phase: Phase | None = None
+    _prev_block: bool = False
 
-    def update(
-        self,
-        state: InputState,
-        battery_mgr: BatteryManager,
-        discharge_slots: DischargeSlots,
-    ) -> None:
+    def update(self, state: InputState, discharge_slots: DischargeSlots) -> None:
         """Compute target_dod for this tick.
 
-        Reads InputState (time, peak, override) + BatteryManager.block +
+        Reads InputState (time, peak, override, exported_energy, pv_5min) +
         DischargeSlots (best_morning_discharge_slot for night-preserve dispatch).
-        Mutates self.target_dod + self.current_phase + self._override_set_phase.
+        Mutates target_dod + current_phase + _override_set_phase + _prev_block.
+
+        UNKNOWN phase (inputs missing — typically <50ms post-restart) keeps
+        persisted state intact; we don't overwrite target_dod or current_phase
+        until phase computation has complete inputs.
         """
         new_phase = self._compute_phase(state, discharge_slots)
+
+        if new_phase == Phase.UNKNOWN:
+            return
+
         self.current_phase = new_phase
 
         # Override priority — record activation phase on first detection.
@@ -122,15 +138,19 @@ class DodPolicy:
         # Override expired or never active — clear tracker.
         self._override_set_phase = None
 
-        # Delegate or direct rule. BatteryManager hysteresis recomputes on every
-        # tick (including phase transition tick) — yields correct block naturally,
-        # no entry-initial special case needed.
         if new_phase in DELEGATING_PHASES:
-            self.target_dod = 0 if battery_mgr.should_block_battery_discharge else 90
+            block_fn = _PHASE_TO_BLOCK_FN[new_phase]
+            new_block = block_fn(state, self._prev_block)
+            self._prev_block = new_block
+            self.target_dod = 0 if new_block else 90
         elif new_phase in DIRECT_PHASE_DOD:
             self.target_dod = DIRECT_PHASE_DOD[new_phase]
+            # Sync hysteresis state to direct rule — when next delegating phase
+            # arrives, hysteresis prev = current direct decision.
+            self._prev_block = self.target_dod == 0
         else:
             self.target_dod = DEFAULT_DOD
+            self._prev_block = False
 
     def _is_override_active(self, state: InputState, current_phase: Phase) -> bool:
         """Check if user override applies right now.
@@ -216,6 +236,7 @@ class DodPolicy:
             "_override_set_phase": (
                 self._override_set_phase.value if self._override_set_phase else None
             ),
+            "_prev_block": self._prev_block,
         }
 
     @classmethod
@@ -228,4 +249,5 @@ class DodPolicy:
                 if data.get("_override_set_phase")
                 else None
             ),
+            _prev_block=bool(data.get("_prev_block", False)),
         )

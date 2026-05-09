@@ -54,11 +54,12 @@ class Ems:
             state,
             self.grid_export.get_active_intervention(),
         )
-        # DodPolicy maps phase + battery.block + override → target_dod (numeric).
-        # Composes BatteryManager (delegating phases use its block_discharge) +
-        # DischargeSlots (night-preserve reads best_morning_discharge_slot).
+        # DodPolicy maps phase + hysteresis + override → target_dod (numeric).
+        # Owns _prev_block (hysteresis keep-state) — delegating phases call
+        # block_pre_charge / block_post_charge / block_afternoon_dynamic
+        # directly. DischargeSlots feeds night-preserve dispatch.
         # DodPolicyActuator listens and writes to inverter via scene.apply.
-        self.dod_policy.update(state, self.battery, self.discharge_slots)
+        self.dod_policy.update(state, self.discharge_slots)
         self._async_update_listeners()
 
     def update_rce(self, now: datetime, data: RcePrices) -> None:

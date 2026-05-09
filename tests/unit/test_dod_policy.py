@@ -1,7 +1,6 @@
-"""Unit tests for DodPolicy — phase dispatch + override + persistence."""
+"""Unit tests for DodPolicy — phase dispatch + hysteresis + override + persistence."""
 
 from datetime import datetime, time
-from unittest.mock import MagicMock
 
 from custom_components.smart_rce.domain.discharge_slots import (
     DischargeSlots,
@@ -22,6 +21,8 @@ def _state(
     ems_allow_discharge_override=False,
     dod_override=-1.0,
     rce_high_price_threshold_gross=350.0,
+    exported_energy_hourly: float | None = 0.0,
+    pv_available_5min: float | None = None,
 ) -> InputState:
     return InputState(
         now=now,
@@ -32,6 +33,10 @@ def _state(
         ems_allow_discharge_override=ems_allow_discharge_override,
         dod_override=dod_override,
         rce_high_price_threshold_gross=rce_high_price_threshold_gross,
+        exported_energy_hourly=exported_energy_hourly,
+        consumption_minus_pv_5_minutes=(
+            -pv_available_5min if pv_available_5min is not None else None
+        ),
     )
 
 
@@ -57,12 +62,6 @@ def _at(h, m=0):
 
 def _weekend_at(h, m=0):
     return datetime(2026, 5, 9, h, m, tzinfo=TIMEZONE)  # 2026-05-09 = Saturday
-
-
-def _battery_mgr(*, block=False):
-    m = MagicMock()
-    m.should_block_battery_discharge = block
-    return m
 
 
 class TestPhaseDispatch:
@@ -171,84 +170,174 @@ class TestDirectPhasesDoD:
     def test_afternoon_static_dod_zero(self):
         p = DodPolicy()
         s = _state(now=_at(14), rce_should_hold_for_peak=True)
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
         assert p.current_phase == Phase.AFTERNOON_STATIC
 
     def test_evening_dod_90(self):
         p = DodPolicy()
         s = _state(now=_at(20))
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 90
 
     def test_night_preserve_dod_zero(self):
         p = DodPolicy()
         s = _state(now=_at(23), is_workday_tomorrow=True)
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
 
     def test_night_free_dod_90(self):
         p = DodPolicy()
         s = _state(now=_weekend_at(23), is_workday_tomorrow=False)
         # 80 netto × 1.23 < 350 threshold → NIGHT_FREE → 90
-        p.update(s, _battery_mgr(), _discharge_slots(morning_price_netto=80.0))
+        p.update(s, _discharge_slots(morning_price_netto=80.0))
         assert p.target_dod == 90
 
     def test_weekend_morning_dod_zero(self):
         p = DodPolicy()
         s = _state(now=_weekend_at(9), is_workday=False)
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
 
     def test_ems_allow_discharge_dod_90(self):
         p = DodPolicy()
         s = _state(now=_at(10), ems_allow_discharge_override=True)
-        p.update(
-            s, _battery_mgr(block=True), _discharge_slots()
-        )  # block ignored when EMS override
+        p.update(s, _discharge_slots())  # block ignored when EMS override
         assert p.target_dod == 90
 
 
 class TestDelegatingPhasesDoD:
-    """Phases that delegate DoD to BatteryManager.block_discharge."""
+    """Delegating phases call block_discharge fn → DoD = 0 if block else 90.
 
-    def test_workday_pre_charge_block_true_dod_zero(self):
+    Hysteresis algorithms tested in test_block_discharge.py — these tests
+    smoke-check the dispatch + block→DoD mapping per delegating phase.
+    """
+
+    # --- WORKDAY_PRE_CHARGE --- #
+    def test_workday_pre_charge_high_export_dod_zero(self):
+        """Exported >=100 Wh → SET → DoD=0."""
         p = DodPolicy()
-        s = _state(now=_at(8))
-        p.update(s, _battery_mgr(block=True), _discharge_slots())
+        s = _state(now=_at(8), exported_energy_hourly=0.150)
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
         assert p.current_phase == Phase.WORKDAY_PRE_CHARGE
+        assert p._prev_block is True
 
-    def test_workday_pre_charge_block_false_dod_90(self):
+    def test_workday_pre_charge_low_export_dod_90(self):
+        """Exported < 50 + no surplus → default reset → DoD=90."""
         p = DodPolicy()
-        s = _state(now=_at(8))
-        p.update(s, _battery_mgr(block=False), _discharge_slots())
+        s = _state(now=_at(8), exported_energy_hourly=0.0)
+        p.update(s, _discharge_slots())
         assert p.target_dod == 90
+        assert p._prev_block is False
 
-    def test_workday_post_charge_block_true_dod_zero(self):
+    # --- WORKDAY_POST_CHARGE --- #
+    def test_workday_post_charge_instant_surplus_dod_zero(self):
+        """pv_5min > +500W → instant_surplus SET → DoD=0."""
         p = DodPolicy()
-        s = _state(now=_at(11), start_charge=time(10, 0))
-        p.update(s, _battery_mgr(block=True), _discharge_slots())
+        s = _state(now=_at(11), start_charge=time(10, 0), pv_available_5min=700.0)
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
         assert p.current_phase == Phase.WORKDAY_POST_CHARGE
 
-    def test_workday_post_charge_block_false_dod_90(self):
-        p = DodPolicy()
-        s = _state(now=_at(11), start_charge=time(10, 0))
-        p.update(s, _battery_mgr(block=False), _discharge_slots())
+    def test_workday_post_charge_deficit_and_reset_dod_90(self):
+        """instant_deficit + hourly_reset → RESET → DoD=90."""
+        p = DodPolicy(_prev_block=True)
+        s = _state(
+            now=_at(11),
+            start_charge=time(10, 0),
+            exported_energy_hourly=0.030,
+            pv_available_5min=-100.0,
+        )
+        p.update(s, _discharge_slots())
         assert p.target_dod == 90
 
-    def test_afternoon_dynamic_block_true_dod_zero(self):
+    # --- AFTERNOON_DYNAMIC --- #
+    def test_afternoon_dynamic_net_export_dod_zero(self):
+        """hourly_export > 0 → SET → DoD=0."""
         p = DodPolicy()
-        s = _state(now=_at(14), rce_should_hold_for_peak=False)
-        p.update(s, _battery_mgr(block=True), _discharge_slots())
+        s = _state(
+            now=_at(14), rce_should_hold_for_peak=False, exported_energy_hourly=0.030
+        )
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
 
-    def test_afternoon_dynamic_block_false_dod_90(self):
-        p = DodPolicy()
-        s = _state(now=_at(14), rce_should_hold_for_peak=False)
-        p.update(s, _battery_mgr(block=False), _discharge_slots())
+    def test_afternoon_dynamic_deficit_no_export_dod_90(self):
+        """instant_deficit + no hourly_export → RESET → DoD=90."""
+        p = DodPolicy(_prev_block=True)
+        s = _state(
+            now=_at(14),
+            rce_should_hold_for_peak=False,
+            exported_energy_hourly=0.0,
+            pv_available_5min=-100.0,
+        )
+        p.update(s, _discharge_slots())
         assert p.target_dod == 90
+
+
+class TestPrevBlockHysteresisKeepState:
+    """_prev_block carried across ticks — hysteresis dead-zone keeps state."""
+
+    def test_pre_charge_dead_zone_keeps_block_true(self):
+        """Exported in dead zone (50..100) → keep prev_block=True."""
+        p = DodPolicy(_prev_block=True)
+        s = _state(now=_at(8), exported_energy_hourly=0.060)
+        p.update(s, _discharge_slots())
+        assert p._prev_block is True
+        assert p.target_dod == 0
+
+    def test_pre_charge_dead_zone_keeps_block_false(self):
+        """Exported in dead zone (50..100) + prev=False → stays False."""
+        p = DodPolicy(_prev_block=False)
+        s = _state(now=_at(8), exported_energy_hourly=0.060)
+        p.update(s, _discharge_slots())
+        assert p._prev_block is False
+        assert p.target_dod == 90
+
+    def test_pre_charge_instant_surplus_extends_keep_zone(self):
+        """Exported < 50 + instant_surplus (>500W) → keep prev=True."""
+        p = DodPolicy(_prev_block=True)
+        s = _state(now=_at(8), exported_energy_hourly=0.020, pv_available_5min=800.0)
+        p.update(s, _discharge_slots())
+        assert p._prev_block is True
+
+
+class TestPrevBlockSyncOnDirectPhase:
+    """Direct phase (e.g. AFTERNOON_STATIC, NIGHT_PRESERVE) syncs _prev_block."""
+
+    def test_direct_dod_zero_sets_prev_block_true(self):
+        """AFTERNOON_STATIC (DoD=0) syncs _prev_block=True for next delegating tick."""
+        p = DodPolicy(_prev_block=False)
+        s = _state(now=_at(14), rce_should_hold_for_peak=True)
+        p.update(s, _discharge_slots())
+        assert p._prev_block is True
+
+    def test_direct_dod_90_sets_prev_block_false(self):
+        """EVENING (DoD=90) syncs _prev_block=False."""
+        p = DodPolicy(_prev_block=True)
+        s = _state(now=_at(20))
+        p.update(s, _discharge_slots())
+        assert p._prev_block is False
+
+
+class TestUnknownPhaseKeepState:
+    """UNKNOWN phase (inputs missing) preserves persisted target_dod."""
+
+    def test_unknown_keeps_target_dod(self):
+        """now=None → UNKNOWN → don't overwrite target_dod."""
+        p = DodPolicy(target_dod=42, current_phase=Phase.WORKDAY_PRE_CHARGE)
+        s = _state(now=_at(8))
+        s.now = None
+        p.update(s, _discharge_slots())
+        assert p.target_dod == 42
+        assert p.current_phase == Phase.WORKDAY_PRE_CHARGE  # also kept
+
+    def test_unknown_keeps_prev_block(self):
+        p = DodPolicy(target_dod=0, _prev_block=True)
+        s = _state(now=_at(8))
+        s.is_workday = None  # morning + workday=None → UNKNOWN
+        p.update(s, _discharge_slots())
+        assert p._prev_block is True
 
 
 class TestOverride:
@@ -257,14 +346,14 @@ class TestOverride:
     def test_override_applied(self):
         p = DodPolicy()
         s = _state(now=_at(23), is_workday_tomorrow=True, dod_override=85)
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 85
         assert p._override_set_phase == Phase.NIGHT_PRESERVE
 
     def test_override_inactive_at_minus_one(self):
         p = DodPolicy()
         s = _state(now=_at(23), is_workday_tomorrow=True, dod_override=-1)
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0  # NIGHT_PRESERVE direct rule
         assert p._override_set_phase is None
 
@@ -277,11 +366,11 @@ class TestOverride:
         p = DodPolicy()
         # Tick 1: night, override=85
         s1 = _state(now=_at(23), is_workday_tomorrow=True, dod_override=85)
-        p.update(s1, _battery_mgr(), _discharge_slots())
+        p.update(s1, _discharge_slots())
         assert p.target_dod == 85
         # Tick 2: morning, override still in input_number (user didn't reset)
         s2 = _state(now=_at(7, 30), is_workday=True, dod_override=85)
-        p.update(s2, _battery_mgr(block=False), _discharge_slots())
+        p.update(s2, _discharge_slots())
         # Override expired (different phase) → delegate to BatteryManager.block
         assert p.target_dod == 90  # block=False → 90
         assert p._override_set_phase is None
@@ -289,10 +378,10 @@ class TestOverride:
     def test_override_persists_within_same_phase(self):
         p = DodPolicy()
         s = _state(now=_at(23), is_workday_tomorrow=True, dod_override=85)
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         # Tick 2: still night, override still 85
         s2 = _state(now=_at(23, 30), is_workday_tomorrow=True, dod_override=85)
-        p.update(s2, _battery_mgr(), _discharge_slots())
+        p.update(s2, _discharge_slots())
         assert p.target_dod == 85
         assert p._override_set_phase == Phase.NIGHT_PRESERVE
 
@@ -338,26 +427,25 @@ class TestSelfHealingAfterRestart:
     def test_restart_in_pre_charge_no_re_emit_initial(self):
         """Restart still in same phase: no spurious entry-initial re-emit.
 
-        Persisted current_phase=PRE_CHARGE; restart at 8:30 → still PRE_CHARGE
-        → normal delegation (block=True → DoD=0), no re-emit of entry 90.
+        Persisted current_phase=PRE_CHARGE; restart at 8:30 with sustained
+        export → block=True → DoD=0 via hysteresis (no entry-initial 90).
         """
         p = DodPolicy(current_phase=Phase.WORKDAY_PRE_CHARGE)
-        s = _state(now=_at(8, 30))
-        p.update(s, _battery_mgr(block=True), _discharge_slots())
-        # Same phase as persisted → delegate (block=True → 0)
+        s = _state(now=_at(8, 30), exported_energy_hourly=0.150)
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
 
     def test_restart_with_phase_change_delegates_immediately(self):
-        """Restart that crosses phase boundary delegates to BatteryManager normally.
+        """Restart that crosses phase boundary delegates to hysteresis normally.
 
-        Persisted current_phase=POST_CHARGE; restart at 13:30 → entered
-        AFTERNOON_DYNAMIC → delegate to BatteryManager.block (no entry initial
-        special case — BatteryManager hysteresis recomputes block correctly).
+        Persisted current_phase=POST_CHARGE; restart at 13:30 → enters
+        AFTERNOON_DYNAMIC. Default state (no export, no instant signal) →
+        block_afternoon_dynamic keeps prev=False → DoD=90.
         """
         p = DodPolicy(current_phase=Phase.WORKDAY_POST_CHARGE)
         s = _state(now=_at(13, 30), rce_should_hold_for_peak=False)
-        p.update(s, _battery_mgr(block=False), _discharge_slots())
-        assert p.target_dod == 90  # block=False → delegate → 90
+        p.update(s, _discharge_slots())
+        assert p.target_dod == 90
         assert p.current_phase == Phase.AFTERNOON_DYNAMIC
 
 
@@ -367,13 +455,13 @@ class TestWeekendBehavior:
     def test_saturday_morning_dod_zero(self):
         p = DodPolicy()
         s = _state(now=_weekend_at(9, 24), is_workday=False)  # Saturday 9:24
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
 
     def test_saturday_afternoon_with_peak_dod_zero(self):
         p = DodPolicy()
         s = _state(now=_weekend_at(15), is_workday=False, rce_should_hold_for_peak=True)
-        p.update(s, _battery_mgr(), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 0
 
     def test_saturday_afternoon_no_peak_delegates_to_block(self):
@@ -387,5 +475,5 @@ class TestWeekendBehavior:
         s = _state(
             now=_weekend_at(15), is_workday=False, rce_should_hold_for_peak=False
         )
-        p.update(s, _battery_mgr(block=False), _discharge_slots())
+        p.update(s, _discharge_slots())
         assert p.target_dod == 90
