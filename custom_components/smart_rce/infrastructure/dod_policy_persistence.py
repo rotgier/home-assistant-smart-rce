@@ -1,11 +1,12 @@
 """DodPolicy state persistence — driven adapter for HA Storage.
 
-Persists `DodPolicy` state across HA restarts via HA Storage helper. Same
-pattern as `battery_persistence.py` (ADR-018). Persisted state:
+Persists `DodPolicy` state across HA restarts via HA Storage helper
+(ADR-018). Persisted state:
 - target_dod (informational — current value also readable from inverter)
-- current_phase (diagnostic)
+- current_phase (diagnostic + UNKNOWN keep-state source)
 - _override_set_phase (override expiry tracking — survives restart so
   user-set override remains active until phase boundary)
+- _prev_block (hysteresis keep-state for delegating phases)
 
 Hexagonal pattern: **driven adapter (outbound)** — domain dictates
 "save state", concrete impl uses HA `Store`.
@@ -45,6 +46,7 @@ class DodPolicyPersistence:
             self._policy.target_dod = restored.target_dod
             self._policy.current_phase = restored.current_phase
             self._policy._override_set_phase = restored._override_set_phase  # noqa: SLF001 — restoring private state
+            self._policy._prev_block = restored._prev_block  # noqa: SLF001 — restoring private state
         self._last_snapshot = self._policy.to_dict()
 
     @callback

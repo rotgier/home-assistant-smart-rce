@@ -61,7 +61,8 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
     ),
     EmsBinarySensorDescription(
         name="Block Battery Discharge",
-        value_fn=lambda ems: ems.battery.should_block_battery_discharge,
+        # Derived from DodPolicy: target_dod=0 ⇔ block discharge.
+        value_fn=lambda ems: ems.dod_policy.target_dod == 0,
         icon="mdi:battery-arrow-down-outline",
     ),
     EmsBinarySensorDescription(

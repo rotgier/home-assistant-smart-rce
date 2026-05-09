@@ -13,8 +13,9 @@ Layer responsibility (DDD):
 
 Adaptery żyją w `infrastructure/`:
 - `state_mapper.py` — HA states → InputState (driving adapter helpers)
-- `battery_persistence.py` — BatteryStatePersistence (driven: HA Storage)
-- `battery_logger.py` — BatteryManagerLogger (driven: Python logging)
+- `dod_policy_persistence.py` — DodPolicyPersistence (driven: HA Storage)
+- `dod_policy_logger.py` — DodPolicyLogger (driven: Python logging)
+- `dod_policy_actuator.py` — DodPolicyActuator (driven: scene.apply)
 - `grid_export_actuator.py` — GridExportActuator (driven: scene.apply)
 - `rce_api.py` — RceApi (driven: HTTP RCE prices)
 """
@@ -29,9 +30,8 @@ from homeassistant.util.dt import now as now_local
 
 from .application.ems import Ems
 from .domain.input_state import InputState
-from .infrastructure.battery_logger import BatteryManagerLogger
-from .infrastructure.battery_persistence import BatteryStatePersistence
 from .infrastructure.dod_policy_actuator import DodPolicyActuator
+from .infrastructure.dod_policy_logger import DodPolicyLogger
 from .infrastructure.dod_policy_persistence import DodPolicyPersistence
 from .infrastructure.grid_export_actuator import GridExportActuator
 from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
@@ -43,25 +43,22 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     """Composition root — wire domain (Ems) z driven + driving adapters."""
     ems: Ems = Ems()
 
-    # Driven adapter: Battery state persistence (HA Storage).
+    # Driven adapter: DodPolicy state persistence (HA Storage).
     # Restore PRZED pierwszym update_state — chroni przed race condition po
     # HA restart (template binary_sensor ładuje się 25-50ms po smart_rce).
-    battery_persistence = BatteryStatePersistence(hass, entry, ems.battery)
-    await battery_persistence.async_restore()
-    entry.async_on_unload(ems.async_add_listener(battery_persistence.save_if_changed))
+    # UNKNOWN-phase keep-state w DodPolicy.update preserves persisted target_dod
+    # until inputs settle.
+    dod_persistence = DodPolicyPersistence(hass, entry, ems.dod_policy)
+    await dod_persistence.async_restore()
+    entry.async_on_unload(ems.async_add_listener(dod_persistence.save_if_changed))
 
-    # Driven adapter: BatteryManager observability (Python logging).
-    battery_logger = BatteryManagerLogger(ems.battery, ems)
-    entry.async_on_unload(ems.async_add_listener(battery_logger.log_if_changed))
+    # Driven adapter: DodPolicy observability (Python logging).
+    dod_logger = DodPolicyLogger(ems.dod_policy, ems)
+    entry.async_on_unload(ems.async_add_listener(dod_logger.log_if_changed))
 
     # Driven adapter: Goodwe EMS via scene.apply (fire-and-forget).
     actuator = GridExportActuator(hass, entry, ems)
     entry.async_on_unload(ems.async_add_listener(actuator.apply_if_changed))
-
-    # Driven adapter: DodPolicy state persistence (HA Storage).
-    dod_persistence = DodPolicyPersistence(hass, entry, ems.dod_policy)
-    await dod_persistence.async_restore()
-    entry.async_on_unload(ems.async_add_listener(dod_persistence.save_if_changed))
 
     # Driven adapter: DoD register via scene.apply with read-back verification.
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).

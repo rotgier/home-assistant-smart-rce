@@ -75,7 +75,6 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.infrastructure"))
     reload(import_module("custom_components.smart_rce.domain.rce"))
     reload(import_module("custom_components.smart_rce.domain.input_state"))
-    reload(import_module("custom_components.smart_rce.domain.battery"))
     reload(import_module("custom_components.smart_rce.domain.block_discharge"))
     # grid_export PRZED water_heater — water_heater importuje InterventionDirection
     # z grid_export. Reload water_heater pre-grid_export → top-level import
@@ -100,9 +99,16 @@ def live_reload():
     # wszystkie 3 driven adapters + state_mapper driving adapter.
     reload(import_module("custom_components.smart_rce.infrastructure.state_mapper"))
     reload(
-        import_module("custom_components.smart_rce.infrastructure.battery_persistence")
+        import_module(
+            "custom_components.smart_rce.infrastructure.dod_policy_persistence"
+        )
     )
-    reload(import_module("custom_components.smart_rce.infrastructure.battery_logger"))
+    reload(
+        import_module("custom_components.smart_rce.infrastructure.dod_policy_logger")
+    )
+    reload(
+        import_module("custom_components.smart_rce.infrastructure.dod_policy_actuator")
+    )
     reload(
         import_module("custom_components.smart_rce.infrastructure.grid_export_actuator")
     )

@@ -1,9 +1,9 @@
 """DoD Policy — single source of truth for inverter DoD register value.
 
-Maps phase (time + flags) + BatteryManager hysteresis + user override → target_dod
-(0..100). Replaces 4 fragile time-triggered HA automations:
+Maps phase (time + flags) + block_discharge hysteresis + user override →
+target_dod (0..100). Replaces 4 fragile time-triggered HA automations:
 
-- `Set SOC 90 at 7 and at 19`           → phases delegate to BatteryManager.block
+- `Set SOC 90 at 7 and at 19`           → delegating phases (block_discharge fns)
 - `Set Min SOC to 100 Afternoon`        → phase AFTERNOON_STATIC (direct 0)
 - `Set Min SOC to 100 Evening`          → phase NIGHT_PRESERVE (direct 0)
 - `ems-set-dod-from-block-discharge`    → replaced by DodPolicyActuator
@@ -11,21 +11,66 @@ Maps phase (time + flags) + BatteryManager hysteresis + user override → target
 
 Self-healing on restart: each tick reads time + flags, computes phase from
 scratch. No timing-sensitive trigger needed — DodPolicy is event-driven via
-EMS update flow.
+EMS update flow. UNKNOWN phase (transient input gaps post-restart) preserves
+persisted target_dod until inputs settle.
 
-Compose-with-BatteryManager: phases WORKDAY_PRE_CHARGE / WORKDAY_POST_CHARGE /
-AFTERNOON_DYNAMIC delegate DoD = `0 if battery.block else 90` (BatteryManager
-keeps its hysteresis — DodPolicy just maps block→DoD). Other phases use
-direct rules (fixed 0/90 based on time + RCE flags).
+Phase classification + decisions:
 
-No entry-initial special case: BatteryManager hysteresis recomputes block on
-every tick from instantaneous export + pv_5min state. At phase boundaries
-(7:00 sharp, 13:00 sharp) the FIRST tick of new phase yields correct block
-naturally — no need to override with arbitrary initial value.
+- **OVERRIDE** (`dod_override >= 0`): user-forced value. Auto-expires on
+  phase boundary (current phase ≠ phase at activation).
+- **EMS_ALLOW_DISCHARGE** (`ems_allow_discharge_override=True`): smart_rce
+  "stays out of the way" → DoD=90, lets other automations rule.
+- **WORKDAY_PRE_CHARGE** (7:00 → start_charge_hour, workday): delegates to
+  `block_pre_charge` — hysteresis 100/50 Wh + instant_surplus extension.
+- **WORKDAY_POST_CHARGE** (start_charge_hour → 13:00, workday): delegates
+  to `block_post_charge` — dual-trigger (instant + hourly). Two-tier defense
+  with POSITIVE intervention (POSITIVE first line >60 Wh, block_post_charge
+  second line >=100 Wh / instant_surplus when POSITIVE cannot absorb, e.g.
+  SoC=100% / BMS clamp / sustained surplus).
+- **AFTERNOON_STATIC** (13:00 → 19:00, peak=True): direct DoD=0 — preserve
+  for evening peak. Battery typically full → POSITIVE entry blocked by
+  `soc_at_entry_ceiling` anyway.
+- **AFTERNOON_DYNAMIC** (13:00 → 19:00, peak=False): delegates to
+  `block_afternoon_dynamic` — aggressive thresholds (>0 Wh hourly) since
+  past PV peak.
+- **EVENING** (19:00 → 22:00): direct DoD=90 — evening discharge automations
+  rule; smart_rce stays out of the way.
+- **NIGHT_PRESERVE** (22:00 → 07:00, workday tomorrow OR expensive morning):
+  direct DoD=0 — preserve battery for tomorrow.
+- **NIGHT_FREE** (22:00 → 07:00, cheap morning ahead): direct DoD=90 — free
+  discharge.
+- **WEEKEND_MORNING** (7:00 → 13:00, weekend): direct DoD=0 — passive PV
+  capture (RCE typically flat, no expensive hours to protect surplus).
+- **UNKNOWN** (inputs missing): keep persisted state.
 
-Override: input_number.ems_dod_override ≥ 0 takes priority over phase logic.
-Active until phase boundary — when current phase ≠ phase at override-set,
-override expires and normal logic resumes.
+Coordination with GridExportManager (POSITIVE / NEGATIVE intervention):
+
+    | Phase             | block_discharge       | POSITIVE         | NEGATIVE |
+    |-------------------|-----------------------|------------------|----------|
+    | EMS_ALLOW         | False (always)        | exits            | exits    |
+    | WORKDAY_PRE       | hysteresis            | blocked          | yes      |
+    | WORKDAY_POST      | dual-trigger          | yes (1st line)   | yes      |
+    | AFTERNOON_STATIC  | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
+    | AFTERNOON_DYNAMIC | dual-trigger          | yes (1st line)   | yes      |
+    | EVENING           | False (always)        | rare             | yes      |
+    | NIGHT_PRESERVE    | False (DoD=0 direct)  | rare             | yes      |
+    | NIGHT_FREE        | False (always)        | rare             | yes      |
+    | WEEKEND_MORNING   | False (DoD=0 direct)  | yes              | yes      |
+
+GridExport intervention thresholds (hourly net export, Wh; details in
+`grid_export/positive.py` + `negative.py`):
+
+- POSITIVE: entry > +60, exit < +50 (deadband +50..+60), SoC entry ≤ 99 /
+  exit ≥ 100.
+- NEGATIVE: entry pre-45min < -50, post-45min < 0, exit > 0; SoC hard floor
+  ≤ 10. DoD-floor handling with hysteresis.
+
+Override semantics: `input_number.ems_dod_override` ≥ 0 takes priority over
+phase logic. `_override_set_phase` records phase at activation; expires when
+current phase != activation phase (auto-resume of normal logic). State
+survives HA restart via `dod_policy_persistence`.
+
+See `context/target_soc_algorithm.md` for broader context.
 """
 
 from __future__ import annotations

@@ -6,7 +6,6 @@ from collections.abc import Callable
 from datetime import datetime
 import logging
 
-from custom_components.smart_rce.domain.battery import BatteryManager
 from custom_components.smart_rce.domain.charge_slots import (
     DEFAULT_HEATER_RCE_THRESHOLD,
     ChargeSlots,
@@ -34,7 +33,6 @@ class Ems:
         self.rce_prices: EmsRcePrices = EmsRcePrices()
         self.charge_slots: ChargeSlots = ChargeSlots()
         self.discharge_slots: DischargeSlots = DischargeSlots()
-        self.battery: BatteryManager = BatteryManager()
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
         self.grid_export: GridExportManager = GridExportManager()
         self.dod_policy: DodPolicy = DodPolicy()
@@ -43,9 +41,6 @@ class Ems:
         # Store przed managers update — listenery (logger, etc.) czytają
         # to po `_async_update_listeners`, więc state musi być świeży.
         self.last_input_state = state
-        # battery — oblicza should_block_battery_discharge dla binary_sensor
-        # (entity diagnostic). Niezależne od innych managerów po Etap 2.
-        self.battery.update(state)
         # grid_export PRZED water_heater — water_heater dostaje aktualny
         # `get_active_intervention()` (POSITIVE → reserved=3500W, NEGATIVE →
         # większy reserved by wymusić grzałki off).
