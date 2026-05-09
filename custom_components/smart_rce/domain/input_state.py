@@ -98,6 +98,26 @@ class InputState:
     # (sink for surplus PV reduces to battery capacity → no benefit from
     # widening charge window).
 
+    dod_override: float | None = None
+    # input_number.ems_dod_override (range -1..100; -1 = inactive).
+    # When ≥0, DodPolicy emits this value as target_dod (highest priority
+    # except ems_allow_discharge_override). Auto-expires on phase boundary.
+
+    is_workday_tomorrow: bool | None = None
+    # binary_sensor.workday_tomorrow (HA workday integration, country=PL).
+    # Used by DodPolicy night-preserve phase (22:00..07:00) to decide whether
+    # to preserve battery (workday tomorrow → True → preserve) or allow free
+    # discharge.
+
+    rce_morning_discharge_price: float | None = None
+    # sensor.rce_morning_discharge_price (gross, gr/kWh) — predicted highest
+    # morning hour price for tomorrow. Used by DodPolicy night-preserve
+    # alongside is_workday_tomorrow (preserve when expensive morning ahead).
+
+    rce_high_price_threshold_gross: float | None = None
+    # input_number.rce_high_price_threshold_gross (gr/kWh, default ~350) —
+    # threshold above which morning_discharge_price triggers preserve.
+
     now: datetime | None = None
 
     @property
