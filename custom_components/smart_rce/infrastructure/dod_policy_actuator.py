@@ -29,6 +29,7 @@ import logging
 from homeassistant.components.logbook import async_log_entry
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.util import dt as dt_util
 
 from ..application.ems import Ems
 from ..const import DOMAIN
@@ -37,6 +38,7 @@ _LOGGER = logging.getLogger(__name__)
 
 GOODWE_DOD_NUMBER = "number.goodwe_depth_of_discharge_on_grid"
 NOTIFY_ALERT_SCRIPT = "script.notify_alert"
+MAX_FAILED_APPLIES_PER_HOUR = 10
 
 
 class DodPolicyActuator:
@@ -47,6 +49,8 @@ class DodPolicyActuator:
         self._entry = entry
         self._ems = ems
         self._lock = asyncio.Lock()
+        self._failed_apply_count: int = 0
+        self._failed_count_hour: int | None = None
 
     @callback
     def apply_if_changed(self) -> None:
@@ -74,13 +78,33 @@ class DodPolicyActuator:
             if current == target:
                 return  # Inverter already at target — no write needed
 
+            # Anti-spam: after MAX_FAILED_APPLIES_PER_HOUR failures within the
+            # current hour, stop trying until hour boundary. Counter resets on
+            # hour change; success also resets it (transient failures don't
+            # accumulate across recovery).
+            now_hour = dt_util.now().hour
+            if self._failed_count_hour != now_hour:
+                self._failed_apply_count = 0
+                self._failed_count_hour = now_hour
+            if self._failed_apply_count >= MAX_FAILED_APPLIES_PER_HOUR:
+                _LOGGER.debug(
+                    "DodPolicyActuator: skipping — %d failed applies in hour %d, "
+                    "waiting for hour boundary",
+                    self._failed_apply_count,
+                    now_hour,
+                )
+                return
+
             try:
                 await self._apply_scene(target)
             except Exception:
                 _LOGGER.exception(
                     "DodPolicyActuator: scene.apply raised for target=%d", target
                 )
+                self._failed_apply_count += 1
                 await self._notify_alert(target, current, reason="apply_exception")
+                if self._failed_apply_count == MAX_FAILED_APPLIES_PER_HOUR:
+                    await self._notify_mute_alert(now_hour)
                 return
 
             # scene.apply blocking=True → after await, inverter state MUST reflect
@@ -100,9 +124,13 @@ class DodPolicyActuator:
                     target,
                     post_write,
                 )
+                self._failed_apply_count += 1
                 await self._notify_alert(target, post_write, reason="silent_fail")
+                if self._failed_apply_count == MAX_FAILED_APPLIES_PER_HOUR:
+                    await self._notify_mute_alert(now_hour)
                 return
 
+            self._failed_apply_count = 0
             self._log_entry(target, previous=current)
 
     def _read_inverter_dod(self) -> int | None:
@@ -164,3 +192,25 @@ class DodPolicyActuator:
             )
         except Exception:  # noqa: BLE001 — defensive: don't crash actuator on notify failure
             _LOGGER.exception("DodPolicyActuator: notify_alert call failed")
+
+    async def _notify_mute_alert(self, hour: int) -> None:
+        """Fire Telegram alert announcing retry mute until next hour boundary."""
+        try:
+            await self._hass.services.async_call(
+                "script",
+                "turn_on",
+                {
+                    "entity_id": NOTIFY_ALERT_SCRIPT,
+                    "variables": {
+                        "title": "DodPolicy: retry limit reached",
+                        "message": (
+                            f"Reached {MAX_FAILED_APPLIES_PER_HOUR} failed apply "
+                            f"attempts in hour {hour}. Muting retries until next "
+                            f"hour boundary."
+                        ),
+                    },
+                },
+                blocking=False,
+            )
+        except Exception:  # noqa: BLE001 — defensive: don't crash actuator on notify failure
+            _LOGGER.exception("DodPolicyActuator: notify_mute_alert call failed")
