@@ -18,6 +18,7 @@ def _state(
     small_on=False,
     battery_soc=50.0,
     battery_charge_limit=18.0,
+    battery_charge_toggle_on=None,
     battery_power_2_minutes=0.0,
     consumption_minus_pv=-3000.0,
     exported_energy_hourly=0.5,
@@ -31,6 +32,7 @@ def _state(
         water_heater_small_is_on=small_on,
         battery_soc=battery_soc,
         battery_charge_limit=battery_charge_limit,
+        battery_charge_toggle_on=battery_charge_toggle_on,
         battery_power_2_minutes=battery_power_2_minutes,
         consumption_minus_pv_2_minutes=consumption_minus_pv,
         exported_energy_hourly=exported_energy_hourly,
@@ -904,3 +906,85 @@ class TestBalancedExportBonus:
         )
         # bonus = min(4500, 2000/0.0833) = min(4500, 24000) = 4500
         assert mgr.water_heater.balanced_export_bonus_w == 4500.0
+
+
+class TestEffectiveChargeLimitFromToggle:
+    """Pre-charge scenario: user disabled charging via toggle, but BMS cap stays 18A.
+
+    Without effective_charge_limit logic, water_heater.py would treat BMS cap as
+    "battery actively charging" → reserved=2500-3500 → heaters off / no upgrade
+    even though battery is idle. With toggle_on=False → effective_limit=0,
+    behavior matches "battery full" case (reserved=0, upgrade allowed).
+    """
+
+    def test_toggle_off_with_bms_18_treats_as_idle(self):
+        """toggle_off + BMS=18 + PV=2000W → reserved=0 → SMALL turns on (1500W fits)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-2000.0,
+                battery_charge_limit=18.0,  # BMS cap (would suggest "charging")
+                battery_charge_toggle_on=False,  # but user disabled
+                battery_soc=50.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # Effective=0 → reserved=0 → budget=2000 → SMALL (≥1500W)
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.should_turn_on is False
+
+    def test_toggle_off_allows_upgrade(self):
+        """toggle_off + exported energy → upgrade ladder activates (skip_upgrade=False)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-1500.0,
+                battery_charge_limit=18.0,
+                battery_charge_toggle_on=False,
+                battery_soc=50.0,
+                exported_energy_hourly=0.5,  # 500 Wh exported, want to burn
+                now=NOON_50,  # 10 min left
+            )
+        )
+        # Effective=0 → reserved=0, skip_upgrade=False
+        # baseline: budget=1500 → SMALL
+        # bonus: 500 / (10/60) = 3000 W → effective=4500 → BOTH upgrade
+        assert mgr.water_heater.balanced_upgrade_active is True
+        assert mgr.water_heater.should_turn_on is True
+        assert mgr.water_heater.should_turn_on_small is True
+
+    def test_toggle_on_keeps_battery_priority(self):
+        """toggle_on + BMS=18 → reserved=2500-3500 (battery priority preserved)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-2000.0,
+                battery_charge_limit=18.0,
+                battery_charge_toggle_on=True,  # user enabled charging
+                battery_soc=50.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # Effective=18 → reserved=2500 (soc>=50) → budget=-500 → OFF (battery priority)
+        assert mgr.water_heater.should_turn_on is False
+        assert mgr.water_heater.should_turn_on_small is False
+
+    def test_toggle_none_falls_back_to_bms(self):
+        """toggle_on=None (defensive, e.g. startup) → use BMS cap (existing behavior)."""
+        mgr = Ems()
+        mgr.update_state(
+            _state(
+                heater_mode="BALANCED",
+                consumption_minus_pv=-2000.0,
+                battery_charge_limit=18.0,
+                battery_charge_toggle_on=None,  # not yet known
+                battery_soc=50.0,
+                exported_energy_hourly=0.0,
+            )
+        )
+        # Effective=18 (fallback) → reserved=2500 → OFF (preserves prior behavior)
+        assert mgr.water_heater.should_turn_on is False
+        assert mgr.water_heater.should_turn_on_small is False

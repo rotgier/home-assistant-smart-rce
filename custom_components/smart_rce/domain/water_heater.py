@@ -134,7 +134,19 @@ class WaterHeaterManager:
     ) -> str:
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
-        battery_charge_limit = state.battery_charge_limit
+        # Effective charge limit captures "is battery actively absorbing PV right now?"
+        # When toggle_on=False (user disabled charging, e.g. pre-charge window before
+        # scheduled charge start), treat as 0 regardless of BMS hardware cap. This
+        # makes _asap/_balanced/_wasted_target see "battery idle" → reserved=0,
+        # skip_upgrade=False, full PV available for heaters.
+        # Source of truth = battery_charge_toggle_on (used by positive/negative.py
+        # for the same "user intent to charge" semantic). BMS limit fallback when
+        # toggle is True (or unknown — defensive).
+        battery_charge_limit = (
+            0.0
+            if state.battery_charge_toggle_on is False
+            else state.battery_charge_limit
+        )
         exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
 
         mode = state.heater_mode or "BALANCED"
