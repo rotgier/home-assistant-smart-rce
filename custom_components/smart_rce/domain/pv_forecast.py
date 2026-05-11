@@ -191,6 +191,11 @@ class PvForecast:
     extrapolated_live_proportional: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
+    # 2-zone band-clamped scoring: S in [-1, +1] anchored at [p10, p90],
+    # clamp above p90. See domain/pv_forecast_extrapolation.py.
+    extrapolated_live_band: ExtrapolatedLive = field(
+        default_factory=ExtrapolatedLive.empty
+    )
 
     def update_at_6(
         self,
