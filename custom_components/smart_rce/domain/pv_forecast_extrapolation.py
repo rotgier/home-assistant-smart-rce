@@ -86,20 +86,48 @@ def extrapolate_5min_rate(
     now: datetime,
     pv_power_w: float | None,
     consumption_w: float | None,
+    pv_bucket_so_far_kwh: float | None = None,
+    consumption_bucket_so_far_kwh: float | None = None,
     start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
-    """Variant 2 — current bucket replaced by 5-min average power sensor reading.
+    """Variant 2 — keep realized so-far, project remaining with 5-min power.
 
-    Useful when utility meter is unavailable / too early in bucket — 5-min
-    average has shorter window so reflects current rate even at bucket start.
+    Bucket reconstruction:
+    - past portion of bucket: actual realized kWh from utility meter
+      (`pv_bucket_so_far_kwh`) — what already happened, don't overwrite
+    - remaining portion: extrapolated as `pv_power_w/1000 × remaining_min/60`
+      using current 5-min average power (more responsive than utility-meter
+      prorate when conditions are changing — cloud roll-in/-out)
+
+    Full bucket equivalent rate (for chart display) = (so_far + remaining) × 2.
+
+    Fallback when so-far values are unavailable / too early in bucket:
+    treat full bucket rate = current 5-min power directly (= original
+    behavior). This preserves the variant's value at bucket start.
     """
     if pv_power_w is None or consumption_w is None:
         return ExtrapolatedLive.empty()
 
-    remaining_min = 30 - now.minute % 30
-    pv_rate_kwh_per_h = pv_power_w / 1000  # W → kWh/h rate (= kW)
+    elapsed_min = now.minute % 30
+    remaining_min = 30 - elapsed_min
+
+    # Remaining contribution (kWh) — used for target_soc current_bucket_override.
+    # Same regardless of so-far availability: this is energy from NOW to bucket end.
     current_pv_remaining_kwh = pv_power_w / 1000 * remaining_min / 60
     current_cons_remaining_kwh = consumption_w / 1000 * remaining_min / 60
+
+    # Full bucket rate (kWh/h, for chart display). Combine realized so-far with
+    # remaining extrapolation when so-far is available + we're past the noise
+    # threshold; otherwise fall back to pure 5-min power rate.
+    if (
+        pv_bucket_so_far_kwh is not None
+        and elapsed_min >= MIN_ELAPSED_FOR_REALIZED_PRORATE
+    ):
+        full_bucket_pv_kwh = pv_bucket_so_far_kwh + current_pv_remaining_kwh
+        pv_rate_kwh_per_h = full_bucket_pv_kwh * 2  # 30-min bucket → kWh/h
+    else:
+        pv_rate_kwh_per_h = pv_power_w / 1000  # fallback (W → kW = kWh/h)
+
     return _build_result(
         adjusted_live,
         now,

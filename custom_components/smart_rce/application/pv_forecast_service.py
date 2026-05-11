@@ -107,6 +107,8 @@ class PvForecastService:
                 now,
                 pv_w,
                 cons_w,
+                pv_bucket_so_far_kwh=pv_so_far_kwh,
+                consumption_bucket_so_far_kwh=cons_so_far_kwh,
                 start_charge_hour=sch,
             )
         )
