@@ -201,6 +201,12 @@ class PvForecast:
     extrapolated_live_band_recent: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
+    # Hour (0..23) marking the boundary between pre-charge and post-charge in
+    # today's 7-13 window. Read from `input_datetime.rce_start_charge_hour_today_override`.
+    # Used by _calculate_target_soc to clamp inter-hour surplus during
+    # pre-charge (battery doesn't charge from PV → surplus exported, not stored).
+    # None = no gate (legacy behavior; accumulate freely).
+    start_charge_hour_today: int | None = None
 
     def update_at_6(
         self,
@@ -262,15 +268,25 @@ class PvForecast:
         self._recalculate_target_soc(now)
 
     def _recalculate_target_soc(self, now: datetime) -> None:
-        """Calculate target SOC from current adjusted_* + consumption_profiles."""
+        """Calculate target SOC from current adjusted_* + consumption_profiles.
+
+        Today variants apply the pre-charge inter-hour clamp via
+        `start_charge_hour_today` (set by application service before recalc).
+        Tomorrow variants currently skip the gate — they'd need a separate
+        `start_charge_hour_tomorrow` source which we don't compute yet.
+        """
+        sch = self.start_charge_hour_today
         if self.adjusted_at_6:
-            self.target_soc = self._calculate_target_soc(self.adjusted_at_6, now=now)
+            self.target_soc = self._calculate_target_soc(
+                self.adjusted_at_6, now=now, start_charge_hour=sch
+            )
         if self.adjusted_live:
             self.target_soc_live = self._calculate_target_soc(
-                self.adjusted_live, now=now
+                self.adjusted_live, now=now, start_charge_hour=sch
             )
 
         # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
+        # No gate applied — we don't have a tomorrow-specific start_charge_hour yet.
         if self.adjusted_tomorrow:
             self.target_soc_tomorrow = self._calculate_target_soc(
                 self.adjusted_tomorrow
@@ -284,7 +300,10 @@ class PvForecast:
         for i, profile in enumerate(self.consumption_profiles):
             if self.adjusted_live and profile is not None:
                 self.target_soc_prev_days[i] = self._calculate_target_soc(
-                    self.adjusted_live, consumption_profile=profile, now=now
+                    self.adjusted_live,
+                    consumption_profile=profile,
+                    now=now,
+                    start_charge_hour=sch,
                 )
             else:
                 self.target_soc_prev_days[i] = None
@@ -317,6 +336,7 @@ class PvForecast:
         consumption_profile: ConsumptionProfile | None = None,
         now: datetime | None = None,
         current_bucket_override: tuple[float, float] | None = None,
+        start_charge_hour: int | None = None,
     ) -> TargetSocResult:
         """Calculate target battery SOC + per-bucket trace.
 
@@ -329,6 +349,14 @@ class PvForecast:
         bucket's PV + consumption kWh values (used by extrapolated variants;
         the kWh values represent "remaining contribution in the bucket from
         now onwards").
+
+        start_charge_hour (int | None): pre-charge gate. When set, surplus
+        accumulated during pre-charge hours (hour < start_charge_hour) does
+        not carry over to the next hour. Battery doesn't charge from PV in
+        pre-charge (battery_charge_max_current_toggle=False) — hourly surplus
+        is exported, not stored. At each hour boundary where the prior hour
+        was pre-charge, cumulative_balance is clamped to ≤ 0 (deficit kept,
+        surplus zeroed). See context/target_soc_algorithm.md option A.
 
         Returns TargetSocResult with .value (SOC percent) and .buckets (trace).
         """
@@ -343,6 +371,7 @@ class PvForecast:
         cumulative_balance = 0.0
         min_balance = 0.0
         min_idx = -1
+        prev_hour: int | None = None
 
         for period in forecast.forecast:
             dt = datetime.fromisoformat(period.period_start)
@@ -352,6 +381,16 @@ class PvForecast:
                 continue
             if hour >= 13:
                 continue
+
+            # Hour-boundary clamp: if prior hour was in pre-charge, its surplus
+            # was exported (not stored in battery) — zero out positive cumulative.
+            if (
+                prev_hour is not None
+                and hour != prev_hour
+                and start_charge_hour is not None
+                and prev_hour < start_charge_hour
+            ):
+                cumulative_balance = min(cumulative_balance, 0.0)
 
             is_current = hour == start_hour and minute == start_minute
             if is_current and current_bucket_override is not None:
@@ -380,6 +419,7 @@ class PvForecast:
                     is_min=False,  # set below
                 )
             )
+            prev_hour = hour
 
         if min_idx >= 0:
             # Replace min bucket with is_min=True (dataclass is frozen → rebuild)

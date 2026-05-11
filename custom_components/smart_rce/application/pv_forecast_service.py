@@ -87,15 +87,27 @@ class PvForecastService:
         cons_w = self._live_rates.read_consumption_w()
         pv_so_far_kwh = self._live_rates.read_pv_bucket_so_far_kwh()
         cons_so_far_kwh = self._live_rates.read_consumption_bucket_so_far_kwh()
+        # Pre-charge gate (used by target_soc calculation inside extrapolations
+        # + propagated to non-extrapolated target_soc via `self.forecast`).
+        sch = self._live_rates.read_start_charge_hour_today_override()
+        self.forecast.start_charge_hour_today = sch
 
         self.forecast.extrapolated_live = (
             pv_forecast_extrapolation.extrapolate_realized_prorate(
-                self.forecast.adjusted_live, now, pv_so_far_kwh, cons_so_far_kwh
+                self.forecast.adjusted_live,
+                now,
+                pv_so_far_kwh,
+                cons_so_far_kwh,
+                start_charge_hour=sch,
             )
         )
         self.forecast.extrapolated_live_5min = (
             pv_forecast_extrapolation.extrapolate_5min_rate(
-                self.forecast.adjusted_live, now, pv_w, cons_w
+                self.forecast.adjusted_live,
+                now,
+                pv_w,
+                cons_w,
+                start_charge_hour=sch,
             )
         )
         self.forecast.extrapolated_live_pattern = (
@@ -106,6 +118,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                start_charge_hour=sch,
             )
         )
         self.forecast.extrapolated_live_proportional = (
@@ -116,6 +129,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                start_charge_hour=sch,
             )
         )
         self.forecast.extrapolated_live_band = (
@@ -126,6 +140,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                start_charge_hour=sch,
             )
         )
         self.forecast.extrapolated_live_band_recent = (
@@ -136,6 +151,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                start_charge_hour=sch,
             )
         )
 
@@ -147,6 +163,17 @@ class PvForecastService:
             )
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
             _LOGGER.exception("Failed to fetch realized PV history")
+
+    def _refresh_start_charge_hour(self) -> None:
+        """Refresh forecast.start_charge_hour_today from HA state.
+
+        Called before each recalc path so non-extrapolated target_soc variants
+        (target_soc, target_soc_live, target_soc_prev_days) inside
+        `PvForecast._recalculate_target_soc` see the current pre-charge gate.
+        """
+        self.forecast.start_charge_hour_today = (
+            self._live_rates.read_start_charge_hour_today_override()
+        )
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.
@@ -162,6 +189,7 @@ class PvForecastService:
         if not solcast_periods:
             return
         weather = self._build_weather(now.date())
+        self._refresh_start_charge_hour()
         self.forecast.update_at_6(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
@@ -171,6 +199,7 @@ class PvForecastService:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
+        self._refresh_start_charge_hour()
         self.forecast.update_live(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
@@ -181,6 +210,7 @@ class PvForecastService:
         now = dt_util.now()
         tomorrow = (now + timedelta(days=1)).date()
         weather = self._build_weather(tomorrow)
+        self._refresh_start_charge_hour()
         self.forecast.update_tomorrow(solcast_periods, weather, now)
 
     def _build_weather(self, day: date) -> list[WeatherConditionAtHour]:

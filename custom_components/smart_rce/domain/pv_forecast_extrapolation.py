@@ -49,6 +49,7 @@ def extrapolate_realized_prorate(
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
+    start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 1 — full bucket projection from utility-meter so-far values.
 
@@ -76,6 +77,7 @@ def extrapolate_realized_prorate(
         current_bucket_pv_kwh_per_h=current_pv_rate,
         current_pv_remaining_kwh=current_pv_remaining_kwh,
         current_cons_remaining_kwh=current_cons_remaining_kwh,
+        start_charge_hour=start_charge_hour,
     )
 
 
@@ -84,6 +86,7 @@ def extrapolate_5min_rate(
     now: datetime,
     pv_power_w: float | None,
     consumption_w: float | None,
+    start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 2 — current bucket replaced by 5-min average power sensor reading.
 
@@ -103,6 +106,7 @@ def extrapolate_5min_rate(
         current_bucket_pv_kwh_per_h=pv_rate_kwh_per_h,
         current_pv_remaining_kwh=current_pv_remaining_kwh,
         current_cons_remaining_kwh=current_cons_remaining_kwh,
+        start_charge_hour=start_charge_hour,
     )
 
 
@@ -113,6 +117,7 @@ def extrapolate_calibrated_pattern(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 3 — projects realization score from past buckets onto future.
 
@@ -193,6 +198,7 @@ def extrapolate_calibrated_pattern(
             current_pv_remaining_kwh,
             current_cons_remaining_kwh,
         ),
+        start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
         adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
@@ -434,6 +440,7 @@ def extrapolate_proportional_median(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 4 — proportional-to-median realization scaling.
 
@@ -504,6 +511,7 @@ def extrapolate_proportional_median(
             current_pv_remaining_kwh,
             current_cons_remaining_kwh,
         ),
+        start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
         adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
@@ -619,6 +627,7 @@ def extrapolate_band_clamped(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 5 — 2-zone band-clamped realization scaling.
 
@@ -698,6 +707,7 @@ def extrapolate_band_clamped(
             current_pv_remaining_kwh,
             current_cons_remaining_kwh,
         ),
+        start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
         adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
@@ -763,6 +773,7 @@ def extrapolate_band_clamped_recent(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 6 — band-clamped scoring, narrow lookback (current + 1 back).
 
@@ -828,6 +839,7 @@ def extrapolate_band_clamped_recent(
             current_pv_remaining_kwh,
             current_cons_remaining_kwh,
         ),
+        start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
         adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
@@ -863,6 +875,7 @@ def _build_result(
     current_bucket_pv_kwh_per_h: float,
     current_pv_remaining_kwh: float,
     current_cons_remaining_kwh: float,
+    start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Assemble result for variants 1 + 2 (no future-bucket override)."""
     adjusted = _build_extrapolated_forecast(
@@ -874,6 +887,7 @@ def _build_result(
         consumption_profile=None,
         now=now,
         current_bucket_override=(current_pv_remaining_kwh, current_cons_remaining_kwh),
+        start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
         adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc

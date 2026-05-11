@@ -33,6 +33,9 @@ _PV_POWER_5MIN_ENTITY: Final = "sensor.pv_power_avg_5_minutes"
 _CONSUMPTION_5MIN_ENTITY: Final = "sensor.house_consumption_avg_5_minutes"
 _PV_BUCKET_KWH_ENTITY: Final = "sensor.total_pv_generation_bi_hourly"
 _CONSUMPTION_BUCKET_KWH_ENTITY: Final = "sensor.total_consumption_minus_bi_hourly"
+_START_CHARGE_HOUR_OVERRIDE_ENTITY: Final = (
+    "input_datetime.rce_start_charge_hour_today_override"
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +59,24 @@ class LiveRateReader:
     def read_consumption_bucket_so_far_kwh(self) -> float | None:
         """KWh accumulated in current 30-min utility meter cycle (minus water heater)."""
         return self._read_float(_CONSUMPTION_BUCKET_KWH_ENTITY)
+
+    def read_start_charge_hour_today_override(self) -> int | None:
+        """Hour (0..23) when pre-charge ends / post-charge begins.
+
+        Read from `input_datetime.rce_start_charge_hour_today_override` (user
+        manual override; default copy of `sensor.rce_start_charge_hour_today_time`).
+        Same source as DodPolicy uses for WORKDAY_PRE/POST_CHARGE phase split.
+
+        Parses HH:MM:SS state, returns the hour component. Returns None when
+        sensor unavailable so caller can fall back to no-gate behavior.
+        """
+        state = self._hass.states.get(_START_CHARGE_HOUR_OVERRIDE_ENTITY)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return None
+        try:
+            return int(state.state.split(":")[0])
+        except (ValueError, AttributeError, IndexError):
+            return None
 
     def _read_float(self, entity_id: str) -> float | None:
         state = self._hass.states.get(entity_id)
