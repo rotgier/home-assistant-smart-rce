@@ -185,6 +185,13 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
             pv.forecast.extrapolated_live_band.adjusted
         ),
     ),
+    PvForecastSensorDescription(
+        name="Weather Adjusted PV Live Extrapolated Band Recent",
+        value_fn=lambda pv: pv.forecast.extrapolated_live_band_recent.remaining_kwh,
+        attr_fn=lambda pv: _pv_forecast_attrs(
+            pv.forecast.extrapolated_live_band_recent.adjusted
+        ),
+    ),
     # --- Target SOC (%) ---
     PvForecastSensorDescription(
         name="Target Battery SOC At 6",
@@ -269,6 +276,16 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.extrapolated_live_band.target_soc
+        ),
+    ),
+    PvForecastSensorDescription(
+        name="Target Battery SOC Live Extrapolated Band Recent",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.extrapolated_live_band_recent.target_soc.value
+        if pv.forecast.extrapolated_live_band_recent.target_soc
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.extrapolated_live_band_recent.target_soc
         ),
     ),
     # --- Prev-workday instrumentation (Etap A) — today ---

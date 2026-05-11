@@ -196,6 +196,11 @@ class PvForecast:
     extrapolated_live_band: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
+    # Same band scoring but narrow lookback (current + 1 bucket back only).
+    # Captures short-horizon weather trend without morning bias.
+    extrapolated_live_band_recent: ExtrapolatedLive = field(
+        default_factory=ExtrapolatedLive.empty
+    )
 
     def update_at_6(
         self,

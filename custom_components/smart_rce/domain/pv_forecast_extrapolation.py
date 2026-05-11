@@ -704,6 +704,136 @@ def extrapolate_band_clamped(
     )
 
 
+# Max age (steps back from current) for the "recent" band variant — only
+# current bucket + 1 prior bucket contribute. Captures short-horizon weather
+# trend without morning bias.
+BAND_RECENT_MAX_AGE: int = 1
+
+
+def _compute_weighted_band_score_recent(
+    solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+    now: datetime,
+    realized_pv_today: dict[tuple[int, int], float],
+    pv_bucket_so_far_kwh: float,
+    elapsed_min: int,
+) -> float | None:
+    """Compute band score weighted average with narrow lookback (current + 1 back)."""
+    current_hour = now.hour
+    current_minute = 0 if now.minute < 30 else 30
+    scores: list[tuple[float, float]] = []
+    age = 0
+    weight = 1.0
+    h, m = current_hour, current_minute
+    while True:
+        sp = solcast_by_bucket.get((h, m))
+        if sp is None:
+            break
+        if sp.pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH:
+            h, m, age, weight = _step_back(h, m, age, weight)
+            if age > BAND_RECENT_MAX_AGE:
+                break
+            continue
+        if (h, m) == (current_hour, current_minute):
+            realized_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
+        else:
+            realized_kwh = realized_pv_today.get((h, m))
+            if realized_kwh is None:
+                h, m, age, weight = _step_back(h, m, age, weight)
+                if age > BAND_RECENT_MAX_AGE:
+                    break
+                continue
+            realized_rate = realized_kwh * 2
+        score = _compute_band_score(realized_rate, sp.pv_estimate10, sp.pv_estimate90)
+        if score is not None:
+            scores.append((score, weight))
+        h, m, age, weight = _step_back(h, m, age, weight)
+        if age > BAND_RECENT_MAX_AGE:
+            break
+
+    if not scores:
+        return None
+    total_weight = sum(w for _, w in scores)
+    return sum(s * w for s, w in scores) / total_weight
+
+
+def extrapolate_band_clamped_recent(
+    adjusted_live: AdjustedPvForecast,
+    solcast_live: list[SolcastPeriod],
+    now: datetime,
+    pv_bucket_so_far_kwh: float | None,
+    consumption_bucket_so_far_kwh: float | None,
+    realized_pv_today: dict[tuple[int, int], float],
+) -> ExtrapolatedLive:
+    """Variant 6 — band-clamped scoring, narrow lookback (current + 1 back).
+
+    Same band-clamped score formula as variant 5 (`extrapolate_band_clamped`)
+    but limited to BAND_RECENT_MAX_AGE=1 — only the current bucket and the
+    immediately prior bucket contribute to cumS.
+
+    Use case: captures current weather trend without carrying morning bias
+    into afternoon projections. Useful when conditions shift mid-day (e.g.
+    cloudy morning → sunny afternoon).
+
+    Trade-off vs full-history Band: more reactive but less stable.
+    A single anomaly bucket dominates cumS; early-bucket noise (real <3min
+    elapsed already short-circuited at entry) still propagates.
+    """
+    elapsed_min = now.minute % 30
+    remaining_min = 30 - elapsed_min
+    if (
+        elapsed_min < MIN_ELAPSED_FOR_REALIZED_PRORATE
+        or pv_bucket_so_far_kwh is None
+        or consumption_bucket_so_far_kwh is None
+    ):
+        return ExtrapolatedLive.empty()
+
+    solcast_by_bucket: dict[tuple[int, int], SolcastPeriod] = {}
+    for sp in solcast_live:
+        dt = datetime.fromisoformat(sp.period_start)
+        if dt.date() != now.date():
+            continue
+        solcast_by_bucket[(dt.hour, dt.minute)] = sp
+
+    cum_s = _compute_weighted_band_score_recent(
+        solcast_by_bucket=solcast_by_bucket,
+        now=now,
+        realized_pv_today=realized_pv_today,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
+        elapsed_min=elapsed_min,
+    )
+    if cum_s is None:
+        return ExtrapolatedLive.empty()
+
+    current_pv_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
+    current_pv_remaining_kwh = pv_bucket_so_far_kwh * remaining_min / elapsed_min
+    current_cons_remaining_kwh = (
+        consumption_bucket_so_far_kwh * remaining_min / elapsed_min
+    )
+
+    future_overrides = _project_future_buckets_band(
+        solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
+    )
+    adjusted = _build_extrapolated_forecast(
+        adjusted_live,
+        now,
+        current_bucket_pv_kwh_per_h=current_pv_rate,
+        future_pv_kwh_per_h_overrides=future_overrides,
+    )
+    remaining_kwh = _sum_remaining_kwh(adjusted, now)
+    target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
+        adjusted,
+        consumption_profile=None,
+        now=now,
+        current_bucket_override=(
+            current_pv_remaining_kwh,
+            current_cons_remaining_kwh,
+        ),
+    )
+    return ExtrapolatedLive(
+        adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
+    )
+
+
 def _project_future_buckets(
     solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
     now: datetime,

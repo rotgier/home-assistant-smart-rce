@@ -128,6 +128,16 @@ class PvForecastService:
                 self._realized_pv_today,
             )
         )
+        self.forecast.extrapolated_live_band_recent = (
+            pv_forecast_extrapolation.extrapolate_band_clamped_recent(
+                self.forecast.adjusted_live,
+                self.forecast.solcast_live,
+                now,
+                pv_so_far_kwh,
+                cons_so_far_kwh,
+                self._realized_pv_today,
+            )
+        )
 
     async def refresh_realized_pv(self) -> None:
         """Fetch today's realized PV per bucket from recorder; cache for next recalc."""
