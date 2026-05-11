@@ -339,6 +339,177 @@ def _step_back(h: int, m: int, age: int, weight: float) -> tuple[int, int, int, 
     return (h - 1) if h > 0 else 0, 30, age + 1, weight * PATTERN_DECAY
 
 
+def _compute_proportional_score(realized_rate: float, est_rate: float) -> float | None:
+    """Score = (realized - est) / est. Centered at 0 (S=0 → real=est).
+
+    p10/p90 not used — independent of forecast band width. Symmetric: same
+    magnitude for +10% above median as -10% below. Returns None when est too
+    small for stable ratio (RATE_EPS guard).
+    """
+    if est_rate < _RATE_EPS:
+        return None
+    return (realized_rate - est_rate) / est_rate
+
+
+# Clamp for negative cumS in projection — prevent project=0 when cumS=-1.
+# At cumS=-0.95 projection = est × 0.05; at -1 → 0 (only fully overcast yields 0).
+_PROPORTIONAL_FLOOR: float = -0.95
+
+
+def _compute_weighted_proportional_score(
+    solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+    now: datetime,
+    realized_pv_today: dict[tuple[int, int], float],
+    pv_bucket_so_far_kwh: float,
+    elapsed_min: int,
+) -> float | None:
+    """Weighted (decay 0.7) average of proportional scores over today's buckets.
+
+    Mirrors _compute_weighted_score structure but uses proportional formula
+    `S = (real - est) / est` for each bucket — independent of band width.
+    """
+    current_hour = now.hour
+    current_minute = 0 if now.minute < 30 else 30
+    scores: list[tuple[float, float]] = []
+    age = 0
+    weight = 1.0
+    h, m = current_hour, current_minute
+    while True:
+        sp = solcast_by_bucket.get((h, m))
+        if sp is None:
+            break
+        if sp.pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH:
+            h, m, age, weight = _step_back(h, m, age, weight)
+            if age > 24:
+                break
+            continue
+        if (h, m) == (current_hour, current_minute):
+            realized_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
+        else:
+            realized_kwh = realized_pv_today.get((h, m))
+            if realized_kwh is None:
+                h, m, age, weight = _step_back(h, m, age, weight)
+                if age > 24:
+                    break
+                continue
+            realized_rate = realized_kwh * 2
+        score = _compute_proportional_score(realized_rate, sp.pv_estimate)
+        if score is not None:
+            scores.append((score, weight))
+        h, m, age, weight = _step_back(h, m, age, weight)
+        if age > 24:
+            break
+
+    if not scores:
+        return None
+    total_weight = sum(w for _, w in scores)
+    return sum(s * w for s, w in scores) / total_weight
+
+
+def _project_future_buckets_proportional(
+    solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+    now: datetime,
+    cum_s: float,
+) -> dict[tuple[int, int], float]:
+    """For each future bucket, project rate = est × (1 + cumS).
+
+    cumS clamped at _PROPORTIONAL_FLOOR (-0.95) so a deeply-bad-day score
+    doesn't drive projections to 0 — leaves a 5% residual.
+    """
+    current_hour = now.hour
+    current_minute = 0 if now.minute < 30 else 30
+    clamped = max(cum_s, _PROPORTIONAL_FLOOR)
+    overrides: dict[tuple[int, int], float] = {}
+    for (h, m), sp in solcast_by_bucket.items():
+        if h < current_hour or (h == current_hour and m <= current_minute):
+            continue
+        overrides[(h, m)] = max(0.0, sp.pv_estimate * (1.0 + clamped))
+    return overrides
+
+
+def extrapolate_proportional_median(
+    adjusted_live: AdjustedPvForecast,
+    solcast_live: list[SolcastPeriod],
+    now: datetime,
+    pv_bucket_so_far_kwh: float | None,
+    consumption_bucket_so_far_kwh: float | None,
+    realized_pv_today: dict[tuple[int, int], float],
+) -> ExtrapolatedLive:
+    """Variant 4 — proportional-to-median realization scaling.
+
+    Same shape as `extrapolate_calibrated_pattern` (variant 3) but uses a
+    different score formula:
+
+        S = (realized - est) / est        (centered at 0, no p10/p90 dependence)
+
+    Weighted average (current=1.0, each step back × PATTERN_DECAY) gives cumS.
+    Each future bucket projects rate = `est × (1 + cumS)`, clamped at 0.
+
+    Pros vs variant 3:
+    - Independent of forecast band width — no spike when p90-est is tiny
+      (which happens in narrow-confidence buckets, especially early morning).
+    - Symmetric: same magnitude for over- and under-prediction relative to est.
+
+    Cons:
+    - Ignores p10/p90 confidence — wide band days treated same as narrow.
+    - Unbounded above; cumS=-0.95 floor protects projection > 0.
+    """
+    elapsed_min = now.minute % 30
+    remaining_min = 30 - elapsed_min
+    if (
+        elapsed_min < MIN_ELAPSED_FOR_REALIZED_PRORATE
+        or pv_bucket_so_far_kwh is None
+        or consumption_bucket_so_far_kwh is None
+    ):
+        return ExtrapolatedLive.empty()
+
+    solcast_by_bucket: dict[tuple[int, int], SolcastPeriod] = {}
+    for sp in solcast_live:
+        dt = datetime.fromisoformat(sp.period_start)
+        if dt.date() != now.date():
+            continue
+        solcast_by_bucket[(dt.hour, dt.minute)] = sp
+
+    cum_s = _compute_weighted_proportional_score(
+        solcast_by_bucket=solcast_by_bucket,
+        now=now,
+        realized_pv_today=realized_pv_today,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
+        elapsed_min=elapsed_min,
+    )
+    if cum_s is None:
+        return ExtrapolatedLive.empty()
+
+    current_pv_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
+    current_pv_remaining_kwh = pv_bucket_so_far_kwh * remaining_min / elapsed_min
+    current_cons_remaining_kwh = (
+        consumption_bucket_so_far_kwh * remaining_min / elapsed_min
+    )
+
+    future_overrides = _project_future_buckets_proportional(
+        solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
+    )
+    adjusted = _build_extrapolated_forecast(
+        adjusted_live,
+        now,
+        current_bucket_pv_kwh_per_h=current_pv_rate,
+        future_pv_kwh_per_h_overrides=future_overrides,
+    )
+    remaining_kwh = _sum_remaining_kwh(adjusted, now)
+    target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
+        adjusted,
+        consumption_profile=None,
+        now=now,
+        current_bucket_override=(
+            current_pv_remaining_kwh,
+            current_cons_remaining_kwh,
+        ),
+    )
+    return ExtrapolatedLive(
+        adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
+    )
+
+
 def _project_future_buckets(
     solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
     now: datetime,

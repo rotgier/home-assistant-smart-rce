@@ -176,6 +176,8 @@ class PvForecast:
     #   - extrapolated_live_5min    : 5-min average power sensors
     #   - extrapolated_live_pattern : weighted realization factor → projected
     #                                 onto future buckets via [p10, estimate]
+    #   - extrapolated_live_proportional : proportional-to-median scoring
+    #                                 (S = (real-est)/est, no p10/p90 dependence)
     # Each ExtrapolatedLive bundles adjusted (chart), remaining_kwh (state), and
     # target_soc (SOC% for 7-13 deficit). All variants use CONSUMPTION_PER_30MIN
     # constant baseline for consumption (matching target_soc_live).
@@ -184,6 +186,9 @@ class PvForecast:
         default_factory=ExtrapolatedLive.empty
     )
     extrapolated_live_pattern: ExtrapolatedLive = field(
+        default_factory=ExtrapolatedLive.empty
+    )
+    extrapolated_live_proportional: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
 
