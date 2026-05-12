@@ -159,6 +159,7 @@ def live_reload():
         import_module("custom_components.smart_rce.infrastructure.grid_export_actuator")
     )
     reload(import_module("custom_components.smart_rce.ems_factory"))
+    reload(import_module("custom_components.smart_rce.domain.target_soc"))
     reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
     reload(
         import_module("custom_components.smart_rce.domain.pv_forecast_extrapolation")

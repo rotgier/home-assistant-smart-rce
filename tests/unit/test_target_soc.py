@@ -1,18 +1,23 @@
-"""Tests for PvForecast._calculate_target_soc() with optional consumption_profile + trace."""
+"""Tests for `calculate_target_soc()` with optional consumption_profile + trace.
+
+Function lives in `domain/target_soc.py` (extracted from `pv_forecast.py`
+to enable reuse by the target-SOC matrix). Constants + result dataclasses
+moved alongside it. Input dataclasses (AdjustedPvForecast, AdjustedPeriod,
+ConsumptionProfile) stay in `pv_forecast.py`.
+"""
 
 from __future__ import annotations
 
 from custom_components.smart_rce.domain.pv_forecast import (
-    CONSUMPTION_PER_30MIN,
-    MIN_SOC_PERCENT,
     AdjustedPeriod,
     AdjustedPvForecast,
     ConsumptionProfile,
-    PvForecast,
 )
-
-# Pure @staticmethod — testing private symbol is intentional (single-class helper).
-_calculate_target_soc = PvForecast._calculate_target_soc  # noqa: SLF001
+from custom_components.smart_rce.domain.target_soc import (
+    CONSUMPTION_PER_30MIN,
+    MIN_SOC_PERCENT,
+    calculate_target_soc as _calculate_target_soc,
+)
 
 
 def _make_forecast(rate_kwh_per_h: float) -> AdjustedPvForecast:

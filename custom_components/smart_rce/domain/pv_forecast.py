@@ -8,6 +8,10 @@ Read top-down:
      as @staticmethod, see Reguła 2b — pure helpers in stateful class)
   4. Standalone domain utilities — multi-class users (merge_weather_conditions,
      walk_back_workdays) used by application service / infrastructure loader
+
+Target SOC formula + its constants + result dataclasses live in
+`domain/target_soc.py` — re-exported here for back-compat (existing
+callers in pv_forecast_extrapolation.py and tests).
 """
 
 from __future__ import annotations
@@ -16,13 +20,31 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
+from .target_soc import (
+    BATTERY_CAPACITY_KWH,
+    BUFFER_PERCENT,
+    CONSUMPTION_PER_30MIN,
+    LOSS_FACTOR,
+    MIN_SOC_PERCENT,
+    TargetSocBucket,
+    TargetSocResult,
+    calculate_target_soc,
+)
+
+__all__ = [
+    "BATTERY_CAPACITY_KWH",
+    "BUFFER_PERCENT",
+    "CONSUMPTION_PER_30MIN",
+    "LOSS_FACTOR",
+    "MIN_SOC_PERCENT",
+    "TargetSocBucket",
+    "TargetSocResult",
+    "calculate_target_soc",
+    # plus everything else exported by this module (implicit)
+]
+
 # --- Constants --- #
 
-CONSUMPTION_PER_30MIN: Final[float] = 0.45  # kWh (= 0.9 kWh/h / 2)
-BATTERY_CAPACITY_KWH: Final[float] = 10.7
-MIN_SOC_PERCENT: Final[int] = 10
-LOSS_FACTOR: Final[float] = 0.10  # 10% conversion losses
-BUFFER_PERCENT: Final[int] = 12
 CLOUDY_CAP_HOUR_7: Final[float] = 0.20  # max hourly rate at hour 7 for cloudy
 
 # Prev-workday consumption profile instrumentation (Etap A).
@@ -81,26 +103,6 @@ class ConsumptionProfile:
 
     def get(self, hour: int, minute: int) -> float | None:
         return self.buckets.get((hour, minute))
-
-
-@dataclass(frozen=True)
-class TargetSocBucket:
-    """Per 30-min bucket trace entry used to verify target SOC calculation."""
-
-    period: str  # "HH:MM" local
-    pv_kwh: float
-    cons_kwh: float
-    balance: float
-    cumulative: float
-    is_min: bool  # True for bucket where cumulative is most negative
-
-
-@dataclass(frozen=True)
-class TargetSocResult:
-    """Target SOC + per-bucket trace for observability."""
-
-    value: int  # target SOC percent (MIN_SOC_PERCENT or higher)
-    buckets: list[TargetSocBucket]
 
 
 @dataclass(frozen=True)
@@ -277,29 +279,27 @@ class PvForecast:
         """
         sch = self.start_charge_hour_today
         if self.adjusted_at_6:
-            self.target_soc = self._calculate_target_soc(
+            self.target_soc = calculate_target_soc(
                 self.adjusted_at_6, now=now, start_charge_hour=sch
             )
         if self.adjusted_live:
-            self.target_soc_live = self._calculate_target_soc(
+            self.target_soc_live = calculate_target_soc(
                 self.adjusted_live, now=now, start_charge_hour=sch
             )
 
         # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
         # No gate applied — we don't have a tomorrow-specific start_charge_hour yet.
         if self.adjusted_tomorrow:
-            self.target_soc_tomorrow = self._calculate_target_soc(
-                self.adjusted_tomorrow
-            )
+            self.target_soc_tomorrow = calculate_target_soc(self.adjusted_tomorrow)
         if self.adjusted_tomorrow_live:
-            self.target_soc_tomorrow_live = self._calculate_target_soc(
+            self.target_soc_tomorrow_live = calculate_target_soc(
                 self.adjusted_tomorrow_live
             )
 
         # Prev-workday instrumentation (Etap A) — adjusted_live + per-day profile.
         for i, profile in enumerate(self.consumption_profiles):
             if self.adjusted_live and profile is not None:
-                self.target_soc_prev_days[i] = self._calculate_target_soc(
+                self.target_soc_prev_days[i] = calculate_target_soc(
                     self.adjusted_live,
                     consumption_profile=profile,
                     now=now,
@@ -308,7 +308,7 @@ class PvForecast:
             else:
                 self.target_soc_prev_days[i] = None
             if self.adjusted_tomorrow_live and profile is not None:
-                self.target_soc_tomorrow_prev_days[i] = self._calculate_target_soc(
+                self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
                     self.adjusted_tomorrow_live, consumption_profile=profile
                 )
             else:
@@ -330,119 +330,10 @@ class PvForecast:
         ]
         self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
 
-    @staticmethod
-    def _calculate_target_soc(
-        forecast: AdjustedPvForecast,
-        consumption_profile: ConsumptionProfile | None = None,
-        now: datetime | None = None,
-        current_bucket_override: tuple[float, float] | None = None,
-        start_charge_hour: int | None = None,
-    ) -> TargetSocResult:
-        """Calculate target battery SOC + per-bucket trace.
-
-        Simulates cumulative energy deficit from now (or 7:00) to 13:00.
-        Before 7:00 or no now: simulates full 7:00-13:00 window.
-        After 7:00: simulates from current 30min period to 13:00.
-        consumption_profile: per-bucket overrides; fallback to CONSUMPTION_PER_30MIN.
-
-        current_bucket_override=(pv_kwh, cons_kwh): replace the in-progress
-        bucket's PV + consumption kWh values (used by extrapolated variants;
-        the kWh values represent "remaining contribution in the bucket from
-        now onwards").
-
-        start_charge_hour (int | None): pre-charge gate. When set, surplus
-        accumulated during pre-charge hours (hour < start_charge_hour) does
-        not carry over to the next hour. Battery doesn't charge from PV in
-        pre-charge (battery_charge_max_current_toggle=False) — hourly surplus
-        is exported, not stored. At each hour boundary where the prior hour
-        was pre-charge, cumulative_balance is clamped to ≤ 0 (deficit kept,
-        surplus zeroed). See context/target_soc_algorithm.md option A.
-
-        Returns TargetSocResult with .value (SOC percent) and .buckets (trace).
-        """
-        # Determine start: current 30min period or 7:00
-        start_hour = 7
-        start_minute = 0
-        if now and now.hour >= 7:
-            start_hour = now.hour
-            start_minute = 0 if now.minute < 30 else 30
-
-        buckets: list[TargetSocBucket] = []
-        cumulative_balance = 0.0
-        min_balance = 0.0
-        min_idx = -1
-        prev_hour: int | None = None
-
-        for period in forecast.forecast:
-            dt = datetime.fromisoformat(period.period_start)
-            hour = dt.hour
-            minute = dt.minute
-            if hour < start_hour or (hour == start_hour and minute < start_minute):
-                continue
-            if hour >= 13:
-                continue
-
-            # Hour-boundary clamp: if prior hour was in pre-charge, its surplus
-            # was exported (not stored in battery) — zero out positive cumulative.
-            if (
-                prev_hour is not None
-                and hour != prev_hour
-                and start_charge_hour is not None
-                and prev_hour < start_charge_hour
-            ):
-                cumulative_balance = min(cumulative_balance, 0.0)
-
-            is_current = hour == start_hour and minute == start_minute
-            if is_current and current_bucket_override is not None:
-                pv_kwh_30min, consumption = current_bucket_override
-            else:
-                pv_kwh_30min = period.pv_estimate_adjusted / 2  # rate -> kWh per 30min
-                consumption = (
-                    consumption_profile.get(hour, minute)
-                    if consumption_profile
-                    else None
-                )
-                if consumption is None:
-                    consumption = CONSUMPTION_PER_30MIN
-            balance = pv_kwh_30min - consumption
-            cumulative_balance += balance
-            if cumulative_balance < min_balance:
-                min_balance = cumulative_balance
-                min_idx = len(buckets)
-            buckets.append(
-                TargetSocBucket(
-                    period=f"{hour:02d}:{minute:02d}",
-                    pv_kwh=round(pv_kwh_30min, 3),
-                    cons_kwh=round(consumption, 3),
-                    balance=round(balance, 3),
-                    cumulative=round(cumulative_balance, 3),
-                    is_min=False,  # set below
-                )
-            )
-            prev_hour = hour
-
-        if min_idx >= 0:
-            # Replace min bucket with is_min=True (dataclass is frozen → rebuild)
-            m = buckets[min_idx]
-            buckets[min_idx] = TargetSocBucket(
-                period=m.period,
-                pv_kwh=m.pv_kwh,
-                cons_kwh=m.cons_kwh,
-                balance=m.balance,
-                cumulative=m.cumulative,
-                is_min=True,
-            )
-
-        if min_balance >= 0:
-            return TargetSocResult(value=MIN_SOC_PERCENT, buckets=buckets)
-
-        deficit_kwh = abs(min_balance)
-        deficit_percent = deficit_kwh / (BATTERY_CAPACITY_KWH / 100)
-        target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
-
-        return TargetSocResult(
-            value=max(round(target), MIN_SOC_PERCENT), buckets=buckets
-        )
+    # Thin shim delegating to free function in `domain/target_soc.py`. Kept
+    # for back-compat with existing callers in `pv_forecast_extrapolation.py`
+    # and tests; new code should call `calculate_target_soc` directly.
+    _calculate_target_soc = staticmethod(calculate_target_soc)
 
     @staticmethod
     def _adjust_pv_forecast_at6(
