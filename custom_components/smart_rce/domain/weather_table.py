@@ -77,6 +77,16 @@ SOURCE_CURRENT = "current"
 SOURCE_NOWCAST = "nowcast"
 SOURCE_FORECAST = "forecast"
 
+# Sources that the previous row may have when dropping a nowcast duplicate.
+# Nowcast slots are 15-min sub-hour refinements — they're noise when the
+# previous row already conveys the same 8 input fields, regardless of
+# whether that previous row was current/forecast/nowcast itself.
+# History is excluded: a past-observation row should never silently
+# shadow a future-looking nowcast point.
+_NOWCAST_DEDUPE_PREV_SOURCES = frozenset(
+    {SOURCE_CURRENT, SOURCE_NOWCAST, SOURCE_FORECAST}
+)
+
 # Sub-second jitter tolerance when bucketing history timestamps. The 8
 # wetteronline sensors all change state at the same coordinator update,
 # but each fires its own state_changed event with a slightly different
@@ -408,24 +418,33 @@ def _to_number(value: Any) -> float | None:
 
 
 def _dedupe_consecutive(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop consecutive history rows where all `DEDUPE_FIELDS` are equal.
+    """Drop redundant rows from consecutive pairs with identical 8 input fields.
 
-    Only applies to history↔history pairs. `current`, `nowcast` and
-    `forecast` rows are always kept — they carry distinct semantic
-    weight (live snapshot, 15-min sub-hour granularity, future-hour
-    forecast) even when their input fields happen to match an adjacent
-    history row. Without this guard, an aligned-coordinator history
-    snapshot at exactly the same minute as `current_obs.fetched_at`
-    would shadow the synthesized current row.
+    Two cases only — never drops current/forecast/history rows:
+
+    1. history → history: collapse the later one (recorder may emit many
+       state_changed events with the same field values within a minute as
+       multiple sensors update with no real change).
+    2. (current|forecast|nowcast) → nowcast: drop the nowcast slot. Nowcast
+       15-min refinements are noise when the previous row already conveys
+       the same 8 fields. Previous-history → nowcast is NOT dropped (past
+       observation shouldn't silently shadow a future-looking nowcast).
     """
     out: list[dict[str, Any]] = []
     for row in rows:
         if (
             out
-            and out[-1]["source"] == SOURCE_HISTORY
-            and row["source"] == SOURCE_HISTORY
             and all(out[-1][f] == row[f] for f in DEDUPE_FIELDS)
+            and _should_dedupe(out[-1]["source"], row["source"])
         ):
             continue
         out.append(row)
     return out
+
+
+def _should_dedupe(prev_source: str, cur_source: str) -> bool:
+    if prev_source == SOURCE_HISTORY and cur_source == SOURCE_HISTORY:
+        return True
+    if cur_source == SOURCE_NOWCAST and prev_source in _NOWCAST_DEDUPE_PREV_SOURCES:
+        return True
+    return False

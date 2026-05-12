@@ -326,6 +326,79 @@ def test_subsecond_jitter_clustered_to_single_row():
     assert rows[1]["precipitation_probability"] == 20.0
 
 
+def test_nowcast_deduped_against_previous_current_when_identical():
+    """Drop nowcast when 8 fields match the preceding current row.
+
+    Sub-hour refinement is noise when the previous row already carries the
+    same values.
+    """
+    fetched_at = _ts(12, 30)
+    nowcast_same = {
+        "date": _ts(12, 45).isoformat(),
+        "condition_custom": "cloudy",
+        "precipitation_probability": 40,
+    }
+    nowcast_different = {
+        "date": _ts(13, 0).isoformat(),
+        "condition_custom": "pouring-light",
+        "precipitation_probability": 80,
+    }
+    current_obs = {
+        "condition_custom": "cloudy",
+        "precipitation_probability": 40,
+        "fetched_at": fetched_at.isoformat(),
+    }
+    rows = assemble_rows(
+        history_per_sensor={},
+        target_date=date(2026, 5, 12),
+        now=fetched_at,
+        current_obs=current_obs,
+        forecast_hours=[],
+        nowcast_items=[nowcast_same, nowcast_different],
+        tz=TZ,
+    )
+    sources_with_times = [(r["source"], r["time"]) for r in rows]
+    # current at 12:30 kept; nowcast 12:45 (same fields as current) dropped;
+    # nowcast 13:00 (different) kept.
+    assert (SOURCE_CURRENT, "12:30") in sources_with_times
+    assert (SOURCE_NOWCAST, "12:45") not in sources_with_times
+    assert (SOURCE_NOWCAST, "13:00") in sources_with_times
+
+
+def test_nowcast_not_deduped_against_previous_history():
+    """History row should NOT silently shadow a future-looking nowcast point."""
+    same_moment = _ts(13, 0)
+    history = _history(
+        [
+            ("sensor.wetteronline_condition_custom", _ts(12, 50), "cloudy"),
+            (
+                "sensor.wetteronline_precipitation_probability",
+                _ts(12, 50),
+                "40",
+            ),
+        ]
+    )
+    nowcast = [
+        {
+            "date": same_moment.isoformat(),
+            "condition_custom": "cloudy",
+            "precipitation_probability": 40,
+        }
+    ]
+    rows = assemble_rows(
+        history_per_sensor=history,
+        target_date=date(2026, 5, 12),
+        now=_ts(12, 55),
+        current_obs=None,
+        forecast_hours=[],
+        nowcast_items=nowcast,
+        tz=TZ,
+    )
+    sources = [r["source"] for r in rows]
+    assert SOURCE_HISTORY in sources
+    assert SOURCE_NOWCAST in sources
+
+
 def test_current_row_not_deduped_against_history_row_at_same_time():
     """Current row must surface even when adjacent history has identical fields.
 
