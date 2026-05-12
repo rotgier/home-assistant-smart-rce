@@ -125,12 +125,21 @@ def test_history_and_nowcast_merge_today():
     assert rows[-1]["time"] == "13:00"
 
 
-def test_synthesized_current_hour_only_today():
+def test_synthesized_current_uses_fetched_at_timestamp():
+    """Current row datetime should reflect the live-snapshot moment.
+
+    fetched_at is "when wo-cloud was last polled" — that is the time at
+    which the live point-in-time values (Prob, Cond) are valid. Using it
+    as the row timestamp positions the row chronologically alongside
+    history rows from the same hour, instead of pinning it to the hour
+    boundary (which would imply the values held since :00).
+    """
     current_obs = {
         "condition_custom": "pouring",
         "precipitation_probability": 90,
         "precipitation_amount_mm_max": 1.0,
         "precipitation_duration_min_max": 60,
+        "fetched_at": "2026-05-12T12:15:30+02:00",
     }
     now = _ts(12, 30)
     rows = assemble_rows(
@@ -144,10 +153,29 @@ def test_synthesized_current_hour_only_today():
     )
     assert len(rows) == 1
     assert rows[0]["source"] == SOURCE_CURRENT
-    assert rows[0]["time"] == "12:00"  # rounded to hour start
+    assert rows[0]["time"] == "12:15"  # from fetched_at, not hour boundary
     assert rows[0]["condition_custom"] == "pouring"
-    # Full hour heavy rain → multiplier ≈ 0.55 ((1 * (0.4 + 0.5*0.2) * 1)=0.5, mul=0.5)
     assert rows[0]["multiplier"] < 1.0
+
+
+def test_synthesized_current_falls_back_to_hour_when_fetched_at_missing():
+    """Missing fetched_at → use the current clock hour as the row anchor."""
+    current_obs = {
+        "condition_custom": "cloudy",
+        "precipitation_probability": 20,
+    }
+    now = _ts(12, 30)
+    rows = assemble_rows(
+        history_per_sensor={},
+        target_date=date(2026, 5, 12),
+        now=now,
+        current_obs=current_obs,
+        forecast_hours=[],
+        nowcast_items=[],
+        tz=TZ,
+    )
+    assert len(rows) == 1
+    assert rows[0]["time"] == "12:00"
 
 
 def test_forecast_skips_current_hour_and_past():

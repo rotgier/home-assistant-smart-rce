@@ -222,17 +222,34 @@ def _current_row(
     tz: tzinfo,
     current_obs: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Synthesize a row for the current clock hour from live observations.
+    """Synthesize a row representing the live point-in-time observation.
 
     The cache-sourced fields (visibility, convection, rainfall amount,
     duration) come from `current_obs` too — the wetteronline weather
     entity merges them in via `_synthesize_current_hour_forecast` and we
     consume the same dict shape.
+
+    Row datetime = `current_obs.fetched_at` (moment the live values were
+    last pulled from wo-cloud). Falls back to the current clock hour if
+    fetched_at is missing — better-than-nothing positioning so the row
+    still surfaces in the table. Using the exact fetched_at puts the row
+    chronologically among history rows from the same hour at the moment
+    the live snapshot was actually current, rather than at the hour
+    boundary (where it gave the misleading impression that the values
+    were valid since :00).
     """
     if not current_obs:
         return None
-    hour_dt = now.replace(minute=0, second=0, microsecond=0).astimezone(tz)
-    row = _empty_row(hour_dt, SOURCE_CURRENT)
+    row_ts: datetime
+    fetched_at = current_obs.get("fetched_at")
+    if fetched_at:
+        try:
+            row_ts = datetime.fromisoformat(fetched_at).astimezone(tz)
+        except (TypeError, ValueError):
+            row_ts = now.replace(minute=0, second=0, microsecond=0).astimezone(tz)
+    else:
+        row_ts = now.replace(minute=0, second=0, microsecond=0).astimezone(tz)
+    row = _empty_row(row_ts, SOURCE_CURRENT)
     row["condition_custom"] = current_obs.get("condition_custom")
     row["precipitation_probability"] = _to_number(
         current_obs.get("precipitation_probability")
