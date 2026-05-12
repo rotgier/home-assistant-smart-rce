@@ -43,9 +43,30 @@ class RealizedPvLoader:
         to total kWh in that completed cycle. Buckets not yet closed are
         excluded (utility meter still accumulating).
         """
+        result = await self.fetch_for_dates([today])
+        return result.get(today, {})
+
+    async def fetch_for_dates(
+        self, dates: list[date]
+    ) -> dict[date, dict[tuple[int, int], float]]:
+        """Fetch realized PV per bucket for each date in `dates` (single LTS query).
+
+        Used by the target_soc matrix to project actual PV totals on the
+        prev-workday sources alongside the cells. One batched query covers
+        `[min(dates), max(dates) + 1day)` and results are bucketed per
+        date in memory. Empty `dates` returns `{}`.
+
+        Same bucket-start convention as `fetch_today`: dict keyed by
+        (hour, minute) where (hour, 0) = HH:00..HH:30, (hour, 30) =
+        HH:30..(HH+1):00 — values are kWh in the completed cycle.
+        """
+        if not dates:
+            return {}
         tz = dt_util.DEFAULT_TIME_ZONE
-        start = datetime.combine(today, time(0, 0), tzinfo=tz)
-        end = datetime.combine(today, time(23, 59), tzinfo=tz)
+        earliest, latest = min(dates), max(dates)
+        start = datetime.combine(earliest, time(0, 0), tzinfo=tz)
+        end = datetime.combine(latest, time(23, 59), tzinfo=tz)
+        wanted: set[date] = set(dates)
 
         instance = get_instance(self._hass)
         stats = await instance.async_add_executor_job(
@@ -60,13 +81,14 @@ class RealizedPvLoader:
         )
         slots = stats.get(_PV_BUCKET_KWH_ENTITY, [])
 
-        buckets: dict[tuple[int, int], float] = {}
+        per_date: dict[date, dict[tuple[int, int], float]] = {d: {} for d in wanted}
         for slot in slots:
             raw_start = slot.get("start")
             if raw_start is None:
                 continue
             ts = datetime.fromtimestamp(float(raw_start), tz=UTC).astimezone(tz)
-            if ts.date() != today:
+            d = ts.date()
+            if d not in wanted:
                 continue
             state_val = slot.get("state")
             if state_val is None:
@@ -77,10 +99,12 @@ class RealizedPvLoader:
                 continue
             # Last 5-min slot before reset captures full-bucket total.
             if ts.minute == 25:
-                buckets[(ts.hour, 0)] = value
+                per_date[d][(ts.hour, 0)] = value
             elif ts.minute == 55:
-                buckets[(ts.hour, 30)] = value
+                per_date[d][(ts.hour, 30)] = value
         _LOGGER.debug(
-            "RealizedPvLoader: fetched %d closed buckets for %s", len(buckets), today
+            "RealizedPvLoader: fetched closed buckets for %d dates (%d total)",
+            len(wanted),
+            sum(len(b) for b in per_date.values()),
         )
-        return buckets
+        return per_date
