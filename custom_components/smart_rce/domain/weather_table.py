@@ -67,9 +67,22 @@ SENSOR_FIELD_MAP: Mapping[str, str] = {
     "sensor.wetteronline_visibility": "visibility_meter",
 }
 
-# Fields compared for dedupe (consecutive rows with all of these equal
-# collapse into one).
+# Fields compared for history↔history dedupe (consecutive rows with all
+# of these equal collapse into one).
 DEDUPE_FIELDS: tuple[str, ...] = tuple(SENSOR_FIELD_MAP.values())
+
+# Fields compared when deciding to drop a nowcast row against the
+# preceding current/forecast/nowcast row. Nowcast items ship only
+# symbol + precipitation prob/type — rainfall amount, duration,
+# visibility, convection are None there. Comparing all 8 fields would
+# never match (current/forecast have those cache values populated). So
+# compare only the fields nowcast actually carries; cache values from
+# the previous row are irrelevant to whether the sub-hour slot adds
+# information.
+_NOWCAST_DEDUPE_FIELDS: tuple[str, ...] = (
+    "condition_custom",
+    "precipitation_probability",
+)
 
 # Sources for the `source` column on each row.
 SOURCE_HISTORY = "history"
@@ -418,33 +431,35 @@ def _to_number(value: Any) -> float | None:
 
 
 def _dedupe_consecutive(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop redundant rows from consecutive pairs with identical 8 input fields.
+    """Drop redundant rows from consecutive pairs.
 
-    Two cases only — never drops current/forecast/history rows:
+    Two cases — never drops current/forecast/history rows:
 
-    1. history → history: collapse the later one (recorder may emit many
-       state_changed events with the same field values within a minute as
-       multiple sensors update with no real change).
-    2. (current|forecast|nowcast) → nowcast: drop the nowcast slot. Nowcast
-       15-min refinements are noise when the previous row already conveys
-       the same 8 fields. Previous-history → nowcast is NOT dropped (past
-       observation shouldn't silently shadow a future-looking nowcast).
+    1. history → history: collapse if all 8 input fields match
+       (DEDUPE_FIELDS). Recorder may emit many state_changed events with
+       the same values within a minute.
+    2. (current|forecast|nowcast) → nowcast: drop the nowcast slot when
+       condition_custom + precipitation_probability match the previous
+       row. Nowcast carries only those two domain-relevant fields (cache-
+       sourced rainfall/duration/conv/vis are None there), so the 15-min
+       refinement is noise when the surrounding row already conveys the
+       same condition + probability. Previous-history → nowcast is NOT
+       dropped (past observation shouldn't silently shadow a future
+       row).
     """
     out: list[dict[str, Any]] = []
     for row in rows:
-        if (
-            out
-            and all(out[-1][f] == row[f] for f in DEDUPE_FIELDS)
-            and _should_dedupe(out[-1]["source"], row["source"])
-        ):
+        if out and _should_dedupe(out[-1], row):
             continue
         out.append(row)
     return out
 
 
-def _should_dedupe(prev_source: str, cur_source: str) -> bool:
+def _should_dedupe(prev: dict[str, Any], cur: dict[str, Any]) -> bool:
+    prev_source = prev["source"]
+    cur_source = cur["source"]
     if prev_source == SOURCE_HISTORY and cur_source == SOURCE_HISTORY:
-        return True
+        return all(prev[f] == cur[f] for f in DEDUPE_FIELDS)
     if cur_source == SOURCE_NOWCAST and prev_source in _NOWCAST_DEDUPE_PREV_SOURCES:
-        return True
+        return all(prev[f] == cur[f] for f in _NOWCAST_DEDUPE_FIELDS)
     return False
