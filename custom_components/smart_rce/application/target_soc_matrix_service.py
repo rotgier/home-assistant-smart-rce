@@ -131,7 +131,7 @@ class TargetSocMatrixService:
         return {
             "date": target_date.isoformat(),
             "kind": "today" if is_today else "tomorrow",
-            "matrix": _serialize(matrix),
+            "matrix": _serialize(matrix, pv_buckets, cons_buckets),
         }
 
     # --- PV inputs --- #
@@ -278,12 +278,18 @@ def _profile_to_buckets(profile: ConsumptionProfile) -> list[float]:
     return [profile.get(h, m) or CONSUMPTION_PER_30MIN for h, m in _BUCKET_TIMES]
 
 
-def _serialize(matrix: TargetSocMatrix) -> dict[str, Any]:
+def _serialize(
+    matrix: TargetSocMatrix,
+    pv_buckets: dict[str, list[float]],
+    cons_buckets: dict[str, list[float]],
+) -> dict[str, Any]:
     """Convert dataclass + tuple-keyed dicts → JSON-friendly attribute shape.
 
     HA attributes must be JSON-serializable; `dict[tuple, ...]` isn't.
     Stringify cell keys as `"<pv_key>|<cons_key>"` so Jinja in markdown
-    cards can split on `|` and look up entries directly.
+    cards can split on `|` and look up entries directly. Also surfaces
+    the raw 30-min bucket lists per strategy so the dashboard chart can
+    plot each PV/Cons strategy as a time-series.
     """
     return {
         "pv_strategies": list(matrix.pv_strategies),
@@ -295,4 +301,10 @@ def _serialize(matrix: TargetSocMatrix) -> dict[str, Any]:
         "pv_sums_kwh": dict(matrix.pv_sums_kwh),
         "cons_sums_kwh": dict(matrix.cons_sums_kwh),
         "source_day_pv_sums_kwh": dict(matrix.source_day_pv_sums_kwh),
+        "pv_buckets_by_strategy": {
+            k: [round(v, 4) for v in vs] for k, vs in pv_buckets.items()
+        },
+        "cons_buckets_by_strategy": {
+            k: [round(v, 4) for v in vs] for k, vs in cons_buckets.items()
+        },
     }
