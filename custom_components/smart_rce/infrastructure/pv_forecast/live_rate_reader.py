@@ -24,12 +24,10 @@ the current PV/consumption rates", the concrete impl reads HA states.
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 from typing import Final
 
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
 
 _PV_POWER_5MIN_ENTITY: Final = "sensor.pv_power_avg_5_minutes"
 _CONSUMPTION_5MIN_ENTITY: Final = "sensor.house_consumption_avg_5_minutes"
@@ -38,7 +36,6 @@ _CONSUMPTION_BUCKET_KWH_ENTITY: Final = "sensor.total_consumption_minus_bi_hourl
 _START_CHARGE_HOUR_OVERRIDE_ENTITY: Final = (
     "input_datetime.rce_start_charge_hour_today_override"
 )
-_START_CHARGE_HOUR_TOMORROW_ENTITY: Final = "sensor.rce_start_charge_hour_tomorrow_time"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,23 +77,6 @@ class LiveRateReader:
             return int(state.state.split(":")[0])
         except (ValueError, AttributeError, IndexError):
             return None
-
-    def read_start_charge_hour_tomorrow(self) -> int | None:
-        """Hour (0..23) when tomorrow's pre-charge ends / post-charge begins.
-
-        Read from `sensor.rce_start_charge_hour_tomorrow_time` (ISO datetime,
-        local hour). No override sensor exists yet for tomorrow — when one
-        is added later, this can be swapped here. Returns None when the
-        sensor is unavailable so caller can fall back to no-gate behavior.
-        """
-        state = self._hass.states.get(_START_CHARGE_HOUR_TOMORROW_ENTITY)
-        if state is None or state.state in ("unknown", "unavailable"):
-            return None
-        try:
-            dt = datetime.fromisoformat(state.state)
-        except (ValueError, TypeError):
-            return None
-        return dt.astimezone(dt_util.DEFAULT_TIME_ZONE).hour
 
     def _read_float(self, entity_id: str) -> float | None:
         state = self._hass.states.get(entity_id)

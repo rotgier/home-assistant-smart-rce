@@ -33,7 +33,9 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
+from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
+from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.pv_forecast import PvForecast
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.pv_forecast.consumption_profile_loader import (
@@ -54,6 +56,8 @@ async def create_pv_forecast_service(
     entry: ConfigEntry,
     weather_listener: WeatherForecastListener,
     weather_forecast_history: WeatherForecastHistory,
+    ems: Ems,
+    rce_coordinator: SmartRceDataUpdateCoordinator,
 ) -> PvForecastService:
     """Composition root — wire domain + adapters + service + HA listenery."""
     forecast = PvForecast()
@@ -71,6 +75,7 @@ async def create_pv_forecast_service(
         consumption_loader=consumption_loader,
         live_rates=live_rates,
         realized_pv_loader=realized_pv_loader,
+        charge_slots=ems.charge_slots,
     )
 
     # Weather history write side — registered FIRST listener przed sensors,
@@ -110,17 +115,13 @@ async def create_pv_forecast_service(
         )
     )
 
-    # Pre-charge gate for tomorrow lives on a smart_rce-published sensor that
-    # is unavailable during initial `recalculate_all` post-reload (sensors
-    # setup runs after composition root). Without this listener, the first
-    # tomorrow target_soc snapshot is computed with gate=None and shows
-    # propagated positive cumulative balance until the next weather update.
+    # Tomorrow pre-charge gate lives in the domain (`ems.charge_slots.tomorrow`).
+    # Subscribe to coordinator so a fresh RCE-prices fetch (which recomputes
+    # charge_slots) triggers a target_soc rebuild. Also catches the initial
+    # setup race where charge_slots is still empty during the first
+    # `recalculate_all` (first_refresh runs after pv_forecast factory).
     entry.async_on_unload(
-        async_track_state_change_event(
-            hass,
-            ["sensor.rce_start_charge_hour_tomorrow_time"],
-            service.on_start_charge_hour_change,
-        )
+        rce_coordinator.async_add_listener(service.on_charge_slots_change)
     )
 
     # Daily prev-workday consumption profile refresh at 05:55 local — sync

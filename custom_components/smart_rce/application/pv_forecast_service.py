@@ -24,6 +24,7 @@ from homeassistant.core import CALLBACK_TYPE, Event, callback
 from homeassistant.util import dt as dt_util
 
 from ..domain import pv_forecast, pv_forecast_extrapolation
+from ..domain.charge_slots import ChargeSlots
 from ..domain.pv_forecast import PvForecast, WeatherConditionAtHour
 from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
@@ -49,6 +50,7 @@ class PvForecastService:
         consumption_loader: ConsumptionProfileLoader,
         live_rates: LiveRateReader,
         realized_pv_loader: RealizedPvLoader,
+        charge_slots: ChargeSlots,
     ) -> None:
         self.forecast = forecast
         self._solcast = solcast
@@ -57,6 +59,7 @@ class PvForecastService:
         self._consumption_loader = consumption_loader
         self._live_rates = live_rates
         self._realized_pv_loader = realized_pv_loader
+        self._charge_slots = charge_slots
         self._realized_pv_today: dict[tuple[int, int], float] = {}
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
 
@@ -167,18 +170,25 @@ class PvForecastService:
             _LOGGER.exception("Failed to fetch realized PV history")
 
     def _refresh_start_charge_hour(self) -> None:
-        """Refresh forecast.start_charge_hour_{today,tomorrow} from HA state.
+        """Refresh forecast.start_charge_hour_{today,tomorrow}.
 
         Called before each recalc path so target_soc variants inside
         `PvForecast._recalculate_target_soc` see the current pre-charge
-        gates: today (override input_datetime) and tomorrow (sensor — no
-        override sensor exists yet).
+        gates:
+        - today  : `input_datetime.rce_start_charge_hour_today_override`
+          (user manual override, stable HA state outside smart_rce).
+        - tomorrow: `ChargeSlots.tomorrow.start_hour` — domain source,
+          owned by the same integration. Sourcing from the domain (vs.
+          reading `sensor.rce_start_charge_hour_tomorrow_time` we publish
+          ourselves) avoids a self-referential race where the sensor is
+          still `unavailable` during the first recalc after a reload.
         """
         self.forecast.start_charge_hour_today = (
             self._live_rates.read_start_charge_hour_today_override()
         )
+        tomorrow_slot = self._charge_slots.tomorrow
         self.forecast.start_charge_hour_tomorrow = (
-            self._live_rates.read_start_charge_hour_tomorrow()
+            int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
         )
 
     def _recalculate_at6(self) -> None:
@@ -254,13 +264,15 @@ class PvForecastService:
         self._notify_listeners()
 
     @callback
-    def on_start_charge_hour_change(self, event: Event) -> None:
-        """Pre-charge gate sensor changed — refresh gates + recompute target_soc.
+    def on_charge_slots_change(self) -> None:
+        """Coordinator updated — `ChargeSlots.tomorrow` may have shifted.
 
-        Wired against `sensor.rce_start_charge_hour_tomorrow_time` (smart_rce
-        self-published, so absent during initial recalculate_all after a
-        reload). Also catches runtime updates after the RCE-tomorrow prices
-        arrive ~14:00 and shift the optimal pre-charge window.
+        Wired against `rce_coordinator.async_add_listener`. Triggers on
+        each successful coordinator refresh; cheap, idempotent. Catches:
+        - initial setup race (ChargeSlots is empty during the first
+          `recalculate_all` because first_refresh hasn't run yet),
+        - runtime shift after the RCE-tomorrow prices arrive ~14:00 and
+          the optimal pre-charge window moves.
         """
         self._refresh_start_charge_hour()
         self.forecast._recalculate_target_soc(dt_util.now())  # noqa: SLF001
