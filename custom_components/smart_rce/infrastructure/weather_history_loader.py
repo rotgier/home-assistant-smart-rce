@@ -58,7 +58,7 @@ class WeatherHistoryLoader:
         out: dict[str, list[StateSnapshot]] = {}
         for entity_id in WETTERONLINE_SENSORS:
             out[entity_id] = [
-                _to_snapshot(state)
+                _to_snapshot(state, tz)
                 for state in raw.get(entity_id, [])
                 if state.last_changed.astimezone(tz).date() == target_date
             ]
@@ -86,13 +86,17 @@ class WeatherHistoryLoader:
         return out
 
 
-def _to_snapshot(state: State) -> StateSnapshot:
+def _to_snapshot(state: State, tz: Any) -> StateSnapshot:
     """Translate HA `State` to domain `StateSnapshot`.
 
     Map HA's "unknown"/"unavailable" sentinels to None so domain dedupe
     logic treats them uniformly with truly-missing sensors.
+
+    `state.last_changed` is UTC out of the recorder; convert to the
+    configured timezone so domain code emits row datetimes/HH:MM labels
+    in the user's wall-clock time.
     """
     value: str | None = state.state
     if value in ("unknown", "unavailable", ""):
         value = None
-    return StateSnapshot(timestamp=state.last_changed, value=value)
+    return StateSnapshot(timestamp=state.last_changed.astimezone(tz), value=value)
