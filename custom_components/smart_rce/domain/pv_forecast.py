@@ -17,7 +17,7 @@ callers in pv_forecast_extrapolation.py and tests).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Final
 
 from .target_soc import (
@@ -507,21 +507,24 @@ def merge_weather_conditions(
     return list(combined.values())
 
 
-def walk_back_workdays(today: date, days_back: int) -> date | None:
-    """Return date N workdays ago (skip weekends).
+def walk_back_workdays(
+    today: date,
+    days_back: int,
+    workday_dates: set[date],
+) -> date | None:
+    """Return the N-th most recent workday strictly before `today`.
 
-    Used by infrastructure/pv_forecast/consumption_profile_loader.py to iterate
-    over PREV_DAYS_COUNT prev workdays. Pure domain (semantics "skip weekends")
-    — does not leak into infrastructure.
-
-    TODO Etap E: replace heuristic with binary_sensor.workday_sensor (PL holidays).
+    `workday_dates` is the authoritative set of workdays in a sufficiently
+    wide lookback window (typically 30 days back) — sourced from the HA
+    workday calendar by `WorkdayCalendarReader`. No "skip weekends"
+    fallback: if the set is empty (calendar unavailable) or shallower
+    than `days_back`, returns None. Callers log a clear warning so the
+    missing calendar is visible rather than silently masked by a
+    heuristic that ignores holidays.
     """
-    target = today
-    found = 0
-    while found < days_back:
-        target -= timedelta(days=1)
-        if target.weekday() < 5:
-            found += 1
-        if (today - target).days > 14:  # safety break
-            return None
-    return target
+    if not workday_dates:
+        return None
+    sorted_back = sorted((d for d in workday_dates if d < today), reverse=True)
+    if days_back <= 0 or days_back > len(sorted_back):
+        return None
+    return sorted_back[days_back - 1]

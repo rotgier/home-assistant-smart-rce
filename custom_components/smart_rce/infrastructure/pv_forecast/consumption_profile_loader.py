@@ -1,9 +1,10 @@
 """ConsumptionProfileLoader — driven adapter for HA recorder LTS query.
 
 Fetches prev-workday consumption profiles from `sensor.total_consumption_minus_bi_hourly`
-through the recorder LTS API. Walks back PREV_DAYS_COUNT workdays (skip weekends —
-domain decision, see `walk_back_workdays` in domain/pv_forecast.py), batched in
-a single async query, bucketed per (date, half-hour).
+through the recorder LTS API. Walks back PREV_DAYS_COUNT actual workdays
+(holiday-aware — set sourced from `WorkdayCalendarReader`, see
+`walk_back_workdays` in domain/pv_forecast.py), batched in a single
+async query, bucketed per (date, half-hour).
 
 Hexagonal pattern: **driven adapter (outbound)** — application service dictates
 "give me consumption profiles for the last N workdays", the concrete impl uses
@@ -23,6 +24,7 @@ from homeassistant.util import dt as dt_util
 
 from ...domain import pv_forecast
 from ...domain.pv_forecast import ConsumptionProfile
+from ..workday_calendar_reader import WorkdayCalendarReader
 
 _CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
 
@@ -32,17 +34,31 @@ _LOGGER = logging.getLogger(__name__)
 class ConsumptionProfileLoader:
     """Fetches PREV_DAYS_COUNT prev-workday consumption profiles from HA recorder."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        workday_reader: WorkdayCalendarReader,
+    ) -> None:
         self._hass = hass
+        self._workday_reader = workday_reader
 
     async def fetch(self, today: date) -> list[ConsumptionProfile | None]:
         """Fetch profiles for the last PREV_DAYS_COUNT workdays in a SINGLE LTS query.
 
-        Walk back N workdays (skip weekends), compute earliest..latest date span,
-        fetch 5-min stats once, then bucket per date in memory.
+        Walk back N actual workdays (calendar-driven, holiday-aware), compute
+        earliest..latest date span, fetch 5-min stats once, then bucket per
+        date in memory.
         """
+        workday_dates = await self._workday_reader.fetch_workdays(today)
+        if not workday_dates:
+            _LOGGER.warning(
+                "Workday calendar returned no events — prev-day consumption "
+                "profiles unavailable; check calendar.workday_calendar config"
+            )
+            return [None] * pv_forecast.PREV_DAYS_COUNT
+
         dates: list[date | None] = [
-            pv_forecast.walk_back_workdays(today, i + 1)
+            pv_forecast.walk_back_workdays(today, i + 1, workday_dates)
             for i in range(pv_forecast.PREV_DAYS_COUNT)
         ]
         valid_dates = [d for d in dates if d is not None]

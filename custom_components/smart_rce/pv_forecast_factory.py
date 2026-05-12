@@ -44,6 +44,7 @@ from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
 from .infrastructure.weather_diff_writer import WeatherDiffWriter
 from .infrastructure.weather_listener import WeatherForecastListener
+from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +58,8 @@ async def create_pv_forecast_service(
     """Composition root — wire domain + adapters + service + HA listenery."""
     forecast = PvForecast()
     solcast = SolcastReader(hass)
-    consumption_loader = ConsumptionProfileLoader(hass)
+    workday_reader = WorkdayCalendarReader(hass)
+    consumption_loader = ConsumptionProfileLoader(hass, workday_reader)
     live_rates = LiveRateReader(hass)
     realized_pv_loader = RealizedPvLoader(hass)
 

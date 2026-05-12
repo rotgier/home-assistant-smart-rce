@@ -162,6 +162,11 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.target_soc"))
     reload(import_module("custom_components.smart_rce.domain.pv_forecast"))
     reload(
+        import_module(
+            "custom_components.smart_rce.infrastructure.workday_calendar_reader"
+        )
+    )
+    reload(
         import_module("custom_components.smart_rce.domain.pv_forecast_extrapolation")
     )
     reload(import_module("custom_components.smart_rce.domain.weather_forecast_history"))
