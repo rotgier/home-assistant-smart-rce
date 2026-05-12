@@ -205,6 +205,46 @@ def test_forecast_skips_current_hour_and_past():
     assert rows[0]["source"] == SOURCE_FORECAST
 
 
+def test_future_date_includes_forecast_rows():
+    """Tomorrow target_date should surface forecast rows from the hourly list.
+
+    wo-cloud hourly forecast extends ~49 hours, so forecast for tomorrow
+    is available — the table view for date+1 should show those rows even
+    though there's no recorder history yet for that day.
+    """
+    now = _ts(12, 30)
+    tomorrow = date(2026, 5, 13)
+    forecast = [
+        # today's later hour — wrong date, skip
+        {"datetime": _ts(20, 0).isoformat(), "condition_custom": "cloudy"},
+        # tomorrow morning — keep
+        {
+            "datetime": _ts(8, 0, day=13).isoformat(),
+            "condition_custom": "partlycloudy",
+            "precipitation_probability": 10,
+        },
+        # tomorrow afternoon — keep
+        {
+            "datetime": _ts(15, 0, day=13).isoformat(),
+            "condition_custom": "sunny",
+            "precipitation_probability": 0,
+        },
+    ]
+    rows = assemble_rows(
+        history_per_sensor={},
+        target_date=tomorrow,
+        now=now,
+        current_obs={"condition_custom": "rainy"},  # ignored — not today
+        forecast_hours=forecast,
+        nowcast_items=[],
+        tz=TZ,
+    )
+    assert len(rows) == 2
+    assert all(r["source"] == SOURCE_FORECAST for r in rows)
+    assert rows[0]["time"] == "08:00"
+    assert rows[1]["time"] == "15:00"
+
+
 def test_past_date_ignores_current_and_future_sources():
     """When target_date != today, current/nowcast/forecast are dropped."""
     history = _history(

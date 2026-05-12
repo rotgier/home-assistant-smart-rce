@@ -141,12 +141,19 @@ def assemble_rows(
 
     candidates.extend(_history_rows(history_per_sensor, target_date))
 
-    is_today = target_date == now.date()
-    if is_today:
+    today = now.date()
+    if target_date == today:
+        # `current` and `nowcast` are bound to right now / next ~105 min,
+        # so they only make sense for today.
         synthesized_current = _current_row(now, tz, current_obs)
         if synthesized_current:
             candidates.append(synthesized_current)
         candidates.extend(_nowcast_rows(nowcast_items, target_date))
+    if target_date >= today:
+        # wo-cloud hourly forecast covers ~49 hours (today + 2 days),
+        # so forecast rows are relevant for today AND any future date
+        # within that horizon. `_forecast_rows` already filters items by
+        # target_date internally.
         candidates.extend(_forecast_rows(forecast_hours, target_date, now))
 
     if not candidates:
