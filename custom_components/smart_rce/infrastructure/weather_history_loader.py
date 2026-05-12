@@ -17,6 +17,7 @@ HA-free.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, time
 import logging
 from typing import Any
@@ -27,6 +28,13 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
 from ..domain.weather_table import WETTERONLINE_SENSORS, StateSnapshot
+
+# How long to wait for the recorder to flush pending state_changed writes
+# before querying. Recorder batches inserts, so the rows for state changes
+# that just happened may still be in queue. Bounded so the sensor never
+# hangs (vs. unconditional async_block_till_done which can block for
+# minutes at startup while recorder restores state).
+_RECORDER_FLUSH_TIMEOUT_S = 2.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,11 +62,22 @@ class WeatherHistoryLoader:
         # Flush pending recorder writes before reading. Without this the
         # query may miss state changes that just happened (e.g., the same
         # coordinator-update event that triggered THIS recompute) because
-        # recorder batches inserts. Symptom: aligned-coordinator tick at
-        # HH:MM:00 fires the weather_listener → recompute → query reads
-        # DB while the HH:MM state_changed rows are still in the recorder
-        # queue → table shows a `current` row but no matching `history`.
-        await instance.async_block_till_done()
+        # recorder batches inserts. Bounded by a short timeout — at HA
+        # startup the recorder restores many entities and an unbounded
+        # async_block_till_done would block the sensor recompute for
+        # minutes (observed: ~5 min on cold boot before the first table
+        # surfaced). At steady state the wait usually returns in <1s.
+        try:
+            await asyncio.wait_for(
+                instance.async_block_till_done(),
+                timeout=_RECORDER_FLUSH_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.debug(
+                "Recorder flush timed out after %ss; proceeding with possibly "
+                "stale data (next refresh will catch up)",
+                _RECORDER_FLUSH_TIMEOUT_S,
+            )
         raw: dict[str, list[State]] = await instance.async_add_executor_job(
             self._fetch_sync, start, end
         )
