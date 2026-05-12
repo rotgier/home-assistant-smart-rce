@@ -1,0 +1,17 @@
+get_weather_table:
+  name: Get weather table
+  description: >
+    Assemble the dashboard weather table for a target date. Returns a row
+    per state change (deduplicated) covering past observations from
+    recorder + current synthesized hour + future hourly forecast + 15-min
+    nowcast slots (when the date is today). Each row carries the 8
+    wetteronline sensor fields plus the computed PV multiplier breakdown
+    (coverage, heaviness, penalty, multiplier).
+  fields:
+    date:
+      name: Date
+      description: ISO date (YYYY-MM-DD) within recorder retention.
+      required: true
+      example: "2026-05-12"
+      selector:
+        date:

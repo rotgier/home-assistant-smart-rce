@@ -23,6 +23,7 @@ from .ems_sensor import EMS_SENSOR_DESCRIPTIONS, EmsSensor
 from .pv_forecast_sensor import PV_FORECAST_DESCRIPTIONS, PvForecastSensor
 from .rce_sensor import SENSOR_DESCRIPTIONS, SmartRceSensor
 from .weather_history_sensor import WeatherForecastHistorySensor
+from .weather_table_sensor import SmartRceWeatherTableSensor
 
 PARALLEL_UPDATES: Final = 1
 
@@ -50,6 +51,14 @@ async def async_setup_entry(
     )
     sensors.append(
         WeatherForecastHistorySensor(weather_history, weather_listener, coordinator)
+    )
+    sensors.append(
+        SmartRceWeatherTableSensor(
+            hass,
+            entry.runtime_data.weather_table_service,
+            weather_listener,
+            coordinator,
+        )
     )
 
     sensors.extend(

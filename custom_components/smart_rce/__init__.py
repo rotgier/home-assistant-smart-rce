@@ -13,10 +13,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
+from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .infrastructure.rce_api import RceApi
+from .infrastructure.weather_history_loader import WeatherHistoryLoader
 from .infrastructure.weather_listener import WeatherForecastListener
 from .pv_forecast_factory import create_pv_forecast_service
 
@@ -34,6 +36,7 @@ class SmartRceData:
     weather_listener: WeatherForecastListener
     pv_forecast: PvForecastService
     weather_forecast_history: WeatherForecastHistory
+    weather_table_service: WeatherTableService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -54,6 +57,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         hass, entry, weather_listener, weather_forecast_history
     )
 
+    weather_history_loader = WeatherHistoryLoader(hass)
+    weather_table_service = WeatherTableService(
+        hass, weather_history_loader, weather_listener
+    )
+
     await rce_coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = SmartRceData(
@@ -62,11 +70,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         weather_listener,
         pv_forecast,
         weather_forecast_history,
+        weather_table_service,
     )
+
+    _register_services(hass, weather_table_service)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+def _register_services(
+    hass: HomeAssistant, weather_table_service: WeatherTableService
+) -> None:
+    """Register smart_rce.get_weather_table service (idempotent)."""
+    from datetime import date as date_type
+
+    import voluptuous as vol
+
+    from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse
+    from homeassistant.exceptions import ServiceValidationError
+
+    if hass.services.has_service("smart_rce", "get_weather_table"):
+        return
+
+    schema = vol.Schema({vol.Required("date"): str})
+
+    async def _handle(call: ServiceCall) -> ServiceResponse:
+        raw = call.data["date"]
+        try:
+            target = date_type.fromisoformat(raw)
+        except ValueError as err:
+            raise ServiceValidationError(
+                f"Invalid date '{raw}', expected ISO YYYY-MM-DD"
+            ) from err
+        return await weather_table_service.async_get_table(target)
+
+    hass.services.async_register(
+        "smart_rce",
+        "get_weather_table",
+        _handle,
+        schema=schema,
+        supports_response=SupportsResponse.ONLY,
+    )
 
 
 def live_reload():
@@ -118,7 +164,14 @@ def live_reload():
         import_module("custom_components.smart_rce.domain.pv_forecast_extrapolation")
     )
     reload(import_module("custom_components.smart_rce.domain.weather_forecast_history"))
+    reload(import_module("custom_components.smart_rce.domain.weather_multiplier"))
+    reload(import_module("custom_components.smart_rce.domain.weather_table"))
     reload(import_module("custom_components.smart_rce.infrastructure.weather_listener"))
+    reload(
+        import_module(
+            "custom_components.smart_rce.infrastructure.weather_history_loader"
+        )
+    )
     reload(
         import_module("custom_components.smart_rce.infrastructure.weather_diff_writer")
     )
@@ -144,12 +197,16 @@ def live_reload():
     )
     reload(import_module("custom_components.smart_rce.infrastructure.pv_forecast"))
     reload(import_module("custom_components.smart_rce.application.pv_forecast_service"))
+    reload(
+        import_module("custom_components.smart_rce.application.weather_table_service")
+    )
     reload(import_module("custom_components.smart_rce.pv_forecast_factory"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor._state_writer_mixin"))
     reload(import_module("custom_components.smart_rce.sensor.rce_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.pv_forecast_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.weather_history_sensor"))
+    reload(import_module("custom_components.smart_rce.sensor.weather_table_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.ems_sensor"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
