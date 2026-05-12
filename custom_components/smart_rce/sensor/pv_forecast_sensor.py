@@ -322,6 +322,28 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
             pv.forecast.consumption_profiles[2],
         ),
     ),
+    PvForecastSensorDescription(
+        name="Target Battery SOC Prev Day 4",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.target_soc_prev_days[3].value
+        if pv.forecast.target_soc_prev_days[3]
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.target_soc_prev_days[3],
+            pv.forecast.consumption_profiles[3],
+        ),
+    ),
+    PvForecastSensorDescription(
+        name="Target Battery SOC Prev Day 5",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.target_soc_prev_days[4].value
+        if pv.forecast.target_soc_prev_days[4]
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.target_soc_prev_days[4],
+            pv.forecast.consumption_profiles[4],
+        ),
+    ),
     # --- Prev-workday instrumentation — tomorrow ---
     PvForecastSensorDescription(
         name="Target Battery SOC Tomorrow Prev Day 1",
@@ -354,6 +376,28 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[2],
             pv.forecast.consumption_profiles[2],
+        ),
+    ),
+    PvForecastSensorDescription(
+        name="Target Battery SOC Tomorrow Prev Day 4",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.target_soc_tomorrow_prev_days[3].value
+        if pv.forecast.target_soc_tomorrow_prev_days[3]
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.target_soc_tomorrow_prev_days[3],
+            pv.forecast.consumption_profiles[3],
+        ),
+    ),
+    PvForecastSensorDescription(
+        name="Target Battery SOC Tomorrow Prev Day 5",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv: pv.forecast.target_soc_tomorrow_prev_days[4].value
+        if pv.forecast.target_soc_tomorrow_prev_days[4]
+        else None,
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.target_soc_tomorrow_prev_days[4],
+            pv.forecast.consumption_profiles[4],
         ),
     ),
     # --- Max safety sensors — max(live, prev_day_1..N) ---
