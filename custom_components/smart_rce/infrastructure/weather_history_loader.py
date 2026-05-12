@@ -51,6 +51,14 @@ class WeatherHistoryLoader:
         end = datetime.combine(target_date, time(23, 59, 59, 999_999), tzinfo=tz)
 
         instance = get_instance(self._hass)
+        # Flush pending recorder writes before reading. Without this the
+        # query may miss state changes that just happened (e.g., the same
+        # coordinator-update event that triggered THIS recompute) because
+        # recorder batches inserts. Symptom: aligned-coordinator tick at
+        # HH:MM:00 fires the weather_listener → recompute → query reads
+        # DB while the HH:MM state_changed rows are still in the recorder
+        # queue → table shows a `current` row but no matching `history`.
+        await instance.async_block_till_done()
         raw: dict[str, list[State]] = await instance.async_add_executor_job(
             self._fetch_sync, start, end
         )
