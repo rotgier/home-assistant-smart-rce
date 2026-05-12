@@ -22,7 +22,7 @@ import logging
 from typing import Any
 
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.history import get_significant_states
+from homeassistant.components.recorder.history import state_changes_during_period
 from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
@@ -40,9 +40,11 @@ class WeatherHistoryLoader:
     async def fetch(self, target_date: date) -> dict[str, list[StateSnapshot]]:
         """Fetch state changes for all 8 wetteronline sensors during target_date.
 
-        `get_significant_states(significant_changes_only=False)` returns
-        every recorded state change (not just "significant" thresholded
-        ones), which is what we need for the row-per-change table view.
+        Uses `state_changes_during_period` per entity (sequential inside a
+        single executor job). Tried `get_significant_states` first but it
+        truncated the result around HA Core restart boundaries — switching
+        to `state_changes_during_period` returns every state_changed event
+        as expected.
         """
         tz = dt_util.DEFAULT_TIME_ZONE
         start = datetime.combine(target_date, time(0, 0), tzinfo=tz)
@@ -70,16 +72,18 @@ class WeatherHistoryLoader:
         return out
 
     def _fetch_sync(self, start: datetime, end: datetime) -> dict[str, list[Any]]:
-        return get_significant_states(
-            self._hass,
-            start,
-            end,
-            entity_ids=list(WETTERONLINE_SENSORS),
-            significant_changes_only=False,
-            include_start_time_state=True,
-            minimal_response=False,
-            no_attributes=True,
-        )
+        out: dict[str, list[Any]] = {}
+        for entity_id in WETTERONLINE_SENSORS:
+            result = state_changes_during_period(
+                self._hass,
+                start,
+                end,
+                entity_id=entity_id,
+                no_attributes=True,
+                include_start_time_state=True,
+            )
+            out[entity_id] = result.get(entity_id, [])
+        return out
 
 
 def _to_snapshot(state: State) -> StateSnapshot:
