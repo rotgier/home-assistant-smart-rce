@@ -254,6 +254,19 @@ class PvForecastService:
         self._notify_listeners()
 
     @callback
+    def on_start_charge_hour_change(self, event: Event) -> None:
+        """Pre-charge gate sensor changed — refresh gates + recompute target_soc.
+
+        Wired against `sensor.rce_start_charge_hour_tomorrow_time` (smart_rce
+        self-published, so absent during initial recalculate_all after a
+        reload). Also catches runtime updates after the RCE-tomorrow prices
+        arrive ~14:00 and shift the optimal pre-charge window.
+        """
+        self._refresh_start_charge_hour()
+        self.forecast._recalculate_target_soc(dt_util.now())  # noqa: SLF001
+        self._notify_listeners()
+
+    @callback
     def on_minute_tick(self) -> None:
         """Per-minute cron — refresh extrapolated variants (remaining_fraction shrinks)."""
         self._recalculate_extrapolated()

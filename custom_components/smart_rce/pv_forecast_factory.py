@@ -110,6 +110,19 @@ async def create_pv_forecast_service(
         )
     )
 
+    # Pre-charge gate for tomorrow lives on a smart_rce-published sensor that
+    # is unavailable during initial `recalculate_all` post-reload (sensors
+    # setup runs after composition root). Without this listener, the first
+    # tomorrow target_soc snapshot is computed with gate=None and shows
+    # propagated positive cumulative balance until the next weather update.
+    entry.async_on_unload(
+        async_track_state_change_event(
+            hass,
+            ["sensor.rce_start_charge_hour_tomorrow_time"],
+            service.on_start_charge_hour_change,
+        )
+    )
+
     # Daily prev-workday consumption profile refresh at 05:55 local — sync
     # callback wraps async refresh_profiles via hass.async_create_task,
     # żeby Service zostało hass-free.
