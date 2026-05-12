@@ -209,6 +209,11 @@ class PvForecast:
     # pre-charge (battery doesn't charge from PV → surplus exported, not stored).
     # None = no gate (legacy behavior; accumulate freely).
     start_charge_hour_today: int | None = None
+    # Same gate for tomorrow — read from `sensor.rce_start_charge_hour_tomorrow_time`.
+    # No user-facing override sensor yet; can be swapped later. Applied to
+    # `target_soc_tomorrow*` so surplus from a sunny pre-charge hour doesn't
+    # mask a real deficit later in the window.
+    start_charge_hour_tomorrow: int | None = None
 
     def update_at_6(
         self,
@@ -272,12 +277,15 @@ class PvForecast:
     def _recalculate_target_soc(self, now: datetime) -> None:
         """Calculate target SOC from current adjusted_* + consumption_profiles.
 
-        Today variants apply the pre-charge inter-hour clamp via
-        `start_charge_hour_today` (set by application service before recalc).
-        Tomorrow variants currently skip the gate — they'd need a separate
-        `start_charge_hour_tomorrow` source which we don't compute yet.
+        Today and tomorrow variants both apply the pre-charge inter-hour
+        clamp via their respective `start_charge_hour_{today,tomorrow}`
+        fields (set by the application service before recalc). Without
+        the clamp a sunny pre-charge hour can mask a later deficit by
+        propagating its positive cumulative balance across the hour
+        boundary into the gated post-charge window.
         """
         sch = self.start_charge_hour_today
+        sch_t = self.start_charge_hour_tomorrow
         if self.adjusted_at_6:
             self.target_soc = calculate_target_soc(
                 self.adjusted_at_6, now=now, start_charge_hour=sch
@@ -288,12 +296,14 @@ class PvForecast:
             )
 
         # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
-        # No gate applied — we don't have a tomorrow-specific start_charge_hour yet.
+        # Pre-charge gate sourced from `sensor.rce_start_charge_hour_tomorrow_time`.
         if self.adjusted_tomorrow:
-            self.target_soc_tomorrow = calculate_target_soc(self.adjusted_tomorrow)
+            self.target_soc_tomorrow = calculate_target_soc(
+                self.adjusted_tomorrow, start_charge_hour=sch_t
+            )
         if self.adjusted_tomorrow_live:
             self.target_soc_tomorrow_live = calculate_target_soc(
-                self.adjusted_tomorrow_live
+                self.adjusted_tomorrow_live, start_charge_hour=sch_t
             )
 
         # Prev-workday instrumentation (Etap A) — adjusted_live + per-day profile.
@@ -309,7 +319,9 @@ class PvForecast:
                 self.target_soc_prev_days[i] = None
             if self.adjusted_tomorrow_live and profile is not None:
                 self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
-                    self.adjusted_tomorrow_live, consumption_profile=profile
+                    self.adjusted_tomorrow_live,
+                    consumption_profile=profile,
+                    start_charge_hour=sch_t,
                 )
             else:
                 self.target_soc_tomorrow_prev_days[i] = None

@@ -167,14 +167,18 @@ class PvForecastService:
             _LOGGER.exception("Failed to fetch realized PV history")
 
     def _refresh_start_charge_hour(self) -> None:
-        """Refresh forecast.start_charge_hour_today from HA state.
+        """Refresh forecast.start_charge_hour_{today,tomorrow} from HA state.
 
-        Called before each recalc path so non-extrapolated target_soc variants
-        (target_soc, target_soc_live, target_soc_prev_days) inside
-        `PvForecast._recalculate_target_soc` see the current pre-charge gate.
+        Called before each recalc path so target_soc variants inside
+        `PvForecast._recalculate_target_soc` see the current pre-charge
+        gates: today (override input_datetime) and tomorrow (sensor — no
+        override sensor exists yet).
         """
         self.forecast.start_charge_hour_today = (
             self._live_rates.read_start_charge_hour_today_override()
+        )
+        self.forecast.start_charge_hour_tomorrow = (
+            self._live_rates.read_start_charge_hour_tomorrow()
         )
 
     def _recalculate_at6(self) -> None:
