@@ -241,6 +241,63 @@ def test_dedupe_fields_contains_all_eight_sensor_fields():
     assert set(DEDUPE_FIELDS) == expected
 
 
+def test_subsecond_jitter_clustered_to_single_row():
+    """8 sensors with sub-second offsets per coordinator tick → 1 row, not 8.
+
+    Without clustering, each near-identical timestamp would yield its own
+    row showing a "staircase" of intermediate states as sensor-after-
+    sensor updates. With clustering the anchor is the cluster's latest
+    timestamp, so state-at-anchor sees every sensor's new value.
+    """
+    base = datetime(2026, 5, 12, 10, 11, 0, tzinfo=TZ)
+    items = []
+    # Two clusters: ~10:11 (8 sensors fire within ~0.5s) and ~10:16 (the
+    # next coordinator tick, also 8 sensors with sub-second jitter).
+    for i, sensor_id in enumerate(
+        [
+            "sensor.wetteronline_condition_custom",
+            "sensor.wetteronline_precipitation_probability",
+            "sensor.wetteronline_precipitation_amount_mm_min",
+            "sensor.wetteronline_precipitation_amount_mm_max",
+            "sensor.wetteronline_precipitation_duration_min_min",
+            "sensor.wetteronline_precipitation_duration_min_max",
+            "sensor.wetteronline_convection_probability",
+            "sensor.wetteronline_visibility",
+        ]
+    ):
+        # Cluster 1 at 10:11
+        items.append(
+            (
+                sensor_id,
+                base.replace(microsecond=i * 50_000),
+                "cloudy" if sensor_id.endswith("condition_custom") else "10",
+            )
+        )
+        # Cluster 2 at 10:16
+        five_min = base.replace(minute=16, microsecond=i * 50_000)
+        items.append(
+            (
+                sensor_id,
+                five_min,
+                "cloudy" if sensor_id.endswith("condition_custom") else "20",
+            )
+        )
+    history = _history(items)
+    rows = assemble_rows(
+        history_per_sensor=history,
+        target_date=date(2026, 5, 12),
+        now=_ts(15, 0, day=13),
+        current_obs=None,
+        forecast_hours=[],
+        nowcast_items=[],
+        tz=TZ,
+    )
+    # Expect exactly 2 rows (one per cluster), not 16 staircase rows.
+    assert len(rows) == 2
+    assert rows[0]["precipitation_probability"] == 10.0
+    assert rows[1]["precipitation_probability"] == 20.0
+
+
 def test_history_timestamps_outside_target_date_excluded():
     """State changes on different days don't generate rows for target_date."""
     history = _history(

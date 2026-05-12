@@ -27,7 +27,7 @@ Pure domain. No HA imports.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import date, datetime, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
 from typing import Any, NamedTuple
 
 from .weather_multiplier import compute_multiplier
@@ -68,6 +68,15 @@ SOURCE_HISTORY = "history"
 SOURCE_CURRENT = "current"
 SOURCE_NOWCAST = "nowcast"
 SOURCE_FORECAST = "forecast"
+
+# Sub-second jitter tolerance when bucketing history timestamps. The 8
+# wetteronline sensors all change state at the same coordinator update,
+# but each fires its own state_changed event with a slightly different
+# sub-second timestamp. Without this clustering each near-identical
+# timestamp would yield a separate row showing a "staircase" of values
+# as sensor-after-sensor updates. 1s is far above the observed jitter
+# (microseconds) and well below the 5-min coordinator cadence.
+HISTORY_TIMESTAMP_CLUSTER_TOLERANCE_S = 1.0
 
 
 class StateSnapshot(NamedTuple):
@@ -123,13 +132,16 @@ def _history_rows(
     history_per_sensor: Mapping[str, list[StateSnapshot]],
     target_date: date,
 ) -> list[dict[str, Any]]:
-    """Build one row per unique state-change timestamp during target_date.
+    """Build one row per unique state-change cluster during target_date.
 
-    For each timestamp, each sensor contributes its state-at-or-just-
-    before that moment. Sensors without any state on or before the
-    timestamp contribute None.
+    Sensor timestamps within `HISTORY_TIMESTAMP_CLUSTER_TOLERANCE_S` of
+    each other are collapsed to a single anchor (the latest in the
+    cluster). At each anchor each sensor contributes its state-at-or-
+    just-before that moment — the late anchor guarantees that all
+    sensor updates in the cluster are visible (so we don't see partial
+    "in-flight" transition rows).
     """
-    all_timestamps = sorted(
+    raw_timestamps = sorted(
         {
             snap.timestamp
             for sensor_id in WETTERONLINE_SENSORS
@@ -137,10 +149,11 @@ def _history_rows(
             if snap.timestamp.date() == target_date
         }
     )
-    if not all_timestamps:
+    if not raw_timestamps:
         return []
+    anchors = _cluster_timestamps(raw_timestamps, HISTORY_TIMESTAMP_CLUSTER_TOLERANCE_S)
     rows: list[dict[str, Any]] = []
-    for ts in all_timestamps:
+    for ts in anchors:
         row = _empty_row(ts, SOURCE_HISTORY)
         for sensor_id in WETTERONLINE_SENSORS:
             value = _state_at(history_per_sensor.get(sensor_id, []), ts)
@@ -152,6 +165,34 @@ def _history_rows(
         _enrich_with_multiplier(row)
         rows.append(row)
     return rows
+
+
+def _cluster_timestamps(
+    timestamps: list[datetime], tolerance_s: float
+) -> list[datetime]:
+    """Collapse near-identical timestamps to a single anchor per cluster.
+
+    Returns the LAST timestamp in each cluster as the anchor so that
+    `_state_at(anchor)` sees every sensor update that happened in the
+    cluster. Without this, sub-second offsets between the 8 sensors'
+    state_changed events would produce a 4-8 row staircase showing the
+    intermediate "some sensors updated, others not yet" states.
+
+    `timestamps` MUST be sorted ascending.
+    """
+    if not timestamps:
+        return []
+    tolerance = timedelta(seconds=tolerance_s)
+    anchors: list[datetime] = []
+    cluster_last = timestamps[0]
+    for ts in timestamps[1:]:
+        if ts - cluster_last <= tolerance:
+            cluster_last = ts
+        else:
+            anchors.append(cluster_last)
+            cluster_last = ts
+    anchors.append(cluster_last)
+    return anchors
 
 
 def _state_at(snapshots: list[StateSnapshot], ts: datetime) -> str | None:
