@@ -36,13 +36,21 @@ from .weather_multiplier import compute_multiplier
 # application layer is responsible for fetching these via the recorder
 # and passing the result to `assemble_rows`. Order matches the dedupe
 # comparison order below.
+#
+# NOTE entity_ids vs SensorEntityDescription.key: HA slugifies entity_id
+# from the entity NAME (e.g., "Precipitation Amount Min" →
+# `precipitation_amount_min`), NOT from `key`. The wetteronline integration
+# uses `key="precipitation_amount_mm_min"` (with mm marker) for unique_id,
+# but the entity_id ends up without the mm/min infix. Always source these
+# values from the live entity_id, then map to the output field name (which
+# keeps the mm/min infix for consistency with current_observations).
 WETTERONLINE_SENSORS: tuple[str, ...] = (
     "sensor.wetteronline_condition_custom",
     "sensor.wetteronline_precipitation_probability",
-    "sensor.wetteronline_precipitation_amount_mm_min",
-    "sensor.wetteronline_precipitation_amount_mm_max",
-    "sensor.wetteronline_precipitation_duration_min_min",
-    "sensor.wetteronline_precipitation_duration_min_max",
+    "sensor.wetteronline_precipitation_amount_min",
+    "sensor.wetteronline_precipitation_amount_max",
+    "sensor.wetteronline_precipitation_duration_min",
+    "sensor.wetteronline_precipitation_duration_max",
     "sensor.wetteronline_convection_probability",
     "sensor.wetteronline_visibility",
 )
@@ -51,10 +59,10 @@ WETTERONLINE_SENSORS: tuple[str, ...] = (
 SENSOR_FIELD_MAP: Mapping[str, str] = {
     "sensor.wetteronline_condition_custom": "condition_custom",
     "sensor.wetteronline_precipitation_probability": "precipitation_probability",
-    "sensor.wetteronline_precipitation_amount_mm_min": "precipitation_amount_mm_min",
-    "sensor.wetteronline_precipitation_amount_mm_max": "precipitation_amount_mm_max",
-    "sensor.wetteronline_precipitation_duration_min_min": "precipitation_duration_min_min",
-    "sensor.wetteronline_precipitation_duration_min_max": "precipitation_duration_min_max",
+    "sensor.wetteronline_precipitation_amount_min": "precipitation_amount_mm_min",
+    "sensor.wetteronline_precipitation_amount_max": "precipitation_amount_mm_max",
+    "sensor.wetteronline_precipitation_duration_min": "precipitation_duration_min_min",
+    "sensor.wetteronline_precipitation_duration_max": "precipitation_duration_min_max",
     "sensor.wetteronline_convection_probability": "convection_probability",
     "sensor.wetteronline_visibility": "visibility_meter",
 }

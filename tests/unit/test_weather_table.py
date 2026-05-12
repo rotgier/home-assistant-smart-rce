@@ -257,10 +257,10 @@ def test_subsecond_jitter_clustered_to_single_row():
         [
             "sensor.wetteronline_condition_custom",
             "sensor.wetteronline_precipitation_probability",
-            "sensor.wetteronline_precipitation_amount_mm_min",
-            "sensor.wetteronline_precipitation_amount_mm_max",
-            "sensor.wetteronline_precipitation_duration_min_min",
-            "sensor.wetteronline_precipitation_duration_min_max",
+            "sensor.wetteronline_precipitation_amount_min",
+            "sensor.wetteronline_precipitation_amount_max",
+            "sensor.wetteronline_precipitation_duration_min",
+            "sensor.wetteronline_precipitation_duration_max",
             "sensor.wetteronline_convection_probability",
             "sensor.wetteronline_visibility",
         ]
