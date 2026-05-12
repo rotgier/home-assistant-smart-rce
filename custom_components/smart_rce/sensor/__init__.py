@@ -22,6 +22,7 @@ from .. import SmartRceConfigEntry
 from .ems_sensor import EMS_SENSOR_DESCRIPTIONS, EmsSensor
 from .pv_forecast_sensor import PV_FORECAST_DESCRIPTIONS, PvForecastSensor
 from .rce_sensor import SENSOR_DESCRIPTIONS, SmartRceSensor
+from .target_soc_matrix_sensor import SmartRceTargetSocMatrixSensor
 from .weather_history_sensor import WeatherForecastHistorySensor
 from .weather_table_sensor import SmartRceWeatherTableSensor
 
@@ -57,6 +58,15 @@ async def async_setup_entry(
             hass,
             entry.runtime_data.weather_table_service,
             weather_listener,
+            coordinator,
+        )
+    )
+    sensors.append(
+        SmartRceTargetSocMatrixSensor(
+            hass,
+            entry.runtime_data.target_soc_matrix_service,
+            weather_listener,
+            pv_forecast,
             coordinator,
         )
     )

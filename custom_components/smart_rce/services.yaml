@@ -15,3 +15,22 @@ get_weather_table:
       example: "2026-05-12"
       selector:
         date:
+
+get_target_soc_matrix:
+  name: Get target SOC matrix
+  description: >
+    Compute the PV × Cons strategy matrix for the 7-13 deficit window on
+    a target date. Today returns 8 PV strategies (At6, Live, Extrap +
+    five extrapolated variants) × 1 Live cons + up to 5 prev-workday
+    cons profiles. Tomorrow returns 2 PV (At6, Live) × the same Cons
+    set. Past dates return kind="past_unsupported" (no matrix; v2 will
+    add recorder-based reconstruction). Each cell carries required SOC%
+    and the cumulative dip in kWh.
+  fields:
+    date:
+      name: Date
+      description: ISO date (YYYY-MM-DD). Today or tomorrow; past returns N/A.
+      required: true
+      example: "2026-05-13"
+      selector:
+        date:

@@ -13,10 +13,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
+from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
+from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.rce_api import RceApi
 from .infrastructure.weather_history_loader import WeatherHistoryLoader
 from .infrastructure.weather_listener import WeatherForecastListener
@@ -37,6 +39,7 @@ class SmartRceData:
     pv_forecast: PvForecastService
     weather_forecast_history: WeatherForecastHistory
     weather_table_service: WeatherTableService
+    target_soc_matrix_service: TargetSocMatrixService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -62,6 +65,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         hass, weather_history_loader, weather_listener
     )
 
+    realized_pv_loader = RealizedPvLoader(hass)
+    target_soc_matrix_service = TargetSocMatrixService(
+        hass, pv_forecast, realized_pv_loader
+    )
+
     await rce_coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = SmartRceData(
@@ -71,9 +79,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         pv_forecast,
         weather_forecast_history,
         weather_table_service,
+        target_soc_matrix_service,
     )
 
-    _register_services(hass, weather_table_service)
+    _register_services(hass, weather_table_service, target_soc_matrix_service)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -81,9 +90,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
 
 
 def _register_services(
-    hass: HomeAssistant, weather_table_service: WeatherTableService
+    hass: HomeAssistant,
+    weather_table_service: WeatherTableService,
+    target_soc_matrix_service: TargetSocMatrixService,
 ) -> None:
-    """Register smart_rce.get_weather_table service (idempotent)."""
+    """Register smart_rce response-only services (idempotent)."""
     from datetime import date as date_type
 
     import voluptuous as vol
@@ -91,28 +102,45 @@ def _register_services(
     from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse
     from homeassistant.exceptions import ServiceValidationError
 
-    if hass.services.has_service("smart_rce", "get_weather_table"):
-        return
-
     schema = vol.Schema({vol.Required("date"): str})
 
-    async def _handle(call: ServiceCall) -> ServiceResponse:
-        raw = call.data["date"]
+    def _parse_date(raw: str) -> date_type:
         try:
-            target = date_type.fromisoformat(raw)
+            return date_type.fromisoformat(raw)
         except ValueError as err:
             raise ServiceValidationError(
                 f"Invalid date '{raw}', expected ISO YYYY-MM-DD"
             ) from err
-        return await weather_table_service.async_get_table(target)
 
-    hass.services.async_register(
-        "smart_rce",
-        "get_weather_table",
-        _handle,
-        schema=schema,
-        supports_response=SupportsResponse.ONLY,
-    )
+    if not hass.services.has_service("smart_rce", "get_weather_table"):
+
+        async def _handle_weather_table(call: ServiceCall) -> ServiceResponse:
+            return await weather_table_service.async_get_table(
+                _parse_date(call.data["date"])
+            )
+
+        hass.services.async_register(
+            "smart_rce",
+            "get_weather_table",
+            _handle_weather_table,
+            schema=schema,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service("smart_rce", "get_target_soc_matrix"):
+
+        async def _handle_target_soc_matrix(call: ServiceCall) -> ServiceResponse:
+            return await target_soc_matrix_service.async_get_matrix(
+                _parse_date(call.data["date"])
+            )
+
+        hass.services.async_register(
+            "smart_rce",
+            "get_target_soc_matrix",
+            _handle_target_soc_matrix,
+            schema=schema,
+            supports_response=SupportsResponse.ONLY,
+        )
 
 
 def live_reload():
@@ -207,6 +235,11 @@ def live_reload():
     reload(
         import_module("custom_components.smart_rce.application.weather_table_service")
     )
+    reload(
+        import_module(
+            "custom_components.smart_rce.application.target_soc_matrix_service"
+        )
+    )
     reload(import_module("custom_components.smart_rce.pv_forecast_factory"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor._state_writer_mixin"))
@@ -214,6 +247,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.sensor.pv_forecast_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.weather_history_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.weather_table_sensor"))
+    reload(import_module("custom_components.smart_rce.sensor.target_soc_matrix_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.ems_sensor"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
