@@ -139,7 +139,7 @@ def assemble_rows(
     """
     candidates: list[dict[str, Any]] = []
 
-    candidates.extend(_history_rows(history_per_sensor, target_date))
+    candidates.extend(_history_rows(history_per_sensor, target_date, now))
 
     today = now.date()
     if target_date == today:
@@ -169,6 +169,7 @@ def assemble_rows(
 def _history_rows(
     history_per_sensor: Mapping[str, list[StateSnapshot]],
     target_date: date,
+    now: datetime,
 ) -> list[dict[str, Any]]:
     """Build one row per unique state-change cluster during target_date.
 
@@ -178,13 +179,19 @@ def _history_rows(
     just-before that moment — the late anchor guarantees that all
     sensor updates in the cluster are visible (so we don't see partial
     "in-flight" transition rows).
+
+    Snapshots whose timestamp is in the future from `now` are dropped:
+    the recorder API used with `include_start_time_state=True` may
+    synthesize a "state at start_time" row when querying a future date
+    (e.g., tomorrow 00:00), but no real observation can exist for a
+    moment that hasn't happened yet.
     """
     raw_timestamps = sorted(
         {
             snap.timestamp
             for sensor_id in WETTERONLINE_SENSORS
             for snap in history_per_sensor.get(sensor_id, [])
-            if snap.timestamp.date() == target_date
+            if snap.timestamp.date() == target_date and snap.timestamp <= now
         }
     )
     if not raw_timestamps:

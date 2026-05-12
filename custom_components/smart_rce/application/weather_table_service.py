@@ -59,18 +59,26 @@ class WeatherTableService:
         future_hours: list[dict[str, Any]] = []
         nowcast_items: list[dict[str, Any]] = []
 
-        if target_date == now.date() and forecast_raw:
-            # forecast[0] is the synthesized current hour (wetteronline's
-            # weather entity prepends it). Treat it as the `current` row
-            # source; the rest are future hours.
-            current_obs = _ensure_dict(forecast_raw[0])
-            future_hours = [_ensure_dict(h) for h in forecast_raw[1:]]
-            # Flatten nowcast_15min across all forecast items — they may
-            # appear on the synthesized hour and the next 1-2 hours.
-            for h in forecast_raw:
-                items = _ensure_dict(h).get("nowcast_15min", [])
-                if isinstance(items, list):
-                    nowcast_items.extend(items)
+        if forecast_raw:
+            if target_date == now.date():
+                # forecast[0] is the synthesized current hour (wetteronline's
+                # weather entity prepends it). Treat it as the `current` row
+                # source; the rest are future hours.
+                current_obs = _ensure_dict(forecast_raw[0])
+                future_hours = [_ensure_dict(h) for h in forecast_raw[1:]]
+                # Flatten nowcast_15min across all forecast items — they may
+                # appear on the synthesized hour and the next 1-2 hours.
+                for h in forecast_raw:
+                    items = _ensure_dict(h).get("nowcast_15min", [])
+                    if isinstance(items, list):
+                        nowcast_items.extend(items)
+            else:
+                # Future date (within forecast horizon, ~2 days ahead): pass
+                # every forecast hour — domain's `_forecast_rows` filters by
+                # target_date internally. No `current` row (live snapshot
+                # only makes sense for today) and no nowcast (covers only
+                # the next ~105 min, never a different day).
+                future_hours = [_ensure_dict(h) for h in forecast_raw]
 
         rows = assemble_rows(
             history_per_sensor=history,
