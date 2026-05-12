@@ -408,14 +408,24 @@ def _to_number(value: Any) -> float | None:
 
 
 def _dedupe_consecutive(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop consecutive rows where all `DEDUPE_FIELDS` are equal.
+    """Drop consecutive history rows where all `DEDUPE_FIELDS` are equal.
 
-    `source`, `datetime`, `time` and computed columns are ignored — the
-    8 input fields are the identity for dedupe purposes.
+    Only applies to history↔history pairs. `current`, `nowcast` and
+    `forecast` rows are always kept — they carry distinct semantic
+    weight (live snapshot, 15-min sub-hour granularity, future-hour
+    forecast) even when their input fields happen to match an adjacent
+    history row. Without this guard, an aligned-coordinator history
+    snapshot at exactly the same minute as `current_obs.fetched_at`
+    would shadow the synthesized current row.
     """
     out: list[dict[str, Any]] = []
     for row in rows:
-        if out and all(out[-1][f] == row[f] for f in DEDUPE_FIELDS):
+        if (
+            out
+            and out[-1]["source"] == SOURCE_HISTORY
+            and row["source"] == SOURCE_HISTORY
+            and all(out[-1][f] == row[f] for f in DEDUPE_FIELDS)
+        ):
             continue
         out.append(row)
     return out

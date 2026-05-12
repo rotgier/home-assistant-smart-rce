@@ -326,6 +326,45 @@ def test_subsecond_jitter_clustered_to_single_row():
     assert rows[1]["precipitation_probability"] == 20.0
 
 
+def test_current_row_not_deduped_against_history_row_at_same_time():
+    """Current row must surface even when adjacent history has identical fields.
+
+    Aligned coordinator may emit a history snapshot at the same minute as
+    the synthesized-current fetched_at. With identical 8 input fields both
+    rows must surface — dedupe must NOT collapse them since they carry
+    different semantic meaning (recorded state change vs live snapshot).
+    """
+    same_moment = _ts(13, 30)
+    history = _history(
+        [
+            ("sensor.wetteronline_condition_custom", same_moment, "cloudy"),
+            (
+                "sensor.wetteronline_precipitation_probability",
+                same_moment,
+                "40",
+            ),
+        ]
+    )
+    current_obs = {
+        "condition_custom": "cloudy",
+        "precipitation_probability": 40,
+        # Identical to the history row's 8 fields:
+        "fetched_at": same_moment.isoformat(),
+    }
+    rows = assemble_rows(
+        history_per_sensor=history,
+        target_date=date(2026, 5, 12),
+        now=same_moment,
+        current_obs=current_obs,
+        forecast_hours=[],
+        nowcast_items=[],
+        tz=TZ,
+    )
+    sources = [r["source"] for r in rows]
+    assert SOURCE_HISTORY in sources
+    assert SOURCE_CURRENT in sources
+
+
 def test_history_timestamps_outside_target_date_excluded():
     """State changes on different days don't generate rows for target_date."""
     history = _history(
