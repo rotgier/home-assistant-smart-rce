@@ -95,15 +95,49 @@ class AdjustedPvForecast:
     total_kwh: float  # sum of (adjusted rate / 2) = actual kWh
 
 
+_EXPECTED_BUCKETS: Final[frozenset[tuple[int, int]]] = frozenset(
+    (h, m) for h in range(7, 13) for m in (0, 30)
+)
+
+
 @dataclass(frozen=True)
 class ConsumptionProfile:
-    """Consumption per 30-min bucket, keyed by (hour, minute) -> kWh."""
+    """Consumption per 30-min bucket, keyed by (hour, minute) -> kWh.
+
+    Strict contract: `buckets` must contain exactly 12 entries covering
+    7:00..12:30 in 30-min steps. Missing buckets are filled with
+    `CONSUMPTION_PER_30MIN` at the infra↔domain boundary
+    (`ConsumptionProfileLoader._bucket_profiles_by_date`) so callers can
+    rely on `.get(h, m)` returning a non-None float.
+    """
 
     buckets: dict[tuple[int, int], float]
     source_date: date | None = None  # workday the profile was taken from
 
-    def get(self, hour: int, minute: int) -> float | None:
-        return self.buckets.get((hour, minute))
+    def __post_init__(self) -> None:
+        got = frozenset(self.buckets.keys())
+        if got != _EXPECTED_BUCKETS:
+            missing = sorted(_EXPECTED_BUCKETS - got)
+            extra = sorted(got - _EXPECTED_BUCKETS)
+            raise ValueError(
+                "ConsumptionProfile must have exactly 12 buckets 7:00..12:30; "
+                f"missing={missing}, extra={extra}"
+            )
+
+    def get(self, hour: int, minute: int) -> float:
+        return self.buckets[(hour, minute)]
+
+    @classmethod
+    def flat(
+        cls,
+        value: float = CONSUMPTION_PER_30MIN,
+        source_date: date | None = None,
+    ) -> ConsumptionProfile:
+        """Synthetic flat baseline — every bucket = `value` kWh."""
+        return cls(
+            buckets={(h, m): value for h, m in _EXPECTED_BUCKETS},
+            source_date=source_date,
+        )
 
 
 @dataclass(frozen=True)
@@ -287,24 +321,25 @@ class PvForecast:
         """
         sch = self.start_charge_hour_today
         sch_t = self.start_charge_hour_tomorrow
+        default_cons = ConsumptionProfile.flat()
         if self.adjusted_at_6:
             self.target_soc = calculate_target_soc(
-                self.adjusted_at_6, now=now, start_charge_hour=sch
+                self.adjusted_at_6, default_cons, now=now, start_charge_hour=sch
             )
         if self.adjusted_live:
             self.target_soc_live = calculate_target_soc(
-                self.adjusted_live, now=now, start_charge_hour=sch
+                self.adjusted_live, default_cons, now=now, start_charge_hour=sch
             )
 
         # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
         # Pre-charge gate sourced from `sensor.rce_start_charge_hour_tomorrow_time`.
         if self.adjusted_tomorrow:
             self.target_soc_tomorrow = calculate_target_soc(
-                self.adjusted_tomorrow, start_charge_hour=sch_t
+                self.adjusted_tomorrow, default_cons, start_charge_hour=sch_t
             )
         if self.adjusted_tomorrow_live:
             self.target_soc_tomorrow_live = calculate_target_soc(
-                self.adjusted_tomorrow_live, start_charge_hour=sch_t
+                self.adjusted_tomorrow_live, default_cons, start_charge_hour=sch_t
             )
 
         # Prev-workday instrumentation (Etap A) — adjusted_live + per-day profile.
@@ -312,7 +347,7 @@ class PvForecast:
             if self.adjusted_live and profile is not None:
                 self.target_soc_prev_days[i] = calculate_target_soc(
                     self.adjusted_live,
-                    consumption_profile=profile,
+                    profile,
                     now=now,
                     start_charge_hour=sch,
                 )
@@ -321,7 +356,7 @@ class PvForecast:
             if self.adjusted_tomorrow_live and profile is not None:
                 self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
                     self.adjusted_tomorrow_live,
-                    consumption_profile=profile,
+                    profile,
                     start_charge_hour=sch_t,
                 )
             else:

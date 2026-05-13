@@ -63,7 +63,7 @@ class TargetSocResult:
 
 def calculate_target_soc(
     forecast: AdjustedPvForecast,
-    consumption_profile: ConsumptionProfile | None = None,
+    consumption_profile: ConsumptionProfile,
     now: datetime | None = None,
     current_bucket_override: tuple[float, float] | None = None,
     start_charge_hour: int | None = None,
@@ -73,7 +73,8 @@ def calculate_target_soc(
     Simulates cumulative energy deficit from now (or 7:00) to 13:00.
     Before 7:00 or no now: simulates full 7:00-13:00 window.
     After 7:00: simulates from current 30min period to 13:00.
-    consumption_profile: per-bucket overrides; fallback to CONSUMPTION_PER_30MIN.
+    consumption_profile: required strict-contract VO (12 buckets); use
+    `ConsumptionProfile.flat()` for the constant-baseline default.
 
     current_bucket_override=(pv_kwh, cons_kwh): replace the in-progress
     bucket's PV + consumption kWh values (used by extrapolated variants;
@@ -127,11 +128,7 @@ def calculate_target_soc(
             pv_kwh_30min, consumption = current_bucket_override
         else:
             pv_kwh_30min = period.pv_estimate_adjusted / 2  # rate -> kWh per 30min
-            consumption = (
-                consumption_profile.get(hour, minute) if consumption_profile else None
-            )
-            if consumption is None:
-                consumption = CONSUMPTION_PER_30MIN
+            consumption = consumption_profile.get(hour, minute)
         balance = pv_kwh_30min - consumption
         cumulative_balance += balance
         if cumulative_balance < min_balance:

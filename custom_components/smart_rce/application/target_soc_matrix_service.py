@@ -286,8 +286,8 @@ def _adjusted_to_buckets(
 
 
 def _profile_to_buckets(profile: ConsumptionProfile) -> list[float]:
-    """Fill 12 buckets from `ConsumptionProfile`; missing slots → baseline."""
-    return [profile.get(h, m) or CONSUMPTION_PER_30MIN for h, m in _BUCKET_TIMES]
+    """Project `ConsumptionProfile` (strict 12-bucket VO) → ordered list."""
+    return [profile.get(h, m) for h, m in _BUCKET_TIMES]
 
 
 def _serialize(

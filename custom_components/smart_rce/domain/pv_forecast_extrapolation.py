@@ -24,10 +24,17 @@ from .pv_forecast import (
     CONSUMPTION_PER_30MIN,
     AdjustedPeriod,
     AdjustedPvForecast,
+    ConsumptionProfile,
     ExtrapolatedLive,
     PvForecast,
     SolcastPeriod,
 )
+
+# Constant-baseline profile reused by every extrapolated variant —
+# matches the target_soc_live baseline (no per-bucket overrides). The
+# `current_bucket_override` argument carries cons remaining for the
+# in-progress bucket, so this baseline only matters for future buckets.
+_DEFAULT_CONS_PROFILE = ConsumptionProfile.flat()
 
 # Min minutes elapsed before we trust realized prorate / pattern variants.
 # Below this, division by tiny elapsed_min produces noise. Same threshold
@@ -220,7 +227,7 @@ def extrapolate_calibrated_pattern(
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
     target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
         adjusted,
-        consumption_profile=None,
+        consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
         current_bucket_override=(
             current_pv_remaining_kwh,
@@ -533,7 +540,7 @@ def extrapolate_proportional_median(
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
     target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
         adjusted,
-        consumption_profile=None,
+        consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
         current_bucket_override=(
             current_pv_remaining_kwh,
@@ -729,7 +736,7 @@ def extrapolate_band_clamped(
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
     target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
         adjusted,
-        consumption_profile=None,
+        consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
         current_bucket_override=(
             current_pv_remaining_kwh,
@@ -861,7 +868,7 @@ def extrapolate_band_clamped_recent(
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
     target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
         adjusted,
-        consumption_profile=None,
+        consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
         current_bucket_override=(
             current_pv_remaining_kwh,
@@ -912,7 +919,7 @@ def _build_result(
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
     target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
         adjusted_live,
-        consumption_profile=None,
+        consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
         current_bucket_override=(current_pv_remaining_kwh, current_cons_remaining_kwh),
         start_charge_hour=start_charge_hour,
