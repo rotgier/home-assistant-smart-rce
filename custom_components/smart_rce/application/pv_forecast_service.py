@@ -190,6 +190,10 @@ class PvForecastService:
         self.forecast.start_charge_hour_tomorrow = (
             int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
         )
+        # Live consumption rate (W) flows into `calculate_target_soc` to
+        # time-prorate the in-progress bucket's cons against the current
+        # 5-min average power instead of the constant baseline.
+        self.forecast.live_consumption_w = self._live_rates.read_consumption_w()
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.

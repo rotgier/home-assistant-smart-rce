@@ -174,6 +174,57 @@ def test_to_profile_no_match_raises() -> None:
         forecast.to_profile(target_date=date(2026, 4, 20))
 
 
+def test_in_progress_bucket_internally_time_prorated() -> None:
+    """At now=09:13, bucket 09:00 yields full × (17/30); future buckets full."""
+    from datetime import datetime, timezone
+
+    pv = _make_profile(2.0)  # 1.0 kWh per 30-min bucket
+    cons = ConsumptionProfile.flat()  # 0.45 per bucket
+    now = datetime(2026, 4, 18, 9, 13, tzinfo=timezone.utc)
+    result = _calculate_target_soc(pv, cons, now=now)
+    first = result.buckets[0]
+    assert first.period == "09:00"
+    # remaining = 17min → factor = 17/30 ≈ 0.567
+    factor = 17 / 30
+    assert abs(first.pv_kwh - round(1.0 * factor, 3)) < 0.002
+    assert abs(first.cons_kwh - round(0.45 * factor, 3)) < 0.002
+    # Bucket past in-progress keeps full values.
+    second = result.buckets[1]
+    assert second.period == "09:30"
+    assert second.pv_kwh == 1.0
+    assert second.cons_kwh == 0.45
+
+
+def test_live_consumption_w_overrides_cons_for_in_progress_bucket() -> None:
+    """`live_consumption_w` injects current-power cons remaining; profile ignored for that bucket."""
+    from datetime import datetime, timezone
+
+    pv = _make_profile(2.0)  # 1.0 kWh per 30-min
+    cons = ConsumptionProfile.flat(value=0.45)
+    now = datetime(2026, 4, 18, 9, 13, tzinfo=timezone.utc)
+    # 1200 W × (17min / 60min/h) = 0.34 kWh remaining
+    result = _calculate_target_soc(pv, cons, now=now, live_consumption_w=1200.0)
+    first = result.buckets[0]
+    expected = round(1.2 * (17 / 60), 3)
+    assert abs(first.cons_kwh - expected) < 0.002
+    # Non-current bucket still uses profile.
+    assert result.buckets[1].cons_kwh == 0.45
+
+
+def test_live_consumption_w_no_effect_outside_window() -> None:
+    """When `now` is before 7:00, no in-progress bucket — full-window simulation."""
+    from datetime import datetime, timezone
+
+    pv = _make_profile(2.0)
+    cons = ConsumptionProfile.flat()
+    now = datetime(2026, 4, 18, 5, 0, tzinfo=timezone.utc)
+    result = _calculate_target_soc(pv, cons, now=now, live_consumption_w=1200.0)
+    # First bucket is 07:00 — not "current", full values.
+    assert result.buckets[0].period == "07:00"
+    assert result.buckets[0].pv_kwh == 1.0
+    assert result.buckets[0].cons_kwh == 0.45
+
+
 def test_to_profile_missing_buckets_filled_with_zero() -> None:
     """When forecast covers only part of 7-13, missing buckets default to 0.0."""
     periods = [

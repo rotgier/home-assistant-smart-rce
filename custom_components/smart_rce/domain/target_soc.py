@@ -20,7 +20,7 @@ happy without runtime coupling.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -103,6 +103,7 @@ def calculate_target_soc(
     pv_profile: PvProfile,
     consumption_profile: ConsumptionProfile,
     now: datetime | None = None,
+    live_consumption_w: float | None = None,
     start_charge_hour: int | None = None,
 ) -> TargetSocResult:
     """Calculate target battery SOC + per-bucket trace.
@@ -112,10 +113,22 @@ def calculate_target_soc(
     After 7:00: simulates from current 30min period to 13:00.
 
     `pv_profile` / `consumption_profile`: strict 12-bucket VOs covering
-    7:00..12:30. Use `PvProfile.flat()` / `ConsumptionProfile.flat()`
-    for synthetic baselines, or build from forecasts via
-    `AdjustedPvForecast.to_profile(target_date)`. Extrapolated variants
-    encode in-progress bucket projections directly into the PvProfile.
+    7:00..12:30 holding **full-bucket** kWh values. Use `PvProfile.flat()`
+    / `ConsumptionProfile.flat()` for synthetic baselines, or build from
+    forecasts via `AdjustedPvForecast.to_profile(target_date)`.
+    Extrapolation strategies pre-compute the in-progress bucket's full
+    projection (so-far + extrapolated remaining) into the profile.
+
+    `now`: when in 7-13 window, the in-progress bucket is **time-prorated
+    internally** — `pv_kwh = profile.get(...) × remaining/1800`,
+    `cons_kwh = profile.get(...) × remaining/1800`. Buckets past the
+    in-progress one keep their full-bucket values. Caller passes full
+    profiles; this function decides the prorate.
+
+    `live_consumption_w`: when given, overrides the in-progress bucket's
+    consumption with `live_consumption_w / 1000 × remaining_sec / 3600`
+    (current power × remaining time). Only applies to the in-progress
+    bucket; non-current buckets always use `consumption_profile`.
 
     start_charge_hour (int | None): pre-charge gate. When set, surplus
     accumulated during pre-charge hours (hour < start_charge_hour) does
@@ -155,8 +168,24 @@ def calculate_target_soc(
             ):
                 cumulative_balance = min(cumulative_balance, 0.0)
 
-            pv_kwh_30min = pv_profile.get(hour, minute)
-            consumption = consumption_profile.get(hour, minute)
+            remaining_sec = 1800.0
+            remaining_factor = 1.0
+            now_inside_bucket = False
+            if now is not None and hour == start_hour and minute == start_minute:
+                bucket_start = now.replace(
+                    hour=hour, minute=minute, second=0, microsecond=0
+                )
+                bucket_end = bucket_start + timedelta(minutes=30)
+                if bucket_start <= now < bucket_end:
+                    remaining_sec = (bucket_end - now).total_seconds()
+                    remaining_factor = remaining_sec / 1800.0
+                    now_inside_bucket = True
+
+            pv_kwh_30min = pv_profile.get(hour, minute) * remaining_factor
+            if now_inside_bucket and live_consumption_w is not None:
+                consumption = (live_consumption_w / 1000.0) * (remaining_sec / 3600.0)
+            else:
+                consumption = consumption_profile.get(hour, minute) * remaining_factor
             balance = pv_kwh_30min - consumption
             cumulative_balance += balance
             if cumulative_balance < min_balance:

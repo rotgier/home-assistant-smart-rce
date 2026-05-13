@@ -289,6 +289,12 @@ class PvForecast:
     # `target_soc_tomorrow*` so surplus from a sunny pre-charge hour doesn't
     # mask a real deficit later in the window.
     start_charge_hour_tomorrow: int | None = None
+    # Live house consumption rate (W) — sourced from
+    # `sensor.house_consumption_avg_5_minutes` via `LiveRateReader.read_consumption_w()`.
+    # Passed to `calculate_target_soc` for **today** variants so the
+    # in-progress bucket's consumption uses the actual current rate
+    # instead of `consumption_profile.get(...)` × remaining-factor.
+    live_consumption_w: float | None = None
 
     def update_at_6(
         self,
@@ -361,6 +367,7 @@ class PvForecast:
         """
         sch = self.start_charge_hour_today
         sch_t = self.start_charge_hour_tomorrow
+        live_cons_w = self.live_consumption_w
         default_cons = ConsumptionProfile.flat()
         today = now.date()
         tomorrow = today + timedelta(days=1)
@@ -377,15 +384,22 @@ class PvForecast:
                 self.adjusted_at_6.to_profile(today),
                 default_cons,
                 now=now,
+                live_consumption_w=live_cons_w,
                 start_charge_hour=sch,
             )
         if live_profile is not None:
             self.target_soc_live = calculate_target_soc(
-                live_profile, default_cons, now=now, start_charge_hour=sch
+                live_profile,
+                default_cons,
+                now=now,
+                live_consumption_w=live_cons_w,
+                start_charge_hour=sch,
             )
 
         # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
         # Pre-charge gate sourced from `sensor.rce_start_charge_hour_tomorrow_time`.
+        # No `live_consumption_w` for tomorrow — current power doesn't carry
+        # across days, the in-progress bucket concept doesn't apply.
         if self.adjusted_tomorrow:
             self.target_soc_tomorrow = calculate_target_soc(
                 self.adjusted_tomorrow.to_profile(tomorrow),
@@ -404,6 +418,7 @@ class PvForecast:
                     live_profile,
                     profile,
                     now=now,
+                    live_consumption_w=live_cons_w,
                     start_charge_hour=sch,
                 )
             else:
