@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from .pv_forecast import AdjustedPvForecast, ConsumptionProfile
+    from .pv_forecast import ConsumptionProfile
 
 # --- Constants --- #
 
@@ -34,8 +34,46 @@ MIN_SOC_PERCENT: Final[int] = 10
 LOSS_FACTOR: Final[float] = 0.10  # 10% conversion losses
 BUFFER_PERCENT: Final[int] = 12
 
+# 12 buckets covering 7:00..12:30 in 30-min steps — strict PvProfile /
+# ConsumptionProfile contract (kept in `target_soc.py` so PvProfile can
+# validate without importing pv_forecast.py's ConsumptionProfile guard
+# constant).
+_EXPECTED_BUCKETS: Final[frozenset[tuple[int, int]]] = frozenset(
+    (h, m) for h in range(7, 13) for m in (0, 30)
+)
+
 
 # --- Value objects --- #
+
+
+@dataclass(frozen=True)
+class PvProfile:
+    """PV generation per 30-min bucket, keyed by (hour, minute) -> kWh.
+
+    Symmetric to `ConsumptionProfile`: strict 12-bucket contract over
+    7:00..12:30, `.get(h, m)` returns float (no Optional). Build from an
+    `AdjustedPvForecast` via `AdjustedPvForecast.to_profile(target_date)`.
+    """
+
+    buckets: dict[tuple[int, int], float]
+
+    def __post_init__(self) -> None:
+        got = frozenset(self.buckets.keys())
+        if got != _EXPECTED_BUCKETS:
+            missing = sorted(_EXPECTED_BUCKETS - got)
+            extra = sorted(got - _EXPECTED_BUCKETS)
+            raise ValueError(
+                "PvProfile must have exactly 12 buckets 7:00..12:30; "
+                f"missing={missing}, extra={extra}"
+            )
+
+    def get(self, hour: int, minute: int) -> float:
+        return self.buckets[(hour, minute)]
+
+    @classmethod
+    def flat(cls, value: float = 0.0) -> PvProfile:
+        """Synthetic flat profile — every bucket = `value` kWh (default 0)."""
+        return cls(buckets={(h, m): value for h, m in _EXPECTED_BUCKETS})
 
 
 @dataclass(frozen=True)
@@ -62,7 +100,7 @@ class TargetSocResult:
 
 
 def calculate_target_soc(
-    forecast: AdjustedPvForecast,
+    pv_profile: PvProfile,
     consumption_profile: ConsumptionProfile,
     now: datetime | None = None,
     current_bucket_override: tuple[float, float] | None = None,
@@ -73,13 +111,17 @@ def calculate_target_soc(
     Simulates cumulative energy deficit from now (or 7:00) to 13:00.
     Before 7:00 or no now: simulates full 7:00-13:00 window.
     After 7:00: simulates from current 30min period to 13:00.
-    consumption_profile: required strict-contract VO (12 buckets); use
-    `ConsumptionProfile.flat()` for the constant-baseline default.
+
+    `pv_profile` / `consumption_profile`: strict 12-bucket VOs covering
+    7:00..12:30. Use `PvProfile.flat()` / `ConsumptionProfile.flat()`
+    for synthetic baselines, or build from forecasts via
+    `AdjustedPvForecast.to_profile(target_date)`.
 
     current_bucket_override=(pv_kwh, cons_kwh): replace the in-progress
     bucket's PV + consumption kWh values (used by extrapolated variants;
     the kWh values represent "remaining contribution in the bucket from
-    now onwards").
+    now onwards"). Will be dropped in C2 when extrapolation strategies
+    encode the projection directly into PvProfile.
 
     start_charge_hour (int | None): pre-charge gate. When set, surplus
     accumulated during pre-charge hours (hour < start_charge_hour) does
@@ -104,47 +146,43 @@ def calculate_target_soc(
     min_idx = -1
     prev_hour: int | None = None
 
-    for period in forecast.forecast:
-        dt = datetime.fromisoformat(period.period_start)
-        hour = dt.hour
-        minute = dt.minute
-        if hour < start_hour or (hour == start_hour and minute < start_minute):
-            continue
-        if hour >= 13:
-            continue
+    for hour in range(7, 13):
+        for minute in (0, 30):
+            if hour < start_hour or (hour == start_hour and minute < start_minute):
+                continue
 
-        # Hour-boundary clamp: if prior hour was in pre-charge, its surplus
-        # was exported (not stored in battery) — zero out positive cumulative.
-        if (
-            prev_hour is not None
-            and hour != prev_hour
-            and start_charge_hour is not None
-            and prev_hour < start_charge_hour
-        ):
-            cumulative_balance = min(cumulative_balance, 0.0)
+            # Hour-boundary clamp: if prior hour was in pre-charge, its surplus
+            # was exported (not stored in battery) — zero out positive cumulative.
+            if (
+                prev_hour is not None
+                and hour != prev_hour
+                and start_charge_hour is not None
+                and prev_hour < start_charge_hour
+            ):
+                cumulative_balance = min(cumulative_balance, 0.0)
 
-        is_current = hour == start_hour and minute == start_minute
-        if is_current and current_bucket_override is not None:
-            pv_kwh_30min, consumption = current_bucket_override
-        else:
-            pv_kwh_30min = period.pv_estimate_adjusted / 2  # rate -> kWh per 30min
-            consumption = consumption_profile.get(hour, minute)
-        balance = pv_kwh_30min - consumption
-        cumulative_balance += balance
-        if cumulative_balance < min_balance:
-            min_balance = cumulative_balance
-            min_idx = len(buckets)
-        buckets.append(
-            TargetSocBucket(
-                period=f"{hour:02d}:{minute:02d}",
-                pv_kwh=round(pv_kwh_30min, 3),
-                cons_kwh=round(consumption, 3),
-                balance=round(balance, 3),
-                cumulative=round(cumulative_balance, 3),
-                is_min=False,  # set below
+            is_current = hour == start_hour and minute == start_minute
+            if is_current and current_bucket_override is not None:
+                pv_kwh_30min, consumption = current_bucket_override
+            else:
+                pv_kwh_30min = pv_profile.get(hour, minute)
+                consumption = consumption_profile.get(hour, minute)
+            balance = pv_kwh_30min - consumption
+            cumulative_balance += balance
+            if cumulative_balance < min_balance:
+                min_balance = cumulative_balance
+                min_idx = len(buckets)
+            buckets.append(
+                TargetSocBucket(
+                    period=f"{hour:02d}:{minute:02d}",
+                    pv_kwh=round(pv_kwh_30min, 3),
+                    cons_kwh=round(consumption, 3),
+                    balance=round(balance, 3),
+                    cumulative=round(cumulative_balance, 3),
+                    is_min=False,  # set below
+                )
             )
-        )
-        prev_hour = hour
+            prev_hour = hour
 
     if min_idx >= 0:
         # Replace min bucket with is_min=True (dataclass is frozen → rebuild)

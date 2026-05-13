@@ -75,27 +75,18 @@ def test_cell_value_matches_calculate_target_soc_directly() -> None:
     )
 
     from custom_components.smart_rce.domain.pv_forecast import (
-        AdjustedPeriod,
-        AdjustedPvForecast,
         ConsumptionProfile,
+        PvProfile,
     )
 
-    direct_forecast = AdjustedPvForecast(
-        forecast=[
-            AdjustedPeriod(
-                period_start=f"2026-01-01T{h:02d}:{m:02d}:00",
-                pv_estimate_adjusted=pv[idx] * 2,
-            )
-            for idx in range(12)
-            for h, m in [(7 + idx // 2, (idx % 2) * 30)]
-        ],
-        total_kwh=sum(pv),
+    direct_pv = PvProfile(
+        buckets={(7 + idx // 2, (idx % 2) * 30): pv[idx] for idx in range(12)},
     )
     direct_profile = ConsumptionProfile(
         buckets={(7 + idx // 2, (idx % 2) * 30): cons[idx] for idx in range(12)},
         source_date=None,
     )
-    direct = calculate_target_soc(direct_forecast, consumption_profile=direct_profile)
+    direct = calculate_target_soc(direct_pv, consumption_profile=direct_profile)
 
     assert matrix.cells_pct[("only_pv", "only_cons")] == direct.value
 

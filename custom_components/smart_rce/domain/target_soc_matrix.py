@@ -19,20 +19,14 @@ into the dashboard markdown cards or the service response.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
 
-from .pv_forecast import AdjustedPeriod, AdjustedPvForecast, ConsumptionProfile
+from .pv_forecast import ConsumptionProfile, PvProfile
 from .target_soc import TargetSocResult, calculate_target_soc
 
 # 7:00..12:30 in 30-min steps = 12 buckets. Matrix never extends beyond
 # the deficit window; using a fixed length keeps the contract explicit.
 _BUCKETS_PER_WINDOW = 12
 _WINDOW_START_HOUR = 7
-# Reference date used to anchor synthesized `AdjustedPeriod.period_start`
-# values when calling `calculate_target_soc`. The formula only reads the
-# hour/minute of each period, never the absolute date, so the choice is
-# arbitrary — pin to a fixed date for determinism in tests.
-_REFERENCE_DATE = date(2026, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -96,15 +90,15 @@ def compute_matrix(
         if len(pv_buckets) != _BUCKETS_PER_WINDOW:
             continue
         pv_sums_kwh[pv_key] = round(sum(pv_buckets), 3)
-        forecast = _synthesize_forecast(pv_buckets)
+        pv_profile = _synthesize_pv_profile(pv_buckets)
         for cons_key in cons_keys_ordered:
             cons_buckets = cons_buckets_by_strategy[cons_key]
             if len(cons_buckets) != _BUCKETS_PER_WINDOW:
                 continue
-            profile = _synthesize_profile(cons_buckets)
+            cons_profile = _synthesize_cons_profile(cons_buckets)
             result = calculate_target_soc(
-                forecast,
-                consumption_profile=profile,
+                pv_profile,
+                consumption_profile=cons_profile,
                 start_charge_hour=start_charge_hour,
             )
             cells_pct[(pv_key, cons_key)] = result.value
@@ -129,31 +123,23 @@ def compute_matrix(
 # --- helpers ---
 
 
-def _synthesize_forecast(pv_buckets: list[float]) -> AdjustedPvForecast:
-    """Wrap 12 kWh-per-30min values as an `AdjustedPvForecast`.
-
-    `calculate_target_soc` consumes `pv_estimate_adjusted` as an hourly
-    rate and divides by 2 internally, so we multiply by 2 here to keep
-    the formula contract intact.
-    """
-    periods = [
-        AdjustedPeriod(
-            period_start=_iso_period(idx),
-            pv_estimate_adjusted=round(pv_buckets[idx] * 2, 4),
-        )
-        for idx in range(_BUCKETS_PER_WINDOW)
-    ]
-    total_kwh = round(sum(pv_buckets), 4)
-    return AdjustedPvForecast(forecast=periods, total_kwh=total_kwh)
+def _synthesize_pv_profile(pv_buckets: list[float]) -> PvProfile:
+    """Wrap 12 kWh-per-30min values as a `PvProfile`."""
+    return PvProfile(
+        buckets={
+            _hour_minute(idx): pv_buckets[idx] for idx in range(_BUCKETS_PER_WINDOW)
+        }
+    )
 
 
-def _synthesize_profile(cons_buckets: list[float]) -> ConsumptionProfile:
+def _synthesize_cons_profile(cons_buckets: list[float]) -> ConsumptionProfile:
     """Wrap 12 kWh-per-30min values as a `ConsumptionProfile`."""
-    buckets: dict[tuple[int, int], float] = {}
-    for idx in range(_BUCKETS_PER_WINDOW):
-        hour, minute = _hour_minute(idx)
-        buckets[(hour, minute)] = cons_buckets[idx]
-    return ConsumptionProfile(buckets=buckets, source_date=None)
+    return ConsumptionProfile(
+        buckets={
+            _hour_minute(idx): cons_buckets[idx] for idx in range(_BUCKETS_PER_WINDOW)
+        },
+        source_date=None,
+    )
 
 
 def _hour_minute(idx: int) -> tuple[int, int]:
@@ -161,11 +147,6 @@ def _hour_minute(idx: int) -> tuple[int, int]:
     hour = _WINDOW_START_HOUR + idx // 2
     minute = (idx % 2) * 30
     return hour, minute
-
-
-def _iso_period(idx: int) -> str:
-    hour, minute = _hour_minute(idx)
-    return datetime.combine(_REFERENCE_DATE, time(hour, minute, 0)).isoformat()
 
 
 def _dip_kwh(result: TargetSocResult) -> float:

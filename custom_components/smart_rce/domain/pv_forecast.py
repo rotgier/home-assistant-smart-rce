@@ -17,7 +17,7 @@ callers in pv_forecast_extrapolation.py and tests).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Final
 
 from .target_soc import (
@@ -26,6 +26,7 @@ from .target_soc import (
     CONSUMPTION_PER_30MIN,
     LOSS_FACTOR,
     MIN_SOC_PERCENT,
+    PvProfile,
     TargetSocBucket,
     TargetSocResult,
     calculate_target_soc,
@@ -37,6 +38,7 @@ __all__ = [
     "CONSUMPTION_PER_30MIN",
     "LOSS_FACTOR",
     "MIN_SOC_PERCENT",
+    "PvProfile",
     "TargetSocBucket",
     "TargetSocResult",
     "calculate_target_soc",
@@ -93,6 +95,44 @@ class WeatherConditionAtHour:
 class AdjustedPvForecast:
     forecast: list[AdjustedPeriod]
     total_kwh: float  # sum of (adjusted rate / 2) = actual kWh
+
+    def to_profile(self, target_date: date | None = None) -> PvProfile:
+        """Project periods → 12-bucket `PvProfile` for 7:00..12:30.
+
+        `pv_estimate_adjusted` is an hourly rate (kWh/h); the profile
+        stores kWh per 30-min bucket → divide by 2.
+
+        `target_date`: filter periods to this date. When None, the date of
+        the first period is used (single-day forecasts). Missing buckets
+        are filled with 0.0 — no PV produced in that slot.
+
+        Raises `ValueError` when no period matches `target_date` (the
+        caller is asking for a day the forecast doesn't cover, e.g.
+        the matrix date-picker pointing at day-after-tomorrow with only
+        today/tomorrow forecast available).
+        """
+        inferred: date | None = None
+        buckets: dict[tuple[int, int], float] = {}
+        matched = False
+        for period in self.forecast:
+            dt = datetime.fromisoformat(period.period_start)
+            if target_date is None and inferred is None:
+                inferred = dt.date()
+            match_date = target_date if target_date is not None else inferred
+            if dt.date() != match_date:
+                continue
+            matched = True
+            if dt.hour < 7 or dt.hour >= 13 or dt.minute not in (0, 30):
+                continue
+            buckets[(dt.hour, dt.minute)] = round(period.pv_estimate_adjusted / 2, 4)
+        if not matched:
+            raise ValueError(
+                f"AdjustedPvForecast.to_profile: no periods match {target_date!r}"
+            )
+        for h in range(7, 13):
+            for m in (0, 30):
+                buckets.setdefault((h, m), 0.0)
+        return PvProfile(buckets=buckets)
 
 
 _EXPECTED_BUCKETS: Final[frozenset[tuple[int, int]]] = frozenset(
@@ -322,40 +362,55 @@ class PvForecast:
         sch = self.start_charge_hour_today
         sch_t = self.start_charge_hour_tomorrow
         default_cons = ConsumptionProfile.flat()
+        today = now.date()
+        tomorrow = today + timedelta(days=1)
+        live_profile = (
+            self.adjusted_live.to_profile(today) if self.adjusted_live else None
+        )
+        tomorrow_live_profile = (
+            self.adjusted_tomorrow_live.to_profile(tomorrow)
+            if self.adjusted_tomorrow_live
+            else None
+        )
         if self.adjusted_at_6:
             self.target_soc = calculate_target_soc(
-                self.adjusted_at_6, default_cons, now=now, start_charge_hour=sch
+                self.adjusted_at_6.to_profile(today),
+                default_cons,
+                now=now,
+                start_charge_hour=sch,
             )
-        if self.adjusted_live:
+        if live_profile is not None:
             self.target_soc_live = calculate_target_soc(
-                self.adjusted_live, default_cons, now=now, start_charge_hour=sch
+                live_profile, default_cons, now=now, start_charge_hour=sch
             )
 
         # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
         # Pre-charge gate sourced from `sensor.rce_start_charge_hour_tomorrow_time`.
         if self.adjusted_tomorrow:
             self.target_soc_tomorrow = calculate_target_soc(
-                self.adjusted_tomorrow, default_cons, start_charge_hour=sch_t
+                self.adjusted_tomorrow.to_profile(tomorrow),
+                default_cons,
+                start_charge_hour=sch_t,
             )
-        if self.adjusted_tomorrow_live:
+        if tomorrow_live_profile is not None:
             self.target_soc_tomorrow_live = calculate_target_soc(
-                self.adjusted_tomorrow_live, default_cons, start_charge_hour=sch_t
+                tomorrow_live_profile, default_cons, start_charge_hour=sch_t
             )
 
         # Prev-workday instrumentation (Etap A) — adjusted_live + per-day profile.
         for i, profile in enumerate(self.consumption_profiles):
-            if self.adjusted_live and profile is not None:
+            if live_profile is not None and profile is not None:
                 self.target_soc_prev_days[i] = calculate_target_soc(
-                    self.adjusted_live,
+                    live_profile,
                     profile,
                     now=now,
                     start_charge_hour=sch,
                 )
             else:
                 self.target_soc_prev_days[i] = None
-            if self.adjusted_tomorrow_live and profile is not None:
+            if tomorrow_live_profile is not None and profile is not None:
                 self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
-                    self.adjusted_tomorrow_live,
+                    tomorrow_live_profile,
                     profile,
                     start_charge_hour=sch_t,
                 )
