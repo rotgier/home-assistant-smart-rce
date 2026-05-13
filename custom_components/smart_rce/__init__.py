@@ -18,10 +18,14 @@ from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
+from .infrastructure.pv_forecast.consumption_profile_loader import (
+    ConsumptionProfileLoader,
+)
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.rce_api import RceApi
 from .infrastructure.weather_history_loader import WeatherHistoryLoader
 from .infrastructure.weather_listener import WeatherForecastListener
+from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
 from .pv_forecast_factory import create_pv_forecast_service
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,8 +70,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     )
 
     realized_pv_loader = RealizedPvLoader(hass)
+    # Matrix service uses its own (stateless) workday + consumption
+    # loaders so it can anchor the prev-workday walk at the date-picker
+    # target — different from `pv_forecast.consumption_profiles` which
+    # is always today-anchored.
+    matrix_workday_reader = WorkdayCalendarReader(hass)
+    matrix_consumption_loader = ConsumptionProfileLoader(hass, matrix_workday_reader)
     target_soc_matrix_service = TargetSocMatrixService(
-        hass, pv_forecast, realized_pv_loader
+        hass, pv_forecast, realized_pv_loader, matrix_consumption_loader
     )
 
     await rce_coordinator.async_config_entry_first_refresh()

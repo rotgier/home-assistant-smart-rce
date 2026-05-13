@@ -50,9 +50,9 @@ CLOUDY_CAP_HOUR_7: Final[float] = 0.20  # max hourly rate at hour 7 for cloudy
 # Prev-workday consumption profile instrumentation (Etap A).
 # How many days back we look to build a consumption profile baseline for
 # target SOC. Domain decision (not infrastructure detail) — semantics
-# "take the last N workdays". Currently 5 → covers a full work-week plus
-# the previous Friday for context on volatility.
-PREV_DAYS_COUNT: Final[int] = 5
+# "take the last N workdays". Currently 8 → covers a full work-week
+# (~5 days) plus another 3 for context on baseline volatility.
+PREV_DAYS_COUNT: Final[int] = 8
 
 # AT6 cloudy modifiers per hour (hourly rate multiplier on est10)
 AT6_CLOUDY_MODIFIER_EARLY: Final[float] = 0.5  # hours 7-10

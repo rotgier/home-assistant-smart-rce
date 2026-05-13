@@ -43,28 +43,44 @@ class ConsumptionProfileLoader:
         self._workday_reader = workday_reader
 
     async def fetch(self, today: date) -> list[ConsumptionProfile | None]:
-        """Fetch profiles for the last PREV_DAYS_COUNT workdays in a SINGLE LTS query.
+        """Fetch profiles for the last PREV_DAYS_COUNT workdays before `today`.
 
-        Walk back N actual workdays (calendar-driven, holiday-aware), compute
-        earliest..latest date span, fetch 5-min stats once, then bucket per
-        date in memory.
+        Delegates to `fetch_for_anchor` with the canonical anchor=today and
+        the domain-configured count. Used by the per-sensor target_soc
+        recomputation path.
         """
-        workday_dates = await self._workday_reader.fetch_workdays(today)
+        return await self.fetch_for_anchor(today, pv_forecast.PREV_DAYS_COUNT)
+
+    async def fetch_for_anchor(
+        self, anchor: date, count: int
+    ) -> list[ConsumptionProfile | None]:
+        """Fetch `count` prev-workday profiles strictly before `anchor` (single LTS query).
+
+        Walk back N actual workdays (calendar-driven, holiday-aware) from
+        the given anchor, compute earliest..latest date span, fetch 5-min
+        stats once, bucket per date in memory.
+
+        Used by the target_soc matrix to anchor the "prev workday" walk
+        at the date-picker target instead of today — when the user
+        inspects tomorrow's matrix, Prev 1 should be today (if today is a
+        workday) rather than yesterday's workday.
+        """
+        workday_dates = await self._workday_reader.fetch_workdays(anchor)
         if not workday_dates:
             _LOGGER.warning(
                 "Workday calendar returned no events — prev-day consumption "
                 "profiles unavailable; check calendar.workday_calendar config"
             )
-            return [None] * pv_forecast.PREV_DAYS_COUNT
+            return [None] * count
 
         dates: list[date | None] = [
-            pv_forecast.walk_back_workdays(today, i + 1, workday_dates)
-            for i in range(pv_forecast.PREV_DAYS_COUNT)
+            pv_forecast.walk_back_workdays(anchor, i + 1, workday_dates)
+            for i in range(count)
         ]
         valid_dates = [d for d in dates if d is not None]
         if not valid_dates:
-            _LOGGER.debug("No valid prev workdays found")
-            return [None] * pv_forecast.PREV_DAYS_COUNT
+            _LOGGER.debug("No valid prev workdays found before %s", anchor)
+            return [None] * count
 
         slots = await self._fetch_5min_slots(valid_dates)
         return self._bucket_profiles_by_date(slots, dates, valid_dates)

@@ -41,6 +41,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from ..application.pv_forecast_service import PvForecastService
+from ..domain import pv_forecast as pv_forecast_module
 from ..domain.pv_forecast import (
     AdjustedPvForecast,
     ConsumptionProfile,
@@ -49,6 +50,9 @@ from ..domain.pv_forecast import (
 )
 from ..domain.target_soc import CONSUMPTION_PER_30MIN
 from ..domain.target_soc_matrix import ConsLabel, TargetSocMatrix, compute_matrix
+from ..infrastructure.pv_forecast.consumption_profile_loader import (
+    ConsumptionProfileLoader,
+)
 from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,10 +91,12 @@ class TargetSocMatrixService:
         hass: HomeAssistant,
         pv_forecast_service: PvForecastService,
         realized_pv_loader: RealizedPvLoader,
+        consumption_loader: ConsumptionProfileLoader,
     ) -> None:
         self._hass = hass
         self._pv_forecast_service = pv_forecast_service
         self._realized_pv_loader = realized_pv_loader
+        self._consumption_loader = consumption_loader
 
     async def async_get_matrix(self, target_date: date) -> dict[str, Any]:
         """Build and return the matrix payload for `target_date`."""
@@ -105,7 +111,13 @@ class TargetSocMatrixService:
         forecast = self._pv_forecast_service.forecast
 
         pv_buckets = self._pv_buckets(forecast, is_today)
-        cons_buckets, cons_labels, cons_source_dates = self._cons_inputs(forecast)
+        # Anchor the prev-workday walk at the date-picker target. For
+        # today this matches `forecast.consumption_profiles`; for
+        # tomorrow it surfaces today as Prev 1 (if today is a workday).
+        cons_profiles = await self._consumption_loader.fetch_for_anchor(
+            target_date, pv_forecast_module.PREV_DAYS_COUNT
+        )
+        cons_buckets, cons_labels, cons_source_dates = self._cons_inputs(cons_profiles)
         source_day_pv_sums = await self._source_day_pv_sums(cons_source_dates)
         sch = (
             forecast.start_charge_hour_today
@@ -131,7 +143,7 @@ class TargetSocMatrixService:
         return {
             "date": target_date.isoformat(),
             "kind": "today" if is_today else "tomorrow",
-            "matrix": _serialize(matrix, pv_buckets, cons_buckets),
+            "matrix": _serialize(matrix, pv_buckets, cons_buckets, cons_source_dates),
         }
 
     # --- PV inputs --- #
@@ -161,7 +173,7 @@ class TargetSocMatrixService:
     # --- Cons inputs --- #
 
     def _cons_inputs(
-        self, forecast: PvForecast
+        self, profiles: list[ConsumptionProfile | None]
     ) -> tuple[dict[str, list[float]], dict[str, ConsLabel], dict[str, date]]:
         """Build Cons buckets + labels + source-date map (for realized PV lookup)."""
         cons_buckets: dict[str, list[float]] = {
@@ -171,7 +183,7 @@ class TargetSocMatrixService:
             _LIVE_CONS_KEY: ConsLabel(key=_LIVE_CONS_KEY, weekday=None)
         }
         cons_source_dates: dict[str, date] = {}
-        for idx, profile in enumerate(forecast.consumption_profiles):
+        for idx, profile in enumerate(profiles):
             if profile is None:
                 continue
             key = f"prev_{idx + 1}"
@@ -282,6 +294,7 @@ def _serialize(
     matrix: TargetSocMatrix,
     pv_buckets: dict[str, list[float]],
     cons_buckets: dict[str, list[float]],
+    cons_source_dates: dict[str, date],
 ) -> dict[str, Any]:
     """Convert dataclass + tuple-keyed dicts → JSON-friendly attribute shape.
 
@@ -289,7 +302,9 @@ def _serialize(
     Stringify cell keys as `"<pv_key>|<cons_key>"` so Jinja in markdown
     cards can split on `|` and look up entries directly. Also surfaces
     the raw 30-min bucket lists per strategy so the dashboard chart can
-    plot each PV/Cons strategy as a time-series.
+    plot each PV/Cons strategy as a time-series, and the source date
+    per Cons-prev strategy (ISO string) so the chart can shift history
+    onto the date-picker target day.
     """
     return {
         "pv_strategies": list(matrix.pv_strategies),
@@ -306,5 +321,8 @@ def _serialize(
         },
         "cons_buckets_by_strategy": {
             k: [round(v, 4) for v in vs] for k, vs in cons_buckets.items()
+        },
+        "cons_source_dates_by_strategy": {
+            k: d.isoformat() for k, d in cons_source_dates.items()
         },
     }
