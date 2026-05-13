@@ -51,8 +51,16 @@ def _with_current_bucket(profile: PvProfile, now: datetime, value: float) -> PvP
     Other buckets keep their full-bucket values from the source profile.
     The asymmetry (current=remaining, future=full) is the same model
     `current_bucket_override` had before C2 — encoded as data now.
+
+    When `now` is outside the 7:00..12:30 window the injection is a
+    no-op — the bucket key would not satisfy the strict profile
+    contract, and there is no in-progress bucket to project for
+    `calculate_target_soc` anyway (it iterates only that window).
     """
-    return PvProfile(buckets={**profile.buckets, _bucket_key(now): value})
+    key = _bucket_key(now)
+    if key not in profile.buckets:
+        return profile
+    return PvProfile(buckets={**profile.buckets, key: value})
 
 
 # Min minutes elapsed before we trust realized prorate / pattern variants.
