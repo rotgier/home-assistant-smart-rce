@@ -485,6 +485,18 @@ def _should_dedupe(prev: dict[str, Any], cur: dict[str, Any]) -> bool:
         return all(prev[f] == cur[f] for f in DEDUPE_FIELDS)
     if cur_source == SOURCE_NOWCAST and prev_source in _NOWCAST_DEDUPE_PREV_SOURCES:
         return all(prev[f] == cur[f] for f in _NOWCAST_DEDUPE_FIELDS)
+    # current → history with same HH:MM + same fields: drop the history
+    # row. When the aligned coordinator's synthesized-current and a
+    # state_changed event land in the same minute, sort-by-timestamp may
+    # place current first (sub-second `fetched_at` < state's last_changed).
+    # `_should_drop_prev` covers the opposite ordering; this branch covers
+    # this one. Either way, the meaningful row (current) wins.
+    if (
+        prev_source == SOURCE_CURRENT
+        and cur_source == SOURCE_HISTORY
+        and prev["time"] == cur["time"]
+    ):
+        return all(prev[f] == cur[f] for f in DEDUPE_FIELDS)
     return False
 
 
