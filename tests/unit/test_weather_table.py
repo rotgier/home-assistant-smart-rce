@@ -478,6 +478,43 @@ def test_history_dropped_when_identical_to_current_at_same_time():
     assert SOURCE_HISTORY not in sources
 
 
+def test_history_kept_when_same_fields_but_different_time_than_current():
+    """History rain-start at 12:25 must NOT be shadowed by current at 12:30.
+
+    Same fields (rain just started) but different HH:MM — the history row
+    documents the transition moment ('rain started at 12:25'); dropping
+    it would lose that information.
+    """
+    history = _history(
+        [
+            ("sensor.wetteronline_condition_custom", _ts(12, 25), "pouring-light"),
+            (
+                "sensor.wetteronline_precipitation_probability",
+                _ts(12, 25),
+                "80",
+            ),
+        ]
+    )
+    current_obs = {
+        "condition_custom": "pouring-light",
+        "precipitation_probability": 80,
+        # Same fields, 5 min later:
+        "fetched_at": _ts(12, 30).isoformat(),
+    }
+    rows = assemble_rows(
+        history_per_sensor=history,
+        target_date=date(2026, 5, 12),
+        now=_ts(12, 30),
+        current_obs=current_obs,
+        forecast_hours=[],
+        nowcast_items=[],
+        tz=TZ,
+    )
+    times_sources = [(r["time"], r["source"]) for r in rows]
+    assert ("12:25", SOURCE_HISTORY) in times_sources
+    assert ("12:30", SOURCE_CURRENT) in times_sources
+
+
 def test_history_kept_when_differs_from_current_at_same_time():
     """History row matching current's timestamp but different fields → keep both.
 

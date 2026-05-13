@@ -491,8 +491,18 @@ def _should_dedupe(prev: dict[str, Any], cur: dict[str, Any]) -> bool:
 def _should_drop_prev(prev: dict[str, Any], cur: dict[str, Any]) -> bool:
     """`prev` is redundant given `cur` and should be removed (cur replaces it).
 
-    Currently fires only for history → current when all input fields match.
+    Currently fires only for history → current when:
+    - both rows have the same HH:MM (sub-minute jitter from the aligned
+      coordinator landing on top of a state_changed event), AND
+    - all input fields match.
+
+    Time-equality is required: an earlier history row (e.g. 12:25) that
+    happens to carry the same fields as a later current row (e.g. 12:30)
+    documents the transition moment ("rain started at 12:25") and must
+    not be silently shadowed.
     """
-    if prev["source"] == SOURCE_HISTORY and cur["source"] == SOURCE_CURRENT:
-        return all(prev[f] == cur[f] for f in DEDUPE_FIELDS)
-    return False
+    if prev["source"] != SOURCE_HISTORY or cur["source"] != SOURCE_CURRENT:
+        return False
+    if prev["time"] != cur["time"]:
+        return False
+    return all(prev[f] == cur[f] for f in DEDUPE_FIELDS)
