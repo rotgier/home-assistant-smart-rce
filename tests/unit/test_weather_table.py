@@ -439,13 +439,13 @@ def test_nowcast_not_deduped_against_previous_history():
     assert SOURCE_NOWCAST in sources
 
 
-def test_current_row_not_deduped_against_history_row_at_same_time():
-    """Current row must surface even when adjacent history has identical fields.
+def test_history_dropped_when_identical_to_current_at_same_time():
+    """History row matching current on every input field → drop history.
 
     Aligned coordinator may emit a history snapshot at the same minute as
-    the synthesized-current fetched_at. With identical 8 input fields both
-    rows must surface — dedupe must NOT collapse them since they carry
-    different semantic meaning (recorded state change vs live snapshot).
+    the synthesized-current fetched_at. Two visually identical rows back-
+    to-back add noise without information — keep the more meaningful
+    `current` (carries the live-snapshot semantic + nowcast items).
     """
     same_moment = _ts(13, 30)
     history = _history(
@@ -462,6 +462,43 @@ def test_current_row_not_deduped_against_history_row_at_same_time():
         "condition_custom": "cloudy",
         "precipitation_probability": 40,
         # Identical to the history row's 8 fields:
+        "fetched_at": same_moment.isoformat(),
+    }
+    rows = assemble_rows(
+        history_per_sensor=history,
+        target_date=date(2026, 5, 12),
+        now=same_moment,
+        current_obs=current_obs,
+        forecast_hours=[],
+        nowcast_items=[],
+        tz=TZ,
+    )
+    sources = [r["source"] for r in rows]
+    assert SOURCE_CURRENT in sources
+    assert SOURCE_HISTORY not in sources
+
+
+def test_history_kept_when_differs_from_current_at_same_time():
+    """History row matching current's timestamp but different fields → keep both.
+
+    Same minute but different precipitation_probability values means a
+    real state change just before the synthesized snapshot — both rows
+    carry information.
+    """
+    same_moment = _ts(13, 30)
+    history = _history(
+        [
+            ("sensor.wetteronline_condition_custom", same_moment, "cloudy"),
+            (
+                "sensor.wetteronline_precipitation_probability",
+                same_moment,
+                "20",  # ← different from current's 40
+            ),
+        ]
+    )
+    current_obs = {
+        "condition_custom": "cloudy",
+        "precipitation_probability": 40,
         "fetched_at": same_moment.isoformat(),
     }
     rows = assemble_rows(

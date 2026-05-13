@@ -447,7 +447,7 @@ def _to_number(value: Any) -> float | None:
 def _dedupe_consecutive(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop redundant rows from consecutive pairs.
 
-    Two cases — never drops current/forecast/history rows:
+    Three cases:
 
     1. history → history: collapse if all 8 input fields match
        (DEDUPE_FIELDS). Recorder may emit many state_changed events with
@@ -460,9 +460,18 @@ def _dedupe_consecutive(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
        same condition + probability. Previous-history → nowcast is NOT
        dropped (past observation shouldn't silently shadow a future
        row).
+    3. history → current with all DEDUPE_FIELDS matching: drop the
+       history row, keep current. Current carries extra info (nowcast
+       items, "this is now") and shows up at the same minute when a
+       state_changed event happens to coincide with the aligned bucket
+       boundary that synthesizes `current`. Showing both is redundant.
     """
     out: list[dict[str, Any]] = []
     for row in rows:
+        if out and _should_drop_prev(out[-1], row):
+            out.pop()
+            out.append(row)
+            continue
         if out and _should_dedupe(out[-1], row):
             continue
         out.append(row)
@@ -476,4 +485,14 @@ def _should_dedupe(prev: dict[str, Any], cur: dict[str, Any]) -> bool:
         return all(prev[f] == cur[f] for f in DEDUPE_FIELDS)
     if cur_source == SOURCE_NOWCAST and prev_source in _NOWCAST_DEDUPE_PREV_SOURCES:
         return all(prev[f] == cur[f] for f in _NOWCAST_DEDUPE_FIELDS)
+    return False
+
+
+def _should_drop_prev(prev: dict[str, Any], cur: dict[str, Any]) -> bool:
+    """`prev` is redundant given `cur` and should be removed (cur replaces it).
+
+    Currently fires only for history → current when all input fields match.
+    """
+    if prev["source"] == SOURCE_HISTORY and cur["source"] == SOURCE_CURRENT:
+        return all(prev[f] == cur[f] for f in DEDUPE_FIELDS)
     return False
