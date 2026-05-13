@@ -4,10 +4,11 @@ Crosses every (PV strategy, Cons baseline) pair, delegates each cell to
 the same `calculate_target_soc` formula as the per-sensor variants
 (single source of truth) and packages results plus row/column summaries.
 
-Inputs are pre-computed 30-min bucket lists (kWh per bucket, 12 entries
-for hours 7..12:30) so the matrix layer stays pure — application code
-extracts them from `PvForecast` adjusted forecasts / ConsumptionProfile
-loaders / RealizedPvLoader respectively.
+Inputs are strict-contract `PvProfile` + `ConsumptionProfile` value
+objects (12 buckets each, 7:00..12:30). Application code builds them
+from `PvForecast.adjusted_*` via `to_profile(target_date)`, from
+`ConsumptionProfileLoader` results, or from synthetic baselines via
+`ConsumptionProfile.flat()`.
 
 Returns a `TargetSocMatrix` value object: dicts of cells keyed by
 (pv_key, cons_key), plus row sums (per PV), column sums (per Cons), and
@@ -22,11 +23,6 @@ from dataclasses import dataclass
 
 from .pv_forecast import ConsumptionProfile, PvProfile
 from .target_soc import TargetSocResult, calculate_target_soc
-
-# 7:00..12:30 in 30-min steps = 12 buckets. Matrix never extends beyond
-# the deficit window; using a fixed length keeps the contract explicit.
-_BUCKETS_PER_WINDOW = 12
-_WINDOW_START_HOUR = 7
 
 
 @dataclass(frozen=True)
@@ -56,8 +52,8 @@ class TargetSocMatrix:
 
 
 def compute_matrix(
-    pv_buckets_by_strategy: dict[str, list[float]],
-    cons_buckets_by_strategy: dict[str, list[float]],
+    pv_profiles_by_strategy: dict[str, PvProfile],
+    cons_profiles_by_strategy: dict[str, ConsumptionProfile],
     cons_labels: dict[str, ConsLabel],
     source_day_pv_sums: dict[str, float | None],
     start_charge_hour: int | None,
@@ -65,17 +61,15 @@ def compute_matrix(
     """Cross every (PV, Cons) pair, compute target SOC% + dip kWh per cell.
 
     Reuses `calculate_target_soc` so the formula + `start_charge_hour`
-    clamp are identical to the per-sensor variants. Bucket lists are
-    expected to be length 12 (7:00..12:30); any other length is treated
-    as missing data and produces no cells for that strategy.
+    clamp are identical to the per-sensor variants.
 
     `source_day_pv_sums` holds the actual realized PV (kWh, 7-13) on
     each Prev-day source, projected as a bottom row in the dashboard.
     Set to None for the Live cons strategy where the concept doesn't
     apply.
     """
-    pv_keys: tuple[str, ...] = tuple(pv_buckets_by_strategy.keys())
-    cons_keys_ordered = list(cons_buckets_by_strategy.keys())
+    pv_keys: tuple[str, ...] = tuple(pv_profiles_by_strategy.keys())
+    cons_keys_ordered = list(cons_profiles_by_strategy.keys())
     cons_strategies: tuple[ConsLabel, ...] = tuple(
         cons_labels.get(k, ConsLabel(key=k)) for k in cons_keys_ordered
     )
@@ -85,17 +79,10 @@ def compute_matrix(
     pv_sums_kwh: dict[str, float] = {}
     cons_sums_kwh: dict[str, float] = {}
 
-    for pv_key in pv_keys:
-        pv_buckets = pv_buckets_by_strategy[pv_key]
-        if len(pv_buckets) != _BUCKETS_PER_WINDOW:
-            continue
-        pv_sums_kwh[pv_key] = round(sum(pv_buckets), 3)
-        pv_profile = _synthesize_pv_profile(pv_buckets)
+    for pv_key, pv_profile in pv_profiles_by_strategy.items():
+        pv_sums_kwh[pv_key] = round(sum(pv_profile.buckets.values()), 3)
         for cons_key in cons_keys_ordered:
-            cons_buckets = cons_buckets_by_strategy[cons_key]
-            if len(cons_buckets) != _BUCKETS_PER_WINDOW:
-                continue
-            cons_profile = _synthesize_cons_profile(cons_buckets)
+            cons_profile = cons_profiles_by_strategy[cons_key]
             result = calculate_target_soc(
                 pv_profile,
                 consumption_profile=cons_profile,
@@ -104,10 +91,8 @@ def compute_matrix(
             cells_pct[(pv_key, cons_key)] = result.value
             cells_kwh[(pv_key, cons_key)] = _dip_kwh(result)
 
-    for cons_key in cons_keys_ordered:
-        cons_buckets = cons_buckets_by_strategy[cons_key]
-        if len(cons_buckets) == _BUCKETS_PER_WINDOW:
-            cons_sums_kwh[cons_key] = round(sum(cons_buckets), 3)
+    for cons_key, cons_profile in cons_profiles_by_strategy.items():
+        cons_sums_kwh[cons_key] = round(sum(cons_profile.buckets.values()), 3)
 
     return TargetSocMatrix(
         pv_strategies=pv_keys,
@@ -118,35 +103,6 @@ def compute_matrix(
         cons_sums_kwh=cons_sums_kwh,
         source_day_pv_sums_kwh=dict(source_day_pv_sums),
     )
-
-
-# --- helpers ---
-
-
-def _synthesize_pv_profile(pv_buckets: list[float]) -> PvProfile:
-    """Wrap 12 kWh-per-30min values as a `PvProfile`."""
-    return PvProfile(
-        buckets={
-            _hour_minute(idx): pv_buckets[idx] for idx in range(_BUCKETS_PER_WINDOW)
-        }
-    )
-
-
-def _synthesize_cons_profile(cons_buckets: list[float]) -> ConsumptionProfile:
-    """Wrap 12 kWh-per-30min values as a `ConsumptionProfile`."""
-    return ConsumptionProfile(
-        buckets={
-            _hour_minute(idx): cons_buckets[idx] for idx in range(_BUCKETS_PER_WINDOW)
-        },
-        source_date=None,
-    )
-
-
-def _hour_minute(idx: int) -> tuple[int, int]:
-    """Map bucket index 0..11 → (hour, minute) within the 7-13 window."""
-    hour = _WINDOW_START_HOUR + idx // 2
-    minute = (idx % 2) * 30
-    return hour, minute
 
 
 def _dip_kwh(result: TargetSocResult) -> float:

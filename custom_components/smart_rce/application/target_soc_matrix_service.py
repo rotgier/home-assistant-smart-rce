@@ -47,8 +47,8 @@ from ..domain.pv_forecast import (
     ConsumptionProfile,
     ExtrapolatedLive,
     PvForecast,
+    PvProfile,
 )
-from ..domain.target_soc import CONSUMPTION_PER_30MIN
 from ..domain.target_soc_matrix import ConsLabel, TargetSocMatrix, compute_matrix
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -74,11 +74,10 @@ _TOMORROW_PV_KEYS: tuple[str, ...] = ("at_6", "live")
 
 _LIVE_CONS_KEY: str = "live"
 
-# 12-bucket window (7:00..12:30) — domain matrix expects exactly this length.
+# 12-bucket window (7:00..12:30) — strict PvProfile/ConsumptionProfile contract.
 _BUCKET_TIMES: tuple[tuple[int, int], ...] = tuple(
     (7 + idx // 2, (idx % 2) * 30) for idx in range(12)
 )
-_LIVE_CONS_BUCKETS: list[float] = [CONSUMPTION_PER_30MIN] * 12
 
 _WEEKDAY_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -110,14 +109,16 @@ class TargetSocMatrixService:
         is_today = target_date == today
         forecast = self._pv_forecast_service.forecast
 
-        pv_buckets = self._pv_buckets(forecast, is_today)
+        pv_profiles = self._pv_profiles(forecast, is_today, target_date)
         # Anchor the prev-workday walk at the date-picker target. For
         # today this matches `forecast.consumption_profiles`; for
         # tomorrow it surfaces today as Prev 1 (if today is a workday).
-        cons_profiles = await self._consumption_loader.fetch_for_anchor(
+        loaded_profiles = await self._consumption_loader.fetch_for_anchor(
             target_date, pv_forecast_module.PREV_DAYS_COUNT
         )
-        cons_buckets, cons_labels, cons_source_dates = self._cons_inputs(cons_profiles)
+        cons_profiles, cons_labels, cons_source_dates = self._cons_inputs(
+            loaded_profiles
+        )
         source_day_pv_sums = await self._source_day_pv_sums(cons_source_dates)
         sch = (
             forecast.start_charge_hour_today
@@ -126,8 +127,8 @@ class TargetSocMatrixService:
         )
 
         matrix = compute_matrix(
-            pv_buckets_by_strategy=pv_buckets,
-            cons_buckets_by_strategy=cons_buckets,
+            pv_profiles_by_strategy=pv_profiles,
+            cons_profiles_by_strategy=cons_profiles,
             cons_labels=cons_labels,
             source_day_pv_sums=source_day_pv_sums,
             start_charge_hour=sch,
@@ -143,22 +144,31 @@ class TargetSocMatrixService:
         return {
             "date": target_date.isoformat(),
             "kind": "today" if is_today else "tomorrow",
-            "matrix": _serialize(matrix, pv_buckets, cons_buckets, cons_source_dates),
+            "matrix": _serialize(matrix, pv_profiles, cons_profiles, cons_source_dates),
         }
 
     # --- PV inputs --- #
 
-    def _pv_buckets(
-        self, forecast: PvForecast, is_today: bool
-    ) -> dict[str, list[float]]:
-        """Map each PV strategy key to its 12-bucket kWh-per-30min list."""
+    def _pv_profiles(
+        self, forecast: PvForecast, is_today: bool, target_date: date
+    ) -> dict[str, PvProfile]:
+        """Map each PV strategy key to its 12-bucket `PvProfile`.
+
+        Strategies whose `AdjustedPvForecast` is missing or doesn't cover
+        `target_date` are skipped — `to_profile()` raises `ValueError`
+        and the strategy simply doesn't appear in the matrix.
+        """
         keys = _TODAY_PV_KEYS if is_today else _TOMORROW_PV_KEYS
-        out: dict[str, list[float]] = {}
+        out: dict[str, PvProfile] = {}
         for key in keys:
             adjusted = self._pv_source(forecast, key, is_today)
-            buckets = _adjusted_to_buckets(adjusted)
-            if buckets is not None:
-                out[key] = buckets
+            if adjusted is None or not adjusted.forecast:
+                continue
+            try:
+                out[key] = adjusted.to_profile(target_date)
+            except ValueError:
+                # Strategy has no periods for target_date (date-picker out of range).
+                continue
         return out
 
     @staticmethod
@@ -174,10 +184,10 @@ class TargetSocMatrixService:
 
     def _cons_inputs(
         self, profiles: list[ConsumptionProfile | None]
-    ) -> tuple[dict[str, list[float]], dict[str, ConsLabel], dict[str, date]]:
-        """Build Cons buckets + labels + source-date map (for realized PV lookup)."""
-        cons_buckets: dict[str, list[float]] = {
-            _LIVE_CONS_KEY: list(_LIVE_CONS_BUCKETS)
+    ) -> tuple[dict[str, ConsumptionProfile], dict[str, ConsLabel], dict[str, date]]:
+        """Build Cons profile map + labels + source-date map (for realized PV lookup)."""
+        cons_profiles: dict[str, ConsumptionProfile] = {
+            _LIVE_CONS_KEY: ConsumptionProfile.flat()
         }
         cons_labels: dict[str, ConsLabel] = {
             _LIVE_CONS_KEY: ConsLabel(key=_LIVE_CONS_KEY, weekday=None)
@@ -187,7 +197,7 @@ class TargetSocMatrixService:
             if profile is None:
                 continue
             key = f"prev_{idx + 1}"
-            cons_buckets[key] = _profile_to_buckets(profile)
+            cons_profiles[key] = profile
             weekday = (
                 _WEEKDAY_ABBR[profile.source_date.weekday()]
                 if profile.source_date is not None
@@ -196,7 +206,7 @@ class TargetSocMatrixService:
             cons_labels[key] = ConsLabel(key=key, weekday=weekday)
             if profile.source_date is not None:
                 cons_source_dates[key] = profile.source_date
-        return cons_buckets, cons_labels, cons_source_dates
+        return cons_profiles, cons_labels, cons_source_dates
 
     # --- Source-day realized PV --- #
 
@@ -259,41 +269,17 @@ _TOMORROW_PV_RESOLVERS: dict[str, callable] = {
 # --- Helpers --- #
 
 
-def _adjusted_to_buckets(
-    forecast: AdjustedPvForecast | None,
-) -> list[float] | None:
-    """Project AdjustedPvForecast 30-min periods within 7-13 → 12 kWh buckets.
-
-    `pv_estimate_adjusted` is an hourly rate → kWh-per-30min = rate / 2.
-    Missing buckets are filled with 0.0 (PV is non-negative; absence
-    means no estimate, not no generation). Returns None when no input.
-    """
-    if forecast is None or not forecast.forecast:
-        return None
-    by_bucket: dict[tuple[int, int], float] = {}
-    for period in forecast.forecast:
-        try:
-            from datetime import datetime  # local — avoid top-level dep on stdlib
-
-            dt = datetime.fromisoformat(period.period_start)
-        except ValueError:
-            continue
-        hour, minute = dt.hour, dt.minute
-        if hour < 7 or hour >= 13 or minute not in (0, 30):
-            continue
-        by_bucket[(hour, minute)] = period.pv_estimate_adjusted / 2
-    return [by_bucket.get(t, 0.0) for t in _BUCKET_TIMES]
-
-
-def _profile_to_buckets(profile: ConsumptionProfile) -> list[float]:
-    """Project `ConsumptionProfile` (strict 12-bucket VO) → ordered list."""
+def _profile_to_buckets_list(
+    profile: PvProfile | ConsumptionProfile,
+) -> list[float]:
+    """Project strict 12-bucket VO → ordered list for serialization."""
     return [profile.get(h, m) for h, m in _BUCKET_TIMES]
 
 
 def _serialize(
     matrix: TargetSocMatrix,
-    pv_buckets: dict[str, list[float]],
-    cons_buckets: dict[str, list[float]],
+    pv_profiles: dict[str, PvProfile],
+    cons_profiles: dict[str, ConsumptionProfile],
     cons_source_dates: dict[str, date],
 ) -> dict[str, Any]:
     """Convert dataclass + tuple-keyed dicts → JSON-friendly attribute shape.
@@ -317,10 +303,12 @@ def _serialize(
         "cons_sums_kwh": dict(matrix.cons_sums_kwh),
         "source_day_pv_sums_kwh": dict(matrix.source_day_pv_sums_kwh),
         "pv_buckets_by_strategy": {
-            k: [round(v, 4) for v in vs] for k, vs in pv_buckets.items()
+            k: [round(v, 4) for v in _profile_to_buckets_list(p)]
+            for k, p in pv_profiles.items()
         },
         "cons_buckets_by_strategy": {
-            k: [round(v, 4) for v in vs] for k, vs in cons_buckets.items()
+            k: [round(v, 4) for v in _profile_to_buckets_list(p)]
+            for k, p in cons_profiles.items()
         },
         "cons_source_dates_by_strategy": {
             k: d.isoformat() for k, d in cons_source_dates.items()
