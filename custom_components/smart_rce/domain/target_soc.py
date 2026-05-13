@@ -103,7 +103,6 @@ def calculate_target_soc(
     pv_profile: PvProfile,
     consumption_profile: ConsumptionProfile,
     now: datetime | None = None,
-    current_bucket_override: tuple[float, float] | None = None,
     start_charge_hour: int | None = None,
 ) -> TargetSocResult:
     """Calculate target battery SOC + per-bucket trace.
@@ -115,13 +114,8 @@ def calculate_target_soc(
     `pv_profile` / `consumption_profile`: strict 12-bucket VOs covering
     7:00..12:30. Use `PvProfile.flat()` / `ConsumptionProfile.flat()`
     for synthetic baselines, or build from forecasts via
-    `AdjustedPvForecast.to_profile(target_date)`.
-
-    current_bucket_override=(pv_kwh, cons_kwh): replace the in-progress
-    bucket's PV + consumption kWh values (used by extrapolated variants;
-    the kWh values represent "remaining contribution in the bucket from
-    now onwards"). Will be dropped in C2 when extrapolation strategies
-    encode the projection directly into PvProfile.
+    `AdjustedPvForecast.to_profile(target_date)`. Extrapolated variants
+    encode in-progress bucket projections directly into the PvProfile.
 
     start_charge_hour (int | None): pre-charge gate. When set, surplus
     accumulated during pre-charge hours (hour < start_charge_hour) does
@@ -161,12 +155,8 @@ def calculate_target_soc(
             ):
                 cumulative_balance = min(cumulative_balance, 0.0)
 
-            is_current = hour == start_hour and minute == start_minute
-            if is_current and current_bucket_override is not None:
-                pv_kwh_30min, consumption = current_bucket_override
-            else:
-                pv_kwh_30min = pv_profile.get(hour, minute)
-                consumption = consumption_profile.get(hour, minute)
+            pv_kwh_30min = pv_profile.get(hour, minute)
+            consumption = consumption_profile.get(hour, minute)
             balance = pv_kwh_30min - consumption
             cumulative_balance += balance
             if cumulative_balance < min_balance:
