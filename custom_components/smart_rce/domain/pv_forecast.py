@@ -26,6 +26,7 @@ from .consumption_profiles import (
     ConsumptionProfiles,
     ConsumptionProfileSource,
 )
+from .profiles_logic import buckets_from_now, remaining_sec_in_current_bucket
 from .target_soc import (
     BATTERY_CAPACITY_KWH,
     BUFFER_PERCENT,
@@ -99,7 +100,12 @@ class AdjustedPvForecast:
     forecast: list[AdjustedPeriod]
     total_kwh: float  # sum of (adjusted rate / 2) = actual kWh
 
-    def to_profile(self, target_date: date | None = None) -> PvProfile:
+    def to_profile(
+        self,
+        target_date: date | None = None,
+        now: datetime | None = None,
+        pv_power_w_5min: float | None = None,
+    ) -> PvProfile:
         """Project periods → 12-bucket `PvProfile` for 7:00..12:30.
 
         `pv_estimate_adjusted` is an hourly rate (kWh/h); the profile
@@ -109,11 +115,36 @@ class AdjustedPvForecast:
         the first period is used (single-day forecasts). Missing buckets
         are filled with 0.0 — no PV produced in that slot.
 
+        `now`: when given, the resulting profile holds kWh contributing to
+        the deficit calculation FROM NOW ONWARDS. Closed buckets
+        (bucket_end <= now) become 0.0; the in-progress bucket
+        (bucket_start <= now < bucket_end) is overridden with live
+        remaining-kWh derived from `pv_power_w_5min`; future buckets keep
+        their full forecast kWh. When `now` is None the profile is a
+        plain forecast snapshot (back-compat for tomorrow / matrix
+        non-today).
+
+        `pv_power_w_5min`: instantaneous PV power, typically the 5-min
+        average from `sensor.pv_power_avg_5_minutes`. Integrated over the
+        remaining seconds in the in-progress bucket to produce live
+        kWh-remaining. Fail-hard contract: required when `now` is given
+        (raises ValueError if None). Caller skips the recalc or passes
+        `now=None` if live data is not yet available. The integration
+        formula will later grow derivative-aware projection (stable rise
+        on clear-sky mornings) — kept on the VO method so consumption's
+        simpler integration in `ConsumptionProfile.to_view` is unaffected.
+
         Raises `ValueError` when no period matches `target_date` (the
         caller is asking for a day the forecast doesn't cover, e.g.
         the matrix date-picker pointing at day-after-tomorrow with only
-        today/tomorrow forecast available).
+        today/tomorrow forecast available), OR when `now` is given but
+        `pv_power_w_5min` is None.
         """
+        if now is not None and pv_power_w_5min is None:
+            raise ValueError(
+                "AdjustedPvForecast.to_profile: pv_power_w_5min is required "
+                "when `now` is given"
+            )
         inferred: date | None = None
         buckets: dict[tuple[int, int], float] = {}
         matched = False
@@ -135,6 +166,13 @@ class AdjustedPvForecast:
         for h in range(7, 13):
             for m in (0, 30):
                 buckets.setdefault((h, m), 0.0)
+        if now is not None:
+            assert pv_power_w_5min is not None  # narrowed by guard above
+            remaining_sec = remaining_sec_in_current_bucket(now)
+            live_remaining_kwh = (pv_power_w_5min / 1000.0) * remaining_sec / 3600.0
+            buckets = buckets_from_now(
+                buckets, now=now, live_remaining_kwh=live_remaining_kwh
+            )
         return PvProfile(buckets=buckets)
 
 
