@@ -33,7 +33,7 @@ reconstruction; out of scope here.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import logging
 from typing import Any
 
@@ -81,6 +81,13 @@ _BUCKET_TIMES: tuple[tuple[int, int], ...] = tuple(
 
 _WEEKDAY_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
+# Toggle that controls whether the *today* matrix is computed in
+# "now-aware" mode (in-progress bucket time-prorated, past buckets
+# skipped — cells match the bridging sensors) or full-window mode
+# (iterate 7:00..12:30 unconditionally — porównywalnie z prev workday).
+# Default: now-aware (state missing / unknown → True).
+_NOW_AWARE_TOGGLE = "input_boolean.rce_target_soc_matrix_now_aware"
+
 
 class TargetSocMatrixService:
     """Assemble the PV × Cons strategy matrix for a target date."""
@@ -99,7 +106,8 @@ class TargetSocMatrixService:
 
     async def async_get_matrix(self, target_date: date) -> dict[str, Any]:
         """Build and return the matrix payload for `target_date`."""
-        today = dt_util.now().date()
+        now = dt_util.now()
+        today = now.date()
         if target_date < today:
             return {
                 "date": target_date.isoformat(),
@@ -125,6 +133,14 @@ class TargetSocMatrixService:
             if is_today
             else forecast.start_charge_hour_tomorrow
         )
+        # Now-aware only for today's matrix. Toggle defaults to ON when
+        # the input_boolean is missing or in an unknown state — explicit
+        # "off" needed to revert to full-window simulation.
+        matrix_now: datetime | None = None
+        matrix_live_cons_w: float | None = None
+        if is_today and self._now_aware_enabled():
+            matrix_now = now
+            matrix_live_cons_w = forecast.live_consumption_w
 
         matrix = compute_matrix(
             pv_profiles_by_strategy=pv_profiles,
@@ -132,6 +148,8 @@ class TargetSocMatrixService:
             cons_labels=cons_labels,
             source_day_pv_sums=source_day_pv_sums,
             start_charge_hour=sch,
+            now=matrix_now,
+            live_consumption_w=matrix_live_cons_w,
         )
         _LOGGER.debug(
             "TargetSocMatrixService: %s for %s — %d PV × %d Cons, %d cells",
@@ -146,6 +164,13 @@ class TargetSocMatrixService:
             "kind": "today" if is_today else "tomorrow",
             "matrix": _serialize(matrix, pv_profiles, cons_profiles, cons_source_dates),
         }
+
+    def _now_aware_enabled(self) -> bool:
+        """Read the now-aware toggle; default ON when missing/unknown."""
+        state = self._hass.states.get(_NOW_AWARE_TOGGLE)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return True
+        return state.state == "on"
 
     # --- PV inputs --- #
 

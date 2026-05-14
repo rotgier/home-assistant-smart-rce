@@ -20,6 +20,7 @@ into the dashboard markdown cards or the service response.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from .pv_forecast import ConsumptionProfile, PvProfile
 from .target_soc import TargetSocResult, calculate_target_soc
@@ -57,11 +58,19 @@ def compute_matrix(
     cons_labels: dict[str, ConsLabel],
     source_day_pv_sums: dict[str, float | None],
     start_charge_hour: int | None,
+    now: datetime | None = None,
+    live_consumption_w: float | None = None,
 ) -> TargetSocMatrix:
     """Cross every (PV, Cons) pair, compute target SOC% + dip kWh per cell.
 
     Reuses `calculate_target_soc` so the formula + `start_charge_hour`
     clamp are identical to the per-sensor variants.
+
+    `now` + `live_consumption_w` are forwarded to `calculate_target_soc`:
+    when `now` falls inside 7-13, the in-progress bucket is time-prorated
+    internally — matrix cells then match the per-strategy bridging
+    sensors (matrix `Live × Live` == `sensor.rce_target_battery_soc_live`).
+    Pass `now=None` for tomorrow matrix (today's "now" doesn't apply).
 
     `source_day_pv_sums` holds the actual realized PV (kWh, 7-13) on
     each Prev-day source, projected as a bottom row in the dashboard.
@@ -86,6 +95,8 @@ def compute_matrix(
             result = calculate_target_soc(
                 pv_profile,
                 consumption_profile=cons_profile,
+                now=now,
+                live_consumption_w=live_consumption_w,
                 start_charge_hour=start_charge_hour,
             )
             cells_pct[(pv_key, cons_key)] = result.value
