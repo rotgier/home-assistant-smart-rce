@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import ClassVar, Final, Protocol
 
+from .profiles_logic import buckets_from_now, remaining_sec_in_current_bucket
 from .target_soc import CONSUMPTION_PER_30MIN
 
 # --- Constants --- #
@@ -84,6 +85,46 @@ class ConsumptionProfile:
             source_date=source_date,
         )
 
+    def to_view(
+        self,
+        now: datetime | None = None,
+        live_consumption_w: float | None = None,
+    ) -> ConsumptionProfile:
+        """Return a now-aware view of this profile for deficit calculation.
+
+        Per-bucket transformation depends on the bucket's position relative
+        to `now`:
+        - Closed bucket (bucket_end <= now): 0.0 (already happened, no
+          remaining contribution).
+        - In-progress bucket (bucket_start <= now < bucket_end):
+          `live_consumption_w / 1000 * remaining_sec / 3600`
+          (current power x remaining time).
+        - Future bucket (bucket_start > now): self.get(h, m) (full kWh).
+
+        When `now` is None the profile is returned unchanged (full-window
+        deficit semantics — back-compat for tomorrow / matrix non-today).
+
+        `live_consumption_w`: instantaneous house-consumption power, e.g.
+        from `sensor.house_consumption_minus_water_avg_5_minutes`.
+        Fail-hard contract: required when `now` is given (raises
+        ValueError if None). The integration `W x remaining_sec / 3600`
+        stays a simple product — unlike PV side which may grow
+        derivative-aware projection, consumption stays simple.
+        """
+        if now is None:
+            return self
+        if live_consumption_w is None:
+            raise ValueError(
+                "ConsumptionProfile.to_view: live_consumption_w is required "
+                "when `now` is given"
+            )
+        remaining_sec = remaining_sec_in_current_bucket(now)
+        live_remaining_kwh = (live_consumption_w / 1000.0) * remaining_sec / 3600.0
+        new_buckets = buckets_from_now(
+            self.buckets, now=now, live_remaining_kwh=live_remaining_kwh
+        )
+        return ConsumptionProfile(buckets=new_buckets, source_date=self.source_date)
+
 
 # --- Port (Protocol) --- #
 
@@ -138,7 +179,7 @@ class ConsumptionProfiles:
 
     @classmethod
     def empty(cls) -> ConsumptionProfiles:
-        """Initial empty state — every prev_X slot None on both anchors."""
+        """Build initial empty state — every prev_X slot None on both anchors."""
         return cls()
 
     async def refresh_full(
@@ -184,8 +225,10 @@ class ConsumptionProfiles:
         )
 
     def is_unavailable(self) -> bool:
-        """Both anchors fully empty — likely a fetch failure, not a normal
-        partial (e.g. fewer than `PREV_DAYS_COUNT` workdays available).
+        """Return True when both anchors are fully empty.
+
+        Likely a fetch failure rather than a normal partial (e.g. fewer
+        than `PREV_DAYS_COUNT` workdays available in the window).
         """
         return all(p is None for p in self.today_profiles) and all(
             p is None for p in self.tomorrow_profiles
