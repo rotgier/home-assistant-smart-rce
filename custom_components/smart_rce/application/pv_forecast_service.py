@@ -101,6 +101,7 @@ class PvForecastService:
                 now,
                 pv_so_far_kwh,
                 cons_so_far_kwh,
+                consumption_w=cons_w,
                 start_charge_hour=sch,
             )
         )
@@ -123,6 +124,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                consumption_w=cons_w,
                 start_charge_hour=sch,
             )
         )
@@ -134,6 +136,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                consumption_w=cons_w,
                 start_charge_hour=sch,
             )
         )
@@ -145,6 +148,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                consumption_w=cons_w,
                 start_charge_hour=sch,
             )
         )
@@ -156,6 +160,7 @@ class PvForecastService:
                 pv_so_far_kwh,
                 cons_so_far_kwh,
                 self._realized_pv_today,
+                consumption_w=cons_w,
                 start_charge_hour=sch,
             )
         )

@@ -85,6 +85,7 @@ def extrapolate_realized_prorate(
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
+    consumption_w: float | None = None,
     start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 1 — full bucket projection from utility-meter so-far values.
@@ -106,7 +107,7 @@ def extrapolate_realized_prorate(
         adjusted_live,
         now,
         current_bucket_pv_kwh_per_h=current_pv_rate,
-        live_consumption_w=None,
+        live_consumption_w=consumption_w,
         start_charge_hour=start_charge_hour,
     )
 
@@ -170,6 +171,7 @@ def extrapolate_calibrated_pattern(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    consumption_w: float | None = None,
     start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 3 — projects realization score from past buckets onto future.
@@ -242,6 +244,7 @@ def extrapolate_calibrated_pattern(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
+        live_consumption_w=consumption_w,
         start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
@@ -484,6 +487,7 @@ def extrapolate_proportional_median(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    consumption_w: float | None = None,
     start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 4 — proportional-to-median realization scaling.
@@ -546,6 +550,7 @@ def extrapolate_proportional_median(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
+        live_consumption_w=consumption_w,
         start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
@@ -662,6 +667,7 @@ def extrapolate_band_clamped(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    consumption_w: float | None = None,
     start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 5 — 2-zone band-clamped realization scaling.
@@ -733,6 +739,7 @@ def extrapolate_band_clamped(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
+        live_consumption_w=consumption_w,
         start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
@@ -799,6 +806,7 @@ def extrapolate_band_clamped_recent(
     pv_bucket_so_far_kwh: float | None,
     consumption_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
+    consumption_w: float | None = None,
     start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
     """Variant 6 — band-clamped scoring, narrow lookback (current + 1 back).
@@ -856,6 +864,7 @@ def extrapolate_band_clamped_recent(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
+        live_consumption_w=consumption_w,
         start_charge_hour=start_charge_hour,
     )
     return ExtrapolatedLive(
