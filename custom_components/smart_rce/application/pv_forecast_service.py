@@ -20,7 +20,8 @@ from collections.abc import Callable
 from datetime import date, timedelta
 import logging
 
-from homeassistant.core import CALLBACK_TYPE, Event, callback
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from ..domain import pv_forecast, pv_forecast_extrapolation
@@ -35,6 +36,11 @@ from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from ..infrastructure.pv_forecast.solcast_reader import SolcastReader
 from ..infrastructure.weather_listener import WeatherForecastListener
 
+# Backoff between retry attempts when ConsumptionProfiles.refresh_full
+# returns a partial result (typical cause: workday calendar / recorder
+# not ready at HA startup). MAX_RETRIES is enforced by the entity.
+_PROFILE_RETRY_INTERVAL_SEC: float = 60.0
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -43,6 +49,7 @@ class PvForecastService:
 
     def __init__(
         self,
+        hass: HomeAssistant,
         forecast: PvForecast,
         solcast: SolcastReader,
         weather_listener: WeatherForecastListener,
@@ -52,6 +59,7 @@ class PvForecastService:
         realized_pv_loader: RealizedPvLoader,
         charge_slots: ChargeSlots,
     ) -> None:
+        self._hass = hass
         self.forecast = forecast
         self._solcast = solcast
         self._weather_listener = weather_listener
@@ -61,6 +69,11 @@ class PvForecastService:
         self._realized_pv_loader = realized_pv_loader
         self._charge_slots = charge_slots
         self._realized_pv_today: dict[tuple[int, int], float] = {}
+        # When `refresh_profiles_full` returns a partial result, we
+        # schedule a retry via `async_call_later`. The cancel handle is
+        # stashed here so a fresh trigger (e.g. daily 05:55 refresh)
+        # can supersede a pending retry without firing duplicates.
+        self._profile_retry_cancel: Callable[[], None] | None = None
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
 
     def recalculate_all(self) -> None:
@@ -293,16 +306,80 @@ class PvForecastService:
         self._recalculate_extrapolated()
         self._notify_listeners()
 
-    async def refresh_profiles(self) -> None:
-        """Fetch prev-workday consumption profiles + update aggregate + notify."""
+    async def refresh_profiles_full(self) -> None:
+        """Full refresh (today + tomorrow anchors) + recalc + listener notify.
+
+        Delegates async I/O to the `ConsumptionProfiles` entity (rich
+        domain model). On a partial outcome (any prev_X slot left None
+        — typical when called before workday calendar / recorder fully
+        loaded at HA startup), schedules a retry 60s later. Caps total
+        attempts via `ConsumptionProfiles.MAX_RETRIES`.
+        """
         now = dt_util.now()
         try:
-            profiles = await self._consumption_loader.fetch(now.date())
+            await self.forecast.consumption_profiles.refresh_full(
+                self._consumption_loader, now
+            )
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
-            _LOGGER.exception("Failed to fetch consumption profiles")
+            _LOGGER.exception("Failed to refresh consumption profiles (full)")
             return
-        self.forecast.update_consumption_profiles(profiles, now)
+        self.forecast.recalculate_target_soc(now)
         self._notify_listeners()
+        self._maybe_schedule_profile_retry()
+
+    async def refresh_profiles_tomorrow_only(self) -> None:
+        """Tomorrow-anchored only refresh — for bucket-boundary intraday updates.
+
+        Called at each :00 / :30 inside the 07:30..13:30 PV window
+        (today's profile, used as tomorrow_prev_1, grows as utility
+        meter cycles close). Today-anchored profiles never change
+        during the day so we skip the second fetch — single recorder
+        round-trip vs `refresh_profiles_full`'s two.
+        """
+        now = dt_util.now()
+        try:
+            await self.forecast.consumption_profiles.refresh_tomorrow_only(
+                self._consumption_loader, now
+            )
+        except Exception:  # noqa: BLE001 — defensive
+            _LOGGER.exception("Failed to refresh consumption profiles (tomorrow)")
+            return
+        self.forecast.recalculate_target_soc(now)
+        self._notify_listeners()
+
+    def _maybe_schedule_profile_retry(self) -> None:
+        """Schedule another `refresh_profiles_full` if the entity says so.
+
+        The entity's `should_retry()` checks both partial-state and the
+        retry budget. Existing pending retry is cancelled so a fresh
+        scheduled trigger (daily 05:55) doesn't stack with it.
+        """
+        if not self.forecast.consumption_profiles.should_retry():
+            self._cancel_profile_retry()
+            return
+        self._cancel_profile_retry()
+        attempt = self.forecast.consumption_profiles.failed_attempts
+        _LOGGER.warning(
+            "Consumption profile refresh partial (attempt %d/%d) — "
+            "retrying in %.0fs",
+            attempt,
+            self.forecast.consumption_profiles.MAX_RETRIES,
+            _PROFILE_RETRY_INTERVAL_SEC,
+        )
+
+        @callback
+        def _on_retry(_now) -> None:
+            self._profile_retry_cancel = None
+            self._hass.async_create_task(self.refresh_profiles_full())
+
+        self._profile_retry_cancel = async_call_later(
+            self._hass, _PROFILE_RETRY_INTERVAL_SEC, _on_retry
+        )
+
+    def _cancel_profile_retry(self) -> None:
+        if self._profile_retry_cancel is not None:
+            self._profile_retry_cancel()
+            self._profile_retry_cancel = None
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         """Register listener for forecast/SoC change events. Returns unsubscribe fn."""

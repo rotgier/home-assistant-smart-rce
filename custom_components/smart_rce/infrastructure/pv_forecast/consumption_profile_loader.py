@@ -153,18 +153,20 @@ class ConsumptionProfileLoader:
             elif ts.minute == 55:
                 by_date[d][(ts.hour, 30)] = value
 
-        # Construct a profile for every valid walk-back date — even when
-        # the recorder returned zero slots for that day (gap, query
-        # in-flight at startup, sensor was unavailable historically).
-        # The default-baseline fill keeps prev_day sensors populated
-        # (flat 0.45 cons) rather than showing "unknown", consistent
-        # with the strict-contract intent introduced in C0.5.
+        # Strict "no data → None" — the prev_day sensor should surface
+        # as `unknown` when the recorder/workday-calendar isn't ready,
+        # not be hidden behind a fake flat-baseline profile. Real causes
+        # (startup race vs. calendar.workday_calendar / recorder
+        # warming) are handled by deferring `refresh_profiles` to
+        # `EVENT_HOMEASSISTANT_STARTED` and retrying on partial fetch
+        # (see `PvForecastService`). Filling missing buckets with
+        # defaults only applies to a date that DID return some slots
+        # (graceful degradation around small historical gaps).
         return [
             ConsumptionProfile(
-                buckets={**_DEFAULT_BUCKETS, **by_date.get(d, {})},
-                source_date=d,
+                buckets={**_DEFAULT_BUCKETS, **by_date[d]}, source_date=d
             )
-            if d is not None
+            if d and by_date.get(d)
             else None
             for d in dates
         ]

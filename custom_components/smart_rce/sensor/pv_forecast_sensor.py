@@ -297,7 +297,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[0],
-            pv.forecast.consumption_profiles[0],
+            pv.forecast.consumption_profiles.today_profiles[0],
         ),
     ),
     PvForecastSensorDescription(
@@ -308,7 +308,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[1],
-            pv.forecast.consumption_profiles[1],
+            pv.forecast.consumption_profiles.today_profiles[1],
         ),
     ),
     PvForecastSensorDescription(
@@ -319,7 +319,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[2],
-            pv.forecast.consumption_profiles[2],
+            pv.forecast.consumption_profiles.today_profiles[2],
         ),
     ),
     PvForecastSensorDescription(
@@ -330,7 +330,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[3],
-            pv.forecast.consumption_profiles[3],
+            pv.forecast.consumption_profiles.today_profiles[3],
         ),
     ),
     PvForecastSensorDescription(
@@ -341,7 +341,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[4],
-            pv.forecast.consumption_profiles[4],
+            pv.forecast.consumption_profiles.today_profiles[4],
         ),
     ),
     PvForecastSensorDescription(
@@ -352,7 +352,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[5],
-            pv.forecast.consumption_profiles[5],
+            pv.forecast.consumption_profiles.today_profiles[5],
         ),
     ),
     PvForecastSensorDescription(
@@ -363,7 +363,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[6],
-            pv.forecast.consumption_profiles[6],
+            pv.forecast.consumption_profiles.today_profiles[6],
         ),
     ),
     PvForecastSensorDescription(
@@ -374,7 +374,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_prev_days[7],
-            pv.forecast.consumption_profiles[7],
+            pv.forecast.consumption_profiles.today_profiles[7],
         ),
     ),
     # --- Prev-workday instrumentation — tomorrow ---
@@ -386,7 +386,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[0],
-            pv.forecast.consumption_profiles[0],
+            pv.forecast.consumption_profiles.tomorrow_profiles[0],
         ),
     ),
     PvForecastSensorDescription(
@@ -397,7 +397,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[1],
-            pv.forecast.consumption_profiles[1],
+            pv.forecast.consumption_profiles.tomorrow_profiles[1],
         ),
     ),
     PvForecastSensorDescription(
@@ -408,7 +408,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[2],
-            pv.forecast.consumption_profiles[2],
+            pv.forecast.consumption_profiles.tomorrow_profiles[2],
         ),
     ),
     PvForecastSensorDescription(
@@ -419,7 +419,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[3],
-            pv.forecast.consumption_profiles[3],
+            pv.forecast.consumption_profiles.tomorrow_profiles[3],
         ),
     ),
     PvForecastSensorDescription(
@@ -430,7 +430,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[4],
-            pv.forecast.consumption_profiles[4],
+            pv.forecast.consumption_profiles.tomorrow_profiles[4],
         ),
     ),
     PvForecastSensorDescription(
@@ -441,7 +441,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[5],
-            pv.forecast.consumption_profiles[5],
+            pv.forecast.consumption_profiles.tomorrow_profiles[5],
         ),
     ),
     PvForecastSensorDescription(
@@ -452,7 +452,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[6],
-            pv.forecast.consumption_profiles[6],
+            pv.forecast.consumption_profiles.tomorrow_profiles[6],
         ),
     ),
     PvForecastSensorDescription(
@@ -463,7 +463,7 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
             pv.forecast.target_soc_tomorrow_prev_days[7],
-            pv.forecast.consumption_profiles[7],
+            pv.forecast.consumption_profiles.tomorrow_profiles[7],
         ),
     ),
     # --- Max safety sensors — max(live, prev_day_1..N) ---

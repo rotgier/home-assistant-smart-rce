@@ -20,6 +20,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
+from .consumption_profiles import (
+    PREV_DAYS_COUNT,
+    ConsumptionProfile,
+    ConsumptionProfiles,
+    ConsumptionProfileSource,
+)
 from .target_soc import (
     BATTERY_CAPACITY_KWH,
     BUFFER_PERCENT,
@@ -36,8 +42,12 @@ __all__ = [
     "BATTERY_CAPACITY_KWH",
     "BUFFER_PERCENT",
     "CONSUMPTION_PER_30MIN",
+    "ConsumptionProfile",
+    "ConsumptionProfiles",
+    "ConsumptionProfileSource",
     "LOSS_FACTOR",
     "MIN_SOC_PERCENT",
+    "PREV_DAYS_COUNT",
     "PvProfile",
     "TargetSocBucket",
     "TargetSocResult",
@@ -48,13 +58,6 @@ __all__ = [
 # --- Constants --- #
 
 CLOUDY_CAP_HOUR_7: Final[float] = 0.20  # max hourly rate at hour 7 for cloudy
-
-# Prev-workday consumption profile instrumentation (Etap A).
-# How many days back we look to build a consumption profile baseline for
-# target SOC. Domain decision (not infrastructure detail) — semantics
-# "take the last N workdays". Currently 8 → covers a full work-week
-# (~5 days) plus another 3 for context on baseline volatility.
-PREV_DAYS_COUNT: Final[int] = 8
 
 # AT6 cloudy modifiers per hour (hourly rate multiplier on est10)
 AT6_CLOUDY_MODIFIER_EARLY: Final[float] = 0.5  # hours 7-10
@@ -135,51 +138,6 @@ class AdjustedPvForecast:
         return PvProfile(buckets=buckets)
 
 
-_EXPECTED_BUCKETS: Final[frozenset[tuple[int, int]]] = frozenset(
-    (h, m) for h in range(7, 13) for m in (0, 30)
-)
-
-
-@dataclass(frozen=True)
-class ConsumptionProfile:
-    """Consumption per 30-min bucket, keyed by (hour, minute) -> kWh.
-
-    Strict contract: `buckets` must contain exactly 12 entries covering
-    7:00..12:30 in 30-min steps. Missing buckets are filled with
-    `CONSUMPTION_PER_30MIN` at the infra↔domain boundary
-    (`ConsumptionProfileLoader._bucket_profiles_by_date`) so callers can
-    rely on `.get(h, m)` returning a non-None float.
-    """
-
-    buckets: dict[tuple[int, int], float]
-    source_date: date | None = None  # workday the profile was taken from
-
-    def __post_init__(self) -> None:
-        got = frozenset(self.buckets.keys())
-        if got != _EXPECTED_BUCKETS:
-            missing = sorted(_EXPECTED_BUCKETS - got)
-            extra = sorted(got - _EXPECTED_BUCKETS)
-            raise ValueError(
-                "ConsumptionProfile must have exactly 12 buckets 7:00..12:30; "
-                f"missing={missing}, extra={extra}"
-            )
-
-    def get(self, hour: int, minute: int) -> float:
-        return self.buckets[(hour, minute)]
-
-    @classmethod
-    def flat(
-        cls,
-        value: float = CONSUMPTION_PER_30MIN,
-        source_date: date | None = None,
-    ) -> ConsumptionProfile:
-        """Synthetic flat baseline — every bucket = `value` kWh."""
-        return cls(
-            buckets={(h, m): value for h, m in _EXPECTED_BUCKETS},
-            source_date=source_date,
-        )
-
-
 @dataclass(frozen=True)
 class ExtrapolatedLive:
     """One extrapolation strategy applied to today's live forecast.
@@ -217,8 +175,12 @@ class PvForecast:
     8 forecast/SoC fields + prev-workday matrix (Etap A instrumentation):
     - adjusted_*: weather-adjusted PV estimates (today/tomorrow × at_6/live)
     - target_soc_*: implied battery SOC target (today/tomorrow × at_6/live)
-    - consumption_profiles: prev-workday consumption baselines (PREV_DAYS_COUNT)
-    - target_soc_*_prev_days: per-prev-workday target SOC (parallel to profiles)
+    - consumption_profiles: rich `ConsumptionProfiles` entity holding two
+      anchor sets (today + tomorrow), each PREV_DAYS_COUNT long. Knows
+      how to refresh itself + retry on partial fetch.
+    - target_soc_*_prev_days: per-prev-workday target SOC (parallel to
+      `consumption_profiles.today_profiles` /
+      `consumption_profiles.tomorrow_profiles` respectively)
     - target_soc_max / target_soc_tomorrow_max: max(live + prev_days) — final
       decision input for automations.
     """
@@ -231,8 +193,8 @@ class PvForecast:
     target_soc_live: TargetSocResult | None = None
     target_soc_tomorrow: TargetSocResult | None = None
     target_soc_tomorrow_live: TargetSocResult | None = None
-    consumption_profiles: list[ConsumptionProfile | None] = field(
-        default_factory=lambda: [None] * PREV_DAYS_COUNT
+    consumption_profiles: ConsumptionProfiles = field(
+        default_factory=lambda: ConsumptionProfiles.empty()
     )
     target_soc_prev_days: list[TargetSocResult | None] = field(
         default_factory=lambda: [None] * PREV_DAYS_COUNT
@@ -348,11 +310,14 @@ class PvForecast:
         )
         self._recalculate_target_soc(now)
 
-    def update_consumption_profiles(
-        self, profiles: list[ConsumptionProfile | None], now: datetime
-    ) -> None:
-        """Refresh prev-workday consumption baselines + downstream target SOC."""
-        self.consumption_profiles = profiles
+    def recalculate_target_soc(self, now: datetime) -> None:
+        """Public hook used by `ConsumptionProfiles.refresh_*` callers.
+
+        The entity mutates `consumption_profiles.today_profiles` /
+        `tomorrow_profiles` in place; the aggregate then refreshes its
+        downstream `target_soc_*` cache via this public method (private
+        `_recalculate_target_soc` remains for internal use).
+        """
         self._recalculate_target_soc(now)
 
     def _recalculate_target_soc(self, now: datetime) -> None:
@@ -411,8 +376,13 @@ class PvForecast:
                 tomorrow_live_profile, default_cons, start_charge_hour=sch_t
             )
 
-        # Prev-workday instrumentation (Etap A) — adjusted_live + per-day profile.
-        for i, profile in enumerate(self.consumption_profiles):
+        # Prev-workday instrumentation (Etap A). Two anchor sets:
+        # - today_profiles: anchored at today → prev_1 = yesterday workday
+        # - tomorrow_profiles: anchored at tomorrow → prev_1 = today workday
+        # Earlier the aggregate held a single list (today-anchored only) and
+        # tomorrow sensors borrowed it too — semantically wrong for
+        # tomorrow_prev_X. Each sensor now reads its own anchor.
+        for i, profile in enumerate(self.consumption_profiles.today_profiles):
             if live_profile is not None and profile is not None:
                 self.target_soc_prev_days[i] = calculate_target_soc(
                     live_profile,
@@ -423,6 +393,7 @@ class PvForecast:
                 )
             else:
                 self.target_soc_prev_days[i] = None
+        for i, profile in enumerate(self.consumption_profiles.tomorrow_profiles):
             if tomorrow_live_profile is not None and profile is not None:
                 self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
                     tomorrow_live_profile,

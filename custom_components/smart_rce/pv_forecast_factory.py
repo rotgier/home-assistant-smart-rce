@@ -26,7 +26,8 @@ from datetime import datetime
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
@@ -68,6 +69,7 @@ async def create_pv_forecast_service(
     realized_pv_loader = RealizedPvLoader(hass)
 
     service = PvForecastService(
+        hass=hass,
         forecast=forecast,
         solcast=solcast,
         weather_listener=weather_listener,
@@ -125,11 +127,12 @@ async def create_pv_forecast_service(
     )
 
     # Daily prev-workday consumption profile refresh at 05:55 local — sync
-    # callback wraps async refresh_profiles via hass.async_create_task,
-    # żeby Service zostało hass-free.
+    # callback wraps async refresh via hass.async_create_task, żeby Service
+    # zostało hass-free. Full refresh — day rollover, today-anchored
+    # prev_1 (= yesterday workday) changes.
     @callback
     def _on_daily_refresh(_now: datetime) -> None:
-        hass.async_create_task(service.refresh_profiles())
+        hass.async_create_task(service.refresh_profiles_full())
 
     entry.async_on_unload(
         async_track_time_change(hass, _on_daily_refresh, hour=5, minute=55, second=0)
@@ -145,16 +148,39 @@ async def create_pv_forecast_service(
     entry.async_on_unload(async_track_time_change(hass, _on_minute_tick, second=0))
 
     @callback
-    def _on_bucket_boundary(_now: datetime) -> None:
+    def _on_bucket_boundary(now: datetime) -> None:
         hass.async_create_task(service.refresh_realized_pv())
+        # Tomorrow-anchored prev_1 = today; its data grows as utility
+        # meter cycles close during the PV window. Outside 07:30..13:30
+        # nothing changes — skip the recorder hit.
+        if (now.hour, now.minute) >= (7, 30) and (now.hour, now.minute) <= (13, 30):
+            hass.async_create_task(service.refresh_profiles_tomorrow_only())
 
     entry.async_on_unload(
         async_track_time_change(hass, _on_bucket_boundary, minute=[0, 30], second=30)
     )
 
-    # Initial calculation + background fetches (consumption profiles, realized PV).
+    # Initial sync recalc — uses the in-memory PvForecast state restored from
+    # last shutdown (or the empty default on cold start). Safe to run before
+    # async fetches return.
     service.recalculate_all()
-    hass.async_create_task(service.refresh_profiles())
-    hass.async_create_task(service.refresh_realized_pv())
+
+    # Initial async fetches deferred to `EVENT_HOMEASSISTANT_STARTED`.
+    # At `async_setup_entry` time the recorder + calendar.workday_calendar
+    # integrations may not be fully loaded yet — `consumption_loader` would
+    # then see an empty workday set and all 8 prev_X slots would be `None`,
+    # leaving sensors stuck at `unknown` until the next scheduled trigger.
+    # Waiting for STARTED guarantees both subsystems are ready.
+    @callback
+    def _on_ha_started(_event: Event) -> None:
+        hass.async_create_task(service.refresh_profiles_full())
+        hass.async_create_task(service.refresh_realized_pv())
+
+    if hass.is_running:
+        _on_ha_started(None)  # type: ignore[arg-type]
+    else:
+        entry.async_on_unload(
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_ha_started)
+        )
 
     return service

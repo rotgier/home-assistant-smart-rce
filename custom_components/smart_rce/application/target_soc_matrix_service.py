@@ -33,7 +33,7 @@ reconstruction; out of scope here.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import logging
 from typing import Any
 
@@ -115,15 +115,40 @@ class TargetSocMatrixService:
                 "matrix": None,
             }
         is_today = target_date == today
+        is_tomorrow = target_date == today + timedelta(days=1)
         forecast = self._pv_forecast_service.forecast
 
         pv_profiles = self._pv_profiles(forecast, is_today, target_date)
-        # Anchor the prev-workday walk at the date-picker target. For
-        # today this matches `forecast.consumption_profiles`; for
-        # tomorrow it surfaces today as Prev 1 (if today is a workday).
-        loaded_profiles = await self._consumption_loader.fetch_for_anchor(
-            target_date, pv_forecast_module.PREV_DAYS_COUNT
-        )
+        # Reuse the PvForecast aggregate's cached profiles for today /
+        # tomorrow (refreshed by `PvForecastService.refresh_profiles_*`
+        # — every minute / bucket-boundary refetches were a waste, the
+        # data only changes daily plus today-prev_1-of-tomorrow grows
+        # within the PV window). For target_date == D+2 or further, fall
+        # back to an on-demand fetch — rare path, no cache.
+        if is_today:
+            loaded_profiles = forecast.consumption_profiles.today_profiles
+        elif is_tomorrow:
+            loaded_profiles = forecast.consumption_profiles.tomorrow_profiles
+        else:
+            loaded_profiles = await self._consumption_loader.fetch_for_anchor(
+                target_date, pv_forecast_module.PREV_DAYS_COUNT
+            )
+        # Surface a loud error when ALL slots are None — likely the
+        # workday calendar / recorder hasn't loaded yet (startup race)
+        # or has been broken for a while. Custom card renders the error
+        # panel instead of a misleading partial matrix.
+        if all(p is None for p in loaded_profiles):
+            _LOGGER.warning(
+                "TargetSocMatrixService: no consumption profiles available "
+                "for %s — returning error payload",
+                target_date,
+            )
+            return {
+                "date": target_date.isoformat(),
+                "kind": "error",
+                "error": "consumption_profiles_unavailable",
+                "matrix": None,
+            }
         cons_profiles, cons_labels, cons_source_dates = self._cons_inputs(
             loaded_profiles
         )
