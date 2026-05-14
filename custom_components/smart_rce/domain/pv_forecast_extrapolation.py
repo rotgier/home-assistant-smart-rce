@@ -28,10 +28,10 @@ from .pv_forecast import (
     AdjustedPvForecast,
     ConsumptionProfile,
     ExtrapolatedLive,
-    PvForecast,
     PvProfile,
     SolcastPeriod,
 )
+from .target_soc import calculate_target_soc
 
 # Constant-baseline profile reused by every extrapolated variant —
 # matches the target_soc_live baseline. Until C4, the in-progress bucket
@@ -240,7 +240,7 @@ def extrapolate_calibrated_pattern(
         future_pv_kwh_per_h_overrides=future_overrides,
     )
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
-    target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
+    target_soc = calculate_target_soc(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
@@ -546,7 +546,7 @@ def extrapolate_proportional_median(
         future_pv_kwh_per_h_overrides=future_overrides,
     )
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
-    target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
+    target_soc = calculate_target_soc(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
@@ -735,7 +735,7 @@ def extrapolate_band_clamped(
         future_pv_kwh_per_h_overrides=future_overrides,
     )
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
-    target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
+    target_soc = calculate_target_soc(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
@@ -860,7 +860,7 @@ def extrapolate_band_clamped_recent(
         future_pv_kwh_per_h_overrides=future_overrides,
     )
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
-    target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
+    target_soc = calculate_target_soc(
         _with_current_bucket(adjusted.to_profile(now.date()), now, current_pv_rate / 2),
         consumption_profile=_DEFAULT_CONS_PROFILE,
         now=now,
@@ -911,7 +911,7 @@ def _build_result(
         adjusted_live, now, current_bucket_pv_kwh_per_h=current_bucket_pv_kwh_per_h
     )
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
-    target_soc = PvForecast._calculate_target_soc(  # noqa: SLF001 — same-package use
+    target_soc = calculate_target_soc(
         _with_current_bucket(
             adjusted_live.to_profile(now.date()),
             now,

@@ -6,9 +6,9 @@ from `__init__.py::async_setup_entry`.
 
 Layer responsibility (DDD):
 - domain/pv_forecast.py — PvForecast aggregate (state + behavior), per-class
-  pure algorithms (PvForecast._adjust_pv_forecast_*, PvForecast._calculate_target_soc),
-  value objects, plus standalone domain utilities (merge_weather_conditions,
-  walk_back_workdays) shared across application + infrastructure
+  pure algorithms (PvForecast._adjust_pv_forecast_*), value objects, plus
+  standalone domain utilities (merge_weather_conditions, walk_back_workdays)
+  shared across application + infrastructure
 - application/pv_forecast_service.py — PvForecastService orchestrator
   (read from adapters → call domain update → notify listeners). HASS-FREE.
 - infrastructure/pv_forecast/ — driving/driven adapters (SolcastReader,

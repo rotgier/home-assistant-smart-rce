@@ -242,7 +242,7 @@ class PvForecast:
     )
     # Hour (0..23) marking the boundary between pre-charge and post-charge in
     # today's 7-13 window. Read from `input_datetime.rce_start_charge_hour_today_override`.
-    # Used by _calculate_target_soc to clamp inter-hour surplus during
+    # Used by calculate_target_soc to clamp inter-hour surplus during
     # pre-charge (battery doesn't charge from PV → surplus exported, not stored).
     # None = no gate (legacy behavior; accumulate freely).
     start_charge_hour_today: int | None = None
@@ -418,11 +418,6 @@ class PvForecast:
             if r is not None
         ]
         self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
-
-    # Thin shim delegating to free function in `domain/target_soc.py`. Kept
-    # for back-compat with existing callers in `pv_forecast_extrapolation.py`
-    # and tests; new code should call `calculate_target_soc` directly.
-    _calculate_target_soc = staticmethod(calculate_target_soc)
 
     @staticmethod
     def _adjust_pv_forecast_at6(
