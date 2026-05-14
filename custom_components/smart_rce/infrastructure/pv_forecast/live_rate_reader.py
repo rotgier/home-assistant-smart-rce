@@ -12,8 +12,11 @@ different extrapolation strategies of the in-progress 30-min bucket:
 
 2. 5-minute averaged power sensors (W):
    - sensor.pv_power_avg_5_minutes
-   - sensor.house_consumption_avg_5_minutes
+   - sensor.house_consumption_minus_water_avg_5_minutes
    Used for "5-min live rate" — current rate as kW (= kWh/h equivalent).
+   Consumption sensor subtracts water heaters because heating water from
+   PV surplus indicates energy abundance — counting it as "real" load
+   would inflate target SOC% during sunny morning bursts.
 
 Returns None when sensors are unavailable so the caller can emit 'unknown'
 instead of stale or fabricated data.
@@ -30,7 +33,7 @@ from typing import Final
 from homeassistant.core import HomeAssistant
 
 _PV_POWER_5MIN_ENTITY: Final = "sensor.pv_power_avg_5_minutes"
-_CONSUMPTION_5MIN_ENTITY: Final = "sensor.house_consumption_avg_5_minutes"
+_CONSUMPTION_5MIN_ENTITY: Final = "sensor.house_consumption_minus_water_avg_5_minutes"
 _PV_BUCKET_KWH_ENTITY: Final = "sensor.total_pv_generation_bi_hourly"
 _CONSUMPTION_BUCKET_KWH_ENTITY: Final = "sensor.total_consumption_minus_bi_hourly"
 _START_CHARGE_HOUR_OVERRIDE_ENTITY: Final = (
