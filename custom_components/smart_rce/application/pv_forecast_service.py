@@ -91,9 +91,14 @@ class PvForecastService:
         `refresh_realized_pv` async path on minute tick / startup).
         """
         if not self.forecast.adjusted_live:
-            self.forecast.extrapolated_live = pv_forecast.ExtrapolatedLive.empty()
-            self.forecast.extrapolated_live_5min = pv_forecast.ExtrapolatedLive.empty()
             self.forecast.extrapolated_live_pattern = (
+                pv_forecast.ExtrapolatedLive.empty()
+            )
+            self.forecast.extrapolated_live_proportional = (
+                pv_forecast.ExtrapolatedLive.empty()
+            )
+            self.forecast.extrapolated_live_band = pv_forecast.ExtrapolatedLive.empty()
+            self.forecast.extrapolated_live_band_recent = (
                 pv_forecast.ExtrapolatedLive.empty()
             )
             return
@@ -102,41 +107,19 @@ class PvForecastService:
         pv_w = self._live_rates.read_pv_power_w()
         cons_w = self._live_rates.read_consumption_w()
         pv_so_far_kwh = self._live_rates.read_pv_bucket_so_far_kwh()
-        cons_so_far_kwh = self._live_rates.read_consumption_bucket_so_far_kwh()
         # Pre-charge gate (used by target_soc calculation inside extrapolations
         # + propagated to non-extrapolated target_soc via `self.forecast`).
         sch = self._live_rates.read_start_charge_hour_today_override()
         self.forecast.start_charge_hour_today = sch
 
-        self.forecast.extrapolated_live = (
-            pv_forecast_extrapolation.extrapolate_realized_prorate(
-                self.forecast.adjusted_live,
-                now,
-                pv_so_far_kwh,
-                cons_so_far_kwh,
-                consumption_w=cons_w,
-                start_charge_hour=sch,
-            )
-        )
-        self.forecast.extrapolated_live_5min = (
-            pv_forecast_extrapolation.extrapolate_5min_rate(
-                self.forecast.adjusted_live,
-                now,
-                pv_w,
-                cons_w,
-                pv_bucket_so_far_kwh=pv_so_far_kwh,
-                consumption_bucket_so_far_kwh=cons_so_far_kwh,
-                start_charge_hour=sch,
-            )
-        )
         self.forecast.extrapolated_live_pattern = (
             pv_forecast_extrapolation.extrapolate_calibrated_pattern(
                 self.forecast.adjusted_live,
                 self.forecast.solcast_live,
                 now,
                 pv_so_far_kwh,
-                cons_so_far_kwh,
                 self._realized_pv_today,
+                pv_power_w_5min=pv_w,
                 consumption_w=cons_w,
                 start_charge_hour=sch,
             )
@@ -147,8 +130,8 @@ class PvForecastService:
                 self.forecast.solcast_live,
                 now,
                 pv_so_far_kwh,
-                cons_so_far_kwh,
                 self._realized_pv_today,
+                pv_power_w_5min=pv_w,
                 consumption_w=cons_w,
                 start_charge_hour=sch,
             )
@@ -159,8 +142,8 @@ class PvForecastService:
                 self.forecast.solcast_live,
                 now,
                 pv_so_far_kwh,
-                cons_so_far_kwh,
                 self._realized_pv_today,
+                pv_power_w_5min=pv_w,
                 consumption_w=cons_w,
                 start_charge_hour=sch,
             )
@@ -171,8 +154,8 @@ class PvForecastService:
                 self.forecast.solcast_live,
                 now,
                 pv_so_far_kwh,
-                cons_so_far_kwh,
                 self._realized_pv_today,
+                pv_power_w_5min=pv_w,
                 consumption_w=cons_w,
                 start_charge_hour=sch,
             )
@@ -208,10 +191,12 @@ class PvForecastService:
         self.forecast.start_charge_hour_tomorrow = (
             int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
         )
-        # Live consumption rate (W) flows into `calculate_target_soc` to
-        # time-prorate the in-progress bucket's cons against the current
-        # 5-min average power instead of the constant baseline.
+        # Live signals (W) propagated to the aggregate; consumed by
+        # `ConsumptionProfile.to_view` / `AdjustedPvForecast.to_profile`
+        # inside `_recalculate_target_soc` to integrate the in-progress
+        # bucket against current 5-min average power.
         self.forecast.live_consumption_w = self._live_rates.read_consumption_w()
+        self.forecast.live_pv_power_w = self._live_rates.read_pv_power_w()
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.

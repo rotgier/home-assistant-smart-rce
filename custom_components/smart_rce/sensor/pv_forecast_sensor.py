@@ -153,18 +153,6 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # forecast attribute = full per-period day with current bucket rescaled
     # (chart-friendly — same shape as Adj PV Live so adjusted_pv() helper works)
     PvForecastSensorDescription(
-        name="Weather Adjusted PV Live Extrapolated",
-        value_fn=lambda pv: pv.forecast.extrapolated_live.remaining_kwh,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.extrapolated_live.adjusted),
-    ),
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Live Extrapolated 5min",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_5min.remaining_kwh,
-        attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecast.extrapolated_live_5min.adjusted
-        ),
-    ),
-    PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Pattern",
         value_fn=lambda pv: pv.forecast.extrapolated_live_pattern.remaining_kwh,
         attr_fn=lambda pv: _pv_forecast_attrs(
@@ -228,26 +216,6 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         ),
     ),
     # --- Target SOC live extrapolated (per-minute tick, in-progress bucket scaled) ---
-    PvForecastSensorDescription(
-        name="Target Battery SOC Live Extrapolated",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.extrapolated_live.target_soc.value
-        if pv.forecast.extrapolated_live.target_soc
-        else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.extrapolated_live.target_soc
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Target Battery SOC Live Extrapolated 5min",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_5min.target_soc.value
-        if pv.forecast.extrapolated_live_5min.target_soc
-        else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.extrapolated_live_5min.target_soc
-        ),
-    ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Pattern",
         native_unit_of_measurement="%",

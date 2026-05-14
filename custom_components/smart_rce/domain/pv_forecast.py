@@ -246,35 +246,29 @@ class PvForecast:
     # the calibrated_pattern extrapolation variant which uses pv_estimate +
     # pv_estimate10 (raw range, not weather-adjusted) as the projection axis.
     solcast_live: list[SolcastPeriod] = field(default_factory=list)
-    # Extrapolated live variants — recomputed every minute. Three strategies
-    # for the in-progress 30-min bucket + future projection (see
-    # domain/pv_forecast_extrapolation.py):
-    #   - extrapolated_live         : realized prorate (utility meter so-far)
-    #   - extrapolated_live_5min    : 5-min average power sensors
+    # Extrapolated live variants — recomputed every minute. Four future-bucket
+    # projection strategies (see domain/pv_forecast_extrapolation.py):
     #   - extrapolated_live_pattern : weighted realization factor → projected
-    #                                 onto future buckets via [p10, estimate]
+    #                                 onto future buckets via [p10, est, p90]
     #   - extrapolated_live_proportional : proportional-to-median scoring
     #                                 (S = (real-est)/est, no p10/p90 dependence)
-    # Each ExtrapolatedLive bundles adjusted (chart), remaining_kwh (state), and
-    # target_soc (SOC% for 7-13 deficit). All variants use CONSUMPTION_PER_30MIN
-    # constant baseline for consumption (matching target_soc_live).
-    extrapolated_live: ExtrapolatedLive = field(default_factory=ExtrapolatedLive.empty)
-    extrapolated_live_5min: ExtrapolatedLive = field(
-        default_factory=ExtrapolatedLive.empty
-    )
+    #   - extrapolated_live_band         : 2-zone score [p10, p90] (no est)
+    #   - extrapolated_live_band_recent  : band scoring, narrow lookback
+    # Each bundles adjusted (chart), remaining_kwh (state), and
+    # target_soc (SOC% for 7-13 deficit). All variants share the
+    # uniform in-progress bucket treatment baked into to_profile() —
+    # live pv_power_w_5min over remaining seconds — so they differ
+    # ONLY in their future bucket projection. Consumption uses the
+    # flat baseline shifted by live consumption.
     extrapolated_live_pattern: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
     extrapolated_live_proportional: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
-    # 2-zone band-clamped scoring: S in [-1, +1] anchored at [p10, p90],
-    # clamp above p90. See domain/pv_forecast_extrapolation.py.
     extrapolated_live_band: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
-    # Same band scoring but narrow lookback (current + 1 bucket back only).
-    # Captures short-horizon weather trend without morning bias.
     extrapolated_live_band_recent: ExtrapolatedLive = field(
         default_factory=ExtrapolatedLive.empty
     )
@@ -290,11 +284,18 @@ class PvForecast:
     # mask a real deficit later in the window.
     start_charge_hour_tomorrow: int | None = None
     # Live house consumption rate (W) — sourced from
-    # `sensor.house_consumption_avg_5_minutes` via `LiveRateReader.read_consumption_w()`.
-    # Passed to `calculate_target_soc` for **today** variants so the
-    # in-progress bucket's consumption uses the actual current rate
-    # instead of `consumption_profile.get(...)` × remaining-factor.
+    # `sensor.house_consumption_minus_water_avg_5_minutes` via
+    # `LiveRateReader.read_consumption_w()`. Integrated by
+    # `ConsumptionProfile.to_view` over the remaining seconds in the
+    # in-progress bucket to produce live kWh-remaining for today's
+    # target_soc variants.
     live_consumption_w: float | None = None
+    # Live PV generation rate (W) — sourced from
+    # `sensor.pv_power_avg_5_minutes` via `LiveRateReader.read_pv_power_w()`.
+    # Symmetric counterpart of `live_consumption_w`: integrated by
+    # `AdjustedPvForecast.to_profile` for the in-progress bucket of
+    # today's PV-side variants.
+    live_pv_power_w: float | None = None
 
     def update_at_6(
         self,
@@ -361,48 +362,71 @@ class PvForecast:
     def _recalculate_target_soc(self, now: datetime) -> None:
         """Calculate target SOC from current adjusted_* + consumption_profiles.
 
-        Today and tomorrow variants both apply the pre-charge inter-hour
-        clamp via their respective `start_charge_hour_{today,tomorrow}`
-        fields (set by the application service before recalc). Without
-        the clamp a sunny pre-charge hour can mask a later deficit by
-        propagating its positive cumulative balance across the hour
-        boundary into the gated post-charge window.
+        Today variants build now-aware profiles via
+        `AdjustedPvForecast.to_profile(today, now, pv_power_w_5min=...)`
+        and `ConsumptionProfile.to_view(now, live_consumption_w=...)`.
+        When either live signal is missing, today variants stay `None`
+        (fail-hard contract — no stale forecast-prorate fallback).
+
+        Tomorrow variants pass `now=None` (full-window deficit, no live
+        in-progress concept since current power doesn't carry across
+        days), so live signals are not needed.
+
+        Pre-charge inter-hour clamp via `start_charge_hour_{today,tomorrow}`
+        applies symmetrically: a sunny pre-charge hour cannot mask a later
+        deficit by propagating its positive cumulative balance across the
+        hour boundary into the gated post-charge window.
         """
         sch = self.start_charge_hour_today
         sch_t = self.start_charge_hour_tomorrow
         live_cons_w = self.live_consumption_w
+        live_pv_w = self.live_pv_power_w
         default_cons = ConsumptionProfile.flat()
         today = now.date()
         tomorrow = today + timedelta(days=1)
-        live_profile = (
-            self.adjusted_live.to_profile(today) if self.adjusted_live else None
-        )
+
+        # Today block — needs both live signals or sets to None
+        today_ready = live_cons_w is not None and live_pv_w is not None
+        if today_ready:
+            cons_view_today = default_cons.to_view(
+                now=now, live_consumption_w=live_cons_w
+            )
+            at6_profile = (
+                self.adjusted_at_6.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
+                if self.adjusted_at_6
+                else None
+            )
+            live_profile = (
+                self.adjusted_live.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
+                if self.adjusted_live
+                else None
+            )
+            self.target_soc = (
+                calculate_target_soc(
+                    at6_profile, cons_view_today, start_charge_hour=sch
+                )
+                if at6_profile is not None
+                else None
+            )
+            self.target_soc_live = (
+                calculate_target_soc(
+                    live_profile, cons_view_today, start_charge_hour=sch
+                )
+                if live_profile is not None
+                else None
+            )
+        else:
+            live_profile = None
+            self.target_soc = None
+            self.target_soc_live = None
+
+        # Tomorrow: full 7-13 window; no live override (current power doesn't
+        # carry across days). Plain profile snapshots — `now=None` path.
         tomorrow_live_profile = (
             self.adjusted_tomorrow_live.to_profile(tomorrow)
             if self.adjusted_tomorrow_live
             else None
         )
-        if self.adjusted_at_6:
-            self.target_soc = calculate_target_soc(
-                self.adjusted_at_6.to_profile(today),
-                default_cons,
-                now=now,
-                live_consumption_w=live_cons_w,
-                start_charge_hour=sch,
-            )
-        if live_profile is not None:
-            self.target_soc_live = calculate_target_soc(
-                live_profile,
-                default_cons,
-                now=now,
-                live_consumption_w=live_cons_w,
-                start_charge_hour=sch,
-            )
-
-        # Tomorrow: always full 7-13 window (no `now` arg → simulates entire window).
-        # Pre-charge gate sourced from `sensor.rce_start_charge_hour_tomorrow_time`.
-        # No `live_consumption_w` for tomorrow — current power doesn't carry
-        # across days, the in-progress bucket concept doesn't apply.
         if self.adjusted_tomorrow:
             self.target_soc_tomorrow = calculate_target_soc(
                 self.adjusted_tomorrow.to_profile(tomorrow),
@@ -414,23 +438,22 @@ class PvForecast:
                 tomorrow_live_profile, default_cons, start_charge_hour=sch_t
             )
 
-        # Prev-workday instrumentation (Etap A). Two anchor sets:
+        # Prev-workday instrumentation. Two anchor sets:
         # - today_profiles: anchored at today → prev_1 = yesterday workday
         # - tomorrow_profiles: anchored at tomorrow → prev_1 = today workday
-        # Earlier the aggregate held a single list (today-anchored only) and
-        # tomorrow sensors borrowed it too — semantically wrong for
-        # tomorrow_prev_X. Each sensor now reads its own anchor.
+        # Today-anchored sensors share `live_profile` (now-aware PV) and
+        # apply per-prev-profile to_view; tomorrow-anchored sensors use full
+        # snapshots (no live override).
         for i, profile in enumerate(self.consumption_profiles.today_profiles):
-            if live_profile is not None and profile is not None:
-                self.target_soc_prev_days[i] = calculate_target_soc(
-                    live_profile,
-                    profile,
-                    now=now,
-                    live_consumption_w=live_cons_w,
-                    start_charge_hour=sch,
-                )
-            else:
+            if profile is None or live_profile is None or not today_ready:
                 self.target_soc_prev_days[i] = None
+                continue
+            assert live_cons_w is not None  # narrowed by today_ready
+            self.target_soc_prev_days[i] = calculate_target_soc(
+                live_profile,
+                profile.to_view(now=now, live_consumption_w=live_cons_w),
+                start_charge_hour=sch,
+            )
         for i, profile in enumerate(self.consumption_profiles.tomorrow_profiles):
             if tomorrow_live_profile is not None and profile is not None:
                 self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(

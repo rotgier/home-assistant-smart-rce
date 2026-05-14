@@ -148,40 +148,6 @@ def test_empty_inputs_return_empty_matrix() -> None:
     assert matrix.cons_sums_kwh == {}
 
 
-def test_now_aware_matrix_matches_sensor_semantics() -> None:
-    """Passing `now` time-prorates in-progress bucket — cell == standalone sensor."""
-    from datetime import datetime, timezone
-
-    # PV deficit in early morning, surplus afterwards.
-    pv = _pv_list([0.1, 0.1, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6])
-    cons = _cons(0.45)
-    now = datetime(2026, 4, 18, 8, 0, tzinfo=timezone.utc)
-
-    full_window = compute_matrix(
-        pv_profiles_by_strategy={"pv": pv},
-        cons_profiles_by_strategy={"cons": cons},
-        cons_labels={},
-        source_day_pv_sums={"cons": None},
-        start_charge_hour=None,
-    )
-    now_aware = compute_matrix(
-        pv_profiles_by_strategy={"pv": pv},
-        cons_profiles_by_strategy={"cons": cons},
-        cons_labels={},
-        source_day_pv_sums={"cons": None},
-        start_charge_hour=None,
-        now=now,
-    )
-
-    # Full-window catches the 7:00 + 7:30 deficit → higher SOC required.
-    # Now-aware skips those past buckets → lower SOC.
-    assert full_window.cells_pct[("pv", "cons")] > now_aware.cells_pct[("pv", "cons")]
-
-    # Now-aware cell matches what `calculate_target_soc(..., now=now)` returns.
-    direct = calculate_target_soc(pv, consumption_profile=cons, now=now)
-    assert now_aware.cells_pct[("pv", "cons")] == direct.value
-
-
 def test_cons_label_defaults_to_key_when_missing() -> None:
     matrix = compute_matrix(
         pv_profiles_by_strategy={"pv": _PV_GENEROUS},

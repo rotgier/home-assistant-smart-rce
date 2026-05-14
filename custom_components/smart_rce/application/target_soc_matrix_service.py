@@ -1,7 +1,7 @@
 """TargetSocMatrixService — application service for the target-SOC matrix.
 
 DDD application layer: pulls PV strategy buckets from the PvForecast
-aggregate (today: 8 strategies, tomorrow: 2 — fewer because extrapolated
+aggregate (today: 6 strategies, tomorrow: 2 — fewer because extrapolated
 variants are dziś-only), Cons baselines from consumption_profiles + a
 synthetic live baseline, and source-day realized PV sums via
 `RealizedPvLoader.fetch_for_dates`. Delegates the cross-product to the
@@ -63,8 +63,6 @@ _LOGGER = logging.getLogger(__name__)
 _TODAY_PV_KEYS: tuple[str, ...] = (
     "at_6",
     "live",
-    "extrap",
-    "extrap_5min",
     "extrap_pattern",
     "extrap_propor",
     "extrap_band",
@@ -118,7 +116,28 @@ class TargetSocMatrixService:
         is_tomorrow = target_date == today + timedelta(days=1)
         forecast = self._pv_forecast_service.forecast
 
-        pv_profiles = self._pv_profiles(forecast, is_today, target_date)
+        # Now-aware only for today's matrix. Toggle defaults to ON when
+        # the input_boolean is missing or in an unknown state — explicit
+        # "off" needed to revert to full-window simulation. Both live
+        # signals must be available too (fail-hard contract on to_view /
+        # to_profile when `now` is given).
+        now_aware = (
+            is_today
+            and self._now_aware_enabled()
+            and forecast.live_consumption_w is not None
+            and forecast.live_pv_power_w is not None
+        )
+        matrix_now: datetime | None = now if now_aware else None
+        live_cons_w = forecast.live_consumption_w if now_aware else None
+        live_pv_w = forecast.live_pv_power_w if now_aware else None
+
+        pv_profiles = self._pv_profiles(
+            forecast,
+            is_today=is_today,
+            target_date=target_date,
+            now=matrix_now,
+            live_pv_power_w=live_pv_w,
+        )
         # Reuse the PvForecast aggregate's cached profiles for today /
         # tomorrow (refreshed by `PvForecastService.refresh_profiles_*`
         # — every minute / bucket-boundary refetches were a waste, the
@@ -150,7 +169,7 @@ class TargetSocMatrixService:
                 "matrix": None,
             }
         cons_profiles, cons_labels, cons_source_dates = self._cons_inputs(
-            loaded_profiles
+            loaded_profiles, now=matrix_now, live_consumption_w=live_cons_w
         )
         source_day_pv_sums = await self._source_day_pv_sums(cons_source_dates)
         sch = (
@@ -158,14 +177,6 @@ class TargetSocMatrixService:
             if is_today
             else forecast.start_charge_hour_tomorrow
         )
-        # Now-aware only for today's matrix. Toggle defaults to ON when
-        # the input_boolean is missing or in an unknown state — explicit
-        # "off" needed to revert to full-window simulation.
-        matrix_now: datetime | None = None
-        matrix_live_cons_w: float | None = None
-        if is_today and self._now_aware_enabled():
-            matrix_now = now
-            matrix_live_cons_w = forecast.live_consumption_w
 
         matrix = compute_matrix(
             pv_profiles_by_strategy=pv_profiles,
@@ -173,8 +184,6 @@ class TargetSocMatrixService:
             cons_labels=cons_labels,
             source_day_pv_sums=source_day_pv_sums,
             start_charge_hour=sch,
-            now=matrix_now,
-            live_consumption_w=matrix_live_cons_w,
         )
         _LOGGER.debug(
             "TargetSocMatrixService: %s for %s — %d PV × %d Cons, %d cells",
@@ -200,9 +209,20 @@ class TargetSocMatrixService:
     # --- PV inputs --- #
 
     def _pv_profiles(
-        self, forecast: PvForecast, is_today: bool, target_date: date
+        self,
+        forecast: PvForecast,
+        *,
+        is_today: bool,
+        target_date: date,
+        now: datetime | None,
+        live_pv_power_w: float | None,
     ) -> dict[str, PvProfile]:
         """Map each PV strategy key to its 12-bucket `PvProfile`.
+
+        For today + now-aware mode, profiles are built with `now` and
+        `live_pv_power_w` so the in-progress bucket carries live remaining
+        kWh (matrix cells then match the bridging sensors). For tomorrow
+        or full-window today, plain forecast snapshots — `now=None`.
 
         Strategies whose `AdjustedPvForecast` is missing or doesn't cover
         `target_date` are skipped — `to_profile()` raises `ValueError`
@@ -215,7 +235,9 @@ class TargetSocMatrixService:
             if adjusted is None or not adjusted.forecast:
                 continue
             try:
-                out[key] = adjusted.to_profile(target_date)
+                out[key] = adjusted.to_profile(
+                    target_date, now=now, pv_power_w_5min=live_pv_power_w
+                )
             except ValueError:
                 # Strategy has no periods for target_date (date-picker out of range).
                 continue
@@ -233,11 +255,22 @@ class TargetSocMatrixService:
     # --- Cons inputs --- #
 
     def _cons_inputs(
-        self, profiles: list[ConsumptionProfile | None]
+        self,
+        profiles: list[ConsumptionProfile | None],
+        *,
+        now: datetime | None,
+        live_consumption_w: float | None,
     ) -> tuple[dict[str, ConsumptionProfile], dict[str, ConsLabel], dict[str, date]]:
-        """Build Cons profile map + labels + source-date map (for realized PV lookup)."""
+        """Build Cons profile map + labels + source-date map (for realized PV lookup).
+
+        Each profile is passed through `to_view(now, live_consumption_w)`
+        — for today+now-aware that bakes the live in-progress integration
+        into the bucket values; for tomorrow / non-today (`now=None`) it
+        returns the profile unchanged (back-compat).
+        """
+        flat = ConsumptionProfile.flat()
         cons_profiles: dict[str, ConsumptionProfile] = {
-            _LIVE_CONS_KEY: ConsumptionProfile.flat()
+            _LIVE_CONS_KEY: flat.to_view(now=now, live_consumption_w=live_consumption_w)
         }
         cons_labels: dict[str, ConsLabel] = {
             _LIVE_CONS_KEY: ConsLabel(key=_LIVE_CONS_KEY, weekday=None)
@@ -247,7 +280,9 @@ class TargetSocMatrixService:
             if profile is None:
                 continue
             key = f"prev_{idx + 1}"
-            cons_profiles[key] = profile
+            cons_profiles[key] = profile.to_view(
+                now=now, live_consumption_w=live_consumption_w
+            )
             weekday = (
                 _WEEKDAY_ABBR[profile.source_date.weekday()]
                 if profile.source_date is not None
@@ -300,8 +335,6 @@ def _live_extrap_adjusted(
 _TODAY_PV_RESOLVERS: dict[str, callable] = {
     "at_6": lambda f: f.adjusted_at_6,
     "live": lambda f: f.adjusted_live,
-    "extrap": _live_extrap_adjusted(lambda f: f.extrapolated_live),
-    "extrap_5min": _live_extrap_adjusted(lambda f: f.extrapolated_live_5min),
     "extrap_pattern": _live_extrap_adjusted(lambda f: f.extrapolated_live_pattern),
     "extrap_propor": _live_extrap_adjusted(lambda f: f.extrapolated_live_proportional),
     "extrap_band": _live_extrap_adjusted(lambda f: f.extrapolated_live_band),
