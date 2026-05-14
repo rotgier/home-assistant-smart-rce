@@ -153,11 +153,18 @@ class ConsumptionProfileLoader:
             elif ts.minute == 55:
                 by_date[d][(ts.hour, 30)] = value
 
+        # Construct a profile for every valid walk-back date — even when
+        # the recorder returned zero slots for that day (gap, query
+        # in-flight at startup, sensor was unavailable historically).
+        # The default-baseline fill keeps prev_day sensors populated
+        # (flat 0.45 cons) rather than showing "unknown", consistent
+        # with the strict-contract intent introduced in C0.5.
         return [
             ConsumptionProfile(
-                buckets={**_DEFAULT_BUCKETS, **by_date[d]}, source_date=d
+                buckets={**_DEFAULT_BUCKETS, **by_date.get(d, {})},
+                source_date=d,
             )
-            if d and by_date.get(d)
+            if d is not None
             else None
             for d in dates
         ]
