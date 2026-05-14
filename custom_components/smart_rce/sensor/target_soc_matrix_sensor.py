@@ -35,6 +35,10 @@ from ..infrastructure.weather_listener import WeatherForecastListener
 
 UNIQUE_ID: Final = f"{DOMAIN}_target_soc_matrix"
 DATE_PICKER_ENTITY_ID: Final = "input_datetime.energy_chart_date"
+# Toggle that flips between full-window and now-aware matrix semantics —
+# changing it should trigger an immediate recompute, otherwise the user
+# waits up to a minute for the next PvForecastService tick.
+NOW_AWARE_TOGGLE_ENTITY_ID: Final = "input_boolean.rce_target_soc_matrix_now_aware"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,7 +96,9 @@ class SmartRceTargetSocMatrixSensor(SensorEntity):
 
         self.async_on_remove(
             async_track_state_change_event(
-                self._hass, [DATE_PICKER_ENTITY_ID], self._on_date_change
+                self._hass,
+                [DATE_PICKER_ENTITY_ID, NOW_AWARE_TOGGLE_ENTITY_ID],
+                self._on_date_change,
             )
         )
 
