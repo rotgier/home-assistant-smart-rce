@@ -4,9 +4,8 @@ Two value objects model the 30-min PV-window grid (7:00..12:30):
 
 - `Bucket(hour, minute)` — identity of a single 30-min slot. Owns time
   math (`is_closed_at`, `is_in_progress_at`, `is_future_at`,
-  `remaining_sec_at`, `elapsed_sec_at`, `Bucket.enclosing(now)`) and
-  in-progress kWh arithmetic as @staticmethods (`live_remaining_kwh`,
-  `full_bucket_kwh`).
+  `remaining_sec_at`, `Bucket.enclosing(now)`) and in-progress kWh
+  arithmetic as @staticmethods (`live_remaining_kwh`, `full_bucket_kwh`).
 
 - `Buckets({Bucket: kWh})` — the full 12-bucket mapping. Strict
   contract: exactly 12 entries covering 7:00..12:30. Single point of
@@ -54,28 +53,18 @@ class Bucket:
         """Bucket that contains `now`. Always returns a valid 30-min slot."""
         return cls(now.hour, 0 if now.minute < 30 else 30)
 
-    def start_datetime(self, on: datetime) -> datetime:
-        """Bucket start as a tz-aware datetime on `on`'s date + tzinfo."""
-        return datetime.combine(
-            on.date(), time(hour=self.hour, minute=self.minute), tzinfo=on.tzinfo
-        )
-
-    def end_datetime(self, on: datetime) -> datetime:
-        """Bucket end (= start + 30 min)."""
-        return self.start_datetime(on) + timedelta(minutes=30)
-
     def is_closed_at(self, now: datetime) -> bool:
         """Return True when `now` is at or past the bucket's end."""
-        return now >= self.end_datetime(now)
+        return now >= self._end_datetime(now)
 
     def is_in_progress_at(self, now: datetime) -> bool:
         """Return True when bucket_start <= now < bucket_end."""
-        start = self.start_datetime(now)
+        start = self._start_datetime(now)
         return start <= now < start + timedelta(minutes=30)
 
     def is_future_at(self, now: datetime) -> bool:
         """Return True when bucket_start > now (entirely ahead of `now`)."""
-        return now < self.start_datetime(now)
+        return now < self._start_datetime(now)
 
     def remaining_sec_at(self, now: datetime) -> float:
         """Seconds from `now` to bucket_end. Negative if `now` past bucket_end.
@@ -84,11 +73,7 @@ class Bucket:
         typically uses this on the enclosing bucket where it lies in
         [0, 1800]).
         """
-        return (self.end_datetime(now) - now).total_seconds()
-
-    def elapsed_sec_at(self, now: datetime) -> float:
-        """Seconds from bucket_start to `now`. Negative if `now` before start."""
-        return (now - self.start_datetime(now)).total_seconds()
+        return (self._end_datetime(now) - now).total_seconds()
 
     @staticmethod
     def full_bucket_kwh(
@@ -123,6 +108,18 @@ class Bucket:
         """
         remaining_sec = Bucket.enclosing(now).remaining_sec_at(now)
         return (power_w / 1000.0) * remaining_sec / 3600.0
+
+    # --- common helpers --- #
+
+    def _end_datetime(self, on: datetime) -> datetime:
+        """Bucket end as a tz-aware datetime on `on`'s date (= start + 30 min)."""
+        return self._start_datetime(on) + timedelta(minutes=30)
+
+    def _start_datetime(self, on: datetime) -> datetime:
+        """Bucket start as a tz-aware datetime on `on`'s date + tzinfo."""
+        return datetime.combine(
+            on.date(), time(hour=self.hour, minute=self.minute), tzinfo=on.tzinfo
+        )
 
 
 # Canonical 12-bucket set for the 7:00..12:30 PV window. Used by
@@ -159,9 +156,22 @@ class Buckets:
                 f"missing={missing}, extra={extra}"
             )
 
+    def __iter__(self):
+        """Iterate `Bucket` keys (matches dict iteration semantics)."""
+        return iter(self.by_bucket)
+
+    @classmethod
+    def flat(cls, value: float) -> Buckets:
+        """Synthetic snapshot — every bucket = `value` kWh."""
+        return cls(by_bucket={bucket: value for bucket in _PV_WINDOW_BUCKETS})
+
     def get(self, hour: int, minute: int) -> float:
         """Lookup by (hour, minute) tuple — convenience for numeric callers."""
         return self.by_bucket[Bucket(hour, minute)]
+
+    def keys(self):
+        """Iterate over `Bucket` keys (no value)."""
+        return self.by_bucket.keys()
 
     def values(self):
         """Iterate over kWh values (no key)."""
@@ -170,14 +180,6 @@ class Buckets:
     def items(self):
         """Iterate over `(Bucket, kWh)` pairs."""
         return self.by_bucket.items()
-
-    def keys(self):
-        """Iterate over `Bucket` keys (no value)."""
-        return self.by_bucket.keys()
-
-    def __iter__(self):
-        """Iterate `Bucket` keys (matches dict iteration semantics)."""
-        return iter(self.by_bucket)
 
     def from_now(self, now: datetime, live_remaining_kwh: float) -> Buckets:
         """Project the snapshot onto the "from-now" view.
@@ -204,8 +206,3 @@ class Buckets:
             else:
                 new[bucket] = live_remaining_kwh
         return Buckets(by_bucket=new)
-
-    @classmethod
-    def flat(cls, value: float) -> Buckets:
-        """Synthetic snapshot — every bucket = `value` kWh."""
-        return cls(by_bucket={bucket: value for bucket in _PV_WINDOW_BUCKETS})
