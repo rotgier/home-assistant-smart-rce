@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import ClassVar, Final, Protocol
 
-from .bucket_math import Bucket, buckets_from_now
+from .bucket import Bucket, Buckets
 from .target_soc import CONSUMPTION_PER_30MIN
 
 # --- Constants --- #
@@ -29,12 +29,6 @@ from .target_soc import CONSUMPTION_PER_30MIN
 # How many prev-workday baselines to fetch. 8 covers a full work-week
 # (~5 days) plus another 3 for context on baseline volatility.
 PREV_DAYS_COUNT: Final[int] = 8
-
-# Exactly 12 buckets covering 7:00..12:30 in 30-min steps — strict
-# contract enforced by `ConsumptionProfile.__post_init__`.
-_EXPECTED_BUCKETS: Final[frozenset[tuple[int, int]]] = frozenset(
-    (h, m) for h in range(7, 13) for m in (0, 30)
-)
 
 # 5 attempts × 60s interval = ~5 minutes worst-case to recover from a
 # startup race (workday calendar or recorder not yet ready). After cap,
@@ -48,30 +42,19 @@ MAX_RETRIES: Final[int] = 5
 
 @dataclass(frozen=True)
 class ConsumptionProfile:
-    """Consumption per 30-min bucket, keyed by (hour, minute) -> kWh.
+    """Consumption per 30-min bucket. Wraps a `Buckets` with cons-side role.
 
-    Strict contract: `buckets` must contain exactly 12 entries covering
-    7:00..12:30 in 30-min steps. Missing buckets are filled with
-    `CONSUMPTION_PER_30MIN` at the infra↔domain boundary
-    (`ConsumptionProfileLoader._bucket_profiles_by_date`) so callers can
-    rely on `.get(h, m)` returning a non-None float.
+    Strict 12-bucket contract enforced inside `Buckets.__post_init__`.
+    Missing buckets are filled with `CONSUMPTION_PER_30MIN` at the
+    infra↔domain boundary (`ConsumptionProfileLoader._bucket_profiles_by_date`)
+    so callers can rely on `.get(h, m)` returning a non-None float.
     """
 
-    buckets: dict[tuple[int, int], float]
+    buckets: Buckets
     source_date: date | None = None  # workday the profile was taken from
 
-    def __post_init__(self) -> None:
-        got = frozenset(self.buckets.keys())
-        if got != _EXPECTED_BUCKETS:
-            missing = sorted(_EXPECTED_BUCKETS - got)
-            extra = sorted(got - _EXPECTED_BUCKETS)
-            raise ValueError(
-                "ConsumptionProfile must have exactly 12 buckets 7:00..12:30; "
-                f"missing={missing}, extra={extra}"
-            )
-
     def get(self, hour: int, minute: int) -> float:
-        return self.buckets[(hour, minute)]
+        return self.buckets.get(hour, minute)
 
     @classmethod
     def flat(
@@ -80,10 +63,7 @@ class ConsumptionProfile:
         source_date: date | None = None,
     ) -> ConsumptionProfile:
         """Synthetic flat baseline — every bucket = `value` kWh."""
-        return cls(
-            buckets={(h, m): value for h, m in _EXPECTED_BUCKETS},
-            source_date=source_date,
-        )
+        return cls(buckets=Buckets.flat(value), source_date=source_date)
 
     def to_view(
         self,
@@ -118,10 +98,8 @@ class ConsumptionProfile:
                 "ConsumptionProfile.to_view: live_consumption_w is required "
                 "when `now` is given"
             )
-        new_buckets = buckets_from_now(
-            self.buckets,
-            now=now,
-            live_remaining_kwh=Bucket.live_remaining_kwh(now, live_consumption_w),
+        new_buckets = self.buckets.from_now(
+            now, Bucket.live_remaining_kwh(now, live_consumption_w)
         )
         return ConsumptionProfile(buckets=new_buckets, source_date=self.source_date)
 

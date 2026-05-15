@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from .bucket import Buckets
+
 if TYPE_CHECKING:
     from .pv_forecast import ConsumptionProfile
 
@@ -33,46 +35,29 @@ MIN_SOC_PERCENT: Final[int] = 10
 LOSS_FACTOR: Final[float] = 0.10  # 10% conversion losses
 BUFFER_PERCENT: Final[int] = 12
 
-# 12 buckets covering 7:00..12:30 in 30-min steps — strict PvProfile /
-# ConsumptionProfile contract (kept in `target_soc.py` so PvProfile can
-# validate without importing pv_forecast.py's ConsumptionProfile guard
-# constant).
-_EXPECTED_BUCKETS: Final[frozenset[tuple[int, int]]] = frozenset(
-    (h, m) for h in range(7, 13) for m in (0, 30)
-)
-
 
 # --- Value objects --- #
 
 
 @dataclass(frozen=True)
 class PvProfile:
-    """PV generation per 30-min bucket, keyed by (hour, minute) -> kWh.
+    """PV generation per 30-min bucket. Wraps a `Buckets` with PV-side role.
 
     Symmetric to `ConsumptionProfile`: strict 12-bucket contract over
-    7:00..12:30, `.get(h, m)` returns float (no Optional). Build from an
-    `AdjustedPvForecast` via `AdjustedPvForecast.to_profile(target_date)`.
+    7:00..12:30 (validated inside `Buckets`), `.get(h, m)` returns float
+    (no Optional). Build from an `AdjustedPvForecast` via
+    `AdjustedPvForecast.to_profile(target_date)`.
     """
 
-    buckets: dict[tuple[int, int], float]
-
-    def __post_init__(self) -> None:
-        got = frozenset(self.buckets.keys())
-        if got != _EXPECTED_BUCKETS:
-            missing = sorted(_EXPECTED_BUCKETS - got)
-            extra = sorted(got - _EXPECTED_BUCKETS)
-            raise ValueError(
-                "PvProfile must have exactly 12 buckets 7:00..12:30; "
-                f"missing={missing}, extra={extra}"
-            )
+    buckets: Buckets
 
     def get(self, hour: int, minute: int) -> float:
-        return self.buckets[(hour, minute)]
+        return self.buckets.get(hour, minute)
 
     @classmethod
     def flat(cls, value: float = 0.0) -> PvProfile:
         """Synthetic flat profile — every bucket = `value` kWh (default 0)."""
-        return cls(buckets={(h, m): value for h, m in _EXPECTED_BUCKETS})
+        return cls(buckets=Buckets.flat(value))
 
 
 @dataclass(frozen=True)

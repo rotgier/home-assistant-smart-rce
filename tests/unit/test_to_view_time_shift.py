@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import math
 
+from custom_components.smart_rce.domain.bucket import Bucket, Buckets
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 import pytest
 
@@ -20,11 +21,13 @@ _TZ = timezone.utc
 def _profile() -> ConsumptionProfile:
     """Distinct value per bucket so we can tell positional shifts apart."""
     return ConsumptionProfile(
-        buckets={
-            (h, m): 0.10 + 0.01 * ((h - 7) * 2 + (1 if m == 30 else 0))
-            for h in range(7, 13)
-            for m in (0, 30)
-        }
+        buckets=Buckets(
+            by_bucket={
+                Bucket(h, m): 0.10 + 0.01 * ((h - 7) * 2 + (1 if m == 30 else 0))
+                for h in range(7, 13)
+                for m in (0, 30)
+            }
+        )
     )
 
 
@@ -46,8 +49,8 @@ def test_now_before_window_all_future() -> None:
     view = p.to_view(
         now=datetime(2026, 5, 14, 6, 0, tzinfo=_TZ), live_consumption_w=0.0
     )
-    for (h, m), full in p.buckets.items():
-        assert view.get(h, m) == full
+    for bucket, full in p.buckets.items():
+        assert view.get(bucket.hour, bucket.minute) == full
 
 
 def test_now_after_window_all_closed() -> None:
@@ -56,8 +59,8 @@ def test_now_after_window_all_closed() -> None:
     view = p.to_view(
         now=datetime(2026, 5, 14, 13, 30, tzinfo=_TZ), live_consumption_w=0.0
     )
-    for h, m in p.buckets:
-        assert view.get(h, m) == 0.0
+    for bucket in p.buckets:
+        assert view.get(bucket.hour, bucket.minute) == 0.0
 
 
 def test_now_at_bucket_boundary_uses_live_for_full_bucket() -> None:
@@ -68,9 +71,9 @@ def test_now_at_bucket_boundary_uses_live_for_full_bucket() -> None:
         now=datetime(2026, 5, 14, 9, 0, tzinfo=_TZ), live_consumption_w=live_w
     )
     # Past closed
-    for h, m in p.buckets:
-        if (h, m) < (9, 0):
-            assert view.get(h, m) == 0.0
+    for bucket in p.buckets:
+        if (bucket.hour, bucket.minute) < (9, 0):
+            assert view.get(bucket.hour, bucket.minute) == 0.0
     # 09:00 bucket: live override over full 1800s
     expected = (live_w / 1000.0) * 1800.0 / 3600.0  # = 0.6 kWh
     assert math.isclose(view.get(9, 0), expected, rel_tol=1e-9)
@@ -139,7 +142,7 @@ def test_flat_profile_works_with_to_view() -> None:
     view = p.to_view(
         now=datetime(2026, 5, 14, 9, 15, tzinfo=_TZ), live_consumption_w=900.0
     )
-    assert len(view.buckets) == 12
+    assert len(list(view.buckets.values())) == 12
     # 09:00 bucket: 900W x 900s / 3600 = 0.225 kWh
     expected = 0.9 * 900.0 / 3600.0
     assert math.isclose(view.get(9, 0), expected, rel_tol=1e-9)

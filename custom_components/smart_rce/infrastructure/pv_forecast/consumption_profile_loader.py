@@ -23,17 +23,18 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from ...domain import pv_forecast
+from ...domain.bucket import Bucket, Buckets
 from ...domain.pv_forecast import ConsumptionProfile
 from ...domain.target_soc import CONSUMPTION_PER_30MIN
 from ..workday_calendar_reader import WorkdayCalendarReader
 
 _CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
 # All 12 buckets covering 7:00..12:30 — used to fill the strict
-# ConsumptionProfile contract when a workday's recorder data is partial
+# Buckets contract when a workday's recorder data is partial
 # (sensor gaps, restarts, etc.). Domain default `CONSUMPTION_PER_30MIN` is
 # the same baseline as the synthetic "live" profile.
-_DEFAULT_BUCKETS: Final[dict[tuple[int, int], float]] = {
-    (h, m): CONSUMPTION_PER_30MIN for h in range(7, 13) for m in (0, 30)
+_DEFAULT_BUCKETS: Final[dict[Bucket, float]] = {
+    Bucket(h, m): CONSUMPTION_PER_30MIN for h in range(7, 13) for m in (0, 30)
 }
 
 _LOGGER = logging.getLogger(__name__)
@@ -132,7 +133,7 @@ class ConsumptionProfileLoader:
         Bucket (hour, 30) = state in slot (hour, 55)
         """
         tz = dt_util.DEFAULT_TIME_ZONE
-        by_date: dict[date, dict[tuple[int, int], float]] = {d: {} for d in valid_dates}
+        by_date: dict[date, dict[Bucket, float]] = {d: {} for d in valid_dates}
         for slot in slots:
             raw_start = slot.get("start")
             if raw_start is None:
@@ -149,9 +150,9 @@ class ConsumptionProfileLoader:
             except (TypeError, ValueError):
                 continue
             if ts.minute == 25:
-                by_date[d][(ts.hour, 0)] = value
+                by_date[d][Bucket(ts.hour, 0)] = value
             elif ts.minute == 55:
-                by_date[d][(ts.hour, 30)] = value
+                by_date[d][Bucket(ts.hour, 30)] = value
 
         # Strict "no data → None" — the prev_day sensor should surface
         # as `unknown` when the recorder/workday-calendar isn't ready,
@@ -164,7 +165,8 @@ class ConsumptionProfileLoader:
         # (graceful degradation around small historical gaps).
         return [
             ConsumptionProfile(
-                buckets={**_DEFAULT_BUCKETS, **by_date[d]}, source_date=d
+                buckets=Buckets(by_bucket={**_DEFAULT_BUCKETS, **by_date[d]}),
+                source_date=d,
             )
             if d and by_date.get(d)
             else None

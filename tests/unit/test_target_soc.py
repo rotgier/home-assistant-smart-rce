@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from custom_components.smart_rce.domain.bucket import Bucket, Buckets
 from custom_components.smart_rce.domain.pv_forecast import (
     AdjustedPeriod,
     AdjustedPvForecast,
@@ -23,6 +24,10 @@ from custom_components.smart_rce.domain.target_soc import (
     calculate_target_soc as _calculate_target_soc,
 )
 import pytest
+
+
+def _buckets(value_by_hm: dict[tuple[int, int], float]) -> Buckets:
+    return Buckets(by_bucket={Bucket(h, m): v for (h, m), v in value_by_hm.items()})
 
 
 def _make_profile(rate_kwh_per_h: float) -> PvProfile:
@@ -68,7 +73,7 @@ def test_profile_with_higher_consumption_raises_soc() -> None:
     for slot in [(7, 0), (7, 30), (8, 0), (8, 30), (9, 0)]:
         buckets[slot] = 0.8
     buckets[(9, 30)] = 0.5
-    profile = ConsumptionProfile(buckets=buckets)
+    profile = ConsumptionProfile(buckets=_buckets(buckets))
     baseline = _calculate_target_soc(pv, ConsumptionProfile.flat())
     with_profile = _calculate_target_soc(pv, profile)
     assert with_profile.value > baseline.value
@@ -78,40 +83,31 @@ def test_profile_with_lower_consumption_lowers_soc() -> None:
     """Profile sugerujący niższe consumption → niższy lub równy target SOC."""
     pv = _make_profile(0.6)
     profile = ConsumptionProfile(
-        buckets={(h, m): 0.2 for h in range(7, 13) for m in (0, 30)}
+        buckets=_buckets({(h, m): 0.2 for h in range(7, 13) for m in (0, 30)})
     )
     baseline = _calculate_target_soc(pv, ConsumptionProfile.flat())
     with_profile = _calculate_target_soc(pv, profile)
     assert with_profile.value <= baseline.value
 
 
-def test_partial_cons_profile_raises_validation_error() -> None:
+def test_partial_buckets_raises_validation_error() -> None:
     with pytest.raises(ValueError, match="missing="):
-        ConsumptionProfile(buckets={(7, 0): 2.0})
+        Buckets(by_bucket={Bucket(7, 0): 2.0})
 
 
-def test_empty_cons_profile_raises_validation_error() -> None:
+def test_empty_buckets_raises_validation_error() -> None:
     with pytest.raises(ValueError, match="missing="):
-        ConsumptionProfile(buckets={})
+        Buckets(by_bucket={})
 
 
-def test_extra_cons_buckets_raise_validation_error() -> None:
-    full = {(h, m): CONSUMPTION_PER_30MIN for h in range(7, 13) for m in (0, 30)}
-    full[(13, 0)] = 0.5
+def test_extra_buckets_raise_validation_error() -> None:
+    full = {Bucket(h, m): CONSUMPTION_PER_30MIN for h in range(7, 13) for m in (0, 30)}
+    # Add one out-of-window bucket via a tuple key (Bucket(13, 0) wouldn't be
+    # extra because Bucket allows any hour). Construct with extra tuple key
+    # bypassing Bucket: not possible, so simulate extra via a 13:00 bucket.
+    full[Bucket(13, 0)] = 0.5
     with pytest.raises(ValueError, match="extra="):
-        ConsumptionProfile(buckets=full)
-
-
-def test_partial_pv_profile_raises_validation_error() -> None:
-    with pytest.raises(ValueError, match="missing="):
-        PvProfile(buckets={(7, 0): 0.5})
-
-
-def test_extra_pv_buckets_raise_validation_error() -> None:
-    full = {(h, m): 0.5 for h in range(7, 13) for m in (0, 30)}
-    full[(13, 0)] = 1.0
-    with pytest.raises(ValueError, match="extra="):
-        PvProfile(buckets=full)
+        Buckets(by_bucket=full)
 
 
 def test_trace_has_is_min_flag() -> None:

@@ -1,11 +1,11 @@
-"""Tests for `bucket_math` — Bucket VO + bucket arithmetic."""
+"""Tests for `bucket` module — Bucket VO + Buckets collection."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import math
 
-from custom_components.smart_rce.domain.bucket_math import Bucket, buckets_from_now
+from custom_components.smart_rce.domain.bucket import Bucket, Buckets
 import pytest
 
 _TZ = timezone.utc
@@ -104,15 +104,37 @@ def test_bucket_full_bucket_kwh_combines_so_far_and_extrap() -> None:
 
 
 def test_buckets_from_now_classifies_closed_in_progress_future() -> None:
-    buckets = {(h, m): 1.0 for h in range(7, 13) for m in (0, 30)}
+    buckets = Buckets.flat(1.0)
     now = datetime(2026, 5, 15, 9, 13, tzinfo=_TZ)
-    view = buckets_from_now(buckets, now=now, live_remaining_kwh=0.7)
+    view = buckets.from_now(now, live_remaining_kwh=0.7)
     # closed: (7,0)..(8,30)
     for h, m in [(7, 0), (7, 30), (8, 0), (8, 30)]:
-        assert view[(h, m)] == 0.0
+        assert view.get(h, m) == 0.0
     # in-progress: (9, 0)
-    assert view[(9, 0)] == 0.7
+    assert view.get(9, 0) == 0.7
     # future: (9, 30)..(12, 30)
-    for (h, m), v in view.items():
-        if (h, m) > (9, 0):
+    for bucket, v in view.items():
+        if (bucket.hour, bucket.minute) > (9, 0):
             assert v == 1.0
+
+
+def test_buckets_flat_satisfies_12_bucket_contract() -> None:
+    buckets = Buckets.flat(0.5)
+    assert len(list(buckets.values())) == 12
+    for h in range(7, 13):
+        for m in (0, 30):
+            assert buckets.get(h, m) == 0.5
+
+
+def test_buckets_missing_entry_raises() -> None:
+    incomplete = {Bucket(h, m): 1.0 for h in range(7, 13) for m in (0, 30)}
+    del incomplete[Bucket(9, 0)]
+    with pytest.raises(ValueError, match="missing="):
+        Buckets(by_bucket=incomplete)
+
+
+def test_buckets_iteration_yields_bucket_instances() -> None:
+    """Storage is dict[Bucket, float] — iteration produces Bucket objects directly."""
+    buckets = Buckets.flat(1.0)
+    for bucket in buckets:
+        assert isinstance(bucket, Bucket)

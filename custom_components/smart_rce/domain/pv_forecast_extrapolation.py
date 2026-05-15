@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .bucket_math import Bucket
+from .bucket import Bucket
 from .pv_forecast import (
     AdjustedPvForecast,
     ConsumptionProfile,
@@ -583,7 +583,7 @@ def _assemble(
 
     Single source of truth for the in-progress bucket rate is
     `AdjustedPvForecast.with_now_aware_in_progress_and_future_overrides`,
-    which uses `bucket_math.full_bucket_kwh × 2` (kWh/h). Future periods
+    which uses `Bucket.full_bucket_kwh × 2` (kWh/h). Future periods
     take `future_overrides[(h,m)]` when present, else keep their original
     forecast values. Past periods are untouched.
 

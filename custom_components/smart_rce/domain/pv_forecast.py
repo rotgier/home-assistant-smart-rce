@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
-from .bucket_math import Bucket, buckets_from_now
+from .bucket import Bucket, Buckets
 from .consumption_profiles import (
     PREV_DAYS_COUNT,
     ConsumptionProfile,
@@ -146,7 +146,7 @@ class AdjustedPvForecast:
                 "when `now` is given"
             )
         inferred: date | None = None
-        buckets: dict[tuple[int, int], float] = {}
+        by_bucket: dict[Bucket, float] = {}
         matched = False
         for period in self.forecast:
             dt = datetime.fromisoformat(period.period_start)
@@ -158,20 +158,21 @@ class AdjustedPvForecast:
             matched = True
             if dt.hour < 7 or dt.hour >= 13 or dt.minute not in (0, 30):
                 continue
-            buckets[(dt.hour, dt.minute)] = round(period.pv_estimate_adjusted / 2, 4)
+            by_bucket[Bucket(dt.hour, dt.minute)] = round(
+                period.pv_estimate_adjusted / 2, 4
+            )
         if not matched:
             raise ValueError(
                 f"AdjustedPvForecast.to_profile: no periods match {target_date!r}"
             )
         for h in range(7, 13):
             for m in (0, 30):
-                buckets.setdefault((h, m), 0.0)
+                by_bucket.setdefault(Bucket(h, m), 0.0)
+        buckets = Buckets(by_bucket=by_bucket)
         if now is not None:
             assert pv_power_w_5min is not None  # narrowed by guard above
-            buckets = buckets_from_now(
-                buckets,
-                now=now,
-                live_remaining_kwh=Bucket.live_remaining_kwh(now, pv_power_w_5min),
+            buckets = buckets.from_now(
+                now, Bucket.live_remaining_kwh(now, pv_power_w_5min)
             )
         return PvProfile(buckets=buckets)
 

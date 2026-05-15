@@ -6,6 +6,7 @@ Verifies that the matrix delegates each cell to `calculate_target_soc`
 
 from __future__ import annotations
 
+from custom_components.smart_rce.domain.bucket import Bucket, Buckets
 from custom_components.smart_rce.domain.pv_forecast import ConsumptionProfile, PvProfile
 from custom_components.smart_rce.domain.target_soc import (
     MIN_SOC_PERCENT,
@@ -16,24 +17,26 @@ from custom_components.smart_rce.domain.target_soc_matrix import (
     compute_matrix,
 )
 
-_BUCKET_KEYS = [(7 + idx // 2, (idx % 2) * 30) for idx in range(12)]
+_BUCKETS = [Bucket(7 + idx // 2, (idx % 2) * 30) for idx in range(12)]
 
 
 def _pv(value: float) -> PvProfile:
-    return PvProfile(buckets={k: value for k in _BUCKET_KEYS})
+    return PvProfile(buckets=Buckets(by_bucket={b: value for b in _BUCKETS}))
 
 
 def _cons(value: float) -> ConsumptionProfile:
-    return ConsumptionProfile(buckets={k: value for k in _BUCKET_KEYS})
+    return ConsumptionProfile(buckets=Buckets(by_bucket={b: value for b in _BUCKETS}))
 
 
 def _pv_list(values: list[float]) -> PvProfile:
-    return PvProfile(buckets={_BUCKET_KEYS[idx]: values[idx] for idx in range(12)})
+    return PvProfile(
+        buckets=Buckets(by_bucket={_BUCKETS[idx]: values[idx] for idx in range(12)})
+    )
 
 
 def _cons_list(values: list[float]) -> ConsumptionProfile:
     return ConsumptionProfile(
-        buckets={_BUCKET_KEYS[idx]: values[idx] for idx in range(12)}
+        buckets=Buckets(by_bucket={_BUCKETS[idx]: values[idx] for idx in range(12)})
     )
 
 
