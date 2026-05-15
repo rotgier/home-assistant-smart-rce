@@ -27,7 +27,6 @@ from .consumption_profiles import (
     ConsumptionProfiles,
     ConsumptionProfileSource,
 )
-from .pv_stability import PvStability
 from .target_soc import (
     BATTERY_CAPACITY_KWH,
     BUFFER_PERCENT,
@@ -395,12 +394,6 @@ class PvForecast:
     # so-far). Combined with `live_pv_power_w` via `Bucket.full_bucket_kwh`
     # to drive the chart in-progress patch + strategy score realized rate.
     pv_bucket_so_far_kwh: float | None = None
-    # PV derivative stability — rich entity tracking run-length of
-    # consecutive "stable" rolling-stddev samples. Source for Phase C
-    # derivative-aware projection gating. Persisted via
-    # `PvStabilityPersistence` (only `run_start` survives restart;
-    # transient sensor readings refresh on next minute tick).
-    pv_stability: PvStability = field(default_factory=PvStability)
 
     def update_at_6(
         self,

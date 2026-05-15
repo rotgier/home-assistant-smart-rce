@@ -17,7 +17,7 @@ Public callbacks (`on_*`) are wired in the factory:
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 import logging
 
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
@@ -118,12 +118,6 @@ class PvForecastService:
         self.forecast.live_pv_power_w = pv_w
         self.forecast.live_consumption_w = cons_w
         self.forecast.pv_bucket_so_far_kwh = pv_so_far_kwh
-        # Refresh PV derivative stability — feeds the run-length tracker
-        # used (Phase C) to gate derivative-aware in-progress projection.
-        # Persistence is driven by the existing _notify_listeners path:
-        # PvStabilityPersistence registers save_if_changed, fires at the
-        # end of this method.
-        self._refresh_pv_stability(now)
 
         # Domain owns the chart in-progress patch — uniform across `live` +
         # `at_6` + all strategy variants. No-op when live signals missing.
@@ -179,18 +173,6 @@ class PvForecastService:
                 start_charge_hour=sch,
             )
         )
-
-    def _refresh_pv_stability(self, now: datetime) -> None:
-        """Read canonical derivative + stddev sensors, update aggregate entity.
-
-        Service-side orchestration only — domain (`PvStability.update`)
-        owns the transition logic, persistence is driven by the existing
-        `_notify_listeners` path. Service stays HA-free apart from
-        sensor reads via `LiveRateReader`.
-        """
-        derivative = self._live_rates.read_pv_derivative_w_per_min()
-        stability = self._live_rates.read_pv_derivative_stability_5m()
-        self.forecast.pv_stability.update(now, derivative, stability)
 
     async def refresh_realized_pv(self) -> None:
         """Fetch today's realized PV per bucket from recorder; cache for next recalc."""

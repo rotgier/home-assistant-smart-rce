@@ -39,13 +39,6 @@ _CONSUMPTION_BUCKET_KWH_ENTITY: Final = "sensor.total_consumption_minus_bi_hourl
 _START_CHARGE_HOUR_OVERRIDE_ENTITY: Final = (
     "input_datetime.rce_start_charge_hour_today_override"
 )
-# Canonical PV derivative + rolling-stddev pair (see packages/pv_stability/
-# in home-assistant-config). Avg-2min source + 5-min window — the sweet
-# spot validated on real data (10.1× clear-vs-variable discriminator).
-_PV_DERIVATIVE_ENTITY: Final = "sensor.pv_power_derivative_avg_2min"
-_PV_DERIVATIVE_STABILITY_5M_ENTITY: Final = (
-    "sensor.pv_power_derivative_avg_2min_stability_5m"
-)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,14 +62,6 @@ class LiveRateReader:
     def read_consumption_bucket_so_far_kwh(self) -> float | None:
         """KWh accumulated in current 30-min utility meter cycle (minus water heater)."""
         return self._read_float(_CONSUMPTION_BUCKET_KWH_ENTITY)
-
-    def read_pv_derivative_w_per_min(self) -> float | None:
-        """Latest PV derivative reading (W/min) on the canonical avg-2min source."""
-        return self._read_float(_PV_DERIVATIVE_ENTITY)
-
-    def read_pv_derivative_stability_5m(self) -> float | None:
-        """Return rolling stddev of the canonical PV derivative over 5-min window (W/min)."""
-        return self._read_float(_PV_DERIVATIVE_STABILITY_5M_ENTITY)
 
     def read_start_charge_hour_today_override(self) -> int | None:
         """Hour (0..23) when pre-charge ends / post-charge begins.
