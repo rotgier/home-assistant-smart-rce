@@ -6,7 +6,7 @@ Each strategy produces an ExtrapolatedLive bundle:
 - target_soc: SOC % needed for 7-13 deficit window (sensor value)
 
 In-progress bucket handling is uniform across all today variants — built
-on `bucket_math.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh)`
+on `Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh)`
 which yields realized so-far plus 5-min power × remaining time. That same
 value drives:
 - chart display (in-progress period rescaled to `full_bucket_kwh × 2` rate
@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .bucket_math import full_bucket_kwh
+from .bucket_math import Bucket
 from .pv_forecast import (
     CONSUMPTION_PER_30MIN,
     AdjustedPvForecast,
@@ -175,10 +175,10 @@ def _current_bucket_realized_rate(
     """In-progress bucket realized rate (kWh/h) for score computation.
 
     Uniform across all variants — same source of truth as chart and
-    target_soc paths: `full_bucket_kwh(now, pv_w, so_far) × 2` (kWh per
-    30-min × 2 = kWh/h).
+    target_soc paths: `Bucket.full_bucket_kwh(now, pv_w, so_far) × 2`
+    (kWh per 30-min × 2 = kWh/h).
     """
-    return full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
+    return Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
 
 
 def _compute_weighted_score(

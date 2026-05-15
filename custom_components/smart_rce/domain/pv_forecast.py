@@ -20,12 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
-from .bucket_math import (
-    Bucket,
-    buckets_from_now,
-    full_bucket_kwh as bucket_full_kwh,
-    live_remaining_kwh,
-)
+from .bucket_math import Bucket, buckets_from_now
 from .consumption_profiles import (
     PREV_DAYS_COUNT,
     ConsumptionProfile,
@@ -176,7 +171,7 @@ class AdjustedPvForecast:
             buckets = buckets_from_now(
                 buckets,
                 now=now,
-                live_remaining_kwh=live_remaining_kwh(now, pv_power_w_5min),
+                live_remaining_kwh=Bucket.live_remaining_kwh(now, pv_power_w_5min),
             )
         return PvProfile(buckets=buckets)
 
@@ -193,14 +188,14 @@ class AdjustedPvForecast:
 
         Used for chart display so the in-progress dot reflects the same bucket
         value the strategy `score` and `target_soc` paths use internally — the
-        single source of truth is `bucket_math.full_bucket_kwh`.
+        single source of truth is `Bucket.full_bucket_kwh`.
 
         Caller must guarantee `now` falls in a 30-min slot covered by the
         forecast (typically a today period in the 7-13 window). If the
         in-progress slot isn't in `self.forecast`, the method is a no-op
         (returns a structural copy with the same values).
         """
-        rate = bucket_full_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
+        rate = Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
         return self._rebuild(now, current_rate=rate, future_overrides=None)
 
     def with_now_aware_in_progress_and_future_overrides(
@@ -219,7 +214,7 @@ class AdjustedPvForecast:
         in `pv_forecast_extrapolation` whose projection produces per-bucket
         future rates.
         """
-        rate = bucket_full_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
+        rate = Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
         return self._rebuild(
             now, current_rate=rate, future_overrides=future_pv_kwh_per_h_overrides
         )

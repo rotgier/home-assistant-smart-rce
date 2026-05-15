@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import ClassVar, Final, Protocol
 
-from .bucket_math import buckets_from_now, remaining_sec_in_current_bucket
+from .bucket_math import Bucket, buckets_from_now
 from .target_soc import CONSUMPTION_PER_30MIN
 
 # --- Constants --- #
@@ -118,10 +118,10 @@ class ConsumptionProfile:
                 "ConsumptionProfile.to_view: live_consumption_w is required "
                 "when `now` is given"
             )
-        remaining_sec = remaining_sec_in_current_bucket(now)
-        live_remaining_kwh = (live_consumption_w / 1000.0) * remaining_sec / 3600.0
         new_buckets = buckets_from_now(
-            self.buckets, now=now, live_remaining_kwh=live_remaining_kwh
+            self.buckets,
+            now=now,
+            live_remaining_kwh=Bucket.live_remaining_kwh(now, live_consumption_w),
         )
         return ConsumptionProfile(buckets=new_buckets, source_date=self.source_date)
 

@@ -5,21 +5,19 @@ Holds the `Bucket` value object (identity = (hour, minute) on the
 
 - Time math: `Bucket.is_closed_at`, `is_in_progress_at`, `is_future_at`,
   `remaining_sec_at`, `elapsed_sec_at`, `Bucket.enclosing(now)`.
-- kWh math: `live_remaining_kwh(now, pv_w)` (energy from now to end of
-  enclosing bucket at constant power), `full_bucket_kwh(now, pv_w,
-  so_far)` (realized + extrapolated).
-- Structural transform: `buckets_from_now(buckets, *, now,
-  live_remaining_kwh)` — closed → 0, in-progress → live override,
-  future → unchanged.
+- kWh math (staticmethods, parameterized by `now`): `Bucket.live_remaining_kwh`,
+  `Bucket.full_bucket_kwh`. The formula is identical for PV and consumption
+  power — both VOs (AdjustedPvForecast and ConsumptionProfile) delegate
+  here so the in-progress integration lives in one place.
+- Structural transform: `buckets_from_now(buckets, *, now, live_kwh)` —
+  closed → 0, in-progress → live override, future → unchanged. Used by
+  profile transforms; stays module-level until Phase 2 introduces a
+  `BucketProfile` wrapper.
 
-This is the shared source of truth for the in-progress bucket arithmetic
-consumed by:
-- `ConsumptionProfile.to_view` / `AdjustedPvForecast.to_profile` —
-  builds the in-progress kWh going into `calculate_target_soc`.
-- `AdjustedPvForecast.with_now_aware_in_progress*` — chart display
-  (in-progress period rescaled to `full_bucket_kwh × 2` rate).
-- `pv_forecast_extrapolation._compute_*_score` — realized rate input
-  to the strategy score (full_bucket_kwh × 2 as kWh/h).
+Shared source of truth for the in-progress bucket arithmetic consumed by:
+- `ConsumptionProfile.to_view` / `AdjustedPvForecast.to_profile`
+- `AdjustedPvForecast.with_now_aware_in_progress*` (chart display)
+- `pv_forecast_extrapolation._compute_*_score` (realized rate input)
 """
 
 from __future__ import annotations
@@ -38,7 +36,9 @@ class Bucket:
 
     `minute` is restricted to {0, 30} — half-hour grid. Outside callers
     construct `Bucket(h, m)` directly; for the bucket enclosing a wall
-    clock value use `Bucket.enclosing(now)`.
+    clock value use `Bucket.enclosing(now)`. kWh helpers
+    (`live_remaining_kwh`, `full_bucket_kwh`) are `@staticmethod` — they
+    operate on the bucket enclosing `now` implicitly, no instance needed.
     """
 
     hour: int
@@ -89,44 +89,39 @@ class Bucket:
         """Seconds from bucket_start to `now`. Negative if `now` before start."""
         return (now - self.start_datetime(now)).total_seconds()
 
+    @staticmethod
+    def live_remaining_kwh(now: datetime, power_w: float) -> float:
+        """Energy contribution from `now` to end of the enclosing 30-min bucket.
 
-def remaining_sec_in_current_bucket(now: datetime) -> float:
-    """Seconds left until the end of the 30-min bucket enclosing `now`.
+        Assumes `power_w` (PV or consumption — formula is symmetric)
+        holds constant for the remaining time. Returns kWh.
 
-    Independent of date / window — for `now=09:13:42`, returns 1038.
-    Microseconds preserved. Equivalent to `Bucket.enclosing(now).remaining_sec_at(now)`.
-    """
-    return Bucket.enclosing(now).remaining_sec_at(now)
+        Single source of truth for the in-progress bucket integration
+        consumed by:
+        - `AdjustedPvForecast.to_profile` (PV side, in-progress = remaining
+          only; past contributes 0 to the forward-looking deficit).
+        - `ConsumptionProfile.to_view` (consumption side, same shape).
+        - `Bucket.full_bucket_kwh` (chart display, combined with so_far).
+        - `pv_forecast_extrapolation._compute_*_score` indirectly via
+          `Bucket.full_bucket_kwh` (realized rate = full_bucket × 2).
+        """
+        remaining_sec = Bucket.enclosing(now).remaining_sec_at(now)
+        return (power_w / 1000.0) * remaining_sec / 3600.0
 
+    @staticmethod
+    def full_bucket_kwh(
+        now: datetime,
+        power_w: float,
+        bucket_so_far_kwh: float,
+    ) -> float:
+        """Total in-progress bucket kWh = realized so-far + extrapolated remaining.
 
-def live_remaining_kwh(now: datetime, pv_power_w: float) -> float:
-    """Energy contribution from `now` to end of the in-progress 30-min bucket.
-
-    Assumes `pv_power_w` (typically `sensor.pv_power_avg_5_minutes`) holds
-    constant for the remaining time. Returns kWh.
-
-    Same value consumed by:
-    - `AdjustedPvForecast.to_profile` (in-progress bucket → live remaining only,
-      past → 0, future → forecast), feeding `calculate_target_soc`.
-    - `AdjustedPvForecast.with_now_aware_in_progress` (chart display,
-      combined with `pv_bucket_so_far_kwh`).
-    - `pv_forecast_extrapolation._compute_*_score` (current bucket realized
-      rate = `(so_far + this) × 2`).
-    """
-    return (pv_power_w / 1000.0) * remaining_sec_in_current_bucket(now) / 3600.0
-
-
-def full_bucket_kwh(
-    now: datetime,
-    pv_power_w: float,
-    pv_bucket_so_far_kwh: float,
-) -> float:
-    """Total in-progress bucket kWh = realized so-far + extrapolated remaining.
-
-    The "what we expect this bucket to deliver" estimate, shared by chart
-    display (rescaled to kWh/h rate via ×2) and strategy score input.
-    """
-    return pv_bucket_so_far_kwh + live_remaining_kwh(now, pv_power_w)
+        The "what we expect this bucket to deliver" estimate. Shared by
+        chart display (rescaled to kWh/h rate via × 2 inside
+        `AdjustedPvForecast.with_now_aware_in_progress*`) and strategy
+        score input in extrapolation variants.
+        """
+        return bucket_so_far_kwh + Bucket.live_remaining_kwh(now, power_w)
 
 
 def buckets_from_now(
@@ -145,8 +140,9 @@ def buckets_from_now(
     `live_remaining_kwh` is the kWh contribution from `now` to bucket_end
     for the in-progress bucket. Required — fail-hard contract: the caller
     (ConsumptionProfile.to_view / AdjustedPvForecast.to_profile) computed
-    it before delegating. When `now` falls outside the 7:00..12:30 window
-    no in-progress bucket exists and `live_remaining_kwh` is unused.
+    it via `Bucket.live_remaining_kwh` before delegating here. When `now`
+    falls outside the 7:00..12:30 window no in-progress bucket exists
+    and `live_remaining_kwh` is unused.
     """
     new_buckets: dict[tuple[int, int], float] = {}
     for (h, m), full_kwh in buckets.items():
