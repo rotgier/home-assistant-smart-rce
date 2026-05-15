@@ -45,6 +45,7 @@ from .infrastructure.pv_forecast.consumption_profile_loader import (
 from .infrastructure.pv_forecast.live_rate_reader import LiveRateReader
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
+from .infrastructure.pv_stability_persistence import PvStabilityPersistence
 from .infrastructure.weather_diff_writer import WeatherDiffWriter
 from .infrastructure.weather_listener import WeatherForecastListener
 from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
@@ -78,6 +79,19 @@ async def create_pv_forecast_service(
         live_rates=live_rates,
         realized_pv_loader=realized_pv_loader,
         charge_slots=ems.charge_slots,
+    )
+
+    # Driven adapter: PvStability state persistence (HA Storage).
+    # Restore PRZED pierwszym recalc — Phase C derivative projection
+    # gating reads `run_length_sec_at(now)` and needs the stable run
+    # to survive HA restart (so a cleared sky from before reboot still
+    # counts toward the trust window).
+    pv_stability_persistence = PvStabilityPersistence(
+        hass, entry, forecast.pv_stability
+    )
+    await pv_stability_persistence.async_restore()
+    entry.async_on_unload(
+        service.async_add_listener(pv_stability_persistence.save_if_changed)
     )
 
     # Weather history write side — registered FIRST listener przed sensors,
