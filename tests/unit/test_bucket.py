@@ -103,6 +103,66 @@ def test_bucket_full_bucket_kwh_combines_so_far_and_extrap() -> None:
     )
 
 
+def test_bucket_live_remaining_kwh_with_zero_derivative_matches_constant() -> None:
+    """`derivative_w_per_min=0` keyword must reproduce constant-power formula."""
+    now = datetime(2026, 5, 15, 9, 13, tzinfo=_TZ)
+    assert Bucket.live_remaining_kwh(
+        now, 1500.0, derivative_w_per_min=0.0
+    ) == Bucket.live_remaining_kwh(now, 1500.0)
+
+
+def test_bucket_live_remaining_kwh_with_positive_ramp() -> None:
+    """`E = P·T + r·T²/2` integration with positive derivative (PV ramping up)."""
+    now = datetime(2026, 5, 15, 9, 13, tzinfo=_TZ)
+    remaining_sec = 1020  # 17 min
+    power_w = 1500.0
+    deriv_w_per_min = 60.0  # +60 W per minute
+    r_w_per_sec = deriv_w_per_min / 60.0
+    energy_w_sec = power_w * remaining_sec + 0.5 * r_w_per_sec * remaining_sec**2
+    expected_kwh = energy_w_sec / (3600.0 * 1000.0)
+    actual_kwh = Bucket.live_remaining_kwh(
+        now, power_w, derivative_w_per_min=deriv_w_per_min
+    )
+    assert math.isclose(actual_kwh, expected_kwh, rel_tol=1e-9)
+    # Ramp lifts the integral above constant baseline.
+    assert actual_kwh > Bucket.live_remaining_kwh(now, power_w)
+
+
+def test_bucket_live_remaining_kwh_with_negative_ramp() -> None:
+    """Negative derivative (afternoon PV decline) lowers the integral."""
+    now = datetime(2026, 5, 15, 11, 5, tzinfo=_TZ)
+    deriv_w_per_min = -50.0
+    power_w = 2000.0
+    constant_kwh = Bucket.live_remaining_kwh(now, power_w)
+    ramp_kwh = Bucket.live_remaining_kwh(
+        now, power_w, derivative_w_per_min=deriv_w_per_min
+    )
+    assert ramp_kwh < constant_kwh
+    # Analytic cross-check.
+    remaining_sec = 25 * 60  # 25 min
+    r_w_per_sec = deriv_w_per_min / 60.0
+    expected = (power_w * remaining_sec + 0.5 * r_w_per_sec * remaining_sec**2) / (
+        3600.0 * 1000.0
+    )
+    assert math.isclose(ramp_kwh, expected, rel_tol=1e-9)
+
+
+def test_bucket_full_bucket_kwh_passes_derivative_through() -> None:
+    """`full_bucket_kwh(..., derivative=X)` must call `live_remaining_kwh(..., derivative=X)`."""
+    now = datetime(2026, 5, 15, 9, 13, tzinfo=_TZ)
+    so_far = 0.5
+    power_w = 1500.0
+    deriv = 90.0
+    expected = so_far + Bucket.live_remaining_kwh(
+        now, power_w, derivative_w_per_min=deriv
+    )
+    assert math.isclose(
+        Bucket.full_bucket_kwh(now, power_w, so_far, derivative_w_per_min=deriv),
+        expected,
+        rel_tol=1e-9,
+    )
+
+
 def test_buckets_from_now_classifies_closed_in_progress_future() -> None:
     buckets = Buckets.flat(1.0)
     now = datetime(2026, 5, 15, 9, 13, tzinfo=_TZ)

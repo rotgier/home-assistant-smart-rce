@@ -394,6 +394,16 @@ class PvForecast:
     # so-far). Combined with `live_pv_power_w` via `Bucket.full_bucket_kwh`
     # to drive the chart in-progress patch + strategy score realized rate.
     pv_bucket_so_far_kwh: float | None = None
+    # Live PV power first derivative (W/min) from
+    # `sensor.pv_power_derivative_avg_2min`. Phase C: feeds the optional
+    # ramp formula `P(t) = P0 + r·t` for in-progress bucket projection.
+    # Ignored when `pv_stability_stable` is not True.
+    live_pv_derivative_w_per_min: float | None = None
+    # Stability gate for the derivative signal (from
+    # `binary_sensor.pv_derivative_is_stable`). True → derivative is
+    # steady enough to use as a slope; False/None → fall back to
+    # constant-power projection.
+    pv_stability_stable: bool | None = None
 
     def update_at_6(
         self,

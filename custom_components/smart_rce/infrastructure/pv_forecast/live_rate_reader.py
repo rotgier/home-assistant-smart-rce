@@ -39,6 +39,12 @@ _CONSUMPTION_BUCKET_KWH_ENTITY: Final = "sensor.total_consumption_minus_bi_hourl
 _START_CHARGE_HOUR_OVERRIDE_ENTITY: Final = (
     "input_datetime.rce_start_charge_hour_today_override"
 )
+# Phase C: derivative-aware projection inputs. Both built by the
+# `pv_stability` HA YAML package — derivative is the 2-min HA derivative
+# of `pv_power_avg_2_minutes` (W/min), stability is the threshold sensor
+# layered on top of a rolling p95 of |second derivative|.
+_PV_DERIVATIVE_ENTITY: Final = "sensor.pv_power_derivative_avg_2min"
+_PV_STABILITY_BINARY_ENTITY: Final = "binary_sensor.pv_derivative_is_stable"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,6 +68,27 @@ class LiveRateReader:
     def read_consumption_bucket_so_far_kwh(self) -> float | None:
         """KWh accumulated in current 30-min utility meter cycle (minus water heater)."""
         return self._read_float(_CONSUMPTION_BUCKET_KWH_ENTITY)
+
+    def read_pv_derivative_w_per_min(self) -> float | None:
+        """PV power first derivative (W/min) — input for ramp projection.
+
+        Source: `sensor.pv_power_derivative_avg_2min` built by HA package
+        `pv_stability` as a 2-min derivative on `pv_power_avg_2_minutes`.
+        """
+        return self._read_float(_PV_DERIVATIVE_ENTITY)
+
+    def read_pv_stability_stable(self) -> bool | None:
+        """Whether the PV derivative is currently flagged stable.
+
+        Source: `binary_sensor.pv_derivative_is_stable` (HA threshold +
+        hysteresis on a rolling p95 of |second derivative|). Phase C
+        gates ramp projection on this signal — `True` means the
+        first-derivative motion is steady enough to trust as a slope.
+        """
+        state = self._hass.states.get(_PV_STABILITY_BINARY_ENTITY)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return None
+        return state.state == "on"
 
     def read_start_charge_hour_today_override(self) -> int | None:
         """Hour (0..23) when pre-charge ends / post-charge begins.

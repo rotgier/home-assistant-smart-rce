@@ -118,6 +118,10 @@ class PvForecastService:
         self.forecast.live_pv_power_w = pv_w
         self.forecast.live_consumption_w = cons_w
         self.forecast.pv_bucket_so_far_kwh = pv_so_far_kwh
+        self.forecast.live_pv_derivative_w_per_min = (
+            self._live_rates.read_pv_derivative_w_per_min()
+        )
+        self.forecast.pv_stability_stable = self._live_rates.read_pv_stability_stable()
 
         # Domain owns the chart in-progress patch — uniform across `live` +
         # `at_6` + all strategy variants. No-op when live signals missing.
@@ -215,6 +219,10 @@ class PvForecastService:
         self.forecast.pv_bucket_so_far_kwh = (
             self._live_rates.read_pv_bucket_so_far_kwh()
         )
+        self.forecast.live_pv_derivative_w_per_min = (
+            self._live_rates.read_pv_derivative_w_per_min()
+        )
+        self.forecast.pv_stability_stable = self._live_rates.read_pv_stability_stable()
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.

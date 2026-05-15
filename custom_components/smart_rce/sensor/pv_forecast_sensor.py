@@ -9,10 +9,13 @@ from typing import Any, Final
 
 from homeassistant.components.sensor import SensorEntityDescription, SensorStateClass
 from homeassistant.const import UnitOfEnergy
+from homeassistant.util import dt as dt_util
 
 from ..application.pv_forecast_service import PvForecastService
 from ..const import DOMAIN
 from ..coordinator import SmartRceDataUpdateCoordinator
+from ..domain.bucket import Bucket
+from ..domain.pv_forecast import PvForecast
 from ._state_writer_mixin import StateWriterMixin
 
 UNIQUE_ID_PREFIX: Final = DOMAIN
@@ -118,6 +121,52 @@ def _target_soc_trace_attrs(result, profile=None) -> dict[str, Any]:
     return attrs
 
 
+def _effective_derivative(forecast: PvForecast) -> float:
+    """Return the derivative to feed the ramp formula, gated on stability.
+
+    Returns `live_pv_derivative_w_per_min` when the stability binary is
+    True AND the value is available; 0.0 otherwise. A 0.0 derivative
+    collapses the ramp integral back to the constant-power formula —
+    so callers can pass this unconditionally to `Bucket.full_bucket_kwh`.
+    """
+    if (
+        forecast.pv_stability_stable
+        and forecast.live_pv_derivative_w_per_min is not None
+    ):
+        return forecast.live_pv_derivative_w_per_min
+    return 0.0
+
+
+def _bucket_end_constant_kwh(forecast: PvForecast) -> float | None:
+    """Projected in-progress bucket kWh assuming constant `live_pv_power_w`."""
+    if forecast.live_pv_power_w is None or forecast.pv_bucket_so_far_kwh is None:
+        return None
+    return Bucket.full_bucket_kwh(
+        dt_util.now(), forecast.live_pv_power_w, forecast.pv_bucket_so_far_kwh
+    )
+
+
+def _bucket_end_derivative_kwh(forecast: PvForecast) -> float | None:
+    """Projected in-progress bucket kWh using ramp when derivative is stable."""
+    if forecast.live_pv_power_w is None or forecast.pv_bucket_so_far_kwh is None:
+        return None
+    return Bucket.full_bucket_kwh(
+        dt_util.now(),
+        forecast.live_pv_power_w,
+        forecast.pv_bucket_so_far_kwh,
+        derivative_w_per_min=_effective_derivative(forecast),
+    )
+
+
+def _bucket_end_derivative_delta_kwh(forecast: PvForecast) -> float | None:
+    """Derivative-aware minus constant projection — zero when ramp inactive."""
+    deriv_kwh = _bucket_end_derivative_kwh(forecast)
+    const_kwh = _bucket_end_constant_kwh(forecast)
+    if deriv_kwh is None or const_kwh is None:
+        return None
+    return deriv_kwh - const_kwh
+
+
 PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # --- Weather-adjusted PV forecast (kWh, default unit) ---
     PvForecastSensorDescription(
@@ -179,6 +228,24 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
         attr_fn=lambda pv: _pv_forecast_attrs(
             pv.forecast.extrapolated_live_band_recent.adjusted
         ),
+    ),
+    # --- In-progress bucket projection observability (Phase C.1) ---
+    # Compare constant-power vs derivative-aware ramp for the bucket the
+    # chart in-progress dot lives in. Delta is non-zero only when the
+    # stability binary flags the derivative trustworthy — observation
+    # period before deciding whether to switch the chart/target_soc
+    # patch to use ramp (Phase C.2).
+    PvForecastSensorDescription(
+        name="PV Bucket End Constant",
+        value_fn=lambda pv: _bucket_end_constant_kwh(pv.forecast),
+    ),
+    PvForecastSensorDescription(
+        name="PV Bucket End Derivative",
+        value_fn=lambda pv: _bucket_end_derivative_kwh(pv.forecast),
+    ),
+    PvForecastSensorDescription(
+        name="PV Bucket End Derivative Delta",
+        value_fn=lambda pv: _bucket_end_derivative_delta_kwh(pv.forecast),
     ),
     # --- Target SOC (%) ---
     PvForecastSensorDescription(

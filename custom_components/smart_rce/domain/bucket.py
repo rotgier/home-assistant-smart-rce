@@ -80,6 +80,8 @@ class Bucket:
         now: datetime,
         power_w: float,
         bucket_so_far_kwh: float,
+        *,
+        derivative_w_per_min: float = 0.0,
     ) -> float:
         """Total in-progress bucket kWh = realized so-far + extrapolated remaining.
 
@@ -87,15 +89,35 @@ class Bucket:
         chart display (rescaled to kWh/h rate via × 2 inside
         `AdjustedPvForecast.with_now_aware_in_progress*`) and strategy
         score input in extrapolation variants.
+
+        With `derivative_w_per_min != 0`, the remaining-time integral uses
+        a linear ramp `P(t) = power_w + r·t` instead of constant power.
+        Used by derivative-aware projection (Phase C) when the PV first
+        derivative signal is flagged stable. Default keeps constant
+        behaviour for all current callers.
         """
-        return bucket_so_far_kwh + Bucket.live_remaining_kwh(now, power_w)
+        return bucket_so_far_kwh + Bucket.live_remaining_kwh(
+            now, power_w, derivative_w_per_min=derivative_w_per_min
+        )
 
     @staticmethod
-    def live_remaining_kwh(now: datetime, power_w: float) -> float:
+    def live_remaining_kwh(
+        now: datetime,
+        power_w: float,
+        *,
+        derivative_w_per_min: float = 0.0,
+    ) -> float:
         """Energy contribution from `now` to end of the enclosing 30-min bucket.
 
-        Assumes `power_w` (PV or consumption — formula is symmetric)
-        holds constant for the remaining time. Returns kWh.
+        `derivative_w_per_min == 0` (default): `power_w` holds constant
+        over the remaining time. Returns `(power_w / 1000) · T / 3600`
+        kWh.
+
+        `derivative_w_per_min != 0`: linear ramp `P(t) = power_w + r·t`
+        where `r = derivative_w_per_min / 60` W/sec. Integrated from 0
+        to T: `E = P·T + r·T²/2`. Caller is responsible for gating on
+        a stability signal — passing a non-zero derivative on a noisy
+        signal will over-/under-estimate.
 
         Single source of truth for the in-progress bucket integration
         consumed by:
@@ -105,9 +127,15 @@ class Bucket:
         - `Bucket.full_bucket_kwh` (chart display, combined with so_far).
         - `pv_forecast_extrapolation._compute_*_score` indirectly via
           `Bucket.full_bucket_kwh` (realized rate = full_bucket × 2).
+        - `PvForecastSensor` observability variants in Phase C (constant
+          vs derivative-aware projection of the in-progress bucket).
         """
         remaining_sec = Bucket.enclosing(now).remaining_sec_at(now)
-        return (power_w / 1000.0) * remaining_sec / 3600.0
+        if derivative_w_per_min == 0.0:
+            return (power_w / 1000.0) * remaining_sec / 3600.0
+        r_w_per_sec = derivative_w_per_min / 60.0
+        energy_w_sec = power_w * remaining_sec + 0.5 * r_w_per_sec * remaining_sec**2
+        return energy_w_sec / (3600.0 * 1000.0)
 
     # --- common helpers --- #
 
