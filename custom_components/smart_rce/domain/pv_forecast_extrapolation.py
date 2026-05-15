@@ -5,10 +5,18 @@ Each strategy produces an ExtrapolatedLive bundle:
 - remaining_kwh: scalar sum from now to end-of-day (sensor state)
 - target_soc: SOC % needed for 7-13 deficit window (sensor value)
 
-In-progress bucket handling is uniform across all today variants —
-`AdjustedPvForecast.to_profile(now, pv_power_w_5min)` integrates live PV
-power over the remaining seconds. The variants only differ in how they
-project FUTURE buckets:
+In-progress bucket handling is uniform across all today variants — built
+on `bucket_math.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh)`
+which yields realized so-far plus 5-min power × remaining time. That same
+value drives:
+- chart display (in-progress period rescaled to `full_bucket_kwh × 2` rate
+  via `AdjustedPvForecast.with_now_aware_in_progress_and_future_overrides`)
+- strategy `score` input (`realized_rate = full_bucket_kwh × 2`)
+- `target_soc` input via `AdjustedPvForecast.to_profile(now, pv_w_5min)`
+  (uses `live_remaining_kwh` part only — past contributes 0 to the
+  forward-looking deficit)
+
+The variants differ only in how they project FUTURE buckets:
 
 1. calibrated_pattern   : weighted 4-zone realization score (p10/est/p90)
                           mapped through inverse score scale onto future
@@ -26,9 +34,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .bucket_math import full_bucket_kwh
 from .pv_forecast import (
     CONSUMPTION_PER_30MIN,
-    AdjustedPeriod,
     AdjustedPvForecast,
     ConsumptionProfile,
     ExtrapolatedLive,
@@ -41,11 +49,6 @@ from .target_soc import calculate_target_soc
 # in-progress integration on top per recalc.
 _DEFAULT_CONS_PROFILE = ConsumptionProfile.flat()
 
-
-# Min minutes elapsed before we trust realized prorate / pattern variants.
-# Below this, division by tiny elapsed_min produces noise. Same threshold
-# (3 min) as the dashboard's extrapolate_current_bucket_js MIN_ELAPSED_MS.
-MIN_ELAPSED_FOR_REALIZED_PRORATE: int = 3
 
 # Exponential decay factor for the calibrated pattern variant — current bucket
 # weight 1.0; each step back multiplies by this. 0.7 → after 3 buckets ≈ 0.34.
@@ -77,30 +80,17 @@ def extrapolate_calibrated_pattern(
         S in 1..2 : est < realized ≤ p90  S = 1 + (real-est)/(p90-est)
         S > 2     : realized > p90        S = 2 + (real-p90)/p90
 
-    Score is dimensionless and continuous across zones. Below p10 we use a
-    ratio (instead of unbounded linear extrapolation) so projection never
-    goes to 0 unless realized is exactly 0. Above p90 we use a ratio for
-    similar bounded behavior.
-
     Past buckets read from `realized_pv_today` (utility meter history per
-    closed bucket). Current bucket extrapolated from `pv_bucket_so_far_kwh /
-    elapsed × 30` for SCORE input. Buckets with
+    closed bucket). Current bucket realized rate = `full_bucket_kwh × 2`
+    (same source of truth as chart + target_soc). Buckets with
     `pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH` are skipped (pre-dawn /
     post-dusk noise).
 
     Weighted average score (current = weight 1.0, each step back × PATTERN_DECAY)
     is mapped back through the inverse of the same 4-zone scale to project
-    each future bucket's PV rate. The projected per-bucket rate replaces
-    forecast PV; the in-progress bucket itself uses `pv_power_w_5min`
-    integrated over remaining time (uniform across all variants).
+    each future bucket's PV rate.
     """
-    elapsed_min = now.minute % 30
-    if (
-        elapsed_min < MIN_ELAPSED_FOR_REALIZED_PRORATE
-        or pv_bucket_so_far_kwh is None
-        or pv_power_w_5min is None
-        or consumption_w is None
-    ):
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
         return ExtrapolatedLive.empty()
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
@@ -109,24 +99,21 @@ def extrapolate_calibrated_pattern(
         now=now,
         realized_pv_today=realized_pv_today,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
-        elapsed_min=elapsed_min,
+        pv_power_w_5min=pv_power_w_5min,
     )
     if score is None:
         return ExtrapolatedLive.empty()
 
-    # In-progress bucket projection for chart display (current_pv_rate).
-    # Doesn't influence target_soc — to_profile overrides with live power.
-    current_pv_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
     future_overrides = _project_future_buckets(
         solcast_by_bucket=solcast_by_bucket, now=now, score=score
     )
     return _assemble(
         adjusted_live=adjusted_live,
         now=now,
-        current_pv_rate=current_pv_rate,
-        future_overrides=future_overrides,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
         consumption_w=consumption_w,
+        future_overrides=future_overrides,
         start_charge_hour=start_charge_hour,
     )
 
@@ -142,38 +129,23 @@ def _compute_score(
     est_rate: float,
     p90_rate: float,
 ) -> float | None:
-    """Realization score on 4-zone normalized scale (rates in kWh/h).
-
-    Returns:
-        S < 0     : realized < p10  → S = realized/p10 - 1   (range -1..0)
-        S in 0..1 : p10..est        → S = (real-p10)/(est-p10)
-        S in 1..2 : est..p90        → S = 1 + (real-est)/(p90-est)
-        S > 2     : realized > p90  → S = 2 + (real-p90)/p90
-        None      : insufficient data (rates too small for stable ratio)
-
-    """
-    # Below p10 — ratio against p10 (or estimate as fallback if p10 too small)
+    """Realization score on 4-zone normalized scale (rates in kWh/h)."""
     if realized_rate < p10_rate:
         if p10_rate >= _RATE_EPS:
             return realized_rate / p10_rate - 1.0
         if est_rate >= _RATE_EPS:
             return realized_rate / est_rate - 1.0
         return None
-    # p10..estimate — linear interpolation
     if realized_rate <= est_rate:
         if (est_rate - p10_rate) >= _RATE_EPS:
             return (realized_rate - p10_rate) / (est_rate - p10_rate)
-        # Collapsed zone (est ≈ p10) — fall through to next zone via shifted score
         return 0.5
-    # estimate..p90 — linear interpolation
     if realized_rate <= p90_rate:
         if (p90_rate - est_rate) >= _RATE_EPS:
             return 1.0 + (realized_rate - est_rate) / (p90_rate - est_rate)
-        # Collapsed zone (p90 ≈ est) — use ratio over estimate
         if est_rate >= _RATE_EPS:
             return 1.0 + (realized_rate - est_rate) / est_rate
         return None
-    # Above p90 — ratio over p90
     if p90_rate >= _RATE_EPS:
         return 2.0 + (realized_rate - p90_rate) / p90_rate
     return None
@@ -185,23 +157,28 @@ def _project_rate_from_score(
     p90_rate: float,
     score: float,
 ) -> float:
-    """Inverse of _compute_score — given score, project PV rate (kWh/h).
-
-    Bounded below at 0 (negative scores asymptote toward 0 at score=-1).
-    Unbounded above (score > 2 ratio-based, can exceed p90).
-    """
+    """Inverse of _compute_score — given score, project PV rate (kWh/h)."""
     if score < 0.0:
-        # Below p10: scale by (1+score). score=-1 → 0; score=0 → p10
         return max(0.0, p10_rate * (1.0 + score))
     if score <= 1.0:
         return p10_rate + score * (est_rate - p10_rate)
     if score <= 2.0:
         if (p90_rate - est_rate) >= _RATE_EPS:
             return est_rate + (score - 1.0) * (p90_rate - est_rate)
-        # Collapsed zone — ratio over estimate
         return est_rate * (1.0 + (score - 1.0))
-    # Above p90 — ratio
     return p90_rate * (1.0 + (score - 2.0))
+
+
+def _current_bucket_realized_rate(
+    now: datetime, pv_power_w_5min: float, pv_bucket_so_far_kwh: float
+) -> float:
+    """In-progress bucket realized rate (kWh/h) for score computation.
+
+    Uniform across all variants — same source of truth as chart and
+    target_soc paths: `full_bucket_kwh(now, pv_w, so_far) × 2` (kWh per
+    30-min × 2 = kWh/h).
+    """
+    return full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
 
 
 def _compute_weighted_score(
@@ -209,59 +186,25 @@ def _compute_weighted_score(
     now: datetime,
     realized_pv_today: dict[tuple[int, int], float],
     pv_bucket_so_far_kwh: float,
-    elapsed_min: int,
+    pv_power_w_5min: float,
 ) -> float | None:
     """Weighted realization score over today's past + current daylight buckets.
 
-    Each bucket contributes a 4-zone score (see _compute_score) and a decaying
-    weight (current bucket = 1.0, each step back × PATTERN_DECAY). Final score
-    is the weighted average.
+    Current bucket realized_rate via `_current_bucket_realized_rate`; past
+    buckets via `realized_pv_today[(h, m)] × 2`. Decaying weight: current=1.0,
+    each step back × PATTERN_DECAY.
     """
-    current_hour = now.hour
-    current_minute = 0 if now.minute < 30 else 30
-    scores: list[tuple[float, float]] = []  # (score, weight)
-    age = 0
-    weight = 1.0
-    h, m = current_hour, current_minute
-    while True:
-        sp = solcast_by_bucket.get((h, m))
-        if sp is None:
-            break
-        # Skip pre-dawn / post-dusk buckets (estimate too small for reliable score).
-        # PATTERN_MIN_FORECAST_KWH is per-bucket kWh; pv_estimate is kWh/h rate so /2.
-        if sp.pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH:
-            h, m, age, weight = _step_back(h, m, age, weight)
-            if age > 24:
-                break
-            continue
-        # Realized rate (kWh/h) for this bucket.
-        if (h, m) == (current_hour, current_minute):
-            # Current bucket — extrapolate so-far to full bucket equivalent rate.
-            realized_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
-        else:
-            realized_kwh = realized_pv_today.get((h, m))
-            if realized_kwh is None:
-                h, m, age, weight = _step_back(h, m, age, weight)
-                if age > 24:
-                    break
-                continue
-            realized_rate = realized_kwh * 2  # kWh per 30min → kWh/h
-        score = _compute_score(
-            realized_rate=realized_rate,
-            p10_rate=sp.pv_estimate10,
-            est_rate=sp.pv_estimate,
-            p90_rate=sp.pv_estimate90,
-        )
-        if score is not None:
-            scores.append((score, weight))
-        h, m, age, weight = _step_back(h, m, age, weight)
-        if age > 24:
-            break
-
-    if not scores:
-        return None
-    total_weight = sum(w for _, w in scores)
-    return sum(s * w for s, w in scores) / total_weight
+    return _weighted_score_over_buckets(
+        solcast_by_bucket=solcast_by_bucket,
+        now=now,
+        realized_pv_today=realized_pv_today,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
+        pv_power_w_5min=pv_power_w_5min,
+        score_fn=lambda real, sp: _compute_score(
+            real, sp.pv_estimate10, sp.pv_estimate, sp.pv_estimate90
+        ),
+        max_age=24,
+    )
 
 
 def _step_back(h: int, m: int, age: int, weight: float) -> tuple[int, int, int, float]:
@@ -272,19 +215,13 @@ def _step_back(h: int, m: int, age: int, weight: float) -> tuple[int, int, int, 
 
 
 def _compute_proportional_score(realized_rate: float, est_rate: float) -> float | None:
-    """Score = (realized - est) / est. Centered at 0 (S=0 → real=est).
-
-    p10/p90 not used — independent of forecast band width. Symmetric: same
-    magnitude for +10% above median as -10% below. Returns None when est too
-    small for stable ratio (RATE_EPS guard).
-    """
+    """Score = (realized - est) / est. Centered at 0 (S=0 → real=est)."""
     if est_rate < _RATE_EPS:
         return None
     return (realized_rate - est_rate) / est_rate
 
 
 # Clamp for negative cumS in projection — prevent project=0 when cumS=-1.
-# At cumS=-0.95 projection = est × 0.05; at -1 → 0 (only fully overcast yields 0).
 _PROPORTIONAL_FLOOR: float = -0.95
 
 
@@ -293,49 +230,18 @@ def _compute_weighted_proportional_score(
     now: datetime,
     realized_pv_today: dict[tuple[int, int], float],
     pv_bucket_so_far_kwh: float,
-    elapsed_min: int,
+    pv_power_w_5min: float,
 ) -> float | None:
-    """Weighted (decay 0.7) average of proportional scores over today's buckets.
-
-    Mirrors _compute_weighted_score structure but uses proportional formula
-    `S = (real - est) / est` for each bucket — independent of band width.
-    """
-    current_hour = now.hour
-    current_minute = 0 if now.minute < 30 else 30
-    scores: list[tuple[float, float]] = []
-    age = 0
-    weight = 1.0
-    h, m = current_hour, current_minute
-    while True:
-        sp = solcast_by_bucket.get((h, m))
-        if sp is None:
-            break
-        if sp.pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH:
-            h, m, age, weight = _step_back(h, m, age, weight)
-            if age > 24:
-                break
-            continue
-        if (h, m) == (current_hour, current_minute):
-            realized_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
-        else:
-            realized_kwh = realized_pv_today.get((h, m))
-            if realized_kwh is None:
-                h, m, age, weight = _step_back(h, m, age, weight)
-                if age > 24:
-                    break
-                continue
-            realized_rate = realized_kwh * 2
-        score = _compute_proportional_score(realized_rate, sp.pv_estimate)
-        if score is not None:
-            scores.append((score, weight))
-        h, m, age, weight = _step_back(h, m, age, weight)
-        if age > 24:
-            break
-
-    if not scores:
-        return None
-    total_weight = sum(w for _, w in scores)
-    return sum(s * w for s, w in scores) / total_weight
+    """Weighted (decay 0.7) average of proportional scores over today's buckets."""
+    return _weighted_score_over_buckets(
+        solcast_by_bucket=solcast_by_bucket,
+        now=now,
+        realized_pv_today=realized_pv_today,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
+        pv_power_w_5min=pv_power_w_5min,
+        score_fn=lambda real, sp: _compute_proportional_score(real, sp.pv_estimate),
+        max_age=24,
+    )
 
 
 def _project_future_buckets_proportional(
@@ -343,11 +249,7 @@ def _project_future_buckets_proportional(
     now: datetime,
     cum_s: float,
 ) -> dict[tuple[int, int], float]:
-    """For each future bucket, project rate = est × (1 + cumS).
-
-    cumS clamped at _PROPORTIONAL_FLOOR (-0.95) so a deeply-bad-day score
-    doesn't drive projections to 0 — leaves a 5% residual.
-    """
+    """For each future bucket, project rate = est × (1 + cumS)."""
     current_hour = now.hour
     current_minute = 0 if now.minute < 30 else 30
     clamped = max(cum_s, _PROPORTIONAL_FLOOR)
@@ -371,30 +273,11 @@ def extrapolate_proportional_median(
 ) -> ExtrapolatedLive:
     """Variant — proportional-to-median realization scaling.
 
-    Same shape as `extrapolate_calibrated_pattern` but uses a different
-    score formula:
-
-        S = (realized - est) / est        (centered at 0, no p10/p90 dependence)
-
-    Weighted average (current=1.0, each step back × PATTERN_DECAY) gives cumS.
-    Each future bucket projects rate = `est × (1 + cumS)`, clamped at 0.
-
-    Pros vs band-aware variants:
-    - Independent of forecast band width — no spike when p90-est is tiny
-      (which happens in narrow-confidence buckets, especially early morning).
-    - Symmetric: same magnitude for over- and under-prediction relative to est.
-
-    Cons:
-    - Ignores p10/p90 confidence — wide band days treated same as narrow.
-    - Unbounded above; cumS=-0.95 floor protects projection > 0.
+    Same shape as `extrapolate_calibrated_pattern` but uses
+    `S = (realized - est) / est` (band-width independent). Future rate =
+    `est × (1 + cumS)`, floored at cumS=-0.95.
     """
-    elapsed_min = now.minute % 30
-    if (
-        elapsed_min < MIN_ELAPSED_FOR_REALIZED_PRORATE
-        or pv_bucket_so_far_kwh is None
-        or pv_power_w_5min is None
-        or consumption_w is None
-    ):
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
         return ExtrapolatedLive.empty()
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
@@ -403,22 +286,21 @@ def extrapolate_proportional_median(
         now=now,
         realized_pv_today=realized_pv_today,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
-        elapsed_min=elapsed_min,
+        pv_power_w_5min=pv_power_w_5min,
     )
     if cum_s is None:
         return ExtrapolatedLive.empty()
 
-    current_pv_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
     future_overrides = _project_future_buckets_proportional(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
     )
     return _assemble(
         adjusted_live=adjusted_live,
         now=now,
-        current_pv_rate=current_pv_rate,
-        future_overrides=future_overrides,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
         consumption_w=consumption_w,
+        future_overrides=future_overrides,
         start_charge_hour=start_charge_hour,
     )
 
@@ -426,27 +308,13 @@ def extrapolate_proportional_median(
 def _compute_band_score(
     realized_rate: float, p10_rate: float, p90_rate: float
 ) -> float | None:
-    """Score on 2-zone scale anchored by [p10, p90] (no est/median use).
-
-        S = -1..0  : real < p10        S = real/p10 - 1
-        S = 0..1   : p10 ≤ real ≤ p90  S = (real - p10) / (p90 - p10)
-        S = 1      : real > p90        (clamped — over-performance capped)
-
-    Differs from 4-zone _compute_score: no explicit est zone; above p90 is
-    clamped to 1.0 instead of using a >p90 ratio extension. Eliminates the
-    "narrow band → explosive S" pathology since the only way to push S above
-    1 would require real > p90 — and that's clamped.
-
-    Below p10 still uses ratio bounded toward 0 at S=-1.
-    """
+    """Score on 2-zone scale anchored by [p10, p90]; clamped at 1 above p90."""
     if realized_rate >= p90_rate:
-        return 1.0  # clamp — over-performance capped at band ceiling
+        return 1.0
     if realized_rate >= p10_rate:
         if (p90_rate - p10_rate) >= _RATE_EPS:
             return (realized_rate - p10_rate) / (p90_rate - p10_rate)
-        # Collapsed band (p10 ≈ p90) — treat as midpoint
         return 0.5
-    # Below p10
     if p10_rate >= _RATE_EPS:
         return realized_rate / p10_rate - 1.0
     return None
@@ -457,45 +325,20 @@ def _compute_weighted_band_score(
     now: datetime,
     realized_pv_today: dict[tuple[int, int], float],
     pv_bucket_so_far_kwh: float,
-    elapsed_min: int,
+    pv_power_w_5min: float,
 ) -> float | None:
     """Weighted (decay 0.7) band-clamped score over today's daylight buckets."""
-    current_hour = now.hour
-    current_minute = 0 if now.minute < 30 else 30
-    scores: list[tuple[float, float]] = []
-    age = 0
-    weight = 1.0
-    h, m = current_hour, current_minute
-    while True:
-        sp = solcast_by_bucket.get((h, m))
-        if sp is None:
-            break
-        if sp.pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH:
-            h, m, age, weight = _step_back(h, m, age, weight)
-            if age > 24:
-                break
-            continue
-        if (h, m) == (current_hour, current_minute):
-            realized_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
-        else:
-            realized_kwh = realized_pv_today.get((h, m))
-            if realized_kwh is None:
-                h, m, age, weight = _step_back(h, m, age, weight)
-                if age > 24:
-                    break
-                continue
-            realized_rate = realized_kwh * 2
-        score = _compute_band_score(realized_rate, sp.pv_estimate10, sp.pv_estimate90)
-        if score is not None:
-            scores.append((score, weight))
-        h, m, age, weight = _step_back(h, m, age, weight)
-        if age > 24:
-            break
-
-    if not scores:
-        return None
-    total_weight = sum(w for _, w in scores)
-    return sum(s * w for s, w in scores) / total_weight
+    return _weighted_score_over_buckets(
+        solcast_by_bucket=solcast_by_bucket,
+        now=now,
+        realized_pv_today=realized_pv_today,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
+        pv_power_w_5min=pv_power_w_5min,
+        score_fn=lambda real, sp: _compute_band_score(
+            real, sp.pv_estimate10, sp.pv_estimate90
+        ),
+        max_age=24,
+    )
 
 
 def _project_future_buckets_band(
@@ -503,11 +346,7 @@ def _project_future_buckets_band(
     now: datetime,
     cum_s: float,
 ) -> dict[tuple[int, int], float]:
-    """For each future bucket: project = p10 + S × (p90 − p10), clamped at p10 floor.
-
-    Inverse of _compute_band_score. Negative S scales p10 toward 0 (bounded at
-    S=-1 → 0). cumS > 1 impossible by construction (clamp in score).
-    """
+    """For each future bucket: project = p10 + S × (p90 − p10), bounded ≥ 0."""
     current_hour = now.hour
     current_minute = 0 if now.minute < 30 else 30
     overrides: dict[tuple[int, int], float] = {}
@@ -520,7 +359,7 @@ def _project_future_buckets_band(
         elif cum_s <= 1.0:
             projected = p10 + cum_s * (p90 - p10)
         else:
-            projected = p90  # defensive, shouldn't happen due to clamp
+            projected = p90
         overrides[(h, m)] = max(0.0, projected)
     return overrides
 
@@ -535,25 +374,8 @@ def extrapolate_band_clamped(
     consumption_w: float | None,
     start_charge_hour: int | None = None,
 ) -> ExtrapolatedLive:
-    """Variant — 2-zone band-clamped realization scaling.
-
-    Score formula (anchored by Solcast's p10 and p90 only, no est):
-
-        below p10  : S = real/p10 - 1     (range -1..0)
-        p10..p90   : S = (real-p10)/(p90-p10)   (range 0..1)
-        above p90  : S = 1                (clamped)
-
-    Weighted average (current=1.0, each step back × PATTERN_DECAY) gives cumS.
-    Each future bucket projects via inverse: rate = p10 + cumS × (p90-p10),
-    bounded below by 0 (cumS=-1).
-    """
-    elapsed_min = now.minute % 30
-    if (
-        elapsed_min < MIN_ELAPSED_FOR_REALIZED_PRORATE
-        or pv_bucket_so_far_kwh is None
-        or pv_power_w_5min is None
-        or consumption_w is None
-    ):
+    """Variant — 2-zone band-clamped realization scaling."""
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
         return ExtrapolatedLive.empty()
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
@@ -562,22 +384,21 @@ def extrapolate_band_clamped(
         now=now,
         realized_pv_today=realized_pv_today,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
-        elapsed_min=elapsed_min,
+        pv_power_w_5min=pv_power_w_5min,
     )
     if cum_s is None:
         return ExtrapolatedLive.empty()
 
-    current_pv_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
     future_overrides = _project_future_buckets_band(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
     )
     return _assemble(
         adjusted_live=adjusted_live,
         now=now,
-        current_pv_rate=current_pv_rate,
-        future_overrides=future_overrides,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
         consumption_w=consumption_w,
+        future_overrides=future_overrides,
         start_charge_hour=start_charge_hour,
     )
 
@@ -593,45 +414,20 @@ def _compute_weighted_band_score_recent(
     now: datetime,
     realized_pv_today: dict[tuple[int, int], float],
     pv_bucket_so_far_kwh: float,
-    elapsed_min: int,
+    pv_power_w_5min: float,
 ) -> float | None:
     """Compute band score weighted average with narrow lookback (current + 1 back)."""
-    current_hour = now.hour
-    current_minute = 0 if now.minute < 30 else 30
-    scores: list[tuple[float, float]] = []
-    age = 0
-    weight = 1.0
-    h, m = current_hour, current_minute
-    while True:
-        sp = solcast_by_bucket.get((h, m))
-        if sp is None:
-            break
-        if sp.pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH:
-            h, m, age, weight = _step_back(h, m, age, weight)
-            if age > BAND_RECENT_MAX_AGE:
-                break
-            continue
-        if (h, m) == (current_hour, current_minute):
-            realized_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
-        else:
-            realized_kwh = realized_pv_today.get((h, m))
-            if realized_kwh is None:
-                h, m, age, weight = _step_back(h, m, age, weight)
-                if age > BAND_RECENT_MAX_AGE:
-                    break
-                continue
-            realized_rate = realized_kwh * 2
-        score = _compute_band_score(realized_rate, sp.pv_estimate10, sp.pv_estimate90)
-        if score is not None:
-            scores.append((score, weight))
-        h, m, age, weight = _step_back(h, m, age, weight)
-        if age > BAND_RECENT_MAX_AGE:
-            break
-
-    if not scores:
-        return None
-    total_weight = sum(w for _, w in scores)
-    return sum(s * w for s, w in scores) / total_weight
+    return _weighted_score_over_buckets(
+        solcast_by_bucket=solcast_by_bucket,
+        now=now,
+        realized_pv_today=realized_pv_today,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
+        pv_power_w_5min=pv_power_w_5min,
+        score_fn=lambda real, sp: _compute_band_score(
+            real, sp.pv_estimate10, sp.pv_estimate90
+        ),
+        max_age=BAND_RECENT_MAX_AGE,
+    )
 
 
 def extrapolate_band_clamped_recent(
@@ -646,25 +442,12 @@ def extrapolate_band_clamped_recent(
 ) -> ExtrapolatedLive:
     """Variant — band-clamped scoring, narrow lookback (current + 1 back).
 
-    Same band-clamped score formula as `extrapolate_band_clamped` but
-    limited to BAND_RECENT_MAX_AGE=1 — only the current bucket and the
-    immediately prior bucket contribute to cumS.
-
-    Use case: captures current weather trend without carrying morning bias
-    into afternoon projections. Useful when conditions shift mid-day (e.g.
-    cloudy morning → sunny afternoon).
-
-    Trade-off vs full-history Band: more reactive but less stable.
-    A single anomaly bucket dominates cumS; early-bucket noise (real <3min
-    elapsed already short-circuited at entry) still propagates.
+    Same band-clamped score as `extrapolate_band_clamped` but limited to
+    BAND_RECENT_MAX_AGE=1 — only the current bucket and the immediately
+    prior bucket contribute to cumS. Captures current weather trend
+    without carrying morning bias into afternoon projections.
     """
-    elapsed_min = now.minute % 30
-    if (
-        elapsed_min < MIN_ELAPSED_FOR_REALIZED_PRORATE
-        or pv_bucket_so_far_kwh is None
-        or pv_power_w_5min is None
-        or consumption_w is None
-    ):
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
         return ExtrapolatedLive.empty()
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
@@ -673,22 +456,21 @@ def extrapolate_band_clamped_recent(
         now=now,
         realized_pv_today=realized_pv_today,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
-        elapsed_min=elapsed_min,
+        pv_power_w_5min=pv_power_w_5min,
     )
     if cum_s is None:
         return ExtrapolatedLive.empty()
 
-    current_pv_rate = pv_bucket_so_far_kwh * 60 / elapsed_min
     future_overrides = _project_future_buckets_band(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
     )
     return _assemble(
         adjusted_live=adjusted_live,
         now=now,
-        current_pv_rate=current_pv_rate,
-        future_overrides=future_overrides,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
         consumption_w=consumption_w,
+        future_overrides=future_overrides,
         start_charge_hour=start_charge_hour,
     )
 
@@ -728,29 +510,94 @@ def _index_solcast_by_bucket(
     return out
 
 
+def _weighted_score_over_buckets(
+    solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+    now: datetime,
+    realized_pv_today: dict[tuple[int, int], float],
+    pv_bucket_so_far_kwh: float,
+    pv_power_w_5min: float,
+    score_fn,
+    max_age: int,
+) -> float | None:
+    """Walk back from current bucket, compute per-bucket score, weight by decay.
+
+    Shared core of all four `_compute_weighted_*_score` functions — they
+    differ only in `score_fn` (4-zone, proportional, band) and `max_age`
+    (24 for full-history, 1 for band_recent).
+
+    Current bucket realized rate uses `_current_bucket_realized_rate`
+    (uniform with chart + target_soc). Past buckets use
+    `realized_pv_today[(h, m)] × 2`. Buckets with
+    `pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH` skipped.
+    """
+    current_hour = now.hour
+    current_minute = 0 if now.minute < 30 else 30
+    scores: list[tuple[float, float]] = []
+    age = 0
+    weight = 1.0
+    h, m = current_hour, current_minute
+    while True:
+        sp = solcast_by_bucket.get((h, m))
+        if sp is None:
+            break
+        if sp.pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH:
+            h, m, age, weight = _step_back(h, m, age, weight)
+            if age > max_age:
+                break
+            continue
+        if (h, m) == (current_hour, current_minute):
+            realized_rate = _current_bucket_realized_rate(
+                now, pv_power_w_5min, pv_bucket_so_far_kwh
+            )
+        else:
+            realized_kwh = realized_pv_today.get((h, m))
+            if realized_kwh is None:
+                h, m, age, weight = _step_back(h, m, age, weight)
+                if age > max_age:
+                    break
+                continue
+            realized_rate = realized_kwh * 2
+        score = score_fn(realized_rate, sp)
+        if score is not None:
+            scores.append((score, weight))
+        h, m, age, weight = _step_back(h, m, age, weight)
+        if age > max_age:
+            break
+
+    if not scores:
+        return None
+    total_weight = sum(w for _, w in scores)
+    return sum(s * w for s, w in scores) / total_weight
+
+
 def _assemble(
     adjusted_live: AdjustedPvForecast,
     now: datetime,
     *,
-    current_pv_rate: float,
-    future_overrides: dict[tuple[int, int], float],
+    pv_bucket_so_far_kwh: float,
     pv_power_w_5min: float,
     consumption_w: float,
+    future_overrides: dict[tuple[int, int], float],
     start_charge_hour: int | None,
 ) -> ExtrapolatedLive:
     """Build the ExtrapolatedLive bundle from a strategy's per-bucket overrides.
 
-    Caller passes the strategy-projected `current_pv_rate` (for the
-    in-progress period in the `adjusted` chart attribute) plus
-    `future_overrides` (kWh/h per future bucket). For target_soc the
-    in-progress bucket is overridden with live `pv_power_w_5min`
-    integrated over remaining time — uniform across all variants — and
-    consumption uses the constant baseline shifted by `consumption_w`.
+    Single source of truth for the in-progress bucket rate is
+    `AdjustedPvForecast.with_now_aware_in_progress_and_future_overrides`,
+    which uses `bucket_math.full_bucket_kwh × 2` (kWh/h). Future periods
+    take `future_overrides[(h,m)]` when present, else keep their original
+    forecast values. Past periods are untouched.
+
+    For target_soc the in-progress bucket is independently overridden by
+    `to_profile(now, pv_power_w_5min)` → `live_remaining_kwh` (remaining
+    only, no so_far — past contributes 0 to forward-looking deficit).
+    Consumption uses the constant flat baseline shifted by `consumption_w`
+    via `to_view`.
     """
-    adjusted = _build_extrapolated_forecast(
-        adjusted_live,
-        now,
-        current_bucket_pv_kwh_per_h=current_pv_rate,
+    adjusted = adjusted_live.with_now_aware_in_progress_and_future_overrides(
+        now=now,
+        pv_power_w_5min=pv_power_w_5min,
+        pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         future_pv_kwh_per_h_overrides=future_overrides,
     )
     remaining_kwh = _sum_remaining_kwh(adjusted, now)
@@ -762,49 +609,6 @@ def _assemble(
     return ExtrapolatedLive(
         adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
     )
-
-
-def _build_extrapolated_forecast(
-    forecast: AdjustedPvForecast,
-    now: datetime,
-    *,
-    current_bucket_pv_kwh_per_h: float,
-    future_pv_kwh_per_h_overrides: dict[tuple[int, int], float] | None = None,
-) -> AdjustedPvForecast:
-    """Build AdjustedPvForecast copy with current bucket rescaled, optionally future too.
-
-    - Current bucket pv_estimate_adjusted := current_bucket_pv_kwh_per_h
-    - Future buckets: use future_pv_kwh_per_h_overrides if provided, else unchanged
-    - Past buckets: unchanged
-    """
-    start_hour = now.hour
-    start_minute = 0 if now.minute < 30 else 30
-
-    new_periods: list[AdjustedPeriod] = []
-    total_kwh = 0.0
-    for period in forecast.forecast:
-        dt = datetime.fromisoformat(period.period_start)
-        is_current = dt.hour == start_hour and dt.minute == start_minute
-        is_future = dt.hour > start_hour or (
-            dt.hour == start_hour and dt.minute > start_minute
-        )
-        if is_current:
-            adj_rate = current_bucket_pv_kwh_per_h
-        elif is_future and future_pv_kwh_per_h_overrides is not None:
-            adj_rate = future_pv_kwh_per_h_overrides.get(
-                (dt.hour, dt.minute), period.pv_estimate_adjusted
-            )
-        else:
-            adj_rate = period.pv_estimate_adjusted
-        new_periods.append(
-            AdjustedPeriod(
-                period_start=period.period_start,
-                pv_estimate_adjusted=round(adj_rate, 4),
-            )
-        )
-        total_kwh += adj_rate / 2
-
-    return AdjustedPvForecast(forecast=new_periods, total_kwh=round(total_kwh, 4))
 
 
 def _sum_remaining_kwh(forecast: AdjustedPvForecast, now: datetime) -> float:

@@ -20,13 +20,18 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
+from .bucket_math import (
+    Bucket,
+    buckets_from_now,
+    full_bucket_kwh as bucket_full_kwh,
+    live_remaining_kwh,
+)
 from .consumption_profiles import (
     PREV_DAYS_COUNT,
     ConsumptionProfile,
     ConsumptionProfiles,
     ConsumptionProfileSource,
 )
-from .profiles_logic import buckets_from_now, remaining_sec_in_current_bucket
 from .target_soc import (
     BATTERY_CAPACITY_KWH,
     BUFFER_PERCENT,
@@ -168,12 +173,105 @@ class AdjustedPvForecast:
                 buckets.setdefault((h, m), 0.0)
         if now is not None:
             assert pv_power_w_5min is not None  # narrowed by guard above
-            remaining_sec = remaining_sec_in_current_bucket(now)
-            live_remaining_kwh = (pv_power_w_5min / 1000.0) * remaining_sec / 3600.0
             buckets = buckets_from_now(
-                buckets, now=now, live_remaining_kwh=live_remaining_kwh
+                buckets,
+                now=now,
+                live_remaining_kwh=live_remaining_kwh(now, pv_power_w_5min),
             )
         return PvProfile(buckets=buckets)
+
+    def with_now_aware_in_progress(
+        self,
+        now: datetime,
+        pv_power_w_5min: float,
+        pv_bucket_so_far_kwh: float,
+    ) -> AdjustedPvForecast:
+        """Return a copy with in-progress period rescaled to full-bucket estimate.
+
+        Rate = `(so_far + live_remaining_kwh) × 2` (kWh/h). Other periods
+        unchanged.
+
+        Used for chart display so the in-progress dot reflects the same bucket
+        value the strategy `score` and `target_soc` paths use internally — the
+        single source of truth is `bucket_math.full_bucket_kwh`.
+
+        Caller must guarantee `now` falls in a 30-min slot covered by the
+        forecast (typically a today period in the 7-13 window). If the
+        in-progress slot isn't in `self.forecast`, the method is a no-op
+        (returns a structural copy with the same values).
+        """
+        rate = bucket_full_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
+        return self._rebuild(now, current_rate=rate, future_overrides=None)
+
+    def with_now_aware_in_progress_and_future_overrides(
+        self,
+        now: datetime,
+        pv_power_w_5min: float,
+        pv_bucket_so_far_kwh: float,
+        future_pv_kwh_per_h_overrides: dict[tuple[int, int], float],
+    ) -> AdjustedPvForecast:
+        """As `with_now_aware_in_progress`, plus future-bucket overrides.
+
+        Future periods (bucket_start > now) get `pv_estimate_adjusted` replaced
+        by their corresponding entry in `future_pv_kwh_per_h_overrides`
+        (kWh/h rate keyed by `(hour, minute)`). Periods without an override
+        entry keep their original forecast value. Used by strategy variants
+        in `pv_forecast_extrapolation` whose projection produces per-bucket
+        future rates.
+        """
+        rate = bucket_full_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
+        return self._rebuild(
+            now, current_rate=rate, future_overrides=future_pv_kwh_per_h_overrides
+        )
+
+    def _rebuild(
+        self,
+        now: datetime,
+        *,
+        current_rate: float,
+        future_overrides: dict[tuple[int, int], float] | None,
+    ) -> AdjustedPvForecast:
+        """Build a new AdjustedPvForecast with selective period replacement.
+
+        - in-progress period (Bucket.enclosing(now)) → `current_rate`
+        - future periods (bucket_start > now): take `future_overrides[(h,m)]`
+          when present, else keep `pv_estimate_adjusted` unchanged
+        - past periods: unchanged
+        """
+        current_bucket = Bucket.enclosing(now)
+        new_periods: list[AdjustedPeriod] = []
+        total_kwh = 0.0
+        for period in self.forecast:
+            dt = datetime.fromisoformat(period.period_start)
+            if dt.date() != now.date():
+                # Not today's period (e.g. tomorrow in a multi-day forecast) —
+                # never patch, never relevant for the in-progress bucket on `now`.
+                rate = period.pv_estimate_adjusted
+            else:
+                period_bucket = (
+                    Bucket(dt.hour, dt.minute) if dt.minute in (0, 30) else None
+                )
+                if period_bucket == current_bucket:
+                    rate = current_rate
+                elif (
+                    period_bucket is not None
+                    and future_overrides is not None
+                    and period_bucket.is_future_at(now)
+                ):
+                    rate = future_overrides.get(
+                        (period_bucket.hour, period_bucket.minute),
+                        period.pv_estimate_adjusted,
+                    )
+                else:
+                    rate = period.pv_estimate_adjusted
+            new_periods.append(
+                AdjustedPeriod(
+                    period_start=period.period_start,
+                    pv_estimate_adjusted=round(rate, 4),
+                )
+            )
+            total_kwh += rate / 2.0
+        return AdjustedPvForecast(forecast=new_periods, total_kwh=round(total_kwh, 4))
 
 
 @dataclass(frozen=True)

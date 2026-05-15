@@ -112,6 +112,26 @@ class PvForecastService:
         sch = self._live_rates.read_start_charge_hour_today_override()
         self.forecast.start_charge_hour_today = sch
 
+        # Chart in-progress patch — uniform across `live` + `at_6` + all
+        # strategy variants. Source of truth: `bucket_math.full_bucket_kwh`.
+        # Skipped when live signals missing (sensor stays on raw forecast).
+        if pv_so_far_kwh is not None and pv_w is not None:
+            self.forecast.adjusted_live = (
+                self.forecast.adjusted_live.with_now_aware_in_progress(
+                    now=now,
+                    pv_power_w_5min=pv_w,
+                    pv_bucket_so_far_kwh=pv_so_far_kwh,
+                )
+            )
+            if self.forecast.adjusted_at_6:
+                self.forecast.adjusted_at_6 = (
+                    self.forecast.adjusted_at_6.with_now_aware_in_progress(
+                        now=now,
+                        pv_power_w_5min=pv_w,
+                        pv_bucket_so_far_kwh=pv_so_far_kwh,
+                    )
+                )
+
         self.forecast.extrapolated_live_pattern = (
             pv_forecast_extrapolation.extrapolate_calibrated_pattern(
                 self.forecast.adjusted_live,

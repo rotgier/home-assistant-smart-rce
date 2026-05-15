@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import ClassVar, Final, Protocol
 
-from .profiles_logic import buckets_from_now, remaining_sec_in_current_bucket
+from .bucket_math import buckets_from_now, remaining_sec_in_current_bucket
 from .target_soc import CONSUMPTION_PER_30MIN
 
 # --- Constants --- #
