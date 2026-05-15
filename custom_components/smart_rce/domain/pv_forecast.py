@@ -402,7 +402,7 @@ class PvForecast:
     ) -> None:
         """Update morning (AT6) snapshot — adjusted_at_6 + downstream target SOC."""
         adjusted = self._adjust_pv_forecast_at6(solcast_periods, weather_conditions)
-        self.adjusted_at_6 = self.apply_chart_in_progress_patch(now, adjusted)
+        self.adjusted_at_6 = self._apply_chart_in_progress_patch(now, adjusted)
         self._recalculate_target_soc(now)
 
     def update_live(
@@ -416,10 +416,31 @@ class PvForecast:
         adjusted = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
-        self.adjusted_live = self.apply_chart_in_progress_patch(now, adjusted)
+        self.adjusted_live = self._apply_chart_in_progress_patch(now, adjusted)
         self._recalculate_target_soc(now)
 
-    def apply_chart_in_progress_patch(
+    def apply_chart_in_progress_patch(self, now: datetime) -> None:
+        """Refresh in-progress period of every today adjusted variant in place.
+
+        Service per-minute hook — single call rescales `adjusted_live` AND
+        `adjusted_at_6` to reflect newer `live_pv_power_w` /
+        `pv_bucket_so_far_kwh`. No-op for variants currently set to None
+        (early startup before the first solcast update).
+
+        Per-forecast variant (used by `update_live` / `update_at_6` on
+        freshly built forecasts) lives in private
+        `_apply_chart_in_progress_patch(now, adjusted)`.
+        """
+        if self.adjusted_live is not None:
+            self.adjusted_live = self._apply_chart_in_progress_patch(
+                now, self.adjusted_live
+            )
+        if self.adjusted_at_6 is not None:
+            self.adjusted_at_6 = self._apply_chart_in_progress_patch(
+                now, self.adjusted_at_6
+            )
+
+    def _apply_chart_in_progress_patch(
         self, now: datetime, adjusted: AdjustedPvForecast
     ) -> AdjustedPvForecast:
         """Return `adjusted` with its in-progress period rescaled, or unchanged.
@@ -436,8 +457,7 @@ class PvForecast:
 
         Callers pass the adjusted forecast they want patched; the method
         keeps the policy (read live signals, decide no-op vs patch) on the
-        aggregate so each call site stays single-line. Reapplied per-minute
-        by the application service to track evolving pv_w / so_far values.
+        aggregate so each call site stays single-line.
         """
         if self.live_pv_power_w is None or self.pv_bucket_so_far_kwh is None:
             return adjusted

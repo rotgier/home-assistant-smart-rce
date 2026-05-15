@@ -123,13 +123,7 @@ class PvForecastService:
         # `at_6` + all strategy variants. No-op when live signals missing.
         # update_live / update_at_6 paths already patch on fresh forecast;
         # here the per-minute tick refreshes both with newer pv_w / so_far.
-        self.forecast.adjusted_live = self.forecast.apply_chart_in_progress_patch(
-            now, self.forecast.adjusted_live
-        )
-        if self.forecast.adjusted_at_6:
-            self.forecast.adjusted_at_6 = self.forecast.apply_chart_in_progress_patch(
-                now, self.forecast.adjusted_at_6
-            )
+        self.forecast.apply_chart_in_progress_patch(now)
 
         self.forecast.extrapolated_live_pattern = (
             pv_forecast_extrapolation.extrapolate_calibrated_pattern(
