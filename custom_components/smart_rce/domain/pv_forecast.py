@@ -401,10 +401,8 @@ class PvForecast:
         now: datetime,
     ) -> None:
         """Update morning (AT6) snapshot — adjusted_at_6 + downstream target SOC."""
-        self.adjusted_at_6 = self._adjust_pv_forecast_at6(
-            solcast_periods, weather_conditions
-        )
-        self.apply_chart_in_progress_patch(now)
+        adjusted = self._adjust_pv_forecast_at6(solcast_periods, weather_conditions)
+        self.adjusted_at_6 = self.apply_chart_in_progress_patch(now, adjusted)
         self._recalculate_target_soc(now)
 
     def update_live(
@@ -415,40 +413,39 @@ class PvForecast:
     ) -> None:
         """Update live forecast — adjusted_live + raw solcast_live + downstream target SOC."""
         self.solcast_live = solcast_periods
-        self.adjusted_live = self._adjust_pv_forecast_live(
+        adjusted = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
-        self.apply_chart_in_progress_patch(now)
+        self.adjusted_live = self.apply_chart_in_progress_patch(now, adjusted)
         self._recalculate_target_soc(now)
 
-    def apply_chart_in_progress_patch(self, now: datetime) -> None:
-        """Rescale in-progress period of today's adjusted variants.
+    def apply_chart_in_progress_patch(
+        self, now: datetime, adjusted: AdjustedPvForecast
+    ) -> AdjustedPvForecast:
+        """Return `adjusted` with its in-progress period rescaled, or unchanged.
 
-        New rate = full-bucket estimate (realized so-far + remaining via
-        5-min power). No-op when live signals (`live_pv_power_w` / `pv_bucket_so_far_kwh`)
-        aren't set yet — chart falls back to raw forecast values. Reapplied
-        per-minute by the application service so the in-progress dot tracks
-        live measurements as they roll in.
+        Rescale = full-bucket estimate (realized so-far + remaining via
+        5-min power); unchanged when live signals aren't set.
 
-        Single source of truth: `Bucket.full_bucket_kwh × 2` (kWh/h rate),
-        matching what the strategy score consumes as `realized_rate` and
-        what `to_profile(now, pv_power_w_5min)` extracts as
-        `live_remaining_kwh` (the remaining-only portion of the same value).
+        Aggregate-level policy: which kWh value goes into the in-progress
+        period (uniform across `adjusted_at_6`, `adjusted_live`, and all
+        strategy variants in `pv_forecast_extrapolation`). Source of truth:
+        `Bucket.full_bucket_kwh × 2` (kWh/h rate) — same value the strategy
+        score consumes as `realized_rate` and `to_profile(now, pv_power_w_5min)`
+        extracts as `live_remaining_kwh` (remaining-only portion).
+
+        Callers pass the adjusted forecast they want patched; the method
+        keeps the policy (read live signals, decide no-op vs patch) on the
+        aggregate so each call site stays single-line. Reapplied per-minute
+        by the application service to track evolving pv_w / so_far values.
         """
         if self.live_pv_power_w is None or self.pv_bucket_so_far_kwh is None:
-            return
-        if self.adjusted_live:
-            self.adjusted_live = self.adjusted_live.with_now_aware_in_progress(
-                now=now,
-                pv_power_w_5min=self.live_pv_power_w,
-                pv_bucket_so_far_kwh=self.pv_bucket_so_far_kwh,
-            )
-        if self.adjusted_at_6:
-            self.adjusted_at_6 = self.adjusted_at_6.with_now_aware_in_progress(
-                now=now,
-                pv_power_w_5min=self.live_pv_power_w,
-                pv_bucket_so_far_kwh=self.pv_bucket_so_far_kwh,
-            )
+            return adjusted
+        return adjusted.with_now_aware_in_progress(
+            now=now,
+            pv_power_w_5min=self.live_pv_power_w,
+            pv_bucket_so_far_kwh=self.pv_bucket_so_far_kwh,
+        )
 
     def update_tomorrow(
         self,
