@@ -111,26 +111,17 @@ class PvForecastService:
         # + propagated to non-extrapolated target_soc via `self.forecast`).
         sch = self._live_rates.read_start_charge_hour_today_override()
         self.forecast.start_charge_hour_today = sch
+        # Refresh aggregate state used by chart patch + extrapolations
+        # (mirrors what `_refresh_start_charge_hour` does for the
+        # update_at_6 / update_live paths — the minute tick lands here
+        # directly so we set the fields explicitly).
+        self.forecast.live_pv_power_w = pv_w
+        self.forecast.live_consumption_w = cons_w
+        self.forecast.pv_bucket_so_far_kwh = pv_so_far_kwh
 
-        # Chart in-progress patch — uniform across `live` + `at_6` + all
-        # strategy variants. Source of truth: `bucket_math.full_bucket_kwh`.
-        # Skipped when live signals missing (sensor stays on raw forecast).
-        if pv_so_far_kwh is not None and pv_w is not None:
-            self.forecast.adjusted_live = (
-                self.forecast.adjusted_live.with_now_aware_in_progress(
-                    now=now,
-                    pv_power_w_5min=pv_w,
-                    pv_bucket_so_far_kwh=pv_so_far_kwh,
-                )
-            )
-            if self.forecast.adjusted_at_6:
-                self.forecast.adjusted_at_6 = (
-                    self.forecast.adjusted_at_6.with_now_aware_in_progress(
-                        now=now,
-                        pv_power_w_5min=pv_w,
-                        pv_bucket_so_far_kwh=pv_so_far_kwh,
-                    )
-                )
+        # Domain owns the chart in-progress patch — uniform across `live` +
+        # `at_6` + all strategy variants. No-op when live signals missing.
+        self.forecast.apply_chart_in_progress_patch(now)
 
         self.forecast.extrapolated_live_pattern = (
             pv_forecast_extrapolation.extrapolate_calibrated_pattern(
@@ -211,12 +202,17 @@ class PvForecastService:
         self.forecast.start_charge_hour_tomorrow = (
             int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
         )
-        # Live signals (W) propagated to the aggregate; consumed by
-        # `ConsumptionProfile.to_view` / `AdjustedPvForecast.to_profile`
-        # inside `_recalculate_target_soc` to integrate the in-progress
-        # bucket against current 5-min average power.
+        # Live signals propagated to the aggregate. Used by:
+        # - `ConsumptionProfile.to_view` / `AdjustedPvForecast.to_profile`
+        #   in `_recalculate_target_soc` (integrate in-progress vs current power)
+        # - `PvForecast.apply_chart_in_progress_patch` (chart in-progress dot
+        #   reflects realized so-far + 5-min extrapolation)
+        # - extrapolation `_compute_*_score` (current bucket realized rate)
         self.forecast.live_consumption_w = self._live_rates.read_consumption_w()
         self.forecast.live_pv_power_w = self._live_rates.read_pv_power_w()
+        self.forecast.pv_bucket_so_far_kwh = (
+            self._live_rates.read_pv_bucket_so_far_kwh()
+        )
 
     def _recalculate_at6(self) -> None:
         """Recalculate AT6 forecast.

@@ -90,6 +90,21 @@ class Bucket:
         return (now - self.start_datetime(now)).total_seconds()
 
     @staticmethod
+    def full_bucket_kwh(
+        now: datetime,
+        power_w: float,
+        bucket_so_far_kwh: float,
+    ) -> float:
+        """Total in-progress bucket kWh = realized so-far + extrapolated remaining.
+
+        The "what we expect this bucket to deliver" estimate. Shared by
+        chart display (rescaled to kWh/h rate via × 2 inside
+        `AdjustedPvForecast.with_now_aware_in_progress*`) and strategy
+        score input in extrapolation variants.
+        """
+        return bucket_so_far_kwh + Bucket.live_remaining_kwh(now, power_w)
+
+    @staticmethod
     def live_remaining_kwh(now: datetime, power_w: float) -> float:
         """Energy contribution from `now` to end of the enclosing 30-min bucket.
 
@@ -107,21 +122,6 @@ class Bucket:
         """
         remaining_sec = Bucket.enclosing(now).remaining_sec_at(now)
         return (power_w / 1000.0) * remaining_sec / 3600.0
-
-    @staticmethod
-    def full_bucket_kwh(
-        now: datetime,
-        power_w: float,
-        bucket_so_far_kwh: float,
-    ) -> float:
-        """Total in-progress bucket kWh = realized so-far + extrapolated remaining.
-
-        The "what we expect this bucket to deliver" estimate. Shared by
-        chart display (rescaled to kWh/h rate via × 2 inside
-        `AdjustedPvForecast.with_now_aware_in_progress*`) and strategy
-        score input in extrapolation variants.
-        """
-        return bucket_so_far_kwh + Bucket.live_remaining_kwh(now, power_w)
 
 
 def buckets_from_now(

@@ -36,7 +36,6 @@ from datetime import datetime
 
 from .bucket_math import Bucket
 from .pv_forecast import (
-    CONSUMPTION_PER_30MIN,
     AdjustedPvForecast,
     ConsumptionProfile,
     ExtrapolatedLive,
@@ -625,7 +624,3 @@ def _sum_remaining_kwh(forecast: AdjustedPvForecast, now: datetime) -> float:
             continue
         total += period.pv_estimate_adjusted / 2
     return round(total, 4)
-
-
-# Suppress unused-import noise — CONSUMPTION_PER_30MIN is referenced in docstring.
-_ = CONSUMPTION_PER_30MIN

@@ -389,6 +389,10 @@ class PvForecast:
     # `AdjustedPvForecast.to_profile` for the in-progress bucket of
     # today's PV-side variants.
     live_pv_power_w: float | None = None
+    # Realized PV kWh in the current in-progress bucket (utility meter
+    # so-far). Combined with `live_pv_power_w` via `Bucket.full_bucket_kwh`
+    # to drive the chart in-progress patch + strategy score realized rate.
+    pv_bucket_so_far_kwh: float | None = None
 
     def update_at_6(
         self,
@@ -400,6 +404,7 @@ class PvForecast:
         self.adjusted_at_6 = self._adjust_pv_forecast_at6(
             solcast_periods, weather_conditions
         )
+        self.apply_chart_in_progress_patch(now)
         self._recalculate_target_soc(now)
 
     def update_live(
@@ -413,7 +418,37 @@ class PvForecast:
         self.adjusted_live = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
+        self.apply_chart_in_progress_patch(now)
         self._recalculate_target_soc(now)
+
+    def apply_chart_in_progress_patch(self, now: datetime) -> None:
+        """Rescale in-progress period of today's adjusted variants.
+
+        New rate = full-bucket estimate (realized so-far + remaining via
+        5-min power). No-op when live signals (`live_pv_power_w` / `pv_bucket_so_far_kwh`)
+        aren't set yet — chart falls back to raw forecast values. Reapplied
+        per-minute by the application service so the in-progress dot tracks
+        live measurements as they roll in.
+
+        Single source of truth: `Bucket.full_bucket_kwh × 2` (kWh/h rate),
+        matching what the strategy score consumes as `realized_rate` and
+        what `to_profile(now, pv_power_w_5min)` extracts as
+        `live_remaining_kwh` (the remaining-only portion of the same value).
+        """
+        if self.live_pv_power_w is None or self.pv_bucket_so_far_kwh is None:
+            return
+        if self.adjusted_live:
+            self.adjusted_live = self.adjusted_live.with_now_aware_in_progress(
+                now=now,
+                pv_power_w_5min=self.live_pv_power_w,
+                pv_bucket_so_far_kwh=self.pv_bucket_so_far_kwh,
+            )
+        if self.adjusted_at_6:
+            self.adjusted_at_6 = self.adjusted_at_6.with_now_aware_in_progress(
+                now=now,
+                pv_power_w_5min=self.live_pv_power_w,
+                pv_bucket_so_far_kwh=self.pv_bucket_so_far_kwh,
+            )
 
     def update_tomorrow(
         self,
