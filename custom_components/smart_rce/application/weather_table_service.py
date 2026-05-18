@@ -22,7 +22,7 @@ table-bridging sensor attribute:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import logging
 from typing import Any
 
@@ -49,11 +49,28 @@ class WeatherTableService:
         self._history_loader = history_loader
         self._weather_listener = weather_listener
 
-    async def async_get_table(self, target_date: date) -> dict[str, Any]:
-        """Build and return the assembled table for `target_date`."""
-        history = await self._history_loader.fetch(target_date)
-        now = dt_util.now()
-        forecast_raw = list(self._weather_listener.forecast_hourly or [])
+    async def async_get_table(
+        self,
+        target_date: date,
+        snapshot_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Build and return the assembled table for `target_date`.
+
+        Live mode (`snapshot_time=None`): uses live `weather_listener.forecast_hourly`
+        plus full-day history from recorder. Reflects current state.
+
+        Snapshot mode (`snapshot_time` set): reconstructs the table as it
+        would have looked at `snapshot_time` — history clipped to that
+        moment, forecast attribute fetched from the historic state of
+        `sensor.wetteronline_forecast_for_today`. Used by the
+        Target SOC Historical dashboard tab.
+        """
+        history = await self._history_loader.fetch(target_date, end_time=snapshot_time)
+        now = snapshot_time if snapshot_time is not None else dt_util.now()
+        if snapshot_time is not None:
+            forecast_raw = await self._history_loader.fetch_forecast_at(snapshot_time)
+        else:
+            forecast_raw = list(self._weather_listener.forecast_hourly or [])
 
         current_obs: dict[str, Any] | None = None
         future_hours: list[dict[str, Any]] = []
@@ -90,9 +107,16 @@ class WeatherTableService:
             tz=dt_util.DEFAULT_TIME_ZONE,
         )
         _LOGGER.debug(
-            "WeatherTableService: %d rows assembled for %s", len(rows), target_date
+            "WeatherTableService: %d rows assembled for %s (snapshot=%s)",
+            len(rows),
+            target_date,
+            snapshot_time.isoformat() if snapshot_time else "live",
         )
-        return {"date": target_date.isoformat(), "rows": rows}
+        return {
+            "date": target_date.isoformat(),
+            "rows": rows,
+            "snapshot_time": snapshot_time.isoformat() if snapshot_time else None,
+        }
 
 
 def _ensure_dict(item: Any) -> dict[str, Any]:

@@ -18,7 +18,7 @@ HA-free.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 import logging
 from typing import Any
 
@@ -45,7 +45,11 @@ class WeatherHistoryLoader:
     def __init__(self, hass: HomeAssistant) -> None:
         self._hass = hass
 
-    async def fetch(self, target_date: date) -> dict[str, list[StateSnapshot]]:
+    async def fetch(
+        self,
+        target_date: date,
+        end_time: datetime | None = None,
+    ) -> dict[str, list[StateSnapshot]]:
         """Fetch state changes for all 8 wetteronline sensors during target_date.
 
         Uses `state_changes_during_period` per entity (sequential inside a
@@ -53,10 +57,15 @@ class WeatherHistoryLoader:
         truncated the result around HA Core restart boundaries — switching
         to `state_changes_during_period` returns every state_changed event
         as expected.
+
+        `end_time` (optional) clips the window — used by snapshot mode to
+        view history "as it was" at a specific moment, dropping any state
+        changes recorded after that point.
         """
         tz = dt_util.DEFAULT_TIME_ZONE
         start = datetime.combine(target_date, time(0, 0), tzinfo=tz)
-        end = datetime.combine(target_date, time(23, 59, 59, 999_999), tzinfo=tz)
+        eod = datetime.combine(target_date, time(23, 59, 59, 999_999), tzinfo=tz)
+        end = min(end_time, eod) if end_time is not None else eod
 
         instance = get_instance(self._hass)
         # Flush pending recorder writes before reading. Without this the
@@ -111,6 +120,62 @@ class WeatherHistoryLoader:
             )
             out[entity_id] = result.get(entity_id, [])
         return out
+
+    def _fetch_forecast_at_sync(
+        self, start: datetime, end: datetime, entity_id: str
+    ) -> dict[str, list[State]]:
+        return state_changes_during_period(
+            self._hass,
+            start,
+            end,
+            entity_id=entity_id,
+            no_attributes=False,
+            include_start_time_state=True,
+        )
+
+    async def fetch_forecast_at(
+        self,
+        snapshot_time: datetime,
+        sensor_entity_id: str = "sensor.wetteronline_forecast_for_today",
+    ) -> list[dict[str, Any]]:
+        """Fetch the `forecast` attribute of `sensor_entity_id` as it was at `snapshot_time`.
+
+        Returns the slot list from the most recent state recorded at or
+        before `snapshot_time`. Empty list when no history is available
+        (snapshot older than recorder retention, or sensor wasn't deployed
+        yet at that moment).
+
+        Uses a tiny `[snapshot_time, snapshot_time + 1s]` window with
+        `include_start_time_state=True` — HA recorder returns a boundary
+        row projecting the state as it was at `snapshot_time` (last
+        state_changed event with `last_updated_ts <= snapshot_time`).
+        """
+        instance = get_instance(self._hass)
+        try:
+            await asyncio.wait_for(
+                instance.async_block_till_done(),
+                timeout=_RECORDER_FLUSH_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.debug("fetch_forecast_at: recorder flush timed out, proceeding")
+
+        end = snapshot_time + timedelta(seconds=1)
+        raw: dict[str, list[State]] = await instance.async_add_executor_job(
+            self._fetch_forecast_at_sync, snapshot_time, end, sensor_entity_id
+        )
+        rows = raw.get(sensor_entity_id, [])
+        if not rows:
+            _LOGGER.debug(
+                "fetch_forecast_at: no history for %s at %s",
+                sensor_entity_id,
+                snapshot_time,
+            )
+            return []
+        boundary = rows[0]
+        slots = boundary.attributes.get("forecast") or []
+        if not isinstance(slots, list):
+            return []
+        return [s for s in slots if isinstance(s, dict)]
 
 
 def _to_snapshot(state: State, tz: Any) -> StateSnapshot:
