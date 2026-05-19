@@ -30,7 +30,7 @@ from .pv_forecast_factory import create_pv_forecast_service
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.TIME]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 
 @dataclass
@@ -261,7 +261,6 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.sensor.ems_sensor"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
-    reload(import_module("custom_components.smart_rce.time"))
     reload(import_module("custom_components.smart_rce"))
 
 
