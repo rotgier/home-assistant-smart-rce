@@ -97,8 +97,8 @@ class TestBalancedBaseline:
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.balanced_baseline == "both_are_on"
 
-    def test_18a_high_soc_big(self):
-        """pv=5500, charge_limit=18A, soc=70% → reserved=2000, budget=3500 → BIG."""
+    def test_18a_high_soc_small(self):
+        """pv=5500, charge_limit=18A, soc=70% → reserved=3500, budget=2000 → SMALL."""
         mgr = Ems()
         mgr.update_state(
             _state(
@@ -109,8 +109,9 @@ class TestBalancedBaseline:
                 exported_energy_hourly=0.0,
             )
         )
-        assert mgr.water_heater.should_turn_on is True
-        assert mgr.water_heater.balanced_baseline == "big_is_on"
+        assert mgr.water_heater.should_turn_on_small is True
+        assert mgr.water_heater.should_turn_on is False
+        assert mgr.water_heater.balanced_baseline == "small_is_on"
 
     def test_7a_small(self):
         """pv=3000, charge_limit=7A, soc=95% → reserved=1000, budget=2000 → SMALL."""
@@ -613,18 +614,14 @@ class TestBalancedOverrideAndDiagnostics:
         assert mgr.water_heater.should_turn_on is False  # nie BIG
         assert mgr.water_heater.should_turn_on_small is True  # SMALL z upgrade
 
-    def test_positive_intervention_bumps_reserved(self):
-        """POSITIVE intervention → reserved 2500→3500 (cl>7, soc>=50).
+    def test_positive_intervention_no_bump_for_high_soc(self):
+        """POSITIVE + cl>7 + soc>=50 → reserved=3500 (same jak default, no bump).
 
-        POSITIVE force ładuje baterię (recommended_ems_mode=charge_battery),
-        więc water_heater rezerwuje więcej dla baterii (+1000W) — grzałki
-        dostają mniejszy budget. Symetrycznie do NEGATIVE bump (+3000W).
-
-        POSITIVE bump dotyczy TYLKO cl>7 + soc>=50 (dla soc<50 reserved=3500
-        i tak default, POSITIVE nie zmienia). Dla cl<=7 POSITIVE NIE bumpuje.
+        Reserved przy cl>7 = 3500 stale (bez różnicy soc, bez POSITIVE bump).
+        Test potwierdza że POSITIVE NIE zmienia budżetu — symetrycznie do
+        test_positive_intervention_no_bump_for_low_soc.
         """
         wh = WaterHeaterManager()
-        # pv=4500, cl=18, soc=70 → bez intervention reserved=2500, budget=2000 → SMALL
         state = _state(
             heater_mode="BALANCED",
             consumption_minus_pv=-4500.0,
@@ -633,13 +630,10 @@ class TestBalancedOverrideAndDiagnostics:
             exported_energy_hourly=0.0,
         )
         wh.update(state, grid_export_intervention=None)
-        assert wh.balanced_baseline == "small_is_on"
-        assert wh.balanced_heater_budget == -2000.0  # -(4500-2500)
+        budget_no_intervention = wh.balanced_heater_budget
 
-        # Z POSITIVE: reserved=3500 → budget=1000 → OFF (poniżej SMALL=1500)
         wh.update(state, grid_export_intervention=InterventionDirection.POSITIVE)
-        assert wh.balanced_baseline == "both_are_off"
-        assert wh.balanced_heater_budget == -1000.0  # -(4500-3500)
+        assert wh.balanced_heater_budget == budget_no_intervention
 
     def test_positive_intervention_no_bump_for_low_soc(self):
         """POSITIVE + cl>7 + soc<50 → reserved=3500 i tak (same jak default).
@@ -671,22 +665,22 @@ class TestBalancedOverrideAndDiagnostics:
         heater_budget poniżej progów grzałek.
         """
         wh = WaterHeaterManager()
-        # pv=4000, cl=18, soc=70 → bez intervention reserved=2500, budget=1500 → SMALL
+        # pv=5000, cl=18, soc=70 → bez intervention reserved=3500, budget=1500 → SMALL
         state = _state(
             heater_mode="BALANCED",
-            consumption_minus_pv=-4000.0,
+            consumption_minus_pv=-5000.0,
             battery_charge_limit=18.0,
             battery_soc=70.0,
             exported_energy_hourly=0.0,
         )
         wh.update(state, grid_export_intervention=None)
         assert wh.balanced_baseline == "small_is_on"
-        assert wh.balanced_heater_budget == -1500.0  # -(4000-2500)
+        assert wh.balanced_heater_budget == -1500.0  # -(5000-3500)
 
-        # Z NEGATIVE intervention: reserved=5500 → budget=-1500 → OFF (grzałki off)
+        # Z NEGATIVE intervention: reserved=5500 → budget=-500 → OFF (grzałki off)
         wh.update(state, grid_export_intervention=InterventionDirection.NEGATIVE)
         assert wh.balanced_baseline == "both_are_off"
-        assert wh.balanced_heater_budget == 1500.0  # -(4000-5500) = -(-1500) = 1500
+        assert wh.balanced_heater_budget == 500.0  # -(5000-5500) = -(-500) = 500
 
     def test_negative_intervention_bumps_reserved_for_low_cl(self):
         """NEGATIVE + cl=2 → reserved 300→600 → naturalnie blokuje SMALL gdy budget mały.

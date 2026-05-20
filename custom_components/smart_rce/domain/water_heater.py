@@ -221,23 +221,18 @@ class WaterHeaterManager:
         # Rezerwacja per battery_charge_limit (0, 1, 2, 7, 18A) i intervention.
         # NEGATIVE intervention: większy reserved (grzałki off priorytetowo),
         # bo grzałka 3kW jest typowo główną przyczyną deficytu hourly.
-        # POSITIVE intervention: bateria łapie surplus, reserved=3500W (>7)
-        # by chronić baterię intervention przed konkurencją z grzałkami.
         # `==` zamiast `is` — StrEnum compare value-based, odporne na module reload.
         # Po `live_reload()` water_heater może trzymać OLD InterventionDirection
         # class reference (reloaded przed grid_export), `is` fail mimo same value.
-        is_positive = grid_export_intervention == InterventionDirection.POSITIVE
         is_negative = grid_export_intervention == InterventionDirection.NEGATIVE
 
         if strategy == "BATTERY_FIRST" and battery_charge_limit > 7:
             reserved = 4500
         elif battery_charge_limit > 7:
-            if is_positive:
-                reserved = 3500
-            elif is_negative:
+            if is_negative:
                 reserved = 5500  # grzałki MUSZĄ off
             else:
-                reserved = 3500 if battery_soc < 50 else 2500
+                reserved = 3500
         elif battery_charge_limit > 2:
             if is_negative:
                 reserved = 2000
