@@ -14,18 +14,19 @@ def _state(
     is_workday_tomorrow=True,
     start_charge=time(10, 0),
     rce_should_hold_for_peak=False,
-    ems_allow_discharge_override=False,
     dod_override=-1.0,
     exported_energy_hourly: float | None = 0.0,
     pv_available_5min: float | None = None,
 ) -> InputState:
+    # Note: `ems_interventions_blocked` was removed from InputState (Etap 0).
+    # Tests exercising the blocked path call
+    # `policy.update(state, ems_interventions_blocked=True)` directly.
     return InputState(
         now=now,
         is_workday=is_workday,
         is_workday_tomorrow=is_workday_tomorrow,
         start_charge_hour_override=start_charge,
         rce_should_hold_for_peak=rce_should_hold_for_peak,
-        ems_allow_discharge_override=ems_allow_discharge_override,
         dod_override=dod_override,
         exported_energy_hourly=exported_energy_hourly,
         consumption_minus_pv_5_minutes=(
@@ -45,10 +46,13 @@ def _weekend_at(h, m=0):
 class TestPhaseDispatch:
     """_compute_phase returns correct phase for time + flags combinations."""
 
-    def test_ems_allow_discharge_overrides_all(self):
+    def test_ems_interventions_blocked_overrides_all(self):
         p = DodPolicy()
-        s = _state(now=_at(10), ems_allow_discharge_override=True)
-        assert p._compute_phase(s) == Phase.EMS_ALLOW_DISCHARGE
+        s = _state(now=_at(10))
+        assert (
+            p._compute_phase(s, ems_interventions_blocked=True)
+            == Phase.INTERVENTIONS_BLOCKED
+        )
 
     def test_workday_pre_charge(self):
         p = DodPolicy()
@@ -215,10 +219,10 @@ class TestDirectPhasesDoD:
         p.update(s)
         assert p.target_dod == 0
 
-    def test_ems_allow_discharge_dod_90(self):
+    def test_interventions_blocked_dod_90(self):
         p = DodPolicy()
-        s = _state(now=_at(10), ems_allow_discharge_override=True)
-        p.update(s)  # block ignored when EMS override
+        s = _state(now=_at(10))
+        p.update(s, ems_interventions_blocked=True)  # block ignored when EMS override
         assert p.target_dod == 90
 
 

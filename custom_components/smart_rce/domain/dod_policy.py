@@ -18,8 +18,10 @@ Phase classification + decisions:
 
 - **OVERRIDE** (`dod_override >= 0`): user-forced value. Auto-expires on
   phase boundary (current phase ≠ phase at activation).
-- **EMS_ALLOW_DISCHARGE** (`ems_allow_discharge_override=True`): smart_rce
-  "stays out of the way" → DoD=90, lets other automations rule.
+- **INTERVENTIONS_BLOCKED** (`ems_interventions_blocked=True`, passed as
+  kwarg from Ems — sourced from BatterySchedule.ems_interventions_blocked):
+  smart_rce's internal interventions blocked → DoD=90, lets external schedule
+  / user override drive discharge through.
 - **WORKDAY_PRE_CHARGE** (7:00 → start_charge_hour, workday): delegates to
   `block_pre_charge` — hysteresis 100/50 Wh + instant_surplus extension.
 - **WORKDAY_POST_CHARGE** (start_charge_hour → 13:00, workday): delegates
@@ -35,8 +37,8 @@ Phase classification + decisions:
   past PV peak.
 - **EVENING_DISCHARGE** (19:00 → 22:00, workday today OR weekend without
   preserve): direct DoD=90. Workday: cover expensive evening consumption;
-  explicit discharge automations use `ems_allow_discharge_override` for fast
-  discharge windows. Weekend: free when no peak ahead and tomorrow=weekend.
+  explicit BatterySchedule engagement raises `ems_interventions_blocked` for
+  fast discharge windows. Weekend: free when no peak ahead and tomorrow=weekend.
 - **EVENING_PRESERVE** (19:00 → 22:00, weekend today AND (peak ahead OR
   workday tomorrow)): direct DoD=0 — protect battery for upcoming load.
 - **NIGHT_PRESERVE** (22:00 → 07:00, workday tomorrow): direct DoD=0 —
@@ -51,7 +53,7 @@ Coordination with GridExportManager (POSITIVE / NEGATIVE intervention):
 
     | Phase              | block_discharge       | POSITIVE         | NEGATIVE |
     |--------------------|-----------------------|------------------|----------|
-    | EMS_ALLOW          | False (always)        | exits            | exits    |
+    | INTERVENTIONS_BLOCKED | False (always)     | exits            | exits    |
     | WORKDAY_PRE        | hysteresis            | blocked          | yes      |
     | WORKDAY_POST       | dual-trigger          | yes (1st line)   | yes      |
     | AFTERNOON_STATIC   | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
@@ -98,7 +100,11 @@ class Phase(Enum):
     """DoD policy phases. Dispatched in priority order; first match wins."""
 
     OVERRIDE = "override"
-    EMS_ALLOW_DISCHARGE = "ems_allow_discharge"
+    INTERVENTIONS_BLOCKED = "interventions_blocked"
+    # When True, BatterySchedule.ems_interventions_blocked active → smart_rce's
+    # internal EMS interventions (POSITIVE/NEGATIVE block_discharge phase rules)
+    # are blocked, DodPolicy stays at DoD=90 so explicit schedule/user override
+    # can drive discharge through. Renamed from EMS_ALLOW_DISCHARGE (Etap 0).
     WORKDAY_PRE_CHARGE = "workday_pre_charge"  # 7:00..start_charge, workday
     WORKDAY_POST_CHARGE = "workday_post_charge"  # start_charge..13:00, workday
     AFTERNOON_STATIC = "afternoon_static"  # 13:00..19:00, peak=True (any day)
@@ -123,7 +129,8 @@ DELEGATING_PHASES: frozenset[Phase] = frozenset(
 
 # Phases with direct (non-delegating) DoD rule.
 DIRECT_PHASE_DOD: dict[Phase, int] = {
-    Phase.EMS_ALLOW_DISCHARGE: 90,  # smart_rce off — let other automations rule
+    Phase.INTERVENTIONS_BLOCKED: 90,  # smart_rce interventions blocked — DoD=90 so
+    # explicit schedule/user override can discharge through.
     Phase.AFTERNOON_STATIC: 0,  # peak today — preserve for evening
     Phase.EVENING_DISCHARGE: 90,  # workday evening (cover peak) OR weekend free
     Phase.EVENING_PRESERVE: 0,  # weekend evening — peak ahead OR workday tomorrow
@@ -158,18 +165,21 @@ class DodPolicy:
     _override_set_phase: Phase | None = None
     _prev_block: bool = False
 
-    def update(self, state: InputState) -> None:
+    def update(
+        self, state: InputState, *, ems_interventions_blocked: bool = False
+    ) -> None:
         """Compute target_dod for this tick.
 
-        Reads InputState (time, peak, override, exported_energy, pv_5min,
-        is_workday, is_workday_tomorrow). Mutates target_dod + current_phase
-        + _override_set_phase + _prev_block.
+        Reads InputState (time, peak, exported_energy, pv_5min, is_workday,
+        is_workday_tomorrow) plus `ems_interventions_blocked` flag passed
+        explicitly by Ems (from BatterySchedule, not from InputState).
+        Mutates target_dod + current_phase + _override_set_phase + _prev_block.
 
         UNKNOWN phase (inputs missing — typically <50ms post-restart) keeps
         persisted state intact; we don't overwrite target_dod or current_phase
         until phase computation has complete inputs.
         """
-        new_phase = self._compute_phase(state)
+        new_phase = self._compute_phase(state, ems_interventions_blocked)
 
         if new_phase == Phase.UNKNOWN:
             return
@@ -216,15 +226,18 @@ class DodPolicy:
             return True
         return current_phase == self._override_set_phase
 
-    def _compute_phase(self, state: InputState) -> Phase:
+    def _compute_phase(
+        self, state: InputState, ems_interventions_blocked: bool = False
+    ) -> Phase:
         """Dispatch to phase by priority — first match wins.
 
-        Priority: 1) EMS allow discharge override (smart_rce off), 2) time +
-        flags → time-window phase. User override (input_number.ems_dod_override)
-        wraps phase via update() — not part of this method's dispatch.
+        Priority: 1) interventions blocked (BatterySchedule active or user
+        override), 2) time + flags → time-window phase. User override
+        (input_number.ems_dod_override) wraps phase via update() — not part of
+        this method's dispatch.
         """
-        if state.ems_allow_discharge_override is True:
-            return Phase.EMS_ALLOW_DISCHARGE
+        if ems_interventions_blocked:
+            return Phase.INTERVENTIONS_BLOCKED
 
         if state.now is None:
             return Phase.UNKNOWN
@@ -264,7 +277,7 @@ class DodPolicy:
 
         - Workday today → DISCHARGE (DoD=90): cover expensive evening peak load.
           Other automations (`Battery Discharge in the evening`) flip
-          `ems_allow_discharge_override` for explicit fast discharge windows;
+          `ems_interventions_blocked=True` for explicit fast discharge windows;
           when off, smart_rce keeps DoD=90 so battery can serve consumption.
         - Weekend today + hold_for_peak=True → PRESERVE (DoD=0): peak ahead
           (today evening or tomorrow morning).
@@ -315,11 +328,19 @@ class DodPolicy:
     def from_dict(cls, data: dict[str, Any]) -> DodPolicy:
         return cls(
             target_dod=int(data.get("target_dod", DEFAULT_DOD)),
-            current_phase=Phase(data.get("current_phase", Phase.UNKNOWN.value)),
+            current_phase=_parse_phase(data.get("current_phase", Phase.UNKNOWN.value)),
             _override_set_phase=(
-                Phase(data["_override_set_phase"])
+                _parse_phase(data["_override_set_phase"])
                 if data.get("_override_set_phase")
                 else None
             ),
             _prev_block=bool(data.get("_prev_block", False)),
         )
+
+
+def _parse_phase(value: str) -> Phase:
+    """Parse stored phase string. Migrates legacy values (Etap 0 rename)."""
+    # Legacy storage: "ems_allow_discharge" → INTERVENTIONS_BLOCKED.
+    if value == "ems_allow_discharge":
+        return Phase.INTERVENTIONS_BLOCKED
+    return Phase(value)

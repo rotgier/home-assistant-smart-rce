@@ -18,7 +18,7 @@ BatteryManager rules there; NEGATIVE works in pre_charge).
 Architecture — two-layer separation of concerns:
 1. **Manager (this class)** — global cross-cutting concerns:
    - none_present_core (defensive — required state fields are None)
-   - ems_allow_discharge_override (global block for both directions)
+   - ems_interventions_blocked (global block for both directions)
    - hour_rollover (continue lifecycle)
    - end_of_hour_cleanup (continue lifecycle, exit ≥ XX:59:50)
    - too_late_in_hour (entry block, ≥ XX:59:40)
@@ -118,13 +118,17 @@ class GridExportManager:
         """
         return self.intervention_direction
 
-    def update(self, state: InputState) -> None:
+    def update(
+        self, state: InputState, *, ems_interventions_blocked: bool = False
+    ) -> None:
         """Re-evaluate intervention state from current InputState.
 
-        Called reactively by Ems on every state change.
+        Called reactively by Ems on every state change. `ems_interventions_blocked`
+        is passed explicitly by Ems (sourced from BatterySchedule, not from
+        InputState — Etap 0 refactor).
 
         Flow:
-        1. Global guards (none_present_core, ems_override) → set_neutral + return
+        1. Global guards (none_present_core, interventions_blocked) → set_neutral + return
         2. Active intervention: tick (hour_rollover, end_of_hour, delegate)
            Or: try_enter (too_late_in_hour, other_automation, balance routing)
         3. Apply disabled_override if strategy_mode != charge_adaptive
@@ -143,8 +147,8 @@ class GridExportManager:
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return
 
-        if state.ems_allow_discharge_override is True:
-            self._set_neutral("ems_allow_discharge_override")
+        if ems_interventions_blocked:
+            self._set_neutral("ems_interventions_blocked")
             self._apply_disabled_override_if_needed(state)
             self._log_after_update(state, prev_active, prev_mode, prev_xset)
             return

@@ -190,7 +190,7 @@ SMART_RCE_DEFAULTS: dict[str, str] = {
     "input_select.ems_water_heater_mode": "BALANCED",
     "number.goodwe_depth_of_discharge_on_grid": "20.0",
     "input_boolean.battery_charge_max_current_toggle": "off",
-    "input_boolean.ems_allow_discharge_override": "off",
+    "input_boolean.ems_interventions_blocked": "off",
     "input_datetime.rce_start_charge_hour_today_override": "08:00:00",
     "input_select.ems_water_heater_strategy": "BATTERY_FIRST",
     "binary_sensor.rce_should_hold_for_peak": "off",

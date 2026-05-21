@@ -130,10 +130,6 @@ def set_battery_charge_toggle_on(entity: str, i: InputState, state: str) -> None
     i.battery_charge_toggle_on = map_on_off(entity, state)
 
 
-def set_ems_allow_discharge_override(entity: str, i: InputState, state: str) -> None:
-    i.ems_allow_discharge_override = map_on_off(entity, state)
-
-
 def set_water_heater_strategy(entity: str, i: InputState, state: str) -> None:
     i.water_heater_strategy = state
 
@@ -217,7 +213,9 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "input_select.ems_water_heater_mode": set_heater_mode,
     "number.goodwe_depth_of_discharge_on_grid": set_depth_of_discharge,
     "input_boolean.battery_charge_max_current_toggle": set_battery_charge_toggle_on,
-    "input_boolean.ems_allow_discharge_override": set_ems_allow_discharge_override,
+    # `input_boolean.ems_allow_discharge_override` REMOVED — replaced by
+    # smart_rce-owned switch `switch.ems_interventions_blocked` backed by
+    # `BatterySchedule.ems_interventions_blocked` (Etap 0).
     "input_datetime.rce_start_charge_hour_today_override": set_start_charge_hour_override,
     "input_select.ems_water_heater_strategy": set_water_heater_strategy,
     "binary_sensor.rce_should_hold_for_peak": set_rce_should_hold_for_peak,

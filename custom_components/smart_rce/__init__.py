@@ -30,12 +30,17 @@ from .pv_forecast_factory import create_pv_forecast_service
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
 
 
 @dataclass
 class SmartRceData:
-    """Smart Rce Data."""
+    """Smart Rce Data.
+
+    `battery_schedule_repo` + `battery_schedule_service` are accessible via
+    `ems.battery_schedule_repo` / `ems.battery_schedule_service` — Ems is
+    their wiring point and exposes them publicly.
+    """
 
     ems: Ems
     rce_coordinator: SmartRceDataUpdateCoordinator
@@ -176,6 +181,21 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.discharge_slots"))
     reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
     reload(import_module("custom_components.smart_rce.domain.dod_policy"))
+    # battery_schedule: domain BEFORE application service (service imports domain).
+    reload(import_module("custom_components.smart_rce.domain.battery_schedule"))
+    reload(
+        import_module("custom_components.smart_rce.infrastructure.async_task_runner")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.infrastructure.battery_schedule_repository"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.application.battery_schedule_service"
+        )
+    )
     reload(import_module("custom_components.smart_rce.application.ems"))
     reload(import_module("custom_components.smart_rce.application"))
     reload(import_module("custom_components.smart_rce.domain"))
@@ -261,6 +281,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.sensor.ems_sensor"))
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
+    reload(import_module("custom_components.smart_rce.switch"))
     reload(import_module("custom_components.smart_rce"))
 
 

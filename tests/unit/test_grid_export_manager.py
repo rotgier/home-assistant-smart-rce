@@ -40,8 +40,10 @@ def _state(
     start_charge_hour_override: time | None = time(10, 0),
     other_ems_automation_active_this_hour: bool | None = False,
     grid_export_strategy_mode: str | None = "charge_adaptive",
-    ems_allow_discharge_override: bool | None = False,
 ) -> InputState:
+    # Note: `ems_interventions_blocked` was removed from InputState (Etap 0
+    # refactor). Tests that need to exercise the blocked path call
+    # `mgr.update(state, ems_interventions_blocked=True)` directly.
     return InputState(
         now=now,
         exported_energy_hourly=exported_energy_hourly,
@@ -55,7 +57,6 @@ def _state(
         start_charge_hour_override=start_charge_hour_override,
         other_ems_automation_active_this_hour=other_ems_automation_active_this_hour,
         grid_export_strategy_mode=grid_export_strategy_mode,
-        ems_allow_discharge_override=ems_allow_discharge_override,
     )
 
 
@@ -1214,7 +1215,7 @@ class TestChargeToggleClamp:
 
 
 class TestEmsOverride:
-    """ems_allow_discharge_override → blokuje TYLKO NEGATIVE (POSITIVE OK).
+    """ems_interventions_blocked → blokuje TYLKO NEGATIVE (POSITIVE OK).
 
     User wymusza discharge → manager nie ingeruje w NEGATIVE intervention
     (which conflicts with discharge intent). POSITIVE force charge is still OK
@@ -1224,32 +1225,28 @@ class TestEmsOverride:
     def test_override_blocks_negative_entry(self):
         mgr = GridExportManager()
         mgr.update(
-            _state(
-                exported_energy_hourly=-0.10,
-                ems_allow_discharge_override=True,
-            )
+            _state(exported_energy_hourly=-0.10),
+            ems_interventions_blocked=True,
         )
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
-        assert "ems_allow_discharge_override" in mgr.last_decision_reason
+        assert "ems_interventions_blocked" in mgr.last_decision_reason
 
     def test_override_blocks_positive_entry(self):
         """POSITIVE entry blocked by override (parity with battery + negative).
 
-        User forces discharge via ems_allow_discharge_override → smart_rce
+        User forces discharge via ems_interventions_blocked → smart_rce
         does not interfere, even when hourly export positive (DISCHARGE_BATTERY in
         in progress → naturally export rises, but that is intentional).
         """
         mgr = GridExportManager()
         mgr.update(
-            _state(
-                exported_energy_hourly=0.10,
-                ems_allow_discharge_override=True,
-            )
+            _state(exported_energy_hourly=0.10),
+            ems_interventions_blocked=True,
         )
         assert mgr.intervention_active is False
         assert mgr.recommended_ems_mode == "auto"
-        assert "ems_allow_discharge_override" in mgr.last_decision_reason
+        assert "ems_interventions_blocked" in mgr.last_decision_reason
 
     def test_override_during_active_positive_exits(self):
         """Override activates while POSITIVE intervention active → exit."""
@@ -1259,13 +1256,11 @@ class TestEmsOverride:
         assert mgr.intervention_direction is InterventionDirection.POSITIVE
         # Override on
         mgr.update(
-            _state(
-                exported_energy_hourly=0.10,
-                ems_allow_discharge_override=True,
-            )
+            _state(exported_energy_hourly=0.10),
+            ems_interventions_blocked=True,
         )
         assert mgr.intervention_active is False
-        assert "ems_allow_discharge_override" in mgr.last_decision_reason
+        assert "ems_interventions_blocked" in mgr.last_decision_reason
 
     def test_override_during_active_negative_exits(self):
         """Override activates while NEGATIVE intervention active → exit."""
@@ -1275,10 +1270,8 @@ class TestEmsOverride:
         assert mgr.intervention_direction is InterventionDirection.NEGATIVE
         # Override on
         mgr.update(
-            _state(
-                exported_energy_hourly=-0.10,
-                ems_allow_discharge_override=True,
-            )
+            _state(exported_energy_hourly=-0.10),
+            ems_interventions_blocked=True,
         )
         assert mgr.intervention_active is False
-        assert "ems_allow_discharge_override" in mgr.last_decision_reason
+        assert "ems_interventions_blocked" in mgr.last_decision_reason

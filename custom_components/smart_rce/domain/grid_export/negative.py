@@ -50,7 +50,7 @@ negative in typical range) — meter = pv_avail − heaters − battery_actual:
              meter = center − xset_signed = +1500 fixed (outside top/bottom).
 
 Cross-cutting checks (manager handles, NOT in try_enter / continue_or_exit):
-- ems_allow_discharge_override (global block)
+- ems_interventions_blocked (global block)
 - balance range (manager routes by `entry_threshold(state)`)
 - too_late_in_hour entry block (manager: now ≥ XX:59:40)
 - other_ems_automation_active_this_hour (manager)
@@ -161,7 +161,7 @@ class NegativeIntervention:
 
         Caller (GridExportManager) MUST verify global guards first:
         - balance < entry_threshold(state) (range routing)
-        - no ems_allow_discharge_override
+        - no ems_interventions_blocked
         - not too_late_in_hour
         - not other_ems_automation_active_this_hour
 
@@ -209,7 +209,7 @@ class NegativeIntervention:
         Caller (GridExportManager) MUST verify global guards first:
         - hour_rollover (started_hour mismatch)
         - end_of_hour_cleanup (now ≥ XX:59:50)
-        - no ems_allow_discharge_override
+        - no ems_interventions_blocked
         """
         if state.exported_energy_hourly > EXIT_BALANCE_KWH:
             return ContinueResult.exit_with("negative_balance_recovered")

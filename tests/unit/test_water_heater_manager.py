@@ -1,10 +1,23 @@
 from datetime import datetime
+from unittest.mock import MagicMock
 
 from custom_components.smart_rce.application.ems import Ems
+from custom_components.smart_rce.domain.battery_schedule import BatterySchedule
 from custom_components.smart_rce.domain.grid_export import InterventionDirection
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
+
+
+def _ems() -> Ems:
+    """Test fixture — Ems with stubbed battery_schedule deps (no HA, no Store)."""
+    repo = MagicMock()
+    repo.schedule = (
+        BatterySchedule()
+    )  # real default schedule (interventions_blocked=False)
+    service = MagicMock()
+    return Ems(battery_schedule_repo=repo, battery_schedule_service=service)
+
 
 NOON = datetime(2026, 4, 16, 12, 0, tzinfo=TIMEZONE)
 NOON_50 = datetime(2026, 4, 16, 12, 50, tzinfo=TIMEZONE)  # 10 min do końca godziny
@@ -48,7 +61,7 @@ class TestBalancedBaseline:
 
     def test_18a_low_soc_small(self):
         """pv=7500, charge_limit=18A, soc=30% → reserved=5500, budget=2000 → SMALL."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -67,7 +80,7 @@ class TestBalancedBaseline:
 
     def test_18a_low_soc_big(self):
         """pv=8500, charge_limit=18A, soc=30% → reserved=5500, budget=3000 → BIG."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -83,7 +96,7 @@ class TestBalancedBaseline:
 
     def test_18a_low_soc_both(self):
         """pv=10000, charge_limit=18A, soc=30% → reserved=5500, budget=4500 → BOTH."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -99,7 +112,7 @@ class TestBalancedBaseline:
 
     def test_18a_high_soc_small(self):
         """pv=7500, charge_limit=18A, soc=70% → reserved=5500, budget=2000 → SMALL."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -115,7 +128,7 @@ class TestBalancedBaseline:
 
     def test_7a_small(self):
         """pv=3000, charge_limit=7A, soc=95% → reserved=1000, budget=2000 → SMALL."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -132,7 +145,7 @@ class TestBalancedBaseline:
 
     def test_2a_reserved_300(self):
         """pv=2000, charge_limit=2A → reserved=300, budget=1700 → SMALL."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -147,7 +160,7 @@ class TestBalancedBaseline:
 
     def test_0a_no_reservation(self):
         """pv=2000, charge_limit=0A → reserved=0, budget=2000 → SMALL."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -162,7 +175,7 @@ class TestBalancedBaseline:
 
     def test_low_pv_off(self):
         """pv=1200, charge_limit=18A, soc=30% → reserved=5500, budget=-4300 → OFF."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -184,7 +197,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_battery_first_18a_reserves_4500_heaters_off(self):
         """pv=5500, charge_limit=18A, BATTERY_FIRST → reserved=4500, budget=1000 < SMALL → OFF."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -202,7 +215,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_battery_first_18a_big_pv_allows_small(self):
         """pv=6500, charge_limit=18A, BATTERY_FIRST → reserved=4500, budget=2000 ≥ SMALL."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -219,7 +232,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_battery_first_fallback_when_charge_limit_drops(self):
         """BATTERY_FIRST + charge_limit=2A → fallback do normalnej logiki (reserved=300)."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -237,7 +250,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_battery_first_fallback_at_charge_limit_7(self):
         """BATTERY_FIRST + charge_limit=7A → fallback (7>7 is False)."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -254,7 +267,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_normal_strategy_uses_existing_algorithm(self):
         """NORMAL (lub None) + charge_limit=18A, soc=30% → reserved=5500."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -272,7 +285,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_none_strategy_uses_existing_algorithm(self):
         """strategy=None (stan po restarcie przed loadem) → istniejąca logika."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -293,7 +306,7 @@ class TestBalancedBatteryFirstStrategy:
         cumulative export narósł do 100 Wh w godzinie, a bateria wciąż
         ładuje się @ 18A. Upgrade wcześniej włączał SMALL ignorując strategy.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -321,7 +334,7 @@ class TestBalancedBatteryFirstStrategy:
         now=NOON_50 (10 min do końca): bonus = 150 Wh / (10/60 h) = 900 W
         → effective = 700 + 900 = 1600 W ≥ SMALL_POWER → upgrade SMALL.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -347,7 +360,7 @@ class TestBalancedBatteryFirstStrategy:
         exported_energy>100 Wh to wcześniejsze burst, nie aktualny surplus.
         Skip applies do NORMAL i BATTERY_FIRST jednakowo.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -372,7 +385,7 @@ class TestBalancedBatteryFirstStrategy:
 
         now=NOON_50: bonus = 150/(10/60) = 900 W → effective = 1600 → SMALL.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -391,7 +404,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_hysteresis_holds_current_state(self):
         """Histereza trzyma obecny stan na granicy progu."""
-        mgr = Ems()
+        mgr = _ems()
         # SMALL jest włączona
         mgr.update_state(
             _state(
@@ -409,7 +422,7 @@ class TestBalancedBatteryFirstStrategy:
 
     def test_hysteresis_does_not_hold_higher_state(self):
         """Histereza NIE trzyma wyższego stanu."""
-        mgr = Ems()
+        mgr = _ems()
         # BIG jest włączona, ale budget na SMALL
         mgr.update_state(
             _state(
@@ -437,7 +450,7 @@ class TestBalancedUpgrade:
         cl=7 → reserved=1000 (cl>2). budget=1200-1000=200, baseline=OFF.
         time_left=1h → bonus=1400W. effective=1600 ≥ SMALL_POWER=1500 → upgrade SMALL.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -457,7 +470,7 @@ class TestBalancedUpgrade:
         cl=7 → reserved=1000. budget=3000-1000=2000, baseline=SMALL.
         bonus=1100W. effective=3100 ≥ BIG_POWER=3000 → upgrade BIG.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -477,7 +490,7 @@ class TestBalancedUpgrade:
         cl=7 → reserved=1000. budget=4000-1000=3000, baseline=BIG.
         bonus=1600W. effective=4600 ≥ BOTH_POWER=4500 → upgrade BOTH.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -494,7 +507,7 @@ class TestBalancedUpgrade:
 
     def test_upgrade_both_stays_both(self):
         """baseline=BOTH, exported=120Wh → BOTH (max, no upgrade)."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -509,7 +522,7 @@ class TestBalancedUpgrade:
 
     def test_no_upgrade_below_threshold(self):
         """baseline=SMALL, exported=80Wh → za mało na upgrade."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -529,7 +542,7 @@ class TestBalancedUpgrade:
         effective=3100 ≥ BIG=3000 → upgrade BIG. Tick 2 (big_on=True): exp=0.6 →
         bonus=600, effective=2600 ≥ BIG-HYSTERESIS=2500 AND current=BIG → trzyma BIG.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -562,7 +575,7 @@ class TestBalancedUpgrade:
         < BIG-HYSTERESIS=2500 → release. effective ≥ SMALL=1500 → upgrade=SMALL.
         baseline=SMALL, target=SMALL → upgrade_active=False.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -598,7 +611,7 @@ class TestBalancedOverrideAndDiagnostics:
         bonus=1400W. effective=1600 ≥ SMALL=1500 → upgrade SMALL.
         Override SOC≥90 (BIG forsowany) odpala TYLKO dla ASAP/WASTED, NIE BALANCED.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -702,7 +715,7 @@ class TestBalancedOverrideAndDiagnostics:
 
     def test_diagnostics_none_in_wasted_mode(self):
         """Diagnostyka BALANCED = None/False gdy tryb WASTED."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="WASTED",
@@ -724,7 +737,7 @@ class TestBalancedOverrideAndDiagnostics:
 
     def test_guard_works_with_balanced(self):
         """Guard DoD=0% działa z BALANCED."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -746,7 +759,7 @@ class TestBalancedExportBonus:
         0.5 kWh wyeksportowane, 5 min do końca, niski pv →
         adaptacyjny upgrade z OFF bezpośrednio do BOTH (skok N+3).
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -768,7 +781,7 @@ class TestBalancedExportBonus:
 
     def test_skip_n_plus_2_off_to_big(self):
         """Skok N→N+2 (OFF→BIG) gdy bonus wystarcza tylko na BIG, nie na BOTH."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -794,7 +807,7 @@ class TestBalancedExportBonus:
         do końca, SMALL przez 60 min zjadłby 1500 Wh — 30× więcej niż mamy
         do "zjedzenia". Adaptacyjny algorytm tego nie robi.
         """
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -813,7 +826,7 @@ class TestBalancedExportBonus:
 
     def test_cutoff_last_minute_disables_bonus(self):
         """W ostatnich 60s godziny bonus=0 — nie aktywuj upgrade'u tuż przed resetem."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -832,7 +845,7 @@ class TestBalancedExportBonus:
 
     def test_skip_upgrade_charge_limit_18_blocks_bonus(self):
         """charge_limit>7 → skip_upgrade, bonus=0 nawet z dużym exported."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -855,7 +868,7 @@ class TestBalancedExportBonus:
         Gdy bonus + pv spadną tak, że effective < heater_W(N) - hysteresis,
         target schodzi do niższego stanu.
         """
-        mgr = Ems()
+        mgr = _ems()
         # Ostatnio mieliśmy BOTH (current_state=BOTH_ARE_ON), ale pv nagle spadło
         mgr.update_state(
             _state(
@@ -882,7 +895,7 @@ class TestBalancedExportBonus:
 
     def test_export_bonus_capped_at_both_power(self):
         """Bonus jest cappowany do BOTH_POWER żeby nie udawać niemożliwego budżetu."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -908,7 +921,7 @@ class TestEffectiveChargeLimitFromToggle:
 
     def test_toggle_off_with_bms_18_treats_as_idle(self):
         """toggle_off + BMS=18 + PV=2000W → reserved=0 → SMALL turns on (1500W fits)."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -925,7 +938,7 @@ class TestEffectiveChargeLimitFromToggle:
 
     def test_toggle_off_allows_upgrade(self):
         """toggle_off + exported energy → upgrade ladder activates (skip_upgrade=False)."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -946,7 +959,7 @@ class TestEffectiveChargeLimitFromToggle:
 
     def test_toggle_on_keeps_battery_priority(self):
         """toggle_on + BMS=18 → reserved=2500-3500 (battery priority preserved)."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
@@ -963,7 +976,7 @@ class TestEffectiveChargeLimitFromToggle:
 
     def test_toggle_none_falls_back_to_bms(self):
         """toggle_on=None (defensive, e.g. startup) → use BMS cap (existing behavior)."""
-        mgr = Ems()
+        mgr = _ems()
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",

@@ -33,11 +33,12 @@ class InputState:
     # Używane przez BatteryManager jako guard dla block_charge (nie blokuj
     # ładowania gdy już zablokowane).
 
-    ems_allow_discharge_override: bool | None = None
-    # input_boolean.ems_allow_discharge_override — manualny override.
-    # Gdy True, BatteryManager "stoi z boku" (oba should_block_* = False).
-    # Używane przy intencjonalnym rozładowaniu (automation Battery Discharge
-    # Max at 8) żeby EMS nie blokował export'u.
+    # `ems_allow_discharge_override` REMOVED — replaced by domain-owned flag
+    # `BatterySchedule.ems_interventions_blocked` (smart_rce-managed switch
+    # `switch.ems_interventions_blocked`). Read in `Ems.update_state` from
+    # the BatterySchedule aggregate, passed explicitly as keyword argument to
+    # `DodPolicy.update` and `GridExportManager.update`. See ADR battery
+    # schedule plan + Etap 0 migration notes.
 
     start_charge_hour_override: time | None = None
     # input_datetime.rce_start_charge_hour_today_override (HH:MM:SS).
@@ -101,7 +102,8 @@ class InputState:
     dod_override: float | None = None
     # input_number.ems_dod_override (range -1..100; -1 = inactive).
     # When ≥0, DodPolicy emits this value as target_dod (highest priority
-    # except ems_allow_discharge_override). Auto-expires on phase boundary.
+    # except ems_interventions_blocked which is passed as kwarg).
+    # Auto-expires on phase boundary.
 
     is_workday_tomorrow: bool | None = None
     # binary_sensor.workday_tomorrow (HA workday integration, country=PL).
