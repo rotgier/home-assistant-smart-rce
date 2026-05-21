@@ -10,13 +10,26 @@ from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 
 def _ems() -> Ems:
-    """Test fixture — Ems with stubbed battery_schedule deps (no HA, no Store)."""
+    """Test fixture — Ems with stubbed battery_schedule deps + driven adapters.
+
+    Driven adapters (dod_repository, dod_logger, dod_actuator, grid_export_actuator)
+    are dispatched explicitly from `Ems.update_state` after the listener-based
+    wiring was inlined (Etap 0 follow-up). Tests use MagicMock — calls become
+    no-ops.
+    """
     repo = MagicMock()
     repo.schedule = (
         BatterySchedule()
     )  # real default schedule (interventions_blocked=False)
     service = MagicMock()
-    return Ems(battery_schedule_repo=repo, battery_schedule_service=service)
+    ems = Ems(battery_schedule_repo=repo, battery_schedule_service=service)
+    ems.attach_driven_adapters(
+        dod_repository=MagicMock(),
+        dod_logger=MagicMock(),
+        dod_actuator=MagicMock(),
+        grid_export_actuator=MagicMock(),
+    )
+    return ems
 
 
 NOON = datetime(2026, 4, 16, 12, 0, tzinfo=TIMEZONE)

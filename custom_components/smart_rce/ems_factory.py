@@ -71,27 +71,26 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         battery_schedule_service=battery_schedule_service,
     )
 
-    # Driven adapter: DodPolicy state persistence (HA Storage).
-    # Restore PRZED pierwszym update_state — chroni przed race condition po
-    # HA restart (template binary_sensor ładuje się 25-50ms po smart_rce).
-    # UNKNOWN-phase keep-state w DodPolicy.update preserves persisted target_dod
-    # until inputs settle.
+    # Driven adapters — instantiated here (they hold Ems reference), then
+    # attached to Ems for explicit dispatch within update_state. No listener
+    # registration — flow visible inline in Ems.update_state body.
+    # DodPolicyRepository: restore PRZED pierwszym update_state (chroni przed
+    # race condition po HA restart; UNKNOWN-phase keep-state w DodPolicy.update
+    # preserves persisted target_dod until inputs settle).
     dod_repository = DodPolicyRepository(hass, ems.dod_policy, tasks)
     await dod_repository.async_restore()
-    entry.async_on_unload(ems.async_add_listener(dod_repository.save_if_changed))
 
-    # Driven adapter: DodPolicy observability (Python logging).
     dod_logger = DodPolicyLogger(ems.dod_policy, ems)
-    entry.async_on_unload(ems.async_add_listener(dod_logger.log_if_changed))
-
-    # Driven adapter: Goodwe EMS via scene.apply (fire-and-forget).
-    grid_export_actuator = GridExportActuator(hass, ems, tasks)
-    entry.async_on_unload(ems.async_add_listener(grid_export_actuator.apply_if_changed))
-
-    # Driven adapter: DoD register via scene.apply with read-back verification.
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
     dod_actuator = DodPolicyActuator(hass, ems, tasks)
-    entry.async_on_unload(ems.async_add_listener(dod_actuator.apply_if_changed))
+    grid_export_actuator = GridExportActuator(hass, ems, tasks)
+
+    ems.attach_driven_adapters(
+        dod_repository=dod_repository,
+        dod_logger=dod_logger,
+        dod_actuator=dod_actuator,
+        grid_export_actuator=grid_export_actuator,
+    )
 
     @callback
     def update_hourly(now: datetime) -> None:

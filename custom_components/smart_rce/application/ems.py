@@ -1,12 +1,27 @@
-"""Energy Management System — orchestrator (composition + listeners + RCE lifecycle).
+"""Energy Management System — orchestrator + per-domain dispatch.
 
-After Etap 0: source of truth for `ems_interventions_blocked` moved from HA
-`input_boolean.ems_allow_discharge_override` into `BatterySchedule` (domain
-aggregate), persisted via `BatteryScheduleRepository`. `Ems.update_state`
-reads it from the repo at start, passes it as keyword argument explicitly to
-`GridExportManager.update` and `DodPolicy.update`. After the
-`BatteryScheduleService.update` call, the flag is re-read in case the service
-just engaged/disengaged a slot mid-tick.
+After Etap 0:
+- Source of truth for `ems_interventions_blocked` lives in `BatterySchedule`
+  (domain aggregate persisted via `BatteryScheduleRepository`), read at start
+  of `update_state` and passed explicitly as keyword argument to
+  `GridExportManager.update` and `DodPolicy.update`.
+- All driven adapters (repositories, loggers, actuators) are now wired via
+  the Ems constructor and dispatched explicitly within `update_state` body,
+  not via the listener mechanism. Flow is fully visible in the IDE
+  (Ctrl+Click `update_state` shows every step in order).
+
+The `async_add_listener` mechanism is preserved for external HA consumers
+(binary_sensor + future sensors that subscribe to ems state changes). Driven
+adapters that smart_rce owns moved to explicit dispatch.
+
+Dispatch order in `update_state` body — per-domain blocks (manager update +
+its associated driven adapters immediately after):
+  1. BatteryScheduleService.update (may flip ems_interventions_blocked)
+  2. GridExportManager.update + GridExportActuator.apply_if_changed
+  3. WaterHeaterManager.update (no driven adapter)
+  4. DodPolicy.update + DodPolicyRepository.save_if_changed
+     + DodPolicyLogger.log_if_changed + DodPolicyActuator.apply_if_changed
+  5. _async_update_listeners() (sensors, external subscribers)
 """
 
 from __future__ import annotations
@@ -14,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 import logging
+from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.application.battery_schedule_service import (
     BatteryScheduleService,
@@ -34,6 +50,20 @@ from custom_components.smart_rce.infrastructure.battery_schedule_repository impo
     BatteryScheduleRepository,
 )
 
+if TYPE_CHECKING:
+    from custom_components.smart_rce.infrastructure.dod_policy_actuator import (
+        DodPolicyActuator,
+    )
+    from custom_components.smart_rce.infrastructure.dod_policy_logger import (
+        DodPolicyLogger,
+    )
+    from custom_components.smart_rce.infrastructure.dod_policy_repository import (
+        DodPolicyRepository,
+    )
+    from custom_components.smart_rce.infrastructure.grid_export_actuator import (
+        GridExportActuator,
+    )
+
 type CALLBACK_TYPE = Callable[[], None]
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,11 +78,12 @@ class Ems:
         # Defaults to None for unit-test convenience (tests instantiate `Ems()`
         # and exercise individual managers like `ems.water_heater.update(...)`
         # without going through `update_state`). Production wiring in
-        # `ems_factory.create_ems` always passes both.
+        # `ems_factory.create_ems` always passes both. Driven adapters
+        # (dod_repository, dod_logger, dod_actuator, grid_export_actuator) are
+        # attached post-construction via `attach_driven_adapters` because Ems
+        # itself is a dependency of those adapters (cyclical wiring resolved
+        # by ordering in factory: Ems first, then adapters, then attach).
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
-        # Last InputState — udostępniane infrastructure adapters (logger,
-        # diagnostic readers) które potrzebują dostępu do bieżących wartości
-        # wejściowych. Promote z prywatnego `_ha` (unused) na publiczny.
         self.last_input_state: InputState | None = None
         self.rce_prices: EmsRcePrices = EmsRcePrices()
         self.charge_slots: ChargeSlots = ChargeSlots()
@@ -60,42 +91,69 @@ class Ems:
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
         self.grid_export: GridExportManager = GridExportManager()
         self.dod_policy: DodPolicy = DodPolicy()
-        # Public attributes — consumed by entities (switch.ems_interventions_blocked)
-        # and dashboard cards via `entry.runtime_data.ems.battery_schedule_*`.
-        # Consistency with other ems.<manager> attributes (grid_export, dod_policy).
         self.battery_schedule_repo = battery_schedule_repo
         self.battery_schedule_service = battery_schedule_service
+        # Driven adapters — attached post-construction by factory.
+        self._dod_repository: DodPolicyRepository | None = None
+        self._dod_logger: DodPolicyLogger | None = None
+        self._dod_actuator: DodPolicyActuator | None = None
+        self._grid_export_actuator: GridExportActuator | None = None
+
+    def attach_driven_adapters(
+        self,
+        *,
+        dod_repository: DodPolicyRepository,
+        dod_logger: DodPolicyLogger,
+        dod_actuator: DodPolicyActuator,
+        grid_export_actuator: GridExportActuator,
+    ) -> None:
+        """Wire driven adapters after construction (factory call).
+
+        Adapters depend on `Ems` in their own constructors, so we can't pass
+        them via Ems.__init__ (would be cyclical). Factory creates Ems,
+        creates adapters (with Ems reference), then calls this to link them
+        for explicit dispatch in `update_state`.
+        """
+        self._dod_repository = dod_repository
+        self._dod_logger = dod_logger
+        self._dod_actuator = dod_actuator
+        self._grid_export_actuator = grid_export_actuator
 
     def update_state(self, state: InputState) -> None:
-        # Store przed managers update — listenery (logger, etc.) czytają
-        # to po `_async_update_listeners`, więc state musi być świeży.
         self.last_input_state = state
 
-        # BatteryScheduleService FIRST — may engage/disengage a slot, mutating
-        # `schedule._currently_engaging` which flips `ems_interventions_blocked`.
-        # Etap 0: service.update is no-op. Etap 2A wires real orchestration.
+        # ─── 1. BatteryScheduleService — may flip ems_interventions_blocked ───
+        # Etap 0: update() is no-op. Etap 2A wires real orchestration
+        # (compute_operation engaging/disengaging slots).
         self.battery_schedule_service.update(
             BatteryScheduleInput(battery_soc=state.battery_soc)
         )
 
-        # Single read after service — source of truth for managers downstream.
+        # Single read after service — source of truth for downstream managers.
         blocked = self.battery_schedule_repo.schedule.ems_interventions_blocked
 
+        # ─── 2. GridExportManager + its actuator (Goodwe scene.apply) ───
         # grid_export PRZED water_heater — water_heater dostaje aktualny
         # `get_active_intervention()` (POSITIVE → reserved=3500W, NEGATIVE →
         # większy reserved by wymusić grzałki off).
         self.grid_export.update(state, ems_interventions_blocked=blocked)
-        self.water_heater.update(
-            state,
-            self.grid_export.get_active_intervention(),
-        )
+        self._grid_export_actuator.apply_if_changed()
 
-        # DodPolicy maps phase + hysteresis + override → target_dod (numeric).
-        # Owns _prev_block (hysteresis keep-state) — delegating phases call
-        # block_pre_charge / block_post_charge / block_afternoon_dynamic
-        # directly. DodPolicyActuator listens and writes to inverter via
-        # scene.apply.
+        # ─── 3. WaterHeaterManager (no driven adapter — pure recommendation) ───
+        self.water_heater.update(state, self.grid_export.get_active_intervention())
+
+        # ─── 4. DodPolicy + persistence + logger + actuator ───
+        # Order matters: save before apply (state persisted even if apply fails),
+        # log after compute (debug log captures intent), actuator last
+        # (Modbus write to inverter).
         self.dod_policy.update(state, ems_interventions_blocked=blocked)
+        self._dod_repository.save_if_changed()
+        self._dod_logger.log_if_changed()
+        self._dod_actuator.apply_if_changed()
+
+        # ─── 5. External listeners (sensors subscribing to ems state) ───
+        # Kept for HA consumers like binary_sensor + future sensors that
+        # observe ems state through `async_add_listener`.
         self._async_update_listeners()
 
     def update_rce(self, now: datetime, data: RcePrices) -> None:
