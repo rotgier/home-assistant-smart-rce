@@ -13,7 +13,7 @@ Layer responsibility (DDD):
 
 Adaptery żyją w `infrastructure/`:
 - `state_mapper.py` — HA states → InputState (driving adapter helpers)
-- `dod_policy_persistence.py` — DodPolicyPersistence (driven: HA Storage)
+- `dod_policy_repository.py` — DodPolicyRepository (driven: HA Storage)
 - `dod_policy_logger.py` — DodPolicyLogger (driven: Python logging)
 - `dod_policy_actuator.py` — DodPolicyActuator (driven: scene.apply)
 - `grid_export_actuator.py` — GridExportActuator (driven: scene.apply)
@@ -40,7 +40,7 @@ from .infrastructure.battery_schedule_repository import (
 )
 from .infrastructure.dod_policy_actuator import DodPolicyActuator
 from .infrastructure.dod_policy_logger import DodPolicyLogger
-from .infrastructure.dod_policy_persistence import DodPolicyPersistence
+from .infrastructure.dod_policy_repository import DodPolicyRepository
 from .infrastructure.grid_export_actuator import GridExportActuator
 from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
 
@@ -76,21 +76,21 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     # HA restart (template binary_sensor ładuje się 25-50ms po smart_rce).
     # UNKNOWN-phase keep-state w DodPolicy.update preserves persisted target_dod
     # until inputs settle.
-    dod_persistence = DodPolicyPersistence(hass, entry, ems.dod_policy)
-    await dod_persistence.async_restore()
-    entry.async_on_unload(ems.async_add_listener(dod_persistence.save_if_changed))
+    dod_repository = DodPolicyRepository(hass, ems.dod_policy, tasks)
+    await dod_repository.async_restore()
+    entry.async_on_unload(ems.async_add_listener(dod_repository.save_if_changed))
 
     # Driven adapter: DodPolicy observability (Python logging).
     dod_logger = DodPolicyLogger(ems.dod_policy, ems)
     entry.async_on_unload(ems.async_add_listener(dod_logger.log_if_changed))
 
     # Driven adapter: Goodwe EMS via scene.apply (fire-and-forget).
-    actuator = GridExportActuator(hass, entry, ems)
-    entry.async_on_unload(ems.async_add_listener(actuator.apply_if_changed))
+    grid_export_actuator = GridExportActuator(hass, ems, tasks)
+    entry.async_on_unload(ems.async_add_listener(grid_export_actuator.apply_if_changed))
 
     # Driven adapter: DoD register via scene.apply with read-back verification.
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
-    dod_actuator = DodPolicyActuator(hass, entry, ems)
+    dod_actuator = DodPolicyActuator(hass, ems, tasks)
     entry.async_on_unload(ems.async_add_listener(dod_actuator.apply_if_changed))
 
     @callback

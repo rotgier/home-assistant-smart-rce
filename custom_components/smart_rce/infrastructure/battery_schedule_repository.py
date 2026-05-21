@@ -19,7 +19,7 @@ Two-phase init:
 
 Hexagonal pattern: **driven adapter (outbound)** — application service
 dictates "save aggregate"; concrete impl uses HA Store. Wzór z
-`dod_policy_persistence.py`.
+`dod_policy_repository.py`.
 """
 
 from __future__ import annotations

@@ -204,7 +204,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.infrastructure.state_mapper"))
     reload(
         import_module(
-            "custom_components.smart_rce.infrastructure.dod_policy_persistence"
+            "custom_components.smart_rce.infrastructure.dod_policy_repository"
         )
     )
     reload(

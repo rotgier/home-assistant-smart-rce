@@ -34,10 +34,10 @@ import asyncio
 import contextlib
 import logging
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from ..application.ems import Ems
+from .async_task_runner import AsyncTaskRunner
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,10 +48,10 @@ GOODWE_EMS_POWER_LIMIT_NUMBER = "number.goodwe_ems_power_limit"
 class GridExportActuator:
     """Driven adapter — Apply Goodwe EMS mode/xset via scene.apply."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, ems: Ems) -> None:
+    def __init__(self, hass: HomeAssistant, ems: Ems, tasks: AsyncTaskRunner) -> None:
         self._hass = hass
-        self._entry = entry
         self._ems = ems
+        self._tasks = tasks
         self._lock = asyncio.Lock()
         # (mode, xset) — ostatnio zaaplikowana para. Init z aktualnego stanu
         # Goodwe entity (kalibracja po reload smart_rce — Goodwe entities
@@ -111,11 +111,7 @@ class GridExportActuator:
             # stale recommendation when intervention reactivates.
             self._last_applied = ("auto", None)
             return
-        self._entry.async_create_background_task(
-            self._hass,
-            self._dispatch(),
-            name="smart_rce_grid_export_apply",
-        )
+        self._tasks.run_background(self._dispatch(), name="smart_rce_grid_export_apply")
 
     def _is_other_automation_active(self) -> bool:
         """Read `other_ems_automation_active_this_hour` flag from last InputState.

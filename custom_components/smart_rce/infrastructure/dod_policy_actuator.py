@@ -27,12 +27,12 @@ import asyncio
 import logging
 
 from homeassistant.components.logbook import async_log_entry
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from ..application.ems import Ems
 from ..const import DOMAIN
+from .async_task_runner import AsyncTaskRunner
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,10 +44,10 @@ MAX_FAILED_APPLIES_PER_HOUR = 10
 class DodPolicyActuator:
     """Driven adapter — applies DodPolicy.target_dod to inverter."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, ems: Ems) -> None:
+    def __init__(self, hass: HomeAssistant, ems: Ems, tasks: AsyncTaskRunner) -> None:
         self._hass = hass
-        self._entry = entry
         self._ems = ems
+        self._tasks = tasks
         self._lock = asyncio.Lock()
         self._failed_apply_count: int = 0
         self._failed_count_hour: int | None = None
@@ -55,11 +55,7 @@ class DodPolicyActuator:
     @callback
     def apply_if_changed(self) -> None:
         """Spawn fire-and-forget background task (registered as ems listener)."""
-        self._entry.async_create_background_task(
-            self._hass,
-            self._dispatch(),
-            name="smart_rce_dod_apply",
-        )
+        self._tasks.run_background(self._dispatch(), name="smart_rce_dod_apply")
 
     async def _dispatch(self) -> None:
         async with self._lock:

@@ -75,7 +75,7 @@ GridExport intervention thresholds (hourly net export, Wh; details in
 Override semantics: `input_number.ems_dod_override` ≥ 0 takes priority over
 phase logic. `_override_set_phase` records phase at activation; expires when
 current phase != activation phase (auto-resume of normal logic). State
-survives HA restart via `dod_policy_persistence`.
+survives HA restart via `dod_policy_repository`.
 
 See `context/target_soc_algorithm.md` for broader context.
 """
