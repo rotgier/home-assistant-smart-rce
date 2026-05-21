@@ -20,15 +20,27 @@ from homeassistant.core import HomeAssistant
 
 
 class AsyncTaskRunner:
-    """Schedule fire-and-forget coroutines tied to a config entry."""
+    """Schedule fire-and-forget coroutines tied to a config entry.
+
+    Two flavors per ADR-019:
+    - `run` (foreground): `entry.async_create_task` — blocks shutdown stage 2
+      so the task completes. Use for persistence saves (`.storage/` JSON write
+      must finalize before HA exits).
+    - `run_background`: `entry.async_create_background_task` — auto-cancels on
+      unload/shutdown. Use for actuator writes (Modbus / scene.apply) where
+      interruption is OK because the hardware retains previous state.
+    """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self._hass = hass
         self._entry = entry
 
     def run(self, coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> object:
-        """Schedule `coro` as a fire-and-forget task tied to this entry.
-
-        Returns the task object (rarely useful — caller treats as void).
-        """
+        """Foreground task — completes before HA shutdown. Use for persistence."""
         return self._entry.async_create_task(self._hass, coro, name=name)
+
+    def run_background(
+        self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
+    ) -> object:
+        """Background task — auto-cancels on unload. Use for actuator writes."""
+        return self._entry.async_create_background_task(self._hass, coro, name=name)

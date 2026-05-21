@@ -58,7 +58,7 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     battery_schedule_store: Store[dict] = Store(
         hass, BATTERY_SCHEDULE_STORAGE_VERSION, BATTERY_SCHEDULE_STORAGE_KEY
     )
-    battery_schedule_repo = BatteryScheduleRepository(battery_schedule_store)
+    battery_schedule_repo = BatteryScheduleRepository(battery_schedule_store, tasks)
     await battery_schedule_repo.async_restore()
     battery_schedule_service = BatteryScheduleService(
         repo=battery_schedule_repo,

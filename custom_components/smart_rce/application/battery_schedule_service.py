@@ -89,7 +89,7 @@ class BatteryScheduleService:
         if self.user_override_active == value:
             return
         self._repo.schedule._interventions_blocked_override = value  # noqa: SLF001
-        self._tasks.run(self._repo.save_if_changed(), name="battery_schedule_save")
+        self._repo.save_if_changed()
         if value != self._last_user_override_state:
             self._last_user_override_state = value
             for cb in self._user_override_listeners:
