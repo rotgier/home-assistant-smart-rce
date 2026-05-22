@@ -29,7 +29,7 @@ field migration.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -48,6 +48,10 @@ class OverrideMode(StrEnum):
 CHARGE_CURRENT_MAX_AMPS: float = 18.5
 CHARGE_CURRENT_OFF_AMPS: float = 0.0
 
+# Morning charge window end — legacy "_ Inverter DISABLE Battery Charge on 07:00"
+# (automation 1717098789420) fires at 06:00:20. Time-gate uses 06:00 sharp.
+CHARGE_WINDOW_END: time = time(6, 0)
+
 
 @dataclass
 class BatteryChargePolicy:
@@ -61,7 +65,13 @@ class BatteryChargePolicy:
     user_override_mode: OverrideMode = OverrideMode.OFF
     _modbus_current_value: float | None = None
     _last_modbus_read_at: datetime | None = None
-    # Etap B' will add: start_charge_hour_override: time | None = None
+    # Etap B' time-gate: morning charge window starts at this time (typically
+    # RCE-derived ~02:00-05:00) and ends at CHARGE_WINDOW_END (06:00). When
+    # None, the time-gate is disabled — charge_allowed defers entirely to
+    # schedule. Fed from `state.start_charge_hour_override` (legacy
+    # input_datetime) for now; future commit migrates ownership to smart_rce
+    # time entity + drops state_mapper bridge.
+    start_charge_hour_override: time | None = None
 
     @property
     def modbus_current_value(self) -> float | None:
@@ -77,16 +87,27 @@ class BatteryChargePolicy:
         Precedence (highest first):
         1. User DISALLOWED — block everything
         2. User ALLOWED — force on
-        3. Schedule engagement — `schedule_op.needs_charge_toggle`
-        4. (Etap B') Time-gate — default off after 06:00 unless
-           `start_charge_hour_override` reached
+        3. Time-gate — morning charge window
+           [start_charge_hour_override, CHARGE_WINDOW_END=06:00) → True
+        4. Schedule engagement — `schedule_op.needs_charge_toggle`
         5. Default — off
+
+        Time-gate semantic mirrors legacy YAML automations (`_ Inverter
+        ENABLE Battery Charge MORNING` at start_charge_hour_override +
+        `_ Inverter DISABLE Battery Charge on 07:00` at 06:00:20). When
+        `start_charge_hour_override is None`, the gate is disabled and
+        we defer entirely to schedule.
         """
         if self.user_override_mode == OverrideMode.DISALLOWED:
             return False
         if self.user_override_mode == OverrideMode.ALLOWED:
             return True
-        # OFF (passthrough) — defer to schedule. Etap B' will add time-gates here.
+        # OFF (passthrough) — time-gate then schedule.
+        if (
+            self.start_charge_hour_override is not None
+            and self.start_charge_hour_override <= now.time() < CHARGE_WINDOW_END
+        ):
+            return True
         return schedule_op.needs_charge_toggle
 
     def target_modbus_value(
@@ -102,6 +123,13 @@ class BatteryChargePolicy:
         if self.user_override_mode == mode:
             return False
         self.user_override_mode = mode
+        return True
+
+    def set_start_charge_hour_override(self, value: time | None) -> bool:
+        """Mutate morning charge window start. Returns True if value changed."""
+        if self.start_charge_hour_override == value:
+            return False
+        self.start_charge_hour_override = value
         return True
 
     def record_modbus_read(self, value: float, at: datetime) -> bool:
@@ -123,6 +151,11 @@ class BatteryChargePolicy:
             "last_modbus_read_at": (
                 self._last_modbus_read_at.isoformat()
                 if self._last_modbus_read_at is not None
+                else None
+            ),
+            "start_charge_hour_override": (
+                self.start_charge_hour_override.isoformat()
+                if self.start_charge_hour_override is not None
                 else None
             ),
         }
@@ -156,8 +189,19 @@ class BatteryChargePolicy:
         else:
             modbus_value = None
 
+        start_charge_raw = data.get("start_charge_hour_override")
+        start_charge: time | None
+        if start_charge_raw is not None:
+            try:
+                start_charge = time.fromisoformat(start_charge_raw)
+            except (TypeError, ValueError):
+                start_charge = None
+        else:
+            start_charge = None
+
         return cls(
             user_override_mode=mode,
             _modbus_current_value=modbus_value,
             _last_modbus_read_at=last_read_at,
+            start_charge_hour_override=start_charge,
         )

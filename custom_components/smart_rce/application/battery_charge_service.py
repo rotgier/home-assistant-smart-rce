@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import contextlib
-from datetime import datetime
+from datetime import datetime, time
 import logging
 from typing import TYPE_CHECKING
 
@@ -59,9 +59,24 @@ class BatteryChargeService:
         self._override_listeners: list[Callable[[OverrideMode], None]] = []
 
     @callback
-    def update(self, schedule_op: BatteryOperation) -> None:
-        """Per-tick hook called from Ems.update_state."""
+    def update(
+        self,
+        schedule_op: BatteryOperation,
+        *,
+        start_charge_hour_override: time | None,
+    ) -> None:
+        """Per-tick hook called from Ems.update_state.
+
+        Etap B' bridge: `start_charge_hour_override` flows from
+        `state.start_charge_hour_override` (legacy input_datetime) into the
+        policy each tick. Future commit migrates ownership to a smart_rce
+        time entity + drops the kwarg + state_mapper field.
+        """
         self._last_schedule_op = schedule_op
+        # Persist only when value actually changes (avoids spurious disk writes
+        # on every tick where state_mapper happens to forward identical value).
+        if self._repo.policy.set_start_charge_hour_override(start_charge_hour_override):
+            self._repo.save_if_changed()
         self._actuator.apply_if_changed(schedule_op, self._clock())
 
     # ─── Properties (sensor / actuator queries) ───

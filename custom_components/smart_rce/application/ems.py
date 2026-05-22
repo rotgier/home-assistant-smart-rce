@@ -148,7 +148,10 @@ class Ems:
         # truth for grid_export + water_heater (passed as explicit kwarg,
         # analogous to ems_interventions_blocked). Actuator dispatched below
         # state-diffs target vs Modbus cache, only writes on delta.
-        self.battery_charge_service.update(schedule_op)
+        self.battery_charge_service.update(
+            schedule_op,
+            start_charge_hour_override=state.start_charge_hour_override,
+        )
         charge_allowed = self.battery_charge_service.charge_allowed
 
         # ─── 3. GridExportManager + its actuator (Goodwe scene.apply) ───

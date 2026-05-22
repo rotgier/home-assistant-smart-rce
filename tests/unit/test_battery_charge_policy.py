@@ -1,6 +1,6 @@
 """Unit tests for BatteryChargePolicy domain entity."""
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 
 from custom_components.smart_rce.domain.battery_charge_policy import (
     CHARGE_CURRENT_MAX_AMPS,
@@ -99,6 +99,51 @@ class TestChargeAllowed:
     def test_disallowed_blocks_idle(self):
         policy = BatteryChargePolicy(user_override_mode=OverrideMode.DISALLOWED)
         assert policy.charge_allowed(_at(12), _idle_op()) is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Time-gate (Etap B') — morning charge window [start_charge_hour, 06:00)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestChargeAllowedTimeGate:
+    def test_no_override_defers_to_schedule(self):
+        """start_charge_hour_override=None → time-gate disabled, schedule decides."""
+        policy = BatteryChargePolicy(start_charge_hour_override=None)
+        assert policy.charge_allowed(_at(3, 30), _idle_op()) is False
+
+    def test_inside_morning_window_forces_on(self):
+        """At 03:30 with override=02:00 → True (window [02:00, 06:00))."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        # Schedule is idle but time-gate forces on.
+        assert policy.charge_allowed(_at(3, 30), _idle_op()) is True
+
+    def test_at_window_start_inclusive(self):
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(2, 0), _idle_op()) is True
+
+    def test_at_window_end_exclusive(self):
+        """06:00 sharp — window CLOSED (legacy disable fires at 06:00:20)."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(6, 0), _idle_op()) is False
+
+    def test_before_window_start(self):
+        """At 01:30, override=02:00 → before window → schedule decides."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(1, 30), _idle_op()) is False
+
+    def test_after_window_end(self):
+        """At 07:00 (after 06:00 close) → schedule decides (idle → False)."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(7, 0), _idle_op()) is False
+
+    def test_disallowed_overrides_time_gate(self):
+        """DISALLOWED beats time-gate (user has final say to block)."""
+        policy = BatteryChargePolicy(
+            user_override_mode=OverrideMode.DISALLOWED,
+            start_charge_hour_override=time(2, 0),
+        )
+        assert policy.charge_allowed(_at(3, 30), _idle_op()) is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -215,3 +260,32 @@ class TestPersistence:
         assert restored.user_override_mode == OverrideMode.OFF
         assert restored.modbus_current_value is None
         assert restored.last_modbus_read_at is None
+        assert restored.start_charge_hour_override is None
+
+    def test_start_charge_hour_override_persisted(self):
+        original = BatteryChargePolicy(start_charge_hour_override=time(2, 30))
+        restored = BatteryChargePolicy.from_dict(original.to_dict())
+        assert restored.start_charge_hour_override == time(2, 30)
+
+    def test_invalid_start_charge_hour_becomes_none(self):
+        restored = BatteryChargePolicy.from_dict(
+            {"user_override_mode": "OFF", "start_charge_hour_override": "not_iso"}
+        )
+        assert restored.start_charge_hour_override is None
+
+
+class TestSetStartChargeHourOverride:
+    def test_changes_returns_true(self):
+        policy = BatteryChargePolicy()
+        assert policy.set_start_charge_hour_override(time(2, 30)) is True
+        assert policy.start_charge_hour_override == time(2, 30)
+
+    def test_same_returns_false(self):
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 30))
+        assert policy.set_start_charge_hour_override(time(2, 30)) is False
+        assert policy.start_charge_hour_override == time(2, 30)
+
+    def test_set_to_none(self):
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 30))
+        assert policy.set_start_charge_hour_override(None) is True
+        assert policy.start_charge_hour_override is None
