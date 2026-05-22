@@ -23,7 +23,7 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
     """
     service = MagicMock()
     service.ems_interventions_blocked = False
-    service.is_active_this_hour = MagicMock(return_value=False)
+    service.schedule_active_this_hour = False
     charge_service = MagicMock()
     charge_service.charge_allowed = charge_allowed
     ems = Ems(

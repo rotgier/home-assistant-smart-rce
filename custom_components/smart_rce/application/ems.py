@@ -138,8 +138,8 @@ class Ems:
         # Source of truth for downstream managers — read via service properties,
         # not via repo (Etap C side fix — Ems doesn't leak repo).
         blocked = self.battery_schedule_service.ems_interventions_blocked
-        schedule_active_this_hour = self.battery_schedule_service.is_active_this_hour(
-            state.now
+        schedule_active_this_hour = (
+            self.battery_schedule_service.schedule_active_this_hour
         )
 
         # ─── 2. BatteryChargeService — caches schedule_op for derived queries ───

@@ -112,9 +112,10 @@ class BatteryScheduleService:
         """Combined user-override OR active engagement — read by DodPolicy / GridExport."""
         return self._repo.schedule.ems_interventions_blocked
 
-    def is_active_this_hour(self, now: datetime) -> bool:
-        """Return True if engaged now OR disengaged within current clock hour."""
-        return self._repo.schedule.is_active_this_hour(now)
+    @property
+    def schedule_active_this_hour(self) -> bool:
+        """True if engaged now OR disengaged within current clock hour."""
+        return self._repo.schedule.is_active_this_hour(self._clock())
 
     # ─────── User override — public methods called from HA entities ───────
 
