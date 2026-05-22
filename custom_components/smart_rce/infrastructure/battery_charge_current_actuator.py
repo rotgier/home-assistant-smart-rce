@@ -139,7 +139,7 @@ class BatteryChargeCurrentActuator:
         """5-min drift refresh — refresh cache, log warning if diverged."""
         async with self._lock:
             cached = self._repo.policy.modbus_current_value
-            readback = await self._refresh_modbus_cache_inner()
+            readback = await self._refresh_modbus_cache()
             if readback is None:
                 return
             if cached is not None and cached != readback:
@@ -153,7 +153,7 @@ class BatteryChargeCurrentActuator:
     async def _on_ha_started(self, _event: Event) -> None:
         """One-shot Modbus cache reconcile after HA fully started."""
         async with self._lock:
-            await self._refresh_modbus_cache_inner()
+            await self._refresh_modbus_cache()
 
     # ─── per-tick state-diff dispatch (called from BatteryChargeService.update) ───
 
@@ -205,13 +205,9 @@ class BatteryChargeCurrentActuator:
             raise RuntimeError("goodwe inverter not loaded")
         await inverter.write_setting(PARAMETER, value)
 
-    async def _refresh_modbus_cache(self) -> None:
-        """Refresh Modbus cache (for call sites that already hold the lock)."""
-        await self._refresh_modbus_cache_inner()
+    # ─── common helpers — multi-caller (_on_periodic_tick, _on_ha_started, _dispatch_apply) ───
 
-    # ─── common helpers — multi-caller (_periodic_refresh, _startup_reconcile, _refresh_modbus_cache) ───
-
-    async def _refresh_modbus_cache_inner(self) -> float | None:
+    async def _refresh_modbus_cache(self) -> float | None:
         """Read Modbus parameter via Inverter.read_setting → write to policy.
 
         Returns the read value (or None if not available — goodwe not yet
