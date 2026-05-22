@@ -48,9 +48,10 @@ class OverrideMode(StrEnum):
 CHARGE_CURRENT_MAX_AMPS: float = 18.5
 CHARGE_CURRENT_OFF_AMPS: float = 0.0
 
-# Morning charge window end — legacy "_ Inverter DISABLE Battery Charge on 07:00"
-# (automation 1717098789420) fires at 06:00:20. Time-gate uses 06:00 sharp.
-CHARGE_WINDOW_END: time = time(6, 0)
+# Morning block-window start — legacy "_ Inverter DISABLE Battery Charge on 07:00"
+# (automation 1717098789420) fires at 06:00:20 and turns off the legacy charge
+# toggle. Time-gate uses 06:00 sharp.
+BLOCK_WINDOW_START: time = time(6, 0)
 
 
 @dataclass
@@ -65,12 +66,13 @@ class BatteryChargePolicy:
     user_override_mode: OverrideMode = OverrideMode.OFF
     _modbus_current_value: float | None = None
     _last_modbus_read_at: datetime | None = None
-    # Etap B' time-gate: morning charge window starts at this time (typically
-    # RCE-derived ~02:00-05:00) and ends at CHARGE_WINDOW_END (06:00). When
-    # None, the time-gate is disabled — charge_allowed defers entirely to
-    # schedule. Fed from `state.start_charge_hour_override` (legacy
-    # input_datetime) for now; future commit migrates ownership to smart_rce
-    # time entity + drops state_mapper bridge.
+    # Etap B' time-gate: charging is BLOCKED in `[BLOCK_WINDOW_START=06:00,
+    # start_charge_hour_override)`. Outside that window charging is ALLOWED.
+    # For start < 06:00 the block window wraps midnight:
+    # `[06:00, 24:00) U [00:00, start)`. When None, time-gate is disabled
+    # (defers entirely to schedule). Fed from `state.start_charge_hour_override`
+    # (legacy input_datetime) for now; future commit migrates ownership to
+    # smart_rce time entity + drops state_mapper bridge.
     start_charge_hour_override: time | None = None
 
     @property
@@ -87,28 +89,35 @@ class BatteryChargePolicy:
         Precedence (highest first):
         1. User DISALLOWED — block everything
         2. User ALLOWED — force on
-        3. Time-gate — morning charge window
-           [start_charge_hour_override, CHARGE_WINDOW_END=06:00) → True
-        4. Schedule engagement — `schedule_op.needs_charge_toggle`
-        5. Default — off
+        3. Time-gate — within block window `[06:00, start_charge_hour)` → False
+        4. Time-gate — outside block window (gate defined) → True
+        5. Schedule engagement (no gate defined) — `schedule_op.needs_charge_toggle`
+        6. Default — off
 
-        Time-gate semantic mirrors legacy YAML automations (`_ Inverter
-        ENABLE Battery Charge MORNING` at start_charge_hour_override +
-        `_ Inverter DISABLE Battery Charge on 07:00` at 06:00:20). When
-        `start_charge_hour_override is None`, the gate is disabled and
-        we defer entirely to schedule.
+        Time-gate semantic mirrors legacy YAML automations
+        (`_ Inverter DISABLE Battery Charge on 07:00` at 06:00:20 + `_ Inverter
+        ENABLE Battery Charge MORNING` at start_charge_hour_override). Toggle
+        is OFF in `[06:00, start_charge_hour)` and ON elsewhere. For
+        start < 06:00, the block window wraps midnight:
+        `[06:00, 24:00) U [00:00, start)`. When start is None, gate is
+        disabled and we defer to schedule.
         """
         if self.user_override_mode == OverrideMode.DISALLOWED:
             return False
         if self.user_override_mode == OverrideMode.ALLOWED:
             return True
         # OFF (passthrough) — time-gate then schedule.
-        if (
-            self.start_charge_hour_override is not None
-            and self.start_charge_hour_override <= now.time() < CHARGE_WINDOW_END
-        ):
-            return True
-        return schedule_op.needs_charge_toggle
+        start = self.start_charge_hour_override
+        if start is None:
+            return schedule_op.needs_charge_toggle
+        now_t = now.time()
+        # Block window is `[BLOCK_WINDOW_START, start)`. If start < 06:00 the
+        # window wraps midnight and we OR the two segments.
+        if start >= BLOCK_WINDOW_START:
+            in_block_window = BLOCK_WINDOW_START <= now_t < start
+        else:
+            in_block_window = now_t >= BLOCK_WINDOW_START or now_t < start
+        return not in_block_window
 
     def target_modbus_value(
         self, now: datetime, schedule_op: BatteryOperation

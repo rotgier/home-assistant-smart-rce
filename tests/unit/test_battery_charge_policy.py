@@ -102,7 +102,7 @@ class TestChargeAllowed:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Time-gate (Etap B') — morning charge window [start_charge_hour, 06:00)
+# Time-gate (Etap B') — block window [06:00, start_charge_hour); ALLOWED outside
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -112,38 +112,83 @@ class TestChargeAllowedTimeGate:
         policy = BatteryChargePolicy(start_charge_hour_override=None)
         assert policy.charge_allowed(_at(3, 30), _idle_op()) is False
 
-    def test_inside_morning_window_forces_on(self):
-        """At 03:30 with override=02:00 → True (window [02:00, 06:00))."""
-        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
-        # Schedule is idle but time-gate forces on.
-        assert policy.charge_allowed(_at(3, 30), _idle_op()) is True
+    # ── start >= 06:00 (e.g., 11:00) — block window [06:00, start) — no wrap ──
 
-    def test_at_window_start_inclusive(self):
-        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
-        assert policy.charge_allowed(_at(2, 0), _idle_op()) is True
+    def test_start_after_06_block_window_blocks(self):
+        """start=11:00, now=09:00 in [06:00, 11:00) → blocked."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
+        assert policy.charge_allowed(_at(9, 0), _idle_op()) is False
 
-    def test_at_window_end_exclusive(self):
-        """06:00 sharp — window CLOSED (legacy disable fires at 06:00:20)."""
-        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+    def test_start_after_06_at_06_inclusive(self):
+        """06:00 sharp → block window STARTS (inclusive)."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
         assert policy.charge_allowed(_at(6, 0), _idle_op()) is False
 
-    def test_before_window_start(self):
-        """At 01:30, override=02:00 → before window → schedule decides."""
-        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
-        assert policy.charge_allowed(_at(1, 30), _idle_op()) is False
+    def test_start_after_06_at_start_exclusive(self):
+        """11:00 sharp = start → block window CLOSES, allowed."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
+        assert policy.charge_allowed(_at(11, 0), _idle_op()) is True
 
-    def test_after_window_end(self):
-        """At 07:00 (after 06:00 close) → schedule decides (idle → False)."""
+    def test_start_after_06_before_block_window_allowed(self):
+        """05:00 < 06:00 → before block window → ALLOWED."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
+        assert policy.charge_allowed(_at(5, 0), _idle_op()) is True
+
+    def test_start_after_06_after_start_allowed(self):
+        """14:00 > 11:00 → past start → ALLOWED."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
+        assert policy.charge_allowed(_at(14, 0), _idle_op()) is True
+
+    def test_start_after_06_late_evening_allowed(self):
+        """23:00 → far past start, still ALLOWED."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
+        assert policy.charge_allowed(_at(23, 0), _idle_op()) is True
+
+    # ── start < 06:00 (e.g., 02:00) — block window wraps midnight ──
+    # Block: [06:00, 24:00) U [00:00, 02:00). Allowed: [02:00, 06:00).
+
+    def test_start_before_06_inside_charge_window_allowed(self):
+        """start=02:00, now=04:00 in [02:00, 06:00) → ALLOWED."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(4, 0), _idle_op()) is True
+
+    def test_start_before_06_after_06_blocked(self):
+        """07:00 → past 06:00 disable → BLOCKED."""
         policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
         assert policy.charge_allowed(_at(7, 0), _idle_op()) is False
 
+    def test_start_before_06_late_evening_blocked(self):
+        """23:00 → still in OFF window (block wraps midnight) → BLOCKED."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(23, 0), _idle_op()) is False
+
+    def test_start_before_06_pre_dawn_blocked(self):
+        """01:00 < 02:00 start → still in wrapped block window → BLOCKED."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(1, 0), _idle_op()) is False
+
+    def test_start_before_06_at_start_allowed(self):
+        """02:00 sharp = start → ALLOWED (block window closes)."""
+        policy = BatteryChargePolicy(start_charge_hour_override=time(2, 0))
+        assert policy.charge_allowed(_at(2, 0), _idle_op()) is True
+
+    # ── User override beats time-gate ──
+
     def test_disallowed_overrides_time_gate(self):
-        """DISALLOWED beats time-gate (user has final say to block)."""
+        """DISALLOWED beats time-gate even in the ALLOWED period."""
         policy = BatteryChargePolicy(
             user_override_mode=OverrideMode.DISALLOWED,
             start_charge_hour_override=time(2, 0),
         )
-        assert policy.charge_allowed(_at(3, 30), _idle_op()) is False
+        assert policy.charge_allowed(_at(4, 0), _idle_op()) is False
+
+    def test_allowed_overrides_time_gate_block(self):
+        """ALLOWED forces on even in the time-gate BLOCK window."""
+        policy = BatteryChargePolicy(
+            user_override_mode=OverrideMode.ALLOWED,
+            start_charge_hour_override=time(11, 0),
+        )
+        assert policy.charge_allowed(_at(9, 0), _idle_op()) is True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
