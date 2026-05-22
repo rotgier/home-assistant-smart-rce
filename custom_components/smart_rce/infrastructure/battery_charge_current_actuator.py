@@ -94,45 +94,43 @@ class BatteryChargeCurrentActuator:
     def __init__(
         self,
         hass: HomeAssistant,
+        entry: ConfigEntry,
         repo: BatteryChargeRepository,
         tasks: AsyncTaskRunner,
         *,
         writes_enabled: bool = False,
     ) -> None:
+        """Self-wires lifecycle on construction (Java @PostConstruct analog).
+
+        All listeners registered here are sync (no await), so the constructor
+        is the natural place to wire them. Factory just calls
+        `BatteryChargeCurrentActuator(hass, entry, repo, tasks)` — no
+        second `schedule_periodic_refresh(entry)` step to forget.
+
+        - 5-min drift refresh via `async_track_time_interval`
+        - Startup reconcile on `EVENT_HOMEASSISTANT_STARTED` (or immediate
+          if HA is already running — config_entry reload scenario) so the
+          Goodwe integration is loaded before we call `inverter.read_setting`.
+          Pattern matches state_mapper + weather_listener.
+        """
         self._hass = hass
         self._repo = repo
         self._tasks = tasks
         self._lock = asyncio.Lock()
         self._writes_enabled = writes_enabled
 
-    # ─── lifecycle setup (called once from factory) ───
-
-    def schedule_periodic_refresh(self, entry: ConfigEntry) -> None:
-        """Register 5-min drift refresh + post-HA-started startup reconcile.
-
-        Called once from `ems_factory` after construction. Tied to entry
-        lifecycle (unsubscribed on unload).
-
-        Startup reconcile waits for `EVENT_HOMEASSISTANT_STARTED` (or fires
-        immediately if HA is already running — reload scenario) so the
-        Goodwe integration is guaranteed to have registered its services
-        before we call `goodwe.get_parameter`. Pattern matches state_mapper
-        + weather_listener.
-        """
         entry.async_on_unload(
-            async_track_time_interval(
-                self._hass, self._on_periodic_tick, PERIODIC_REFRESH
-            )
+            async_track_time_interval(hass, self._on_periodic_tick, PERIODIC_REFRESH)
         )
-        if self._hass.state == CoreState.running:
-            self._tasks.run_background(
+        if hass.state == CoreState.running:
+            tasks.run_background(
                 self._startup_reconcile(),
                 name="smart_rce_battery_charge_startup_reconcile",
             )
         else:
-            self._hass.bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STARTED, self._on_ha_started
-            )
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, self._on_ha_started)
+
+    # ─── lifecycle helpers (callbacks registered in __init__) ───
 
     @callback
     def _on_periodic_tick(self, _now: datetime) -> None:

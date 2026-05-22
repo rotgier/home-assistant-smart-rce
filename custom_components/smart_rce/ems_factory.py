@@ -83,10 +83,8 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     battery_charge_repo = BatteryChargeRepository(battery_charge_store, tasks)
     await battery_charge_repo.async_restore()
     battery_charge_actuator = BatteryChargeCurrentActuator(
-        hass, battery_charge_repo, tasks
+        hass, entry, battery_charge_repo, tasks
     )
-    # Register 5-min drift refresh + delayed startup reconcile (lifecycle tied to entry).
-    battery_charge_actuator.schedule_periodic_refresh(entry)
     battery_charge_service = BatteryChargeService(
         repo=battery_charge_repo,
         clock=now_local,
