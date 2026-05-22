@@ -36,7 +36,8 @@ import logging
 
 from homeassistant.core import HomeAssistant, callback
 
-from ..application.ems import Ems
+from ..domain.grid_export import GridExportManager
+from ..domain.input_state import InputState
 from .async_task_runner import AsyncTaskRunner
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,9 +49,14 @@ GOODWE_EMS_POWER_LIMIT_NUMBER = "number.goodwe_ems_power_limit"
 class GridExportActuator:
     """Driven adapter — Apply Goodwe EMS mode/xset via scene.apply."""
 
-    def __init__(self, hass: HomeAssistant, ems: Ems, tasks: AsyncTaskRunner) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        manager: GridExportManager,
+        tasks: AsyncTaskRunner,
+    ) -> None:
         self._hass = hass
-        self._ems = ems
+        self._manager = manager
         self._tasks = tasks
         self._lock = asyncio.Lock()
         # (mode, xset) — ostatnio zaaplikowana para. Init z aktualnego stanu
@@ -94,8 +100,11 @@ class GridExportActuator:
         return (mode, xset)
 
     @callback
-    def apply_if_changed(self) -> None:
-        """Spawn fire-and-forget background task (registered as ems listener).
+    def apply_if_changed(self, state: InputState) -> None:
+        """Spawn fire-and-forget background task (called from Ems body).
+
+        `state` passed by caller — eliminates back-reference to Ems and keeps
+        the actuator's contract narrow (manager + current tick's InputState).
 
         Skips dispatch when external EMS automation is managing Goodwe this
         hour (`other_ems_automation_active_this_hour=True`). Resets
@@ -105,7 +114,7 @@ class GridExportActuator:
         compare against a stale `_last_applied` (e.g. last intervention
         values from before the automation) and re-apply that obsolete state.
         """
-        if self._is_other_automation_active():
+        if state.other_ems_automation_active_this_hour is True:
             # External automation manages Goodwe — assume it will reset to AUTO.
             # Skip dispatch + sync `_last_applied` so smart_rce does not push
             # stale recommendation when intervention reactivates.
@@ -113,22 +122,12 @@ class GridExportActuator:
             return
         self._tasks.run_background(self._dispatch(), name="smart_rce_grid_export_apply")
 
-    def _is_other_automation_active(self) -> bool:
-        """Read `other_ems_automation_active_this_hour` flag from last InputState.
-
-        Uses `Ems.last_input_state` (in-memory snapshot updated by
-        `Ems.update_state`) — consistent with rest of architecture (input
-        state propagation, no extra HA entity_id lookups).
-        """
-        last = self._ems.last_input_state
-        return last is not None and last.other_ems_automation_active_this_hour is True
-
     async def _dispatch(self) -> None:
         async with self._lock:
             # Re-read in-memory INSIDE locka — między schedule a acquire
             # mogły dojść kolejne event'y; używamy najświeższych wartości.
-            mode = self._ems.grid_export.recommended_ems_mode
-            xset = self._ems.grid_export.recommended_xset
+            mode = self._manager.recommended_ems_mode
+            xset = self._manager.recommended_xset
             target = (mode, xset)
             if target == self._last_applied:
                 return  # coalesce: same as last apply

@@ -137,7 +137,7 @@ class Ems:
         # `get_active_intervention()` (POSITIVE → reserved=3500W, NEGATIVE →
         # większy reserved by wymusić grzałki off).
         self.grid_export.update(state, ems_interventions_blocked=blocked)
-        self._grid_export_actuator.apply_if_changed()
+        self._grid_export_actuator.apply_if_changed(state)
 
         # ─── 3. WaterHeaterManager (no driven adapter — pure recommendation) ───
         self.water_heater.update(state, self.grid_export.get_active_intervention())
@@ -148,7 +148,7 @@ class Ems:
         # (Modbus write to inverter).
         self.dod_policy.update(state, ems_interventions_blocked=blocked)
         self._dod_repository.save_if_changed()
-        self._dod_logger.log_if_changed()
+        self._dod_logger.log_if_changed(state)
         self._dod_actuator.apply_if_changed()
 
         # ─── 5. External listeners (sensors subscribing to ems state) ───

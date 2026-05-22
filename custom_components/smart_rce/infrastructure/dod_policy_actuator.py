@@ -30,8 +30,8 @@ from homeassistant.components.logbook import async_log_entry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
-from ..application.ems import Ems
 from ..const import DOMAIN
+from ..domain.dod_policy import DodPolicy
 from .async_task_runner import AsyncTaskRunner
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,9 +44,11 @@ MAX_FAILED_APPLIES_PER_HOUR = 10
 class DodPolicyActuator:
     """Driven adapter — applies DodPolicy.target_dod to inverter."""
 
-    def __init__(self, hass: HomeAssistant, ems: Ems, tasks: AsyncTaskRunner) -> None:
+    def __init__(
+        self, hass: HomeAssistant, policy: DodPolicy, tasks: AsyncTaskRunner
+    ) -> None:
         self._hass = hass
-        self._ems = ems
+        self._policy = policy
         self._tasks = tasks
         self._lock = asyncio.Lock()
         self._failed_apply_count: int = 0
@@ -59,7 +61,7 @@ class DodPolicyActuator:
 
     async def _dispatch(self) -> None:
         async with self._lock:
-            target = self._ems.dod_policy.target_dod
+            target = self._policy.target_dod
             current = self._read_inverter_dod()
 
             if current is None:
@@ -150,7 +152,7 @@ class DodPolicyActuator:
 
     def _log_entry(self, target: int, *, previous: int | None) -> None:
         """Write structured logbook entry for traceability of DoD changes."""
-        phase = self._ems.dod_policy.current_phase.value
+        phase = self._policy.current_phase.value
         prev_str = str(previous) if previous is not None else "unknown"
         async_log_entry(
             self._hass,

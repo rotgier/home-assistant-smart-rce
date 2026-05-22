@@ -80,10 +80,10 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     dod_repository = DodPolicyRepository(hass, ems.dod_policy, tasks)
     await dod_repository.async_restore()
 
-    dod_logger = DodPolicyLogger(ems.dod_policy, ems)
+    dod_logger = DodPolicyLogger(ems.dod_policy)
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
-    dod_actuator = DodPolicyActuator(hass, ems, tasks)
-    grid_export_actuator = GridExportActuator(hass, ems, tasks)
+    dod_actuator = DodPolicyActuator(hass, ems.dod_policy, tasks)
+    grid_export_actuator = GridExportActuator(hass, ems.grid_export, tasks)
 
     ems.attach_driven_adapters(
         dod_repository=dod_repository,

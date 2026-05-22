@@ -15,8 +15,8 @@ from typing import Final
 
 from homeassistant.core import callback
 
-from ..application.ems import Ems
 from ..domain.dod_policy import DodPolicy
+from ..domain.input_state import InputState
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,19 +49,21 @@ class DodPolicyLogger:
        max once per DOD_POLICY_LOG_THROTTLE_SEC when fields don't change.
     """
 
-    def __init__(self, policy: DodPolicy, ems: Ems) -> None:
+    def __init__(self, policy: DodPolicy) -> None:
         self._policy = policy
-        self._ems = ems
         self._prev_target_dod: int | None = None
         self._prev_phase_value: str | None = None
         self._throttle = _DodPolicyLogThrottle()
         self._restored_logged = False
 
     @callback
-    def log_if_changed(self) -> None:
-        """Emit logs after policy update (registered as ems listener)."""
-        state = self._ems.last_input_state
-        if state is None or state.now is None:
+    def log_if_changed(self, state: InputState) -> None:
+        """Emit logs after policy update (called explicitly from Ems body).
+
+        `state` passed by caller — eliminates back-reference to Ems and keeps
+        the logger's contract narrow (only what it needs to read).
+        """
+        if state.now is None:
             return
 
         curr_target = self._policy.target_dod
@@ -90,10 +92,10 @@ class DodPolicyLogger:
         self._prev_target_dod = curr_target
         self._prev_phase_value = curr_phase_value
 
-        self._maybe_log_snapshot(state.now, curr_target, curr_phase_value)
+        self._maybe_log_snapshot(state, curr_target, curr_phase_value)
 
     def _maybe_log_snapshot(
-        self, now: datetime, target_dod: int, phase_value: str
+        self, state: InputState, target_dod: int, phase_value: str
     ) -> None:
         """Throttled DEBUG snapshot — log on change or timeout.
 
@@ -102,6 +104,9 @@ class DodPolicyLogger:
         """
         prev_block = self._policy._prev_block  # noqa: SLF001 — diagnostic read
         snapshot_key = (phase_value, target_dod, prev_block)
+        now = state.now
+        if now is None:
+            return
         should_log = (
             self._throttle.last_snapshot_key is None
             or snapshot_key != self._throttle.last_snapshot_key
@@ -112,9 +117,6 @@ class DodPolicyLogger:
         if not should_log:
             return
 
-        state = self._ems.last_input_state
-        if state is None:
-            return
         exported = state.exported_energy_hourly
         pv_avail_5m = state.pv_available_5min
         _LOGGER.debug(
