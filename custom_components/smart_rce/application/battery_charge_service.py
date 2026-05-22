@@ -106,8 +106,7 @@ class BatteryChargeService:
             previous.value,
             mode.value,
         )
-        for cb in self._override_listeners:
-            cb(mode)
+        self._notify_override_listeners(mode)
 
     def add_override_listener(
         self, cb: Callable[[OverrideMode], None]
@@ -120,6 +119,10 @@ class BatteryChargeService:
                 self._override_listeners.remove(cb)
 
         return _unsub
+
+    def _notify_override_listeners(self, mode: OverrideMode) -> None:
+        for cb in self._override_listeners:
+            cb(mode)
 
     # ─── start_charge_hour_override — public mutators ───
 
@@ -134,8 +137,7 @@ class BatteryChargeService:
             previous,
             value,
         )
-        for cb in self._start_charge_hour_listeners:
-            cb(value)
+        self._notify_start_charge_hour_listeners(value)
 
     def add_start_charge_hour_override_listener(
         self, cb: Callable[[time | None], None]
@@ -148,6 +150,10 @@ class BatteryChargeService:
                 self._start_charge_hour_listeners.remove(cb)
 
         return _unsub
+
+    def _notify_start_charge_hour_listeners(self, value: time | None) -> None:
+        for cb in self._start_charge_hour_listeners:
+            cb(value)
 
     @callback
     def auto_sync_start_charge_hour_override(self, value: time | None) -> None:
@@ -173,5 +179,4 @@ class BatteryChargeService:
             previous,
             value,
         )
-        for cb in self._start_charge_hour_listeners:
-            cb(value)
+        self._notify_start_charge_hour_listeners(value)
