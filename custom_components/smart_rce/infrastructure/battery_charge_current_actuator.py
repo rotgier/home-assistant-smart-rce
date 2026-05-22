@@ -1,33 +1,41 @@
 """BatteryChargeCurrentActuator — driven adapter for Modbus battery_charge_current.
 
 Goodwe HA integration doesn't expose an entity for `battery_charge_current`
-(Modbus register 45353, Kind.BAT) — only the `goodwe.set_parameter` /
-`goodwe.get_parameter` services. This adapter wraps those services into an
-idempotent "apply target value if different from cached readback" actuator.
+(Modbus register 45353, Kind.BAT) — only `goodwe.set_parameter` /
+`goodwe.get_parameter` services. The `get_parameter` service additionally
+requires an `entity_id` write target and discards the return value, which
+would force us to depend on an external `input_number` helper as a
+readback buffer.
 
-Modbus readback channel:
-- `goodwe.get_parameter` requires an `entity_id` to write the read value
-  into. We reuse legacy `input_number.battery_charge_current` as the
-  readback display channel (smart_rce-controlled after Etap B migration).
-- After each write OR periodic refresh, we call `goodwe.get_parameter` →
-  read `input_number.battery_charge_current` HA state → record into policy.
+We bypass the service layer and call `Inverter.read_setting()` /
+`Inverter.write_setting()` directly via `hass.data[goodwe.DOMAIN]`. This
+is the public API of the `goodwe` Python library (the HA integration only
+wraps it) so the coupling is minimal — we depend on:
+- `hass.data["goodwe"]` registry shape (HA convention, stable in fork)
+- `runtime_data.inverter` field name and `.device_info["identifiers"]`
+  (matches `goodwe/services.py:_get_inverter_by_device_id`)
+- `Inverter.read_setting(name)` / `.write_setting(name, value)` (goodwe
+  lib public API)
 
-State-diff: target (`service.target_modbus_value`, derived from policy)
-vs current (`service.modbus_current_value`, our cached Modbus readback).
-Only writes when delta detected, avoiding spurious Modbus writes.
+Plus: no external `input_number` helper needed; smart_rce fully owns
+the Modbus readback pipeline. `sensor.ems_battery_charge_current` is the
+single user-visible display of the cached readback (`policy._modbus_current_value`).
+
+State-diff: target (`policy.target_modbus_value`, derived) vs cached
+`policy.modbus_current_value`. Only writes when delta detected.
 
 Drift detection: periodic refresh every 5 minutes via
 `async_track_time_interval` — catches "ktoś klikał scene.apply" or other
 external interference.
 
-Restart safety: cached `_modbus_current_value` persisted in
-`BatteryChargeRepository`; on restart we restore the cache, then schedule
-a single delayed reconcile (30s post-startup so Goodwe integration is
-loaded) to refresh the cache and write iff diverged from target.
+Restart safety: `_modbus_current_value` persisted in
+`BatteryChargeRepository`; on `EVENT_HOMEASSISTANT_STARTED` we run a
+one-shot reconcile to sync cache with actual Modbus state before any
+writes fire.
 
 Hexagonal pattern: driven adapter (outbound). Depends on Repository only —
 no Service back-reference. `apply_if_changed(schedule_op, now)` invoked
-explicitly from `Ems.update_state`.
+from `BatteryChargeService.update`.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
@@ -52,19 +61,17 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Goodwe inverter device — same constant used by other actuators.
+# Goodwe integration domain + our inverter device id (matches other actuators).
+GOODWE_DOMAIN = "goodwe"
 GOODWE_DEVICE_ID = "690e4551a45b55c24447b0ae3c05942c"
 
 # Modbus parameter name (per goodwe lib `et.py` register 45353).
 PARAMETER = "battery_charge_current"
 
-# Modbus readback display channel (legacy `input_number` retained after
-# Etap B migration — actuator-owned semantics, smart_rce updates it).
-READBACK_ENTITY = "input_number.battery_charge_current"
-
-# Modbus write → readback delay. `goodwe.set_parameter` is async and
-# inverter takes some time to settle. 5s is the legacy timing from YAML
-# adapter automations 172-218.
+# Modbus write → readback delay. `inverter.write_setting` returns when the
+# write completes, but the inverter takes some time to settle internally
+# before a subsequent read returns the new value. 5s is the legacy timing
+# from YAML adapter automations 172-218 (we keep it for safety).
 WRITE_TO_READBACK_DELAY_SEC = 5
 
 # Periodic drift refresh interval.
@@ -205,59 +212,62 @@ class BatteryChargeCurrentActuator:
             await self._refresh_modbus_cache()
 
     async def _set_parameter(self, value: float) -> None:
-        """Write Modbus parameter via goodwe.set_parameter."""
-        await self._hass.services.async_call(
-            "goodwe",
-            "set_parameter",
-            {
-                "device_id": GOODWE_DEVICE_ID,
-                "parameter": PARAMETER,
-                "value": str(value),
-            },
-            blocking=True,
-        )
+        """Write Modbus parameter via Inverter.write_setting (goodwe lib API)."""
+        inverter = self._get_inverter()
+        if inverter is None:
+            raise RuntimeError("goodwe inverter not loaded")
+        await inverter.write_setting(PARAMETER, value)
 
     async def _refresh_modbus_cache(self) -> None:
         """Refresh Modbus cache (for call sites that already hold the lock)."""
         await self._refresh_modbus_cache_inner()
 
-    # ─── common helper — multi-caller (_periodic_refresh, _startup_reconcile, _refresh_modbus_cache) ───
+    # ─── common helpers — multi-caller (_periodic_refresh, _startup_reconcile, _refresh_modbus_cache) ───
 
     async def _refresh_modbus_cache_inner(self) -> float | None:
-        """Call goodwe.get_parameter → read input_number → write to policy.
+        """Read Modbus parameter via Inverter.read_setting → write to policy.
 
-        Returns the read value (or None if not available). Caller must hold
-        the lock.
+        Returns the read value (or None if not available — goodwe not yet
+        loaded, Modbus failure, parse error). Caller must hold the lock.
         """
-        try:
-            await self._hass.services.async_call(
-                "goodwe",
-                "get_parameter",
-                {
-                    "device_id": GOODWE_DEVICE_ID,
-                    "parameter": PARAMETER,
-                    "entity_id": READBACK_ENTITY,
-                },
-                blocking=True,
-            )
-        except Exception:
-            _LOGGER.exception("BatteryChargeCurrentActuator: get_parameter failed")
-            return None
-        state = self._hass.states.get(READBACK_ENTITY)
-        if state is None or state.state in ("unknown", "unavailable"):
+        inverter = self._get_inverter()
+        if inverter is None:
             _LOGGER.debug(
-                "BatteryChargeCurrentActuator: readback entity %s unavailable",
-                READBACK_ENTITY,
+                "BatteryChargeCurrentActuator: goodwe inverter not loaded — skipping read"
             )
             return None
         try:
-            value = float(state.state)
+            raw = await inverter.read_setting(PARAMETER)
+        except Exception:
+            _LOGGER.exception("BatteryChargeCurrentActuator: read_setting failed")
+            return None
+        try:
+            value = float(raw)
         except (ValueError, TypeError):
             _LOGGER.warning(
-                "BatteryChargeCurrentActuator: invalid readback %r from %s",
-                state.state,
-                READBACK_ENTITY,
+                "BatteryChargeCurrentActuator: read_setting returned non-numeric %r",
+                raw,
             )
             return None
         await self._repo.record_modbus_read(value, dt_util.now())
         return value
+
+    def _get_inverter(self):
+        """Resolve `Inverter` instance from `hass.data["goodwe"]` runtime_data.
+
+        Mirrors `goodwe/services.py:_get_inverter_by_device_id`: looks up
+        the device by id, then matches against `runtime_data.device_info`
+        identifiers across all goodwe config entries. Returns None if goodwe
+        isn't loaded yet (typical at HA startup before
+        EVENT_HOMEASSISTANT_STARTED).
+        """
+        runtime_datas = self._hass.data.get(GOODWE_DOMAIN)
+        if not runtime_datas:
+            return None
+        device = dr.async_get(self._hass).async_get(GOODWE_DEVICE_ID)
+        if device is None:
+            return None
+        for runtime_data in runtime_datas.values():
+            if device.identifiers == runtime_data.device_info.get("identifiers"):
+                return runtime_data.inverter
+        return None
