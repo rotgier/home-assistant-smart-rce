@@ -70,14 +70,8 @@ class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
         return self._service.override_mode.value
 
     async def async_select_option(self, option: str) -> None:
-        try:
-            mode = OverrideMode(option)
-        except ValueError:
-            _LOGGER.warning(
-                "EmsBatteryChargeAllowedOverrideSelect: invalid option %r", option
-            )
-            return
-        await self._service.set_override_mode(mode)
+        # HA platform validates `option` against `_attr_options` before calling us.
+        await self._service.set_override_mode(OverrideMode(option))
 
     @callback
     def _on_change(self, _mode: OverrideMode) -> None:
