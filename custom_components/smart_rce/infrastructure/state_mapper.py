@@ -19,7 +19,6 @@ zachował tylko composition root (instancjowanie domain + adapters).
 """
 
 from collections.abc import Callable
-from datetime import time
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -138,19 +137,6 @@ def set_is_workday(entity: str, i: InputState, state: str) -> None:
     i.is_workday = map_on_off(entity, state)
 
 
-def set_start_charge_hour_override(entity: str, i: InputState, state: str) -> None:
-    """Parse input_datetime.rce_start_charge_hour_today_override state → time."""
-    if state in (None, "", "unavailable", "unknown"):
-        i.start_charge_hour_override = None
-        return
-    try:
-        # HA input_datetime (has_time, has_date=false) string format: "HH:MM:SS"
-        i.start_charge_hour_override = time.fromisoformat(state)
-    except ValueError:
-        _LOGGER.error("State %s=%s cannot be parsed as time", entity, state)
-        i.start_charge_hour_override = None
-
-
 def set_pv_power(entity: str, i: InputState, state: str) -> None:
     i.pv_power = map_float(entity, state)
 
@@ -216,7 +202,6 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     # `input_boolean.ems_allow_discharge_override` REMOVED — replaced by
     # smart_rce-owned switch `switch.ems_interventions_blocked` backed by
     # `BatterySchedule.ems_interventions_blocked` (Etap 0).
-    "input_datetime.rce_start_charge_hour_today_override": set_start_charge_hour_override,
     "input_select.ems_water_heater_strategy": set_water_heater_strategy,
     "binary_sensor.rce_should_hold_for_peak": set_rce_should_hold_for_peak,
     "binary_sensor.workday": set_is_workday,

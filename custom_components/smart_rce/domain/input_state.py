@@ -7,7 +7,7 @@ importować InputState bez circular dependency z ems.py.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime
 
 
 @dataclass
@@ -41,10 +41,13 @@ class InputState:
     # `switch.ems_interventions_blocked`). Same kwarg-passing pattern as
     # `battery_charge_allowed`.
 
-    start_charge_hour_override: time | None = None
-    # input_datetime.rce_start_charge_hour_today_override (HH:MM:SS).
-    # Pre-charge window end. Domyślnie kopia rce_start_charge_hour_today_time,
-    # user może nadpisać ręcznie.
+    # `start_charge_hour_override` REMOVED (Etap B'-2) — replaced by
+    # `BatteryChargePolicy.start_charge_hour_override` (smart_rce-managed
+    # `time.ems_battery_charge_start_hour_override` entity). Read in
+    # `Ems.update_state` from BatteryChargeService property, passed explicitly
+    # as keyword argument to `DodPolicy.update` and `GridExportManager.update`
+    # (mirrors `ems_interventions_blocked` Etap 0 + `battery_charge_allowed`
+    # Etap B patterns).
 
     water_heater_strategy: str | None = None
     # input_select.ems_water_heater_strategy — strategia rezerwacji PV między

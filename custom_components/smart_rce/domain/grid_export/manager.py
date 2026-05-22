@@ -39,7 +39,7 @@ returns to AUTO, listener restores registers to AUTO.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 import logging
 from typing import Final
 
@@ -125,6 +125,7 @@ class GridExportManager:
         ems_interventions_blocked: bool = False,
         battery_charge_allowed: bool = True,
         ems_schedule_active_this_hour: bool = False,
+        start_charge_hour_override: time | None = None,
     ) -> None:
         """Re-evaluate intervention state from current InputState.
 
@@ -195,9 +196,17 @@ class GridExportManager:
 
         # --- Continue / Entry routing ---
         if self._active is not None:
-            self._tick_active(state, battery_charge_allowed=battery_charge_allowed)
+            self._tick_active(
+                state,
+                battery_charge_allowed=battery_charge_allowed,
+                start_charge_hour_override=start_charge_hour_override,
+            )
         else:
-            self._try_enter(state, battery_charge_allowed=battery_charge_allowed)
+            self._try_enter(
+                state,
+                battery_charge_allowed=battery_charge_allowed,
+                start_charge_hour_override=start_charge_hour_override,
+            )
 
         self._apply_disabled_override_if_needed(state)
         self._log_after_update(
@@ -218,7 +227,13 @@ class GridExportManager:
             or state.pv_power is None
         )
 
-    def _tick_active(self, state: InputState, *, battery_charge_allowed: bool) -> None:
+    def _tick_active(
+        self,
+        state: InputState,
+        *,
+        battery_charge_allowed: bool,
+        start_charge_hour_override: time | None,
+    ) -> None:
         """Continue path — global exit checks first, then delegate to intervention."""
         # Hour rollover (utility_meter resets hourly balance on the full hour,
         # each hour = a separate intervention decision).
@@ -230,16 +245,30 @@ class GridExportManager:
             self._set_neutral("end_of_hour_cleanup")
             return
         # Delegate to intervention — intervention-specific exits + recompute.
-        result = self._active.continue_or_exit(
-            state, battery_charge_allowed=battery_charge_allowed
-        )
+        # Only POSITIVE consumes start_charge_hour_override (pre-charge window).
+        if isinstance(self._active, PositiveIntervention):
+            result = self._active.continue_or_exit(
+                state,
+                battery_charge_allowed=battery_charge_allowed,
+                start_charge_hour_override=start_charge_hour_override,
+            )
+        else:
+            result = self._active.continue_or_exit(
+                state, battery_charge_allowed=battery_charge_allowed
+            )
         if result.is_exit:
             self._set_neutral(result.exit_reason)
         else:
             # self._active mutated in place — sync last_decision_reason.
             self.last_decision_reason = self._active.last_reason
 
-    def _try_enter(self, state: InputState, *, battery_charge_allowed: bool) -> None:
+    def _try_enter(
+        self,
+        state: InputState,
+        *,
+        battery_charge_allowed: bool,
+        start_charge_hour_override: time | None,
+    ) -> None:
         """Entry path — global entry blocks first, then balance range routing.
 
         Note: `other_ems_automation_active_this_hour` is handled by the global
@@ -258,7 +287,9 @@ class GridExportManager:
         balance = state.exported_energy_hourly
         if balance > positive.BALANCE_GATE_KWH:
             result = PositiveIntervention.try_enter(
-                state, battery_charge_allowed=battery_charge_allowed
+                state,
+                battery_charge_allowed=battery_charge_allowed,
+                start_charge_hour_override=start_charge_hour_override,
             )
         elif balance < negative.entry_threshold(state):
             result = NegativeIntervention.try_enter(

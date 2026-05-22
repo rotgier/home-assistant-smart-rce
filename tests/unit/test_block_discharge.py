@@ -7,7 +7,7 @@ in DodPolicy. These tests exercise hysteresis algorithms in isolation.
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime
 
 from custom_components.smart_rce.domain.block_discharge import (
     DISCHARGE_HYSTERESIS_RESET_WH,
@@ -46,7 +46,6 @@ def _state(
         exported_energy_hourly=exported_energy_hourly,
         heater_mode="BALANCED",
         depth_of_discharge=None,
-        start_charge_hour_override=time(10, 0),
         rce_should_hold_for_peak=False,
         is_workday=True,
         now=datetime(2026, 4, 20, 8, 30, tzinfo=TIMEZONE),

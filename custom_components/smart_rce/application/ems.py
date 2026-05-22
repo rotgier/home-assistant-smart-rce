@@ -41,6 +41,7 @@ from custom_components.smart_rce.domain.battery_schedule import BatteryScheduleI
 from custom_components.smart_rce.domain.charge_slots import (
     DEFAULT_HEATER_RCE_THRESHOLD,
     ChargeSlots,
+    StartChargeTodayChanged,
 )
 from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
 from custom_components.smart_rce.domain.dod_policy import DodPolicy
@@ -133,11 +134,14 @@ class Ems:
         # truth for grid_export + water_heater (passed as explicit kwarg,
         # analogous to ems_interventions_blocked). Actuator dispatched below
         # state-diffs target vs Modbus cache, only writes on delta.
-        self.battery_charge_service.update(
-            schedule_op,
-            start_charge_hour_override=state.start_charge_hour_override,
-        )
+        self.battery_charge_service.update(schedule_op)
         charge_allowed = self.battery_charge_service.charge_allowed
+        # start_charge_hour_override now owned by BatteryChargePolicy (Etap B'-2);
+        # passed as explicit kwarg to consumers (DodPolicy, GridExport) — same
+        # pattern as charge_allowed / ems_interventions_blocked.
+        start_charge_hour_override = (
+            self.battery_charge_service.start_charge_hour_override
+        )
 
         # ─── 3. GridExportManager + its actuator (Goodwe scene.apply) ───
         # grid_export PRZED water_heater — water_heater dostaje aktualny
@@ -148,6 +152,7 @@ class Ems:
             ems_interventions_blocked=blocked,
             battery_charge_allowed=charge_allowed,
             ems_schedule_active_this_hour=schedule_active_this_hour,
+            start_charge_hour_override=start_charge_hour_override,
         )
         self._grid_export_actuator.apply_if_changed(state)
 
@@ -162,7 +167,11 @@ class Ems:
         # Order matters: save before apply (state persisted even if apply fails),
         # log after compute (debug log captures intent), actuator last
         # (Modbus write to inverter).
-        self.dod_policy.update(state, ems_interventions_blocked=blocked)
+        self.dod_policy.update(
+            state,
+            ems_interventions_blocked=blocked,
+            start_charge_hour_override=start_charge_hour_override,
+        )
         self._dod_repository.save_if_changed()
         self._dod_logger.log_if_changed(state)
         self._dod_actuator.apply_if_changed()
@@ -179,12 +188,13 @@ class Ems:
         if not data:
             return
         self.rce_prices.update(now, data)
-        self.charge_slots.update(data, self._heater_threshold())
+        self._refresh_charge_slots(now, data)
         self.update_hourly(now)
 
     def update_hourly(self, now: datetime) -> None:
         self.rce_prices.update_hourly(now)
-        self.charge_slots.rotate_if_day_changed(now)
+        rotation_event = self.charge_slots.rotate_if_day_changed(now)
+        self._maybe_sync_start_charge_hour(now, rotation_event)
         self.discharge_slots.update(self.rce_prices.rce_prices, now)
         if self.rce_prices.current_price is not None:
             self._async_update_listeners()
@@ -192,7 +202,7 @@ class Ems:
     def restore_rce_today(self, prices_attr: list[dict], now: datetime) -> None:
         """Restore today's RCE prices from sensor attributes."""
         self.rce_prices.restore_today(prices_attr, now)
-        self.charge_slots.update(self.rce_prices.rce_prices, self._heater_threshold())
+        self._refresh_charge_slots(now, self.rce_prices.rce_prices)
         self.update_hourly(now)
 
     def restore_rce_tomorrow(self, prices_attr: list[dict]) -> None:
@@ -201,8 +211,44 @@ class Ems:
         # EmsRcePrices.restore_tomorrow przyjmuje now żeby utworzyć RcePrices
         # gdy first restore (rce_prices is None) — używamy datetime.now() jako
         # placeholder (nie wpływa na żadną logikę odczytową).
-        self.rce_prices.restore_tomorrow(prices_attr, datetime.now())
-        self.charge_slots.update(self.rce_prices.rce_prices, self._heater_threshold())
+        now_local_dt = datetime.now()
+        self.rce_prices.restore_tomorrow(prices_attr, now_local_dt)
+        self._refresh_charge_slots(now_local_dt, self.rce_prices.rce_prices)
+
+    def _refresh_charge_slots(self, now: datetime, rce_data: RcePrices | None) -> None:
+        """Recompute charge_slots from RCE + propagate today_start change event.
+
+        Etap B'-2: replaces legacy YAML automation
+        `copy-rce-start-charge-override-midnight` — sync RCE-computed
+        today_start into BatteryChargePolicy.start_charge_hour_override.
+        """
+        event = self.charge_slots.update(rce_data, self._heater_threshold())
+        self._maybe_sync_start_charge_hour(now, event)
+
+    def _maybe_sync_start_charge_hour(
+        self, now: datetime, event: StartChargeTodayChanged | None
+    ) -> None:
+        """Propagate event to BatteryChargePolicy with stickiness gate.
+
+        Conditions to sync (any one):
+        1. Bootstrap — policy.start_charge_hour_override is None (fresh install
+           or first deploy)
+        2. Midnight window — `0 <= now.hour < 6` (mirrors legacy YAML automation
+           `copy-rce-start-charge-override-midnight` time condition)
+
+        Outside these, user's manual override on `time.ems_battery_charge_start_hour_override`
+        is preserved (sticky). At midnight rotation the override resets to
+        the freshly-computed today_start.
+        """
+        if event is None:
+            return
+        if self.battery_charge_service is None:
+            return
+        policy_current = self.battery_charge_service.start_charge_hour_override
+        if policy_current is None or 0 <= now.hour < 6:
+            self.battery_charge_service.auto_sync_start_charge_hour_override(
+                event.new_value
+            )
 
     def _heater_threshold(self) -> float:
         """Read input_number.heater_rce_threshold from last InputState (with fallback).

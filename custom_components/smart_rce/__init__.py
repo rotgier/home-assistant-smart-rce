@@ -35,6 +35,7 @@ PLATFORMS = [
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.TIME,
 ]
 
 
@@ -305,6 +306,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.binary_sensor"))
     reload(import_module("custom_components.smart_rce.switch"))
     reload(import_module("custom_components.smart_rce.select"))
+    reload(import_module("custom_components.smart_rce.time"))
     reload(import_module("custom_components.smart_rce"))
 
 

@@ -37,7 +37,7 @@ _CONSUMPTION_5MIN_ENTITY: Final = "sensor.house_consumption_minus_water_avg_5_mi
 _PV_BUCKET_KWH_ENTITY: Final = "sensor.total_pv_generation_bi_hourly"
 _CONSUMPTION_BUCKET_KWH_ENTITY: Final = "sensor.total_consumption_minus_bi_hourly"
 _START_CHARGE_HOUR_OVERRIDE_ENTITY: Final = (
-    "input_datetime.rce_start_charge_hour_today_override"
+    "time.ems_battery_charge_start_hour_override"
 )
 # Phase C: derivative-aware projection inputs. Both built by the
 # `pv_stability` HA YAML package — derivative is the 2-min HA derivative
@@ -93,12 +93,14 @@ class LiveRateReader:
     def read_start_charge_hour_today_override(self) -> int | None:
         """Hour (0..23) when pre-charge ends / post-charge begins.
 
-        Read from `input_datetime.rce_start_charge_hour_today_override` (user
-        manual override; default copy of `sensor.rce_start_charge_hour_today_time`).
-        Same source as DodPolicy uses for WORKDAY_PRE/POST_CHARGE phase split.
+        Etap B'-2: read from smart_rce-owned `time.ems_battery_charge_start_hour_override`
+        (replaces legacy `input_datetime.rce_start_charge_hour_today_override`).
+        Same source as DodPolicy uses for WORKDAY_PRE/POST_CHARGE phase split,
+        sourced from `BatteryChargePolicy.start_charge_hour_override` via the
+        HA time entity.
 
         Parses HH:MM:SS state, returns the hour component. Returns None when
-        sensor unavailable so caller can fall back to no-gate behavior.
+        entity unavailable so caller can fall back to no-gate behavior.
         """
         state = self._hass.states.get(_START_CHARGE_HOUR_OVERRIDE_ENTITY)
         if state is None or state.state in ("unknown", "unavailable"):

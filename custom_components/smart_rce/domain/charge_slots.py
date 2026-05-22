@@ -50,6 +50,20 @@ class ChargeWindow:
     end_datetime: datetime
 
 
+@dataclass(frozen=True)
+class StartChargeTodayChanged:
+    """Event emitted by ChargeSlots when today's start time-of-day changes.
+
+    Emitted from:
+    - `update` — only when the newly-computed today_start differs from the
+      previous value (RCE refresh that genuinely changed the slot).
+    - `rotate_if_day_changed` — on every rotation regardless of equality
+      (semantic: 'new day = fresh value, downstream can decide stickiness').
+    """
+
+    new_value: time
+
+
 class ChargeSlots:
     """Cached today/tomorrow ChargeWindow + algorytm doboru godzin."""
 
@@ -61,17 +75,34 @@ class ChargeSlots:
         self,
         rce_data: RcePrices | None,
         heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,
-    ) -> None:
-        """Recompute charge windows z fresh RCE data — full refresh today/tomorrow."""
+    ) -> StartChargeTodayChanged | None:
+        """Recompute charge windows from RCE — full refresh today/tomorrow.
+
+        Returns `StartChargeTodayChanged` event when today's start_datetime
+        time-of-day actually changed (Etap B'-2 — drives auto-sync of
+        BatteryChargePolicy.start_charge_hour_override).
+        """
+        previous = self.today.start_datetime.time() if self.today else None
         if rce_data is None:
             self.today = None
             self.tomorrow = None
-            return
-        self.today = self.compute(rce_data.today, heater_threshold)
-        self.tomorrow = self.compute(rce_data.tomorrow, heater_threshold)
+            new = None
+        else:
+            self.today = self.compute(rce_data.today, heater_threshold)
+            self.tomorrow = self.compute(rce_data.tomorrow, heater_threshold)
+            new = self.today.start_datetime.time() if self.today else None
+        if new is not None and new != previous:
+            return StartChargeTodayChanged(new_value=new)
+        return None
 
-    def rotate_if_day_changed(self, now: datetime) -> None:
-        """Move tomorrow → today gdy data się zmieniła (wywoływane z update_hourly)."""
+    def rotate_if_day_changed(self, now: datetime) -> StartChargeTodayChanged | None:
+        """Move tomorrow → today when date rolled. Returns event on rotation.
+
+        Event is emitted on EVERY rotation (not gated on value equality with
+        previous today) — semantic: 'new day, fresh value'. Downstream
+        consumer (BatteryChargeService.auto_sync_start_charge_hour_override)
+        handles idempotent no-op when value matches the current override.
+        """
         if (
             self.today is not None
             and self.tomorrow is not None
@@ -84,6 +115,10 @@ class ChargeSlots:
             )
             self.today = self.tomorrow
             self.tomorrow = None
+            new = self.today.start_datetime.time() if self.today else None
+            if new is not None:
+                return StartChargeTodayChanged(new_value=new)
+        return None
 
     @staticmethod
     def compute(

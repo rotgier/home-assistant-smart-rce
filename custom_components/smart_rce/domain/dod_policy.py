@@ -93,6 +93,8 @@ from .block_discharge import (
 )
 
 if TYPE_CHECKING:
+    from datetime import time
+
     from .input_state import InputState
 
 
@@ -166,20 +168,30 @@ class DodPolicy:
     _prev_block: bool = False
 
     def update(
-        self, state: InputState, *, ems_interventions_blocked: bool = False
+        self,
+        state: InputState,
+        *,
+        ems_interventions_blocked: bool = False,
+        start_charge_hour_override: time | None = None,
     ) -> None:
         """Compute target_dod for this tick.
 
         Reads InputState (time, peak, exported_energy, pv_5min, is_workday,
-        is_workday_tomorrow) plus `ems_interventions_blocked` flag passed
-        explicitly by Ems (from BatterySchedule, not from InputState).
+        is_workday_tomorrow) plus kwargs from Ems:
+        - `ems_interventions_blocked` from BatteryScheduleService
+        - `start_charge_hour_override` from BatteryChargeService (Etap B'-2;
+          previously read from InputState.start_charge_hour_override which
+          mapped legacy input_datetime)
+
         Mutates target_dod + current_phase + _override_set_phase + _prev_block.
 
         UNKNOWN phase (inputs missing — typically <50ms post-restart) keeps
         persisted state intact; we don't overwrite target_dod or current_phase
         until phase computation has complete inputs.
         """
-        new_phase = self._compute_phase(state, ems_interventions_blocked)
+        new_phase = self._compute_phase(
+            state, ems_interventions_blocked, start_charge_hour_override
+        )
 
         if new_phase == Phase.UNKNOWN:
             return
@@ -227,7 +239,10 @@ class DodPolicy:
         return current_phase == self._override_set_phase
 
     def _compute_phase(
-        self, state: InputState, ems_interventions_blocked: bool = False
+        self,
+        state: InputState,
+        ems_interventions_blocked: bool = False,
+        start_charge_hour_override: time | None = None,
     ) -> Phase:
         """Dispatch to phase by priority — first match wins.
 
@@ -265,9 +280,9 @@ class DodPolicy:
             return Phase.WEEKEND_MORNING
 
         # Workday morning — pre-charge or post-charge based on start_charge_hour
-        if state.start_charge_hour_override is None:
+        if start_charge_hour_override is None:
             return Phase.UNKNOWN
-        if state.now.time() < state.start_charge_hour_override:
+        if state.now.time() < start_charge_hour_override:
             return Phase.WORKDAY_PRE_CHARGE
         return Phase.WORKDAY_POST_CHARGE
 

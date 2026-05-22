@@ -57,26 +57,12 @@ class BatteryChargeService:
         self._actuator = actuator
         self._last_schedule_op: BatteryOperation = BatteryOperation.idle()
         self._override_listeners: list[Callable[[OverrideMode], None]] = []
+        self._start_charge_hour_listeners: list[Callable[[time | None], None]] = []
 
     @callback
-    def update(
-        self,
-        schedule_op: BatteryOperation,
-        *,
-        start_charge_hour_override: time | None,
-    ) -> None:
-        """Per-tick hook called from Ems.update_state.
-
-        Etap B' bridge: `start_charge_hour_override` flows from
-        `state.start_charge_hour_override` (legacy input_datetime) into the
-        policy each tick. Future commit migrates ownership to a smart_rce
-        time entity + drops the kwarg + state_mapper field.
-        """
+    def update(self, schedule_op: BatteryOperation) -> None:
+        """Per-tick hook called from Ems.update_state."""
         self._last_schedule_op = schedule_op
-        # Persist only when value actually changes (avoids spurious disk writes
-        # on every tick where state_mapper happens to forward identical value).
-        if self._repo.policy.set_start_charge_hour_override(start_charge_hour_override):
-            self._repo.save_if_changed()
         self._actuator.apply_if_changed(schedule_op, self._clock())
 
     # ─── Properties (sensor / actuator queries) ───
@@ -102,6 +88,10 @@ class BatteryChargeService:
     @property
     def override_mode(self) -> OverrideMode:
         return self._repo.policy.user_override_mode
+
+    @property
+    def start_charge_hour_override(self) -> time | None:
+        return self._repo.policy.start_charge_hour_override
 
     # ─── User override — public mutators ───
 
@@ -130,3 +120,58 @@ class BatteryChargeService:
                 self._override_listeners.remove(cb)
 
         return _unsub
+
+    # ─── start_charge_hour_override — public mutators ───
+
+    async def set_start_charge_hour_override(self, value: time | None) -> None:
+        """UI-driven time entity change. Persists + notifies listeners on delta."""
+        previous = self._repo.policy.start_charge_hour_override
+        if previous == value:
+            return
+        await self._repo.set_start_charge_hour_override(value)
+        _LOGGER.info(
+            "BatteryChargeService: start_charge_hour_override %s → %s",
+            previous,
+            value,
+        )
+        for cb in self._start_charge_hour_listeners:
+            cb(value)
+
+    def add_start_charge_hour_override_listener(
+        self, cb: Callable[[time | None], None]
+    ) -> Callable[[], None]:
+        """Subscribe to start_charge_hour_override changes."""
+        self._start_charge_hour_listeners.append(cb)
+
+        def _unsub() -> None:
+            with contextlib.suppress(ValueError):
+                self._start_charge_hour_listeners.remove(cb)
+
+        return _unsub
+
+    @callback
+    def auto_sync_start_charge_hour_override(self, value: time | None) -> None:
+        """Auto-sync RCE-proposed start_charge_hour to policy override.
+
+        Sync entry point called from `Ems.update_hourly` during the midnight
+        window OR when policy is uninitialized (bootstrap). Mirrors legacy
+        YAML automation `copy-rce-start-charge-override-midnight` — copy
+        the RCE-derived `sensor.rce_start_charge_hour_today_time` into the
+        user-overridable setting once per day at rollover.
+
+        Sticky override semantic (Etap 2G future): outside the auto-sync
+        window the user's manual time entity change won't be overwritten.
+        """
+        previous = self._repo.policy.start_charge_hour_override
+        if previous == value:
+            return
+        if not self._repo.policy.set_start_charge_hour_override(value):
+            return
+        self._repo.save_if_changed()
+        _LOGGER.info(
+            "BatteryChargeService: auto-sync start_charge_hour_override %s → %s",
+            previous,
+            value,
+        )
+        for cb in self._start_charge_hour_listeners:
+            cb(value)

@@ -26,7 +26,7 @@ Two-phase init:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 import logging
 from typing import Any, Final
 
@@ -82,6 +82,11 @@ class BatteryChargeRepository:
     async def set_override_mode(self, mode: OverrideMode) -> None:
         """Set user override + auto-persist on change."""
         if self._policy.set_user_override_mode(mode):
+            await self._persist_now()
+
+    async def set_start_charge_hour_override(self, value: time | None) -> None:
+        """Set morning charge window start + auto-persist on change."""
+        if self._policy.set_start_charge_hour_override(value):
             await self._persist_now()
 
     @callback

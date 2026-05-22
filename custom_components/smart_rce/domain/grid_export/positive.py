@@ -61,7 +61,10 @@ Cross-cutting checks (manager handles, NOT in try_enter / continue_or_exit):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final
+
+if TYPE_CHECKING:
+    from datetime import time
 
 from custom_components.smart_rce.domain.grid_export.intervention import (
     CONTINUE,
@@ -147,7 +150,11 @@ class PositiveIntervention:
 
     @classmethod
     def try_enter(
-        cls, state: InputState, *, battery_charge_allowed: bool
+        cls,
+        state: InputState,
+        *,
+        battery_charge_allowed: bool,
+        start_charge_hour_override: time | None,
     ) -> EntryResult:
         """Try to enter POSITIVE intervention.
 
@@ -155,14 +162,15 @@ class PositiveIntervention:
         - balance > BALANCE_GATE_KWH (range routing)
         - no ems_interventions_blocked
         - not too_late_in_hour
-        - not other_ems_automation_active_this_hour
+        - not ems_schedule_active_this_hour
 
         Checks intervention-specific gates, then delegates to `_enter` for
-        instance creation + initial _continue. `battery_charge_allowed`
-        sourced from BatteryChargeService (Etap B — replaces legacy
-        `state.battery_charge_toggle_on`).
+        instance creation + initial _continue. `battery_charge_allowed` and
+        `start_charge_hour_override` are sourced from BatteryChargeService
+        (Etap B / B'-2 — replaces legacy `state.battery_charge_toggle_on` +
+        `state.start_charge_hour_override`).
         """
-        if cls._is_in_pre_charge_window(state):
+        if cls._is_in_pre_charge_window(state, start_charge_hour_override):
             return EntryResult.blocked("in_pre_charge_window")
         if state.battery_soc >= SOC_ENTRY_CEILING:
             return EntryResult.blocked("soc_at_entry_ceiling")
@@ -186,7 +194,11 @@ class PositiveIntervention:
         return EntryResult.entered(intervention)
 
     def continue_or_exit(
-        self, state: InputState, *, battery_charge_allowed: bool
+        self,
+        state: InputState,
+        *,
+        battery_charge_allowed: bool,
+        start_charge_hour_override: time | None,
     ) -> ContinueResult:
         """Continue POSITIVE intervention. Mutates self in-place on continue.
 
@@ -195,7 +207,7 @@ class PositiveIntervention:
         - end_of_hour_cleanup (now ≥ XX:59:50)
         - no ems_interventions_blocked
         """
-        if self._is_in_pre_charge_window(state):
+        if self._is_in_pre_charge_window(state, start_charge_hour_override):
             return ContinueResult.exit_with("in_pre_charge_window")
         if state.exported_energy_hourly < EXIT_BALANCE_KWH:
             return ContinueResult.exit_with("balance_recovered")
@@ -206,17 +218,20 @@ class PositiveIntervention:
         return self._continue(state)
 
     @staticmethod
-    def _is_in_pre_charge_window(state: InputState) -> bool:
+    def _is_in_pre_charge_window(
+        state: InputState, start_charge_hour_override: time | None
+    ) -> bool:
         """Pre-charge: 7:00 ≤ now < start_charge_hour_override.
 
         Multi-caller helper (try_enter + continue_or_exit) — placed after
-        the last caller (continue_or_exit).
+        the last caller (continue_or_exit). `start_charge_hour_override`
+        passed by callers (Etap B'-2 — was read from InputState).
         """
-        if state.start_charge_hour_override is None:
+        if start_charge_hour_override is None:
             return False
         if state.now.hour < PRE_CHARGE_WINDOW_START_HOUR:
             return False
-        return state.now.time() < state.start_charge_hour_override
+        return state.now.time() < start_charge_hour_override
 
     def _continue(self, state: InputState) -> ContinueResult:
         """Compute new decision and commit to self. Returns CONTINUE or exit.
