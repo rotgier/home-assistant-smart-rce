@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import date, time
+from datetime import date, datetime, time
 from enum import Enum, StrEnum
 from typing import Any, Final, Literal
 
@@ -276,6 +276,63 @@ class BatteryScheduleEntry:
     def with_changes(self, **kwargs: Any) -> BatteryScheduleEntry:
         return dataclasses.replace(self, **kwargs)
 
+    # ─── window + target predicates ───
+
+    def is_in_window(self, now: datetime) -> bool:
+        """Return True if `now` falls inside `[start, end)`. Ignores `enabled`."""
+        return self.start <= now.time() < self.end
+
+    def soc_target_reached(self, current_soc: float) -> bool:
+        """Return True when no further work needed for this direction.
+
+        Discharge → SoC <= target. Charge → SoC >= target.
+        """
+        if self.kind.direction.is_discharge:
+            return current_soc <= self.target_soc
+        return current_soc >= self.target_soc
+
+    def time_to_complete_at(self, current_soc: float) -> float:
+        """Seconds needed to reach target_soc at the default inverter rate.
+
+        Returns 0 if already at target. Symmetric for charge/discharge —
+        absolute SoC delta × rate. Never negative.
+        """
+        if self.soc_target_reached(current_soc):
+            return 0.0
+        delta = abs(current_soc - self.target_soc)
+        return delta * self.kind.profile.rate_sec_per_pct
+
+    def should_apply_now(self, now: datetime, current_soc: float) -> bool:
+        """Whether orchestrator should actively engage EMS mode at `now`.
+
+        Returns False if:
+        - slot is disabled
+        - `now` outside `[start, end)`
+        - `target_soc` already reached
+        - `behavior=DELAYED_TO_END` and remaining window time still exceeds
+          the projected time-to-complete
+
+        `behavior=IMMEDIATE` → True as soon as inside window with target not
+        reached.
+
+        NOTE: orchestrator applies hysteresis on top — once engaged, sticks
+        until target_reached or out of window, even if `should_apply_now`
+        flickers (e.g. SoC drops faster than expected). See
+        `BatterySchedule.compute_operation`.
+        """
+        if not self.enabled:
+            return False
+        if not self.is_in_window(now):
+            return False
+        if self.soc_target_reached(current_soc):
+            return False
+        if self.behavior == SlotBehavior.IMMEDIATE:
+            return True
+        # DELAYED_TO_END: engage only when remaining window time is just
+        # enough to hit target at the assumed rate.
+        sec_to_end = _sec_until_today(now, self.end)
+        return sec_to_end <= self.time_to_complete_at(current_soc)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -397,6 +454,72 @@ class BatterySchedule:
             SlotKind.DISCHARGE_EVENING: self.tomorrow_discharge_evening,
         }
 
+    def today_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
+        return self.today_entries()[kind]
+
+    # ─── compute_operation — pure decision function w/ aggregate state mutations ───
+
+    def compute_operation(
+        self, now: datetime, current_soc: float
+    ) -> tuple[BatteryOperation, list[BatteryScheduleEvent]]:
+        """Decide BatteryOperation + emit domain events for what changed.
+
+        Mutates aggregate state:
+        - `last_seen_date` set to `now.date()` (rolls tomorrow→today on date change)
+        - `_currently_engaging` flipped on engage/disengage
+
+        Hysteresis: once `_currently_engaging` is set, keep engaging that slot
+        until target_reached OR out-of-window OR slot disabled. Prevents
+        flicker when SoC change rate diverges from the rate estimate.
+
+        Precedence (when no current engagement, multiple slots in window):
+        DISCHARGE_EVENING > DISCHARGE_MORNING > CHARGE_AFTERNOON > CHARGE_MORNING
+        (`_PRECEDENCE` list — last wins as strongest).
+        """
+        events: list[BatteryScheduleEvent] = []
+
+        # 1. Day roll detection
+        if self.last_seen_date is not None and self.last_seen_date != now.date():
+            events.append(DayRolled(from_date=self.last_seen_date, to_date=now.date()))
+            self.roll_day()
+        self.last_seen_date = now.date()
+
+        # 2. Already engaging? Stick until target_reached / window_ended / disabled.
+        if self._currently_engaging is not None:
+            entry = self.today_entry_for(self._currently_engaging)
+            disengage_reason = _disengage_reason(entry, now, current_soc)
+            if disengage_reason is None:
+                # Stay engaged — sticky hysteresis trumps DELAYED_TO_END flicker.
+                return BatteryOperation.from_entry(entry), events
+            events.append(
+                SlotDisengaged(
+                    slot=self._currently_engaging,
+                    soc=current_soc,
+                    at=now,
+                    reason=disengage_reason,
+                )
+            )
+            self._currently_engaging = None
+            # Fall through — another slot might be ready to engage immediately.
+
+        # 3. Find highest-precedence slot that should engage NOW.
+        entry = self._find_engaging_entry(now, current_soc)
+        if entry is not None:
+            events.append(SlotEngaged(slot=entry.kind, soc=current_soc, at=now))
+            self._currently_engaging = entry.kind
+            return BatteryOperation.from_entry(entry), events
+
+        return BatteryOperation.idle(), events
+
+    def _find_engaging_entry(
+        self, now: datetime, current_soc: float
+    ) -> BatteryScheduleEntry | None:
+        today = self.today_entries()
+        engaging = [
+            today[k] for k in _PRECEDENCE if today[k].should_apply_now(now, current_soc)
+        ]
+        return engaging[-1] if engaging else None
+
     def roll_day(self) -> None:
         """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
 
@@ -472,3 +595,144 @@ class BatterySchedule:
                 data.get("interventions_blocked_override", False)
             ),
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Precedence + helpers (used by compute_operation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# Order for resolving overlapping `should_apply_now`. Last wins (= strongest).
+# Discharge always beats charge (RCE peaks are time-critical; charging can wait).
+# Evening discharge beats morning (typically higher RCE peak). Afternoon charge
+# beats morning charge (closer to use, less time wasted holding).
+_PRECEDENCE: Final[list[SlotKind]] = [
+    SlotKind.CHARGE_MORNING,
+    SlotKind.CHARGE_AFTERNOON,
+    SlotKind.DISCHARGE_MORNING,
+    SlotKind.DISCHARGE_EVENING,
+]
+
+
+# Reason for disengaging a currently-engaging slot. None = keep engaging.
+DisengageReason = Literal["target_reached", "window_ended", "disabled"]
+
+
+def _disengage_reason(
+    entry: BatteryScheduleEntry, now: datetime, soc: float
+) -> DisengageReason | None:
+    """Return None if entry should keep engaging; otherwise the reason to stop."""
+    if not entry.enabled:
+        return "disabled"
+    if not entry.is_in_window(now):
+        return "window_ended"
+    if entry.soc_target_reached(soc):
+        return "target_reached"
+    return None
+
+
+def _sec_until_today(now: datetime, end: time) -> float:
+    """Seconds from `now` until today's `end` time. Negative if already past."""
+    end_dt = datetime.combine(now.date(), end, tzinfo=now.tzinfo)
+    return (end_dt - now).total_seconds()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BatteryOperation — desired action this tick (input to Applier in Etap 2D)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BatteryOperation:
+    """Desired battery operation at this moment.
+
+    Output of `BatterySchedule.compute_operation`. Consumed by
+    `BatteryOperationApplier` (Etap 2D, infrastructure) which translates fields
+    into HA service calls. Equality is structural — service compares vs
+    `_last_op` to skip no-op applies.
+
+    NO `ems_override_active` field — `schedule.ems_interventions_blocked` is
+    the canonical source of truth (read by Ems body and passed explicitly to
+    DodPolicy/GridExportManager). NO `dod_force` — DodPolicy reacts via
+    `INTERVENTIONS_BLOCKED` phase.
+
+    `slot` carries the SlotKind responsible for this op (or None for idle).
+    Used by Applier/Notifier to dispatch by kind without parsing strings.
+    """
+
+    ems_mode: EmsMode
+    power_limit_w: int | None
+    needs_charge_toggle: bool
+    notification_level: NotificationLevel
+    slot: SlotKind | None
+
+    @property
+    def is_idle(self) -> bool:
+        return self.slot is None
+
+    @classmethod
+    def idle(cls) -> BatteryOperation:
+        return cls(
+            ems_mode=EmsMode.AUTO,
+            power_limit_w=None,
+            needs_charge_toggle=False,
+            notification_level=NotificationLevel.NORMAL,
+            slot=None,
+        )
+
+    @classmethod
+    def from_entry(cls, entry: BatteryScheduleEntry) -> BatteryOperation:
+        d = entry.kind.direction
+        return cls(
+            ems_mode=d.ems_mode,
+            power_limit_w=d.power_limit_w,
+            needs_charge_toggle=d.needs_charge_toggle,
+            notification_level=entry.kind.profile.notification_level,
+            slot=entry.kind,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Events — domain happenings emitted by compute_operation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BatteryScheduleEvent:
+    """Base marker class for domain events emitted by compute_operation.
+
+    Notifier (Etap 2D) dispatches by isinstance — separate handler per type.
+    """
+
+
+@dataclass(frozen=True)
+class SlotEngaged(BatteryScheduleEvent):
+    """A slot just became active — orchestrator started engaging it."""
+
+    slot: SlotKind
+    soc: float
+    at: datetime
+
+
+@dataclass(frozen=True)
+class SlotDisengaged(BatteryScheduleEvent):
+    """A slot just stopped being active.
+
+    `reason` distinguishes why:
+    - "target_reached" — SoC reached target (normal completion)
+    - "window_ended" — `now` moved past `end` (window timeout)
+    - "disabled" — slot.enabled flipped to False mid-engagement
+    """
+
+    slot: SlotKind
+    soc: float
+    at: datetime
+    reason: DisengageReason
+
+
+@dataclass(frozen=True)
+class DayRolled(BatteryScheduleEvent):
+    """Midnight crossing detected — tomorrow_* shifted to today_*."""
+
+    from_date: date
+    to_date: date

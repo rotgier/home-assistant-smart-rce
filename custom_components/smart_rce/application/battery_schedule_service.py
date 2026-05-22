@@ -1,8 +1,9 @@
 """BatteryScheduleService — application orchestrator + use case facade.
 
 Public API consumed by HA entities (switch, dashboard cards) and Ems:
-- `update(input)` — per-tick orchestration (Etap 2A adds compute_operation
-  + side effects; Etap 0 is no-op)
+- `update(input)` — per-tick orchestration: calls aggregate compute_operation,
+  persists changed aggregate state. Etap 2D will add applier (HA service calls
+  to inverter) and notifier (telegram via script.notify_alert) dispatch.
 - `user_override_active` — current user override state (property)
 - `set_user_override(value)` — UI-driven toggle (switch entity)
 - `add_user_override_listener(cb)` — subscribe to user override changes
@@ -16,11 +17,9 @@ DDD application layer:
 - Use case methods compose domain mutations + repo persistence + listener
   notifications explicitly — no listener indirection on repo
 
-Etap 0 vs Etap 2A:
-- Etap 0: only user-override path is wired (switch entity + persistence).
-  `update()` is no-op — no schedule engagement logic yet.
-- Etap 2A: `update()` calls `schedule.compute_operation` + dispatches domain
-  events to notifier + applies BatteryOperation via applier.
+Etap 2A scope (now): wires compute_operation through update, persists
+aggregate, tracks last_op for diff detection. Adapter side effects deferred
+to Etap 2D — events are computed but NOT dispatched yet (logged debug only).
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 
-from ..domain.battery_schedule import BatteryScheduleInput
+from ..domain.battery_schedule import BatteryOperation, BatteryScheduleInput
 
 if TYPE_CHECKING:
     from ..infrastructure.async_task_runner import AsyncTaskRunner
@@ -62,10 +61,43 @@ class BatteryScheduleService:
         self._last_user_override_state: bool = (
             self._repo.schedule._interventions_blocked_override  # noqa: SLF001
         )
+        # Track last BatteryOperation to skip no-op applies (Etap 2D applier will
+        # use this to avoid spurious Goodwe writes when the op didn't change).
+        self._last_op: BatteryOperation = BatteryOperation.idle()
 
     @callback
     def update(self, input: BatteryScheduleInput) -> None:
-        """No-op in Etap 0. Etap 2A adds compute_operation + side effects."""
+        """Per-tick orchestration — called from Ems.update_state.
+
+        Domain logic (compute_operation) runs synchronously inside the aggregate;
+        side effects (persistence, applier, notifier) fire as fire-and-forget
+        tasks. Etap 2A wires compute_operation + persistence; applier + notifier
+        arrive in Etap 2D.
+        """
+        if input.battery_soc is None:
+            return
+
+        # ─── Domain logic — aggregate decides operation + emits events ───
+        op, events = self._repo.schedule.compute_operation(
+            self._clock(), input.battery_soc
+        )
+
+        # ─── Persistence — repo save_if_changed checks dict equality internally ───
+        self._repo.save_if_changed()
+
+        # ─── Events — log only in Etap 2A; notifier dispatch comes in Etap 2D ───
+        for event in events:
+            _LOGGER.info("BatteryScheduleEvent: %s", event)
+
+        # ─── Apply — only when op changed; applier wired in Etap 2D ───
+        if op != self._last_op:
+            _LOGGER.info(
+                "BatteryOperation change: %s → %s",
+                self._last_op,
+                op,
+            )
+            self._last_op = op
+            # TODO Etap 2D: self._tasks.run_background(self._applier.apply(op))
 
     # ─────── User override — public methods called from HA entities ───────
 
@@ -83,7 +115,7 @@ class BatteryScheduleService:
         disk write to complete).
 
         Schedule engagement is managed separately by `compute_operation`
-        (Etap 2A) — this method only controls the user-facing portion of
+        — this method only controls the user-facing portion of
         `ems_interventions_blocked`.
         """
         if self.user_override_active == value:
