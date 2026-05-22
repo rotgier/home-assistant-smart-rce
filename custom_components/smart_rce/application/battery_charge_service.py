@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import contextlib
+from dataclasses import dataclass
 from datetime import datetime, time
 import logging
 from typing import TYPE_CHECKING
@@ -33,6 +34,22 @@ from homeassistant.core import callback
 
 from ..domain.battery_charge_policy import OverrideMode
 from ..domain.battery_schedule import BatteryOperation
+from ..domain.charge_slots import StartChargeTodayChanged
+
+
+@dataclass(frozen=True)
+class BatteryChargeUpdateResult:
+    """Return value of `BatteryChargeService.update`.
+
+    Atomic capture of values Ems needs to pass to downstream managers
+    (DodPolicy, GridExport) this tick — taken AFTER policy decisions
+    settle. Lazy property reads on the service still work for external
+    consumers (sensors).
+    """
+
+    charge_allowed: bool
+    start_charge_hour_override: time | None
+
 
 if TYPE_CHECKING:
     from ..infrastructure.battery_charge_current_actuator import (
@@ -60,10 +77,14 @@ class BatteryChargeService:
         self._start_charge_hour_listeners: list[Callable[[time | None], None]] = []
 
     @callback
-    def update(self, schedule_op: BatteryOperation) -> None:
+    def update(self, schedule_op: BatteryOperation) -> BatteryChargeUpdateResult:
         """Per-tick hook called from Ems.update_state."""
         self._last_schedule_op = schedule_op
         self._actuator.apply_if_changed(schedule_op, self._clock())
+        return BatteryChargeUpdateResult(
+            charge_allowed=self._repo.policy.charge_allowed(self._clock(), schedule_op),
+            start_charge_hour_override=self._repo.policy.start_charge_hour_override,
+        )
 
     # ─── Properties (sensor / actuator queries) ───
 
@@ -156,23 +177,28 @@ class BatteryChargeService:
             cb(value)
 
     @callback
-    def auto_sync_start_charge_hour_override(self, value: time | None) -> None:
-        """Auto-sync RCE-proposed start_charge_hour to policy override.
+    def handle_start_charge_today_changed(
+        self, event: StartChargeTodayChanged | None, now: datetime
+    ) -> None:
+        """React to ChargeSlots emitting a today-start change event.
 
-        Sync entry point called from `Ems.update_hourly` during the midnight
-        window OR when policy is uninitialized (bootstrap). Mirrors legacy
-        YAML automation `copy-rce-start-charge-override-midnight` — copy
-        the RCE-derived `sensor.rce_start_charge_hour_today_time` into the
-        user-overridable setting once per day at rollover.
+        Sticky override gate — sync the new value into the policy only when:
+        1. Bootstrap — policy.start_charge_hour_override is None (fresh install)
+        2. Midnight window — `0 <= now.hour < 6`
 
-        Sticky override semantic (Etap 2G future): outside the auto-sync
-        window the user's manual time entity change won't be overwritten.
+        Outside these, user manual override on the time entity persists.
+        Mirrors legacy YAML automation `copy-rce-start-charge-override-midnight`
+        (gated by `condition: time after 00:00 before 06:00`).
         """
+        if event is None:
+            return
         previous = self._repo.policy.start_charge_hour_override
+        if previous is not None and not (0 <= now.hour < 6):
+            return  # sticky — user override survives outside midnight window
+        value = event.new_value
         if previous == value:
             return
-        if not self._repo.policy.set_start_charge_hour_override(value):
-            return
+        self._repo.policy.set_start_charge_hour_override(value)
         self._repo.save_if_changed()
         _LOGGER.info(
             "BatteryChargeService: auto-sync start_charge_hour_override %s → %s",

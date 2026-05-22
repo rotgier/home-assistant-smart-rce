@@ -15,13 +15,31 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
     legacy `state.battery_charge_toggle_on`). Default True = battery actively
     charging. Tests needing 'disabled' semantic pass `_ems(charge_allowed=False)`.
     """
+    from custom_components.smart_rce.application.battery_charge_service import (
+        BatteryChargeUpdateResult,
+    )
+    from custom_components.smart_rce.application.battery_schedule_service import (
+        BatteryScheduleUpdateResult,
+    )
+    from custom_components.smart_rce.domain.battery_schedule import BatteryOperation
     from custom_components.smart_rce.domain.dod_policy import DodPolicy
     from custom_components.smart_rce.domain.grid_export import GridExportManager
 
     service = MagicMock()
-    service.ems_interventions_blocked = False
-    service.schedule_active_this_hour = False
+    service.update = MagicMock(
+        return_value=BatteryScheduleUpdateResult(
+            operation=BatteryOperation.idle(),
+            ems_interventions_blocked=False,
+            schedule_active_this_hour=False,
+        )
+    )
     charge_service = MagicMock()
+    charge_service.update = MagicMock(
+        return_value=BatteryChargeUpdateResult(
+            charge_allowed=charge_allowed,
+            start_charge_hour_override=None,
+        )
+    )
     charge_service.charge_allowed = charge_allowed
     return Ems(
         dod_policy=DodPolicy(),

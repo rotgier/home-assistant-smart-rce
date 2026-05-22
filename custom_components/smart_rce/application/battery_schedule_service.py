@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import contextlib
+from dataclasses import dataclass
 from datetime import datetime
 import logging
 from typing import TYPE_CHECKING
@@ -33,6 +34,23 @@ from typing import TYPE_CHECKING
 from homeassistant.core import callback
 
 from ..domain.battery_schedule import BatteryOperation, BatteryScheduleInput
+
+
+@dataclass(frozen=True)
+class BatteryScheduleUpdateResult:
+    """Return value of `BatteryScheduleService.update`.
+
+    Atomic capture of all values Ems needs to pass to downstream managers
+    (DodPolicy, GridExport) this tick — taken AFTER compute_operation
+    mutated the aggregate. Lazy property reads on the service still work
+    for external consumers (sensors) — this is the orchestration-side
+    return contract.
+    """
+
+    operation: BatteryOperation
+    ems_interventions_blocked: bool
+    schedule_active_this_hour: bool
+
 
 if TYPE_CHECKING:
     from ..infrastructure.async_task_runner import AsyncTaskRunner
@@ -66,20 +84,15 @@ class BatteryScheduleService:
         self._last_op: BatteryOperation = BatteryOperation.idle()
 
     @callback
-    def update(self, input: BatteryScheduleInput) -> BatteryOperation:
+    def update(self, input: BatteryScheduleInput) -> BatteryScheduleUpdateResult:
         """Per-tick orchestration — called from Ems.update_state.
 
-        Domain logic (compute_operation) runs synchronously inside the aggregate;
-        side effects (persistence, applier, notifier) fire as fire-and-forget
-        tasks. Etap 2A wires compute_operation + persistence; applier + notifier
-        arrive in Etap 2D.
-
-        Returns the freshly-computed BatteryOperation so downstream consumers
-        (BatteryChargeService in Etap B, applier/notifier in Etap 2D) can
-        pick it up without re-querying the aggregate.
+        Returns a snapshot of all values Ems needs to drive downstream managers
+        (operation, ems_interventions_blocked, schedule_active_this_hour) —
+        captured atomically AFTER compute_operation mutated the aggregate.
         """
         if input.battery_soc is None:
-            return self._last_op
+            return self._make_result(self._last_op)
 
         # ─── Domain logic — aggregate decides operation + emits events ───
         op, events = self._repo.schedule.compute_operation(
@@ -103,7 +116,17 @@ class BatteryScheduleService:
             self._last_op = op
             # TODO Etap 2D: self._tasks.run_background(self._applier.apply(op))
 
-        return op
+        return self._make_result(op)
+
+    def _make_result(self, op: BatteryOperation) -> BatteryScheduleUpdateResult:
+        """Capture current aggregate state alongside given operation."""
+        return BatteryScheduleUpdateResult(
+            operation=op,
+            ems_interventions_blocked=self._repo.schedule.ems_interventions_blocked,
+            schedule_active_this_hour=self._repo.schedule.is_active_this_hour(
+                self._clock()
+            ),
+        )
 
     # ─── Properties exposed to Ems + entities (avoid Ems leaking repo) ───
 

@@ -124,7 +124,7 @@ def _restore_prices_today(ems: Ems, attrs: dict[str, Any]) -> None:
 def _restore_prices_tomorrow(ems: Ems, attrs: dict[str, Any]) -> None:
     prices = attrs.get("prices")
     if prices:
-        ems.restore_rce_tomorrow(prices)
+        ems.restore_rce_tomorrow(prices, now_local())
 
 
 SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
