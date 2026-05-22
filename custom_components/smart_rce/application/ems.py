@@ -54,9 +54,6 @@ from custom_components.smart_rce.infrastructure.battery_schedule_repository impo
 )
 
 if TYPE_CHECKING:
-    from custom_components.smart_rce.infrastructure.battery_charge_current_actuator import (
-        BatteryChargeCurrentActuator,
-    )
     from custom_components.smart_rce.infrastructure.dod_policy_actuator import (
         DodPolicyActuator,
     )
@@ -69,7 +66,6 @@ if TYPE_CHECKING:
     from custom_components.smart_rce.infrastructure.grid_export_actuator import (
         GridExportActuator,
     )
-    from homeassistant.util import dt as dt_util  # noqa: F401 — type hint hook
 
 type CALLBACK_TYPE = Callable[[], None]
 
@@ -103,11 +99,12 @@ class Ems:
         self.battery_schedule_service = battery_schedule_service
         self.battery_charge_service = battery_charge_service
         # Driven adapters — attached post-construction by factory.
+        # battery_charge_actuator is NOT here — it is owned by
+        # BatteryChargeService (encapsulation of the bounded context).
         self._dod_repository: DodPolicyRepository | None = None
         self._dod_logger: DodPolicyLogger | None = None
         self._dod_actuator: DodPolicyActuator | None = None
         self._grid_export_actuator: GridExportActuator | None = None
-        self._battery_charge_actuator: BatteryChargeCurrentActuator | None = None
 
     def attach_driven_adapters(
         self,
@@ -116,7 +113,6 @@ class Ems:
         dod_logger: DodPolicyLogger,
         dod_actuator: DodPolicyActuator,
         grid_export_actuator: GridExportActuator,
-        battery_charge_actuator: BatteryChargeCurrentActuator,
     ) -> None:
         """Wire driven adapters after construction (factory call).
 
@@ -129,11 +125,8 @@ class Ems:
         self._dod_logger = dod_logger
         self._dod_actuator = dod_actuator
         self._grid_export_actuator = grid_export_actuator
-        self._battery_charge_actuator = battery_charge_actuator
 
     def update_state(self, state: InputState) -> None:
-        from homeassistant.util import dt as dt_util
-
         self.last_input_state = state
 
         # ─── 1. BatteryScheduleService — may flip ems_interventions_blocked ───
@@ -182,15 +175,12 @@ class Ems:
         self._dod_logger.log_if_changed(state)
         self._dod_actuator.apply_if_changed()
 
-        # ─── 6. BatteryChargeCurrentActuator — Modbus write for charge_current ───
-        # Separate Modbus register from EMS mode / power_limit (handled above
-        # in grid_export_actuator). State-diff against cached Modbus readback;
-        # if target == current, no write fires.
-        self._battery_charge_actuator.apply_if_changed(schedule_op, dt_util.now())
-
-        # ─── 7. External listeners (sensors subscribing to ems state) ───
+        # ─── 6. External listeners (sensors subscribing to ems state) ───
         # Kept for HA consumers like binary_sensor + future sensors that
-        # observe ems state through `async_add_listener`.
+        # observe ems state through `async_add_listener`. Note: the
+        # BatteryChargeCurrentActuator (Modbus write for charge_current) is
+        # owned by BatteryChargeService and dispatched inside its update()
+        # above — no Ems-level reference (encapsulation per bounded context).
         self._async_update_listeners()
 
     def update_rce(self, now: datetime, data: RcePrices) -> None:

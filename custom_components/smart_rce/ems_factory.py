@@ -73,17 +73,24 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         tasks=tasks,
     )
 
-    # Battery charge: repo owns BatteryChargePolicy. Service + actuator are
-    # siblings — both depend on repo (no circular dep, no Service ↔ Actuator
-    # link). Etap B migration replaces input_boolean.battery_charge_max_current_toggle.
+    # Battery charge: repo owns BatteryChargePolicy. Actuator depends on
+    # repo. Service owns actuator (encapsulation of bounded context — Ems
+    # only sees the Service). Etap B migration replaces
+    # input_boolean.battery_charge_max_current_toggle.
     battery_charge_store: Store[dict] = Store(
         hass, BATTERY_CHARGE_STORAGE_VERSION, BATTERY_CHARGE_STORAGE_KEY
     )
     battery_charge_repo = BatteryChargeRepository(battery_charge_store, tasks)
     await battery_charge_repo.async_restore()
+    battery_charge_actuator = BatteryChargeCurrentActuator(
+        hass, battery_charge_repo, tasks
+    )
+    # Register 5-min drift refresh + delayed startup reconcile (lifecycle tied to entry).
+    battery_charge_actuator.schedule_periodic_refresh(entry)
     battery_charge_service = BatteryChargeService(
         repo=battery_charge_repo,
         clock=now_local,
+        actuator=battery_charge_actuator,
     )
 
     ems: Ems = Ems(
@@ -105,18 +112,12 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
     dod_actuator = DodPolicyActuator(hass, ems.dod_policy, tasks)
     grid_export_actuator = GridExportActuator(hass, ems.grid_export, tasks)
-    battery_charge_actuator = BatteryChargeCurrentActuator(
-        hass, battery_charge_repo, tasks
-    )
-    # Register 5-min drift refresh + delayed startup reconcile (lifecycle tied to entry).
-    battery_charge_actuator.schedule_periodic_refresh(entry)
 
     ems.attach_driven_adapters(
         dod_repository=dod_repository,
         dod_logger=dod_logger,
         dod_actuator=dod_actuator,
         grid_export_actuator=grid_export_actuator,
-        battery_charge_actuator=battery_charge_actuator,
     )
 
     @callback

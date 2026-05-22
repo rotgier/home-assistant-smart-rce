@@ -35,6 +35,9 @@ from ..domain.battery_charge_policy import OverrideMode
 from ..domain.battery_schedule import BatteryOperation
 
 if TYPE_CHECKING:
+    from ..infrastructure.battery_charge_current_actuator import (
+        BatteryChargeCurrentActuator,
+    )
     from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,16 +50,25 @@ class BatteryChargeService:
         self,
         repo: BatteryChargeRepository,
         clock: Callable[[], datetime],
+        actuator: BatteryChargeCurrentActuator,
     ) -> None:
         self._repo = repo
         self._clock = clock
+        self._actuator = actuator
         self._last_schedule_op: BatteryOperation = BatteryOperation.idle()
         self._override_listeners: list[Callable[[OverrideMode], None]] = []
 
     @callback
     def update(self, schedule_op: BatteryOperation) -> None:
-        """Per-tick — cache schedule_op so derived properties stay fresh."""
+        """Per-tick — cache schedule_op + trigger actuator state-diff.
+
+        Encapsulates the actuator dispatch so Ems doesn't know about the
+        Modbus write path — only that BatteryChargeService.update runs each
+        tick. State-diff inside the actuator decides whether to actually
+        write (no-op when target == cached Modbus value).
+        """
         self._last_schedule_op = schedule_op
+        self._actuator.apply_if_changed(schedule_op, self._clock())
 
     # ─── Properties (sensor / actuator queries) ───
 
