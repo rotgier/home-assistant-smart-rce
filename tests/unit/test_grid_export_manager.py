@@ -31,7 +31,6 @@ def _state(
     now: datetime = POST_CHARGE,
     exported_energy_hourly: float | None = 0.0,
     battery_soc: float | None = 80.0,
-    battery_charge_toggle_on: bool | None = True,
     pv_power: float | None = 3000.0,
     pv_power_avg_2_minutes: float | None = None,  # None → fallback to pv_power
     consumption_minus_pv_2_minutes: float | None = -3000.0,  # surplus PV 3kW
@@ -41,14 +40,15 @@ def _state(
     other_ems_automation_active_this_hour: bool | None = False,
     grid_export_strategy_mode: str | None = "charge_adaptive",
 ) -> InputState:
-    # Note: `ems_interventions_blocked` was removed from InputState (Etap 0
-    # refactor). Tests that need to exercise the blocked path call
-    # `mgr.update(state, ems_interventions_blocked=True)` directly.
+    # Note: `ems_interventions_blocked` and `battery_charge_toggle_on` were
+    # removed from InputState (Etap 0 + Etap B refactors). Tests that need
+    # to exercise the blocked / not-allowed path call
+    # `mgr.update(state, ems_interventions_blocked=True)` or
+    # `mgr.update(state, battery_charge_allowed=False)` directly.
     return InputState(
         now=now,
         exported_energy_hourly=exported_energy_hourly,
         battery_soc=battery_soc,
-        battery_charge_toggle_on=battery_charge_toggle_on,
         pv_power=pv_power,
         pv_power_avg_2_minutes=pv_power_avg_2_minutes,
         consumption_minus_pv_2_minutes=consumption_minus_pv_2_minutes,
@@ -182,11 +182,15 @@ class TestEntryGates:
         assert mgr.intervention_active is False
         assert "soc_at_entry_ceiling" in mgr.last_decision_reason
 
-    def test_toggle_off(self):
+    def test_charge_not_allowed(self):
+        """Etap B: kwarg battery_charge_allowed=False blocks POSITIVE entry."""
         mgr = GridExportManager()
-        mgr.update(_state(exported_energy_hourly=0.10, battery_charge_toggle_on=False))
+        mgr.update(
+            _state(exported_energy_hourly=0.10),
+            battery_charge_allowed=False,
+        )
         assert mgr.intervention_active is False
-        assert "toggle_off" in mgr.last_decision_reason
+        assert "charge_not_allowed" in mgr.last_decision_reason
 
     def test_late_hour_blocks(self):
         mgr = GridExportManager()
@@ -274,7 +278,8 @@ class TestExitGates:
         assert mgr.intervention_active is False
         assert mgr.last_decision_reason == "soc_ceiling_exit"
 
-    def test_exit_toggle_off(self):
+    def test_exit_charge_not_allowed(self):
+        """Etap B: battery_charge_allowed flipping False exits active POSITIVE."""
         mgr = GridExportManager()
         mgr.update(
             _state(
@@ -285,11 +290,11 @@ class TestExitGates:
         mgr.update(
             _state(
                 exported_energy_hourly=0.10,
-                battery_charge_toggle_on=False,
-            )
+            ),
+            battery_charge_allowed=False,
         )
         assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "toggle_off_exit"
+        assert mgr.last_decision_reason == "charge_not_allowed_exit"
 
     def test_exit_end_of_hour(self):
         """End-of-hour cleanup mimo dalej positive balance.
@@ -1182,32 +1187,32 @@ class TestNegativeInPreCharge:
         assert "in_pre_charge_window" in mgr.last_decision_reason
 
 
-class TestChargeToggleClamp:
-    """Toggle off → bucket charge clamp do STOP."""
+class TestChargeAllowedClamp:
+    """battery_charge_allowed=False → bucket charge clamp do STOP."""
 
-    def test_charge_toggle_off_clamps_to_stop(self):
-        """Bucket charge (xset>0) + toggle=False → clamp xset=0."""
+    def test_charge_not_allowed_clamps_to_stop(self):
+        """Bucket charge (xset>0) + battery_charge_allowed=False → clamp xset=0."""
         mgr = GridExportManager()
         mgr.update(
             _state(
                 exported_energy_hourly=-0.10,
                 consumption_minus_pv_2_minutes=-3000,  # pv_avail=3000 → bucket charge xset 2000
-                battery_charge_toggle_on=False,
-            )
+            ),
+            battery_charge_allowed=False,
         )
         assert mgr.intervention_active is True
         assert mgr.recommended_ems_mode == "charge_battery"
         assert mgr.recommended_xset == 0  # clamped
 
-    def test_discharge_bucket_unaffected_by_toggle(self):
-        """Bucket discharge is not clamped by toggle (toggle applies to charge)."""
+    def test_discharge_bucket_unaffected_by_charge_allowed(self):
+        """Discharge bucket is not clamped (charge_allowed only affects charge bucket)."""
         mgr = GridExportManager()
         mgr.update(
             _state(
                 exported_energy_hourly=-0.10,
                 consumption_minus_pv_2_minutes=500,  # pv_avail=-500 → discharge 2000
-                battery_charge_toggle_on=False,
-            )
+            ),
+            battery_charge_allowed=False,
         )
         assert mgr.intervention_active is True
         assert mgr.recommended_ems_mode == "discharge_battery"

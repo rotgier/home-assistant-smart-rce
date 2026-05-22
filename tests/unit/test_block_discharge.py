@@ -46,7 +46,6 @@ def _state(
         exported_energy_hourly=exported_energy_hourly,
         heater_mode="BALANCED",
         depth_of_discharge=None,
-        battery_charge_toggle_on=False,
         start_charge_hour_override=time(10, 0),
         rce_should_hold_for_peak=False,
         is_workday=True,

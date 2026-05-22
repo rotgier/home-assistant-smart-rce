@@ -30,7 +30,12 @@ from .pv_forecast_factory import create_pv_forecast_service
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [
+    Platform.BINARY_SENSOR,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+]
 
 
 @dataclass
@@ -183,6 +188,9 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.domain.dod_policy"))
     # battery_schedule: domain BEFORE application service (service imports domain).
     reload(import_module("custom_components.smart_rce.domain.battery_schedule"))
+    # battery_charge_policy imports BatteryOperation from battery_schedule —
+    # reload AFTER battery_schedule.
+    reload(import_module("custom_components.smart_rce.domain.battery_charge_policy"))
     reload(
         import_module("custom_components.smart_rce.infrastructure.async_task_runner")
     )
@@ -193,8 +201,16 @@ def live_reload():
     )
     reload(
         import_module(
+            "custom_components.smart_rce.infrastructure.battery_charge_repository"
+        )
+    )
+    reload(
+        import_module(
             "custom_components.smart_rce.application.battery_schedule_service"
         )
+    )
+    reload(
+        import_module("custom_components.smart_rce.application.battery_charge_service")
     )
     reload(import_module("custom_components.smart_rce.application.ems"))
     reload(import_module("custom_components.smart_rce.application"))
@@ -215,6 +231,11 @@ def live_reload():
     )
     reload(
         import_module("custom_components.smart_rce.infrastructure.grid_export_actuator")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.infrastructure.battery_charge_current_actuator"
+        )
     )
     reload(import_module("custom_components.smart_rce.ems_factory"))
     reload(import_module("custom_components.smart_rce.domain.target_soc"))
@@ -282,6 +303,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
     reload(import_module("custom_components.smart_rce.switch"))
+    reload(import_module("custom_components.smart_rce.select"))
     reload(import_module("custom_components.smart_rce"))
 
 

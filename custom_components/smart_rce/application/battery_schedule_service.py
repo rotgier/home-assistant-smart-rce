@@ -66,16 +66,20 @@ class BatteryScheduleService:
         self._last_op: BatteryOperation = BatteryOperation.idle()
 
     @callback
-    def update(self, input: BatteryScheduleInput) -> None:
+    def update(self, input: BatteryScheduleInput) -> BatteryOperation:
         """Per-tick orchestration — called from Ems.update_state.
 
         Domain logic (compute_operation) runs synchronously inside the aggregate;
         side effects (persistence, applier, notifier) fire as fire-and-forget
         tasks. Etap 2A wires compute_operation + persistence; applier + notifier
         arrive in Etap 2D.
+
+        Returns the freshly-computed BatteryOperation so downstream consumers
+        (BatteryChargeService in Etap B, applier/notifier in Etap 2D) can
+        pick it up without re-querying the aggregate.
         """
         if input.battery_soc is None:
-            return
+            return self._last_op
 
         # ─── Domain logic — aggregate decides operation + emits events ───
         op, events = self._repo.schedule.compute_operation(
@@ -98,6 +102,8 @@ class BatteryScheduleService:
             )
             self._last_op = op
             # TODO Etap 2D: self._tasks.run_background(self._applier.apply(op))
+
+        return op
 
     # ─────── User override — public methods called from HA entities ───────
 

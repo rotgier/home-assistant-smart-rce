@@ -133,4 +133,15 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: ems.dod_policy.current_phase.value,
         icon="mdi:state-machine",
     ),
+    EmsSensorDescription(
+        name="Battery Charge Current",
+        # Cached Modbus readback of `battery_charge_current` register (A).
+        # smart_rce manages this since Goodwe HA integration doesn't expose
+        # an entity for the register — only goodwe.set_parameter /
+        # goodwe.get_parameter services. Updated by BatteryChargeCurrentActuator.
+        native_unit_of_measurement="A",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: ems.battery_charge_service.modbus_current_value,
+        icon="mdi:current-dc",
+    ),
 )

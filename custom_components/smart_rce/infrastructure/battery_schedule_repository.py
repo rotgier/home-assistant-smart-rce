@@ -1,6 +1,6 @@
 """BatteryScheduleRepository — driven adapter for BatterySchedule persistence.
 
-Pure persistence: load aggregate from `.storage/smart_rce_battery_schedule`,
+Pure persistence: load aggregate from `.storage/ems_battery_schedule`,
 save when dict differs from last save. No business operations, no listeners
 — those live in `BatteryScheduleService` (application layer). Service uses
 this repo, exposes use-case methods (`set_user_override`,
@@ -34,7 +34,7 @@ from ..domain.battery_schedule import BatterySchedule
 from .async_task_runner import AsyncTaskRunner
 
 STORAGE_VERSION: Final[int] = 1
-STORAGE_KEY: Final[str] = "smart_rce_battery_schedule"
+STORAGE_KEY: Final[str] = "ems_battery_schedule"
 
 _LOGGER = logging.getLogger(__name__)
 

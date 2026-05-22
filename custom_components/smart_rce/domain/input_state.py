@@ -28,17 +28,18 @@ class InputState:
     depth_of_discharge: float | None = (
         None  # % (number.goodwe_depth_of_discharge_on_grid)
     )
-    battery_charge_toggle_on: bool | None = None
-    # input_boolean.battery_charge_max_current_toggle state.
-    # Używane przez BatteryManager jako guard dla block_charge (nie blokuj
-    # ładowania gdy już zablokowane).
+    # `battery_charge_toggle_on` REMOVED (Etap B) — replaced by
+    # `BatteryChargePolicy.charge_allowed` (smart_rce-managed select
+    # `select.ems_battery_charge_allowed_override`). Read in
+    # `Ems.update_state` from BatteryChargeService, passed explicitly as
+    # keyword argument `battery_charge_allowed` to
+    # `GridExportManager.update` and `WaterHeaterManager.update`
+    # (mirrors `ems_interventions_blocked` Etap 0 pattern).
 
-    # `ems_allow_discharge_override` REMOVED — replaced by domain-owned flag
+    # `ems_allow_discharge_override` REMOVED (Etap 0) — replaced by
     # `BatterySchedule.ems_interventions_blocked` (smart_rce-managed switch
-    # `switch.ems_interventions_blocked`). Read in `Ems.update_state` from
-    # the BatterySchedule aggregate, passed explicitly as keyword argument to
-    # `DodPolicy.update` and `GridExportManager.update`. See ADR battery
-    # schedule plan + Etap 0 migration notes.
+    # `switch.ems_interventions_blocked`). Same kwarg-passing pattern as
+    # `battery_charge_allowed`.
 
     start_charge_hour_override: time | None = None
     # input_datetime.rce_start_charge_hour_today_override (HH:MM:SS).

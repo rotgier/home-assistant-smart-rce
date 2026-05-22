@@ -75,6 +75,12 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         value_fn=lambda ems: ems.grid_export.intervention_active,
         icon="mdi:transmission-tower-export",
     ),
+    EmsBinarySensorDescription(
+        name="Battery Charge Allowed",
+        # Combined decision from BatteryChargePolicy (user override + schedule).
+        value_fn=lambda ems: ems.battery_charge_service.charge_allowed,
+        icon="mdi:battery-charging",
+    ),
 )
 
 

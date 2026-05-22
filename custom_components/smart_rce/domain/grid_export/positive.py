@@ -77,7 +77,7 @@ from custom_components.smart_rce.domain.input_state import InputState
 # DISCHARGE_BATTERY xset=0 is silently ignored by the inverter when DoD=0
 # (PV surplus still charges the battery). CHARGE_BATTERY xset=0 reliably
 # parks the battery at zero power regardless of DoD, AND also works when
-# battery_charge_toggle_on is OFF — despite the misleading "CHARGE" label,
+# battery_charge_allowed is False — despite the misleading "CHARGE" label,
 # with xset=0 the inverter does not actually charge, just enforces zero
 # net battery power. Same string as _CHARGE_MODE — kept as a separate
 # constant to preserve conceptual naming (STANDBY vs CHARGE differ by xset
@@ -146,7 +146,9 @@ class PositiveIntervention:
     """Tracks last positive xset for hysteresis lookup. None when STANDBY/AUTO."""
 
     @classmethod
-    def try_enter(cls, state: InputState) -> EntryResult:
+    def try_enter(
+        cls, state: InputState, *, battery_charge_allowed: bool
+    ) -> EntryResult:
         """Try to enter POSITIVE intervention.
 
         Caller (GridExportManager) MUST verify global guards first:
@@ -156,14 +158,16 @@ class PositiveIntervention:
         - not other_ems_automation_active_this_hour
 
         Checks intervention-specific gates, then delegates to `_enter` for
-        instance creation + initial _continue.
+        instance creation + initial _continue. `battery_charge_allowed`
+        sourced from BatteryChargeService (Etap B — replaces legacy
+        `state.battery_charge_toggle_on`).
         """
         if cls._is_in_pre_charge_window(state):
             return EntryResult.blocked("in_pre_charge_window")
         if state.battery_soc >= SOC_ENTRY_CEILING:
             return EntryResult.blocked("soc_at_entry_ceiling")
-        if state.battery_charge_toggle_on is False:
-            return EntryResult.blocked("toggle_off")
+        if not battery_charge_allowed:
+            return EntryResult.blocked("charge_not_allowed")
         return cls._enter(state)
 
     @classmethod
@@ -181,7 +185,9 @@ class PositiveIntervention:
             return EntryResult.blocked(result.exit_reason)
         return EntryResult.entered(intervention)
 
-    def continue_or_exit(self, state: InputState) -> ContinueResult:
+    def continue_or_exit(
+        self, state: InputState, *, battery_charge_allowed: bool
+    ) -> ContinueResult:
         """Continue POSITIVE intervention. Mutates self in-place on continue.
 
         Caller (GridExportManager) MUST verify global guards first:
@@ -195,8 +201,8 @@ class PositiveIntervention:
             return ContinueResult.exit_with("balance_recovered")
         if state.battery_soc >= SOC_CEILING:
             return ContinueResult.exit_with("soc_ceiling_exit")
-        if state.battery_charge_toggle_on is False:
-            return ContinueResult.exit_with("toggle_off_exit")
+        if not battery_charge_allowed:
+            return ContinueResult.exit_with("charge_not_allowed_exit")
         return self._continue(state)
 
     @staticmethod

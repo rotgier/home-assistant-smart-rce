@@ -72,6 +72,8 @@ class WaterHeaterManager:
         self,
         state: InputState,
         grid_export_intervention: InterventionDirection | None = None,
+        *,
+        battery_charge_allowed: bool,
     ) -> None:
         """Update target state based on PV/battery/heater config.
 
@@ -81,12 +83,19 @@ class WaterHeaterManager:
         - NEGATIVE: deficit hourly — większy reserved (5500W dla `>7`,
           2000W dla `>2`, 600W dla `==2`) by wymusić grzałki off.
         - None: original logic.
+
+        `battery_charge_allowed`: kwarg from BatteryChargeService — replaces
+        legacy `state.battery_charge_toggle_on`. When False, effective
+        charge_limit is treated as 0 (battery idle, PV fully available
+        for heaters).
         """
         if self._none_present(state):
             return
 
         current_state = self._current_state(state)
-        target = self._determine_target(state, current_state, grid_export_intervention)
+        target = self._determine_target(
+            state, current_state, grid_export_intervention, battery_charge_allowed
+        )
 
         self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
         self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
@@ -131,21 +140,20 @@ class WaterHeaterManager:
         state: InputState,
         current_state: str,
         grid_export_intervention: InterventionDirection | None = None,
+        battery_charge_allowed: bool = True,
     ) -> str:
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
         # Effective charge limit captures "is battery actively absorbing PV right now?"
-        # When toggle_on=False (user disabled charging, e.g. pre-charge window before
-        # scheduled charge start), treat as 0 regardless of BMS hardware cap. This
-        # makes _asap/_balanced/_wasted_target see "battery idle" → reserved=0,
-        # skip_upgrade=False, full PV available for heaters.
-        # Source of truth = battery_charge_toggle_on (used by positive/negative.py
-        # for the same "user intent to charge" semantic). BMS limit fallback when
-        # toggle is True (or unknown — defensive).
+        # When battery_charge_allowed=False (user disabled charging, e.g. pre-charge
+        # window before scheduled charge start), treat as 0 regardless of BMS hardware
+        # cap. This makes _asap/_balanced/_wasted_target see "battery idle" →
+        # reserved=0, skip_upgrade=False, full PV available for heaters.
+        # Source of truth = BatteryChargeService.charge_allowed (also used by
+        # positive/negative.py for the same "is the inverter actually charging"
+        # semantic). BMS limit fallback when allowed.
         battery_charge_limit = (
-            0.0
-            if state.battery_charge_toggle_on is False
-            else state.battery_charge_limit
+            0.0 if not battery_charge_allowed else state.battery_charge_limit
         )
         exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
 

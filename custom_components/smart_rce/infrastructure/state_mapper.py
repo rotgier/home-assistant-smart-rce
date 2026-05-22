@@ -126,10 +126,6 @@ def set_depth_of_discharge(entity: str, i: InputState, state: str) -> None:
     i.depth_of_discharge = map_float(entity, state)
 
 
-def set_battery_charge_toggle_on(entity: str, i: InputState, state: str) -> None:
-    i.battery_charge_toggle_on = map_on_off(entity, state)
-
-
 def set_water_heater_strategy(entity: str, i: InputState, state: str) -> None:
     i.water_heater_strategy = state
 
@@ -212,7 +208,11 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "sensor.total_export_import_hourly": set_exported_energy_hourly,
     "input_select.ems_water_heater_mode": set_heater_mode,
     "number.goodwe_depth_of_discharge_on_grid": set_depth_of_discharge,
-    "input_boolean.battery_charge_max_current_toggle": set_battery_charge_toggle_on,
+    # `input_boolean.battery_charge_max_current_toggle` REMOVED (Etap B) —
+    # replaced by smart_rce-owned select `select.ems_battery_charge_allowed_override`
+    # backed by `BatteryChargePolicy.user_override_mode`. Combined decision
+    # (override + schedule) flows through `BatteryChargeService.charge_allowed`,
+    # passed as kwarg to managers (no longer via InputState).
     # `input_boolean.ems_allow_discharge_override` REMOVED — replaced by
     # smart_rce-owned switch `switch.ems_interventions_blocked` backed by
     # `BatterySchedule.ems_interventions_blocked` (Etap 0).

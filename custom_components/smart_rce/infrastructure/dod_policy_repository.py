@@ -29,7 +29,7 @@ from ..domain.dod_policy import DodPolicy
 from .async_task_runner import AsyncTaskRunner
 
 DOD_POLICY_STORAGE_VERSION: Final[int] = 1
-DOD_POLICY_STORAGE_KEY: Final[str] = "smart_rce_dod_policy"
+DOD_POLICY_STORAGE_KEY: Final[str] = "ems_dod_policy"
 
 
 class DodPolicyRepository:

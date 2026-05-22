@@ -119,13 +119,18 @@ class GridExportManager:
         return self.intervention_direction
 
     def update(
-        self, state: InputState, *, ems_interventions_blocked: bool = False
+        self,
+        state: InputState,
+        *,
+        ems_interventions_blocked: bool = False,
+        battery_charge_allowed: bool = True,
     ) -> None:
         """Re-evaluate intervention state from current InputState.
 
         Called reactively by Ems on every state change. `ems_interventions_blocked`
-        is passed explicitly by Ems (sourced from BatterySchedule, not from
-        InputState — Etap 0 refactor).
+        and `battery_charge_allowed` are passed explicitly by Ems (sourced
+        from BatterySchedule and BatteryChargePolicy respectively, not from
+        InputState — Etap 0 + Etap B refactors).
 
         Flow:
         1. Global guards (none_present_core, interventions_blocked) → set_neutral + return
@@ -144,13 +149,17 @@ class GridExportManager:
             # no meaning (state.grid_export_strategy_mode may also be None).
             self._set_neutral("none_present")
             self._disabled_override_active = False
-            self._log_after_update(state, prev_active, prev_mode, prev_xset)
+            self._log_after_update(
+                state, prev_active, prev_mode, prev_xset, battery_charge_allowed
+            )
             return
 
         if ems_interventions_blocked:
             self._set_neutral("ems_interventions_blocked")
             self._apply_disabled_override_if_needed(state)
-            self._log_after_update(state, prev_active, prev_mode, prev_xset)
+            self._log_after_update(
+                state, prev_active, prev_mode, prev_xset, battery_charge_allowed
+            )
             return
 
         # External EMS automation managing Goodwe — exit any active intervention
@@ -159,17 +168,21 @@ class GridExportManager:
         if state.other_ems_automation_active_this_hour is True:
             self._set_neutral("other_automation_active")
             self._apply_disabled_override_if_needed(state)
-            self._log_after_update(state, prev_active, prev_mode, prev_xset)
+            self._log_after_update(
+                state, prev_active, prev_mode, prev_xset, battery_charge_allowed
+            )
             return
 
         # --- Continue / Entry routing ---
         if self._active is not None:
-            self._tick_active(state)
+            self._tick_active(state, battery_charge_allowed=battery_charge_allowed)
         else:
-            self._try_enter(state)
+            self._try_enter(state, battery_charge_allowed=battery_charge_allowed)
 
         self._apply_disabled_override_if_needed(state)
-        self._log_after_update(state, prev_active, prev_mode, prev_xset)
+        self._log_after_update(
+            state, prev_active, prev_mode, prev_xset, battery_charge_allowed
+        )
 
     @staticmethod
     def _none_present_core(state: InputState) -> bool:
@@ -185,7 +198,7 @@ class GridExportManager:
             or state.pv_power is None
         )
 
-    def _tick_active(self, state: InputState) -> None:
+    def _tick_active(self, state: InputState, *, battery_charge_allowed: bool) -> None:
         """Continue path — global exit checks first, then delegate to intervention."""
         # Hour rollover (utility_meter resets hourly balance on the full hour,
         # each hour = a separate intervention decision).
@@ -197,14 +210,16 @@ class GridExportManager:
             self._set_neutral("end_of_hour_cleanup")
             return
         # Delegate to intervention — intervention-specific exits + recompute.
-        result = self._active.continue_or_exit(state)
+        result = self._active.continue_or_exit(
+            state, battery_charge_allowed=battery_charge_allowed
+        )
         if result.is_exit:
             self._set_neutral(result.exit_reason)
         else:
             # self._active mutated in place — sync last_decision_reason.
             self.last_decision_reason = self._active.last_reason
 
-    def _try_enter(self, state: InputState) -> None:
+    def _try_enter(self, state: InputState, *, battery_charge_allowed: bool) -> None:
         """Entry path — global entry blocks first, then balance range routing.
 
         Note: `other_ems_automation_active_this_hour` is handled by the global
@@ -222,9 +237,13 @@ class GridExportManager:
         # Deadzone (-0.05..+0.06): no intervention applies.
         balance = state.exported_energy_hourly
         if balance > positive.BALANCE_GATE_KWH:
-            result = PositiveIntervention.try_enter(state)
+            result = PositiveIntervention.try_enter(
+                state, battery_charge_allowed=battery_charge_allowed
+            )
         elif balance < negative.entry_threshold(state):
-            result = NegativeIntervention.try_enter(state)
+            result = NegativeIntervention.try_enter(
+                state, battery_charge_allowed=battery_charge_allowed
+            )
         else:
             self.last_decision_reason = f"balance_in_deadzone_{balance:.3f}"
             return
@@ -297,6 +316,7 @@ class GridExportManager:
         prev_active: bool,
         prev_mode: str,
         prev_xset: int | None,
+        battery_charge_allowed: bool,
     ) -> None:
         """INFO transition + DEBUG snapshot (throttled)."""
         if (
@@ -315,9 +335,11 @@ class GridExportManager:
                 self.recommended_xset,
                 self.last_decision_reason,
             )
-        self._maybe_log_snapshot(state)
+        self._maybe_log_snapshot(state, battery_charge_allowed)
 
-    def _maybe_log_snapshot(self, state: InputState) -> None:
+    def _maybe_log_snapshot(
+        self, state: InputState, battery_charge_allowed: bool
+    ) -> None:
         """Log DEBUG snapshot when key fields change OR throttle interval elapsed."""
         snapshot = (
             self.intervention_active,
@@ -342,7 +364,7 @@ class GridExportManager:
         _LOGGER.debug(
             "GridExportManager: now=%s active=%s mode=%s xset=%s reason=%s | "
             "strategy=%s hourly=%s soc=%s pv=%s pv_avg2m=%s pv_avail=%s "
-            "charge_limit=%s toggle=%s",
+            "charge_limit=%s charge_allowed=%s",
             now.strftime("%H:%M:%S") if now else "?",
             self.intervention_active,
             self.recommended_ems_mode,
@@ -355,7 +377,7 @@ class GridExportManager:
             state.pv_power_avg_2_minutes,
             int(pv_avail) if pv_avail is not None else None,
             state.battery_charge_limit,
-            state.battery_charge_toggle_on,
+            battery_charge_allowed,
         )
         self._last_log_snapshot = snapshot
         self._last_log_ts = now

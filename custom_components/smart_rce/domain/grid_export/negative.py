@@ -77,7 +77,7 @@ from custom_components.smart_rce.domain.input_state import InputState
 # DISCHARGE_BATTERY xset=0 is silently ignored by the inverter when DoD=0
 # (PV surplus still charges the battery). CHARGE_BATTERY xset=0 reliably
 # parks the battery at zero power regardless of DoD, AND also works when
-# battery_charge_toggle_on is OFF — despite the misleading "CHARGE" label,
+# battery_charge_allowed is False — despite the misleading "CHARGE" label,
 # with xset=0 the inverter does not actually charge, just enforces zero
 # net battery power. Same string as _CHARGE_MODE — kept as a separate
 # constant to preserve conceptual naming (STANDBY vs CHARGE differ by xset
@@ -156,7 +156,9 @@ class NegativeIntervention:
     None initially → fresh lookup (no hysteresis on first _continue)."""
 
     @classmethod
-    def try_enter(cls, state: InputState) -> EntryResult:
+    def try_enter(
+        cls, state: InputState, *, battery_charge_allowed: bool
+    ) -> EntryResult:
         """Try to enter NEGATIVE intervention.
 
         Caller (GridExportManager) MUST verify global guards first:
@@ -168,6 +170,9 @@ class NegativeIntervention:
         Checks intervention-specific gates (SoC, DoD, pv_available) plus
         entry feasibility (bucket discharge requires SoC > min_soc), then
         delegates to `_enter` for instance creation + initial _continue.
+
+        `battery_charge_allowed` is forwarded to `_continue` via `_enter`
+        so charge-bucket clamp can respect it inside `_clamp_bucket_per_soc`.
         """
         if state.battery_soc <= SOC_HARD_FLOOR:
             return EntryResult.blocked("soc_below_hard_floor")
@@ -189,21 +194,25 @@ class NegativeIntervention:
             and state.pv_available < 0
         ):
             return EntryResult.blocked("soc_at_dod_floor_no_pv_surplus")
-        return cls._enter(state)
+        return cls._enter(state, battery_charge_allowed=battery_charge_allowed)
 
     @classmethod
-    def _enter(cls, state: InputState) -> EntryResult:
+    def _enter(cls, state: InputState, *, battery_charge_allowed: bool) -> EntryResult:
         """Create blank intervention, run initial _continue, map to EntryResult.
 
         Initial _xset_signed=None default → fresh lookup (no hysteresis on entry).
         """
         intervention = cls(started_hour=state.now.hour)
-        result = intervention._continue(state)  # noqa: SLF001 — same-class access
+        result = intervention._continue(  # noqa: SLF001 — same-class access
+            state, battery_charge_allowed=battery_charge_allowed
+        )
         if result.is_exit:
             return EntryResult.blocked(result.exit_reason)
         return EntryResult.entered(intervention)
 
-    def continue_or_exit(self, state: InputState) -> ContinueResult:
+    def continue_or_exit(
+        self, state: InputState, *, battery_charge_allowed: bool
+    ) -> ContinueResult:
         """Continue NEGATIVE intervention. Mutates self in-place on continue.
 
         Caller (GridExportManager) MUST verify global guards first:
@@ -217,9 +226,11 @@ class NegativeIntervention:
             return ContinueResult.exit_with("none_depth_of_discharge_exit")
         if state.pv_available is None:
             return ContinueResult.exit_with("none_pv_available")
-        return self._continue(state)
+        return self._continue(state, battery_charge_allowed=battery_charge_allowed)
 
-    def _continue(self, state: InputState) -> ContinueResult:
+    def _continue(
+        self, state: InputState, *, battery_charge_allowed: bool
+    ) -> ContinueResult:
         """Compute new decision and commit to self. Returns CONTINUE or exit.
 
         Used by both _enter (initial fresh lookup) and continue_or_exit
@@ -229,7 +240,9 @@ class NegativeIntervention:
         Flow: hysteresis lookup → SoC clamp → post-clamp DoD check → commit.
         """
         xset_signed, is_stay = self._resolve_xset_with_hysteresis(state.pv_available)
-        xset_signed, is_stay = self._clamp_bucket_per_soc(xset_signed, is_stay, state)
+        xset_signed, is_stay = self._clamp_bucket_per_soc(
+            xset_signed, is_stay, state, battery_charge_allowed=battery_charge_allowed
+        )
         # Post-clamp: discharge bucket at DoD floor only persists when clamp
         # did not activate (pv_available < -200W). Exit on deep deficit —
         # load-following more efficient than STOP when no PV surplus.
@@ -283,16 +296,20 @@ class NegativeIntervention:
 
     @staticmethod
     def _clamp_bucket_per_soc(
-        xset_signed: int, is_stay: bool, state: InputState
+        xset_signed: int,
+        is_stay: bool,
+        state: InputState,
+        *,
+        battery_charge_allowed: bool,
     ) -> tuple[int, bool]:
         """Clamp bucket to STOP when SoC limits prevent execution.
 
         Charge bucket (xset > 0):
         - SoC = 100 → battery full, cannot charge, but PV export still offsets
           NEGATIVE (bucket STOP yields pv_avail export).
-        - battery_charge_toggle_on = False → user disabled charging, manager
-          respects (bucket STOP). NEGATIVE branch still active — pv_avail
-          export saves the balance.
+        - battery_charge_allowed = False → user/policy disabled charging,
+          manager respects (bucket STOP). NEGATIVE branch still active —
+          pv_avail export saves the balance.
 
         Discharge bucket (xset < 0):
         - SoC at DoD floor AND pv_available >= -DISCHARGE_FLOOR_HYSTERESIS_W
@@ -309,7 +326,7 @@ class NegativeIntervention:
         if xset_signed > 0:
             if state.battery_soc is not None and state.battery_soc >= SOC_CEILING:
                 return 0, False
-            if state.battery_charge_toggle_on is False:
+            if not battery_charge_allowed:
                 return 0, False
             return xset_signed, is_stay
         if xset_signed < 0:

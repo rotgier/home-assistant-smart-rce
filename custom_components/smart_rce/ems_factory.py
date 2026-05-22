@@ -29,10 +29,17 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import now as now_local
 
+from .application.battery_charge_service import BatteryChargeService
 from .application.battery_schedule_service import BatteryScheduleService
 from .application.ems import Ems
 from .domain.input_state import InputState
 from .infrastructure.async_task_runner import AsyncTaskRunner
+from .infrastructure.battery_charge_current_actuator import BatteryChargeCurrentActuator
+from .infrastructure.battery_charge_repository import (
+    STORAGE_KEY as BATTERY_CHARGE_STORAGE_KEY,
+    STORAGE_VERSION as BATTERY_CHARGE_STORAGE_VERSION,
+    BatteryChargeRepository,
+)
 from .infrastructure.battery_schedule_repository import (
     STORAGE_KEY as BATTERY_SCHEDULE_STORAGE_KEY,
     STORAGE_VERSION as BATTERY_SCHEDULE_STORAGE_VERSION,
@@ -66,9 +73,23 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         tasks=tasks,
     )
 
+    # Battery charge: repo owns BatteryChargePolicy. Service + actuator are
+    # siblings — both depend on repo (no circular dep, no Service ↔ Actuator
+    # link). Etap B migration replaces input_boolean.battery_charge_max_current_toggle.
+    battery_charge_store: Store[dict] = Store(
+        hass, BATTERY_CHARGE_STORAGE_VERSION, BATTERY_CHARGE_STORAGE_KEY
+    )
+    battery_charge_repo = BatteryChargeRepository(battery_charge_store, tasks)
+    await battery_charge_repo.async_restore()
+    battery_charge_service = BatteryChargeService(
+        repo=battery_charge_repo,
+        clock=now_local,
+    )
+
     ems: Ems = Ems(
         battery_schedule_repo=battery_schedule_repo,
         battery_schedule_service=battery_schedule_service,
+        battery_charge_service=battery_charge_service,
     )
 
     # Driven adapters — instantiated here (they hold Ems reference), then
@@ -84,12 +105,18 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
     dod_actuator = DodPolicyActuator(hass, ems.dod_policy, tasks)
     grid_export_actuator = GridExportActuator(hass, ems.grid_export, tasks)
+    battery_charge_actuator = BatteryChargeCurrentActuator(
+        hass, battery_charge_repo, tasks
+    )
+    # Register 5-min drift refresh + delayed startup reconcile (lifecycle tied to entry).
+    battery_charge_actuator.schedule_periodic_refresh(entry)
 
     ems.attach_driven_adapters(
         dod_repository=dod_repository,
         dod_logger=dod_logger,
         dod_actuator=dod_actuator,
         grid_export_actuator=grid_export_actuator,
+        battery_charge_actuator=battery_charge_actuator,
     )
 
     @callback

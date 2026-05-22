@@ -31,6 +31,9 @@ from datetime import datetime
 import logging
 from typing import TYPE_CHECKING
 
+from custom_components.smart_rce.application.battery_charge_service import (
+    BatteryChargeService,
+)
 from custom_components.smart_rce.application.battery_schedule_service import (
     BatteryScheduleService,
 )
@@ -51,6 +54,9 @@ from custom_components.smart_rce.infrastructure.battery_schedule_repository impo
 )
 
 if TYPE_CHECKING:
+    from custom_components.smart_rce.infrastructure.battery_charge_current_actuator import (
+        BatteryChargeCurrentActuator,
+    )
     from custom_components.smart_rce.infrastructure.dod_policy_actuator import (
         DodPolicyActuator,
     )
@@ -63,6 +69,7 @@ if TYPE_CHECKING:
     from custom_components.smart_rce.infrastructure.grid_export_actuator import (
         GridExportActuator,
     )
+    from homeassistant.util import dt as dt_util  # noqa: F401 — type hint hook
 
 type CALLBACK_TYPE = Callable[[], None]
 
@@ -74,6 +81,7 @@ class Ems:
         self,
         battery_schedule_repo: BatteryScheduleRepository | None = None,
         battery_schedule_service: BatteryScheduleService | None = None,
+        battery_charge_service: BatteryChargeService | None = None,
     ) -> None:
         # Defaults to None for unit-test convenience (tests instantiate `Ems()`
         # and exercise individual managers like `ems.water_heater.update(...)`
@@ -93,11 +101,13 @@ class Ems:
         self.dod_policy: DodPolicy = DodPolicy()
         self.battery_schedule_repo = battery_schedule_repo
         self.battery_schedule_service = battery_schedule_service
+        self.battery_charge_service = battery_charge_service
         # Driven adapters — attached post-construction by factory.
         self._dod_repository: DodPolicyRepository | None = None
         self._dod_logger: DodPolicyLogger | None = None
         self._dod_actuator: DodPolicyActuator | None = None
         self._grid_export_actuator: GridExportActuator | None = None
+        self._battery_charge_actuator: BatteryChargeCurrentActuator | None = None
 
     def attach_driven_adapters(
         self,
@@ -106,6 +116,7 @@ class Ems:
         dod_logger: DodPolicyLogger,
         dod_actuator: DodPolicyActuator,
         grid_export_actuator: GridExportActuator,
+        battery_charge_actuator: BatteryChargeCurrentActuator,
     ) -> None:
         """Wire driven adapters after construction (factory call).
 
@@ -118,31 +129,51 @@ class Ems:
         self._dod_logger = dod_logger
         self._dod_actuator = dod_actuator
         self._grid_export_actuator = grid_export_actuator
+        self._battery_charge_actuator = battery_charge_actuator
 
     def update_state(self, state: InputState) -> None:
+        from homeassistant.util import dt as dt_util
+
         self.last_input_state = state
 
         # ─── 1. BatteryScheduleService — may flip ems_interventions_blocked ───
-        # Etap 0: update() is no-op. Etap 2A wires real orchestration
-        # (compute_operation engaging/disengaging slots).
-        self.battery_schedule_service.update(
+        # Etap 2A wires real orchestration (compute_operation engaging/disengaging
+        # slots). Returns the BatteryOperation for downstream consumers.
+        schedule_op = self.battery_schedule_service.update(
             BatteryScheduleInput(battery_soc=state.battery_soc)
         )
 
         # Single read after service — source of truth for downstream managers.
         blocked = self.battery_schedule_repo.schedule.ems_interventions_blocked
 
-        # ─── 2. GridExportManager + its actuator (Goodwe scene.apply) ───
+        # ─── 2. BatteryChargeService — caches schedule_op for derived queries ───
+        # Service.charge_allowed + target_modbus_value become consistent with
+        # this tick's schedule_op. Single read after update is the source of
+        # truth for grid_export + water_heater (passed as explicit kwarg,
+        # analogous to ems_interventions_blocked). Actuator dispatched below
+        # state-diffs target vs Modbus cache, only writes on delta.
+        self.battery_charge_service.update(state, schedule_op)
+        charge_allowed = self.battery_charge_service.charge_allowed
+
+        # ─── 3. GridExportManager + its actuator (Goodwe scene.apply) ───
         # grid_export PRZED water_heater — water_heater dostaje aktualny
         # `get_active_intervention()` (POSITIVE → reserved=3500W, NEGATIVE →
         # większy reserved by wymusić grzałki off).
-        self.grid_export.update(state, ems_interventions_blocked=blocked)
+        self.grid_export.update(
+            state,
+            ems_interventions_blocked=blocked,
+            battery_charge_allowed=charge_allowed,
+        )
         self._grid_export_actuator.apply_if_changed(state)
 
-        # ─── 3. WaterHeaterManager (no driven adapter — pure recommendation) ───
-        self.water_heater.update(state, self.grid_export.get_active_intervention())
+        # ─── 4. WaterHeaterManager (no driven adapter — pure recommendation) ───
+        self.water_heater.update(
+            state,
+            self.grid_export.get_active_intervention(),
+            battery_charge_allowed=charge_allowed,
+        )
 
-        # ─── 4. DodPolicy + persistence + logger + actuator ───
+        # ─── 5. DodPolicy + persistence + logger + actuator ───
         # Order matters: save before apply (state persisted even if apply fails),
         # log after compute (debug log captures intent), actuator last
         # (Modbus write to inverter).
@@ -151,7 +182,13 @@ class Ems:
         self._dod_logger.log_if_changed(state)
         self._dod_actuator.apply_if_changed()
 
-        # ─── 5. External listeners (sensors subscribing to ems state) ───
+        # ─── 6. BatteryChargeCurrentActuator — Modbus write for charge_current ───
+        # Separate Modbus register from EMS mode / power_limit (handled above
+        # in grid_export_actuator). State-diff against cached Modbus readback;
+        # if target == current, no write fires.
+        self._battery_charge_actuator.apply_if_changed(schedule_op, dt_util.now())
+
+        # ─── 7. External listeners (sensors subscribing to ems state) ───
         # Kept for HA consumers like binary_sensor + future sensors that
         # observe ems state through `async_add_listener`.
         self._async_update_listeners()

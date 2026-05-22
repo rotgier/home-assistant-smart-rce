@@ -9,25 +9,37 @@ from custom_components.smart_rce.domain.rce import TIMEZONE
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 
-def _ems() -> Ems:
+def _ems(*, charge_allowed: bool = True) -> Ems:
     """Test fixture — Ems with stubbed battery_schedule deps + driven adapters.
 
     Driven adapters (dod_repository, dod_logger, dod_actuator, grid_export_actuator)
     are dispatched explicitly from `Ems.update_state` after the listener-based
     wiring was inlined (Etap 0 follow-up). Tests use MagicMock — calls become
     no-ops.
+
+    `charge_allowed`: simulates the BatteryChargeService output (Etap B —
+    replaces legacy `state.battery_charge_toggle_on`). Default True =
+    "battery is actively charging" (= legacy toggle_on=True). Tests that
+    need "charging disabled" semantic pass `_ems(charge_allowed=False)`.
     """
     repo = MagicMock()
     repo.schedule = (
         BatterySchedule()
     )  # real default schedule (interventions_blocked=False)
     service = MagicMock()
-    ems = Ems(battery_schedule_repo=repo, battery_schedule_service=service)
+    charge_service = MagicMock()
+    charge_service.charge_allowed = charge_allowed
+    ems = Ems(
+        battery_schedule_repo=repo,
+        battery_schedule_service=service,
+        battery_charge_service=charge_service,
+    )
     ems.attach_driven_adapters(
         dod_repository=MagicMock(),
         dod_logger=MagicMock(),
         dod_actuator=MagicMock(),
         grid_export_actuator=MagicMock(),
+        battery_charge_actuator=MagicMock(),
     )
     return ems
 
@@ -44,7 +56,6 @@ def _state(
     small_on=False,
     battery_soc=50.0,
     battery_charge_limit=18.0,
-    battery_charge_toggle_on=None,
     battery_power_2_minutes=0.0,
     consumption_minus_pv=-3000.0,
     exported_energy_hourly=0.5,
@@ -58,7 +69,6 @@ def _state(
         water_heater_small_is_on=small_on,
         battery_soc=battery_soc,
         battery_charge_limit=battery_charge_limit,
-        battery_charge_toggle_on=battery_charge_toggle_on,
         battery_power_2_minutes=battery_power_2_minutes,
         consumption_minus_pv_2_minutes=consumption_minus_pv,
         exported_energy_hourly=exported_energy_hourly,
@@ -656,12 +666,16 @@ class TestBalancedOverrideAndDiagnostics:
             battery_soc=70.0,
             exported_energy_hourly=0.0,
         )
-        wh.update(state, grid_export_intervention=None)
+        wh.update(state, grid_export_intervention=None, battery_charge_allowed=True)
         assert wh.balanced_baseline == "both_are_off"
         assert wh.balanced_heater_budget == 0.0  # -(5500-5500)
 
         # Z POSITIVE: reserved=3500 → budget=2000 → SMALL
-        wh.update(state, grid_export_intervention=InterventionDirection.POSITIVE)
+        wh.update(
+            state,
+            grid_export_intervention=InterventionDirection.POSITIVE,
+            battery_charge_allowed=True,
+        )
         assert wh.balanced_baseline == "small_is_on"
         assert wh.balanced_heater_budget == -2000.0  # -(5500-3500)
 
@@ -675,10 +689,14 @@ class TestBalancedOverrideAndDiagnostics:
             battery_soc=30.0,  # soc<50
             exported_energy_hourly=0.0,
         )
-        wh.update(state, grid_export_intervention=None)
+        wh.update(state, grid_export_intervention=None, battery_charge_allowed=True)
         assert wh.balanced_heater_budget == 0.0
 
-        wh.update(state, grid_export_intervention=InterventionDirection.POSITIVE)
+        wh.update(
+            state,
+            grid_export_intervention=InterventionDirection.POSITIVE,
+            battery_charge_allowed=True,
+        )
         assert wh.balanced_heater_budget == -2000.0  # -(5500-3500)
 
     def test_negative_intervention_no_bump_for_cl_gt_7(self):
@@ -696,10 +714,14 @@ class TestBalancedOverrideAndDiagnostics:
             battery_soc=70.0,
             exported_energy_hourly=0.0,
         )
-        wh.update(state, grid_export_intervention=None)
+        wh.update(state, grid_export_intervention=None, battery_charge_allowed=True)
         budget_no_intervention = wh.balanced_heater_budget
 
-        wh.update(state, grid_export_intervention=InterventionDirection.NEGATIVE)
+        wh.update(
+            state,
+            grid_export_intervention=InterventionDirection.NEGATIVE,
+            battery_charge_allowed=True,
+        )
         # Budget identyczny — reserved=5500 w obu przypadkach
         assert wh.balanced_heater_budget == budget_no_intervention
 
@@ -718,12 +740,16 @@ class TestBalancedOverrideAndDiagnostics:
             battery_soc=50.0,
             exported_energy_hourly=0.0,
         )
-        wh.update(state, grid_export_intervention=None)
+        wh.update(state, grid_export_intervention=None, battery_charge_allowed=True)
         # reserved=300, budget=1500 → SMALL (1500≥1500)
         assert wh.balanced_baseline == "small_is_on"
 
         # Z NEGATIVE: reserved=600, budget=1200 → OFF (1200<1500)
-        wh.update(state, grid_export_intervention=InterventionDirection.NEGATIVE)
+        wh.update(
+            state,
+            grid_export_intervention=InterventionDirection.NEGATIVE,
+            battery_charge_allowed=True,
+        )
         assert wh.balanced_baseline == "both_are_off"
 
     def test_diagnostics_none_in_wasted_mode(self):
@@ -923,24 +949,27 @@ class TestBalancedExportBonus:
         assert mgr.water_heater.balanced_export_bonus_w == 4500.0
 
 
-class TestEffectiveChargeLimitFromToggle:
-    """Pre-charge scenario: user disabled charging via toggle, but BMS cap stays 18A.
+class TestEffectiveChargeLimitFromKwarg:
+    """Pre-charge scenario: charging disabled via BatteryChargePolicy, but BMS cap stays 18A.
 
     Without effective_charge_limit logic, water_heater.py would treat BMS cap as
     "battery actively charging" → reserved=2500-3500 → heaters off / no upgrade
-    even though battery is idle. With toggle_on=False → effective_limit=0,
+    even though battery is idle. With battery_charge_allowed=False → effective_limit=0,
     behavior matches "battery full" case (reserved=0, upgrade allowed).
+
+    Etap B refactor: `battery_charge_toggle_on` field removed from InputState;
+    value now sourced from `BatteryChargeService.charge_allowed` (passed via
+    `_ems(charge_allowed=...)` test fixture).
     """
 
-    def test_toggle_off_with_bms_18_treats_as_idle(self):
-        """toggle_off + BMS=18 + PV=2000W → reserved=0 → SMALL turns on (1500W fits)."""
-        mgr = _ems()
+    def test_charge_disallowed_with_bms_18_treats_as_idle(self):
+        """Disallowed + BMS=18 + PV=2000W → reserved=0 → SMALL turns on (1500W fits)."""
+        mgr = _ems(charge_allowed=False)
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-2000.0,
                 battery_charge_limit=18.0,  # BMS cap (would suggest "charging")
-                battery_charge_toggle_on=False,  # but user disabled
                 battery_soc=50.0,
                 exported_energy_hourly=0.0,
             )
@@ -949,15 +978,14 @@ class TestEffectiveChargeLimitFromToggle:
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.should_turn_on is False
 
-    def test_toggle_off_allows_upgrade(self):
-        """toggle_off + exported energy → upgrade ladder activates (skip_upgrade=False)."""
-        mgr = _ems()
+    def test_charge_disallowed_allows_upgrade(self):
+        """Disallowed + exported energy → upgrade ladder activates (skip_upgrade=False)."""
+        mgr = _ems(charge_allowed=False)
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-1500.0,
                 battery_charge_limit=18.0,
-                battery_charge_toggle_on=False,
                 battery_soc=50.0,
                 exported_energy_hourly=0.5,  # 500 Wh exported, want to burn
                 now=NOON_50,  # 10 min left
@@ -970,36 +998,18 @@ class TestEffectiveChargeLimitFromToggle:
         assert mgr.water_heater.should_turn_on is True
         assert mgr.water_heater.should_turn_on_small is True
 
-    def test_toggle_on_keeps_battery_priority(self):
-        """toggle_on + BMS=18 → reserved=2500-3500 (battery priority preserved)."""
-        mgr = _ems()
+    def test_charge_allowed_keeps_battery_priority(self):
+        """Allowed + BMS=18 → reserved=2500-3500 (battery priority preserved)."""
+        mgr = _ems(charge_allowed=True)
         mgr.update_state(
             _state(
                 heater_mode="BALANCED",
                 consumption_minus_pv=-2000.0,
                 battery_charge_limit=18.0,
-                battery_charge_toggle_on=True,  # user enabled charging
                 battery_soc=50.0,
                 exported_energy_hourly=0.0,
             )
         )
         # Effective=18 → reserved=2500 (soc>=50) → budget=-500 → OFF (battery priority)
-        assert mgr.water_heater.should_turn_on is False
-        assert mgr.water_heater.should_turn_on_small is False
-
-    def test_toggle_none_falls_back_to_bms(self):
-        """toggle_on=None (defensive, e.g. startup) → use BMS cap (existing behavior)."""
-        mgr = _ems()
-        mgr.update_state(
-            _state(
-                heater_mode="BALANCED",
-                consumption_minus_pv=-2000.0,
-                battery_charge_limit=18.0,
-                battery_charge_toggle_on=None,  # not yet known
-                battery_soc=50.0,
-                exported_energy_hourly=0.0,
-            )
-        )
-        # Effective=18 (fallback) → reserved=2500 → OFF (preserves prior behavior)
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_on_small is False
