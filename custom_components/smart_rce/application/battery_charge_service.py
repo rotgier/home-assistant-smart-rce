@@ -1,7 +1,7 @@
 """BatteryChargeService — application orchestrator + use case facade.
 
 Public API consumed by HA entities (select, sensors) and Ems:
-- `update(state, schedule_op)` — per-tick orchestration; caches latest
+- `update(schedule_op)` — per-tick orchestration; caches latest
   `BatteryOperation` so derived properties (`charge_allowed`,
   `target_modbus_value`) can be queried lazily by sensors/actuator.
 - `override_mode` / `set_override_mode(mode)` — select entity bridge
@@ -35,7 +35,6 @@ from ..domain.battery_charge_policy import OverrideMode
 from ..domain.battery_schedule import BatteryOperation
 
 if TYPE_CHECKING:
-    from ..domain.input_state import InputState
     from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,7 +54,7 @@ class BatteryChargeService:
         self._override_listeners: list[Callable[[OverrideMode], None]] = []
 
     @callback
-    def update(self, state: InputState, schedule_op: BatteryOperation) -> None:
+    def update(self, schedule_op: BatteryOperation) -> None:
         """Per-tick — cache schedule_op so derived properties stay fresh."""
         self._last_schedule_op = schedule_op
 
