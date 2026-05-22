@@ -89,10 +89,12 @@ class BatteryChargePolicy:
         Precedence (highest first):
         1. User DISALLOWED — block everything
         2. User ALLOWED — force on
-        3. Time-gate — within block window `[06:00, start_charge_hour)` → False
-        4. Time-gate — outside block window (gate defined) → True
-        5. Schedule engagement (no gate defined) — `schedule_op.needs_charge_toggle`
-        6. Default — off
+        3. Schedule engagement — `schedule_op.needs_charge_toggle` → True
+           (a CHARGE slot beats any time-gate block — slots are explicit
+           user/proposer intent)
+        4. Time-gate — within block window `[06:00, start_charge_hour)` → False
+        5. Time-gate — outside block window (gate defined) → True
+        6. Default — off (no gate, no schedule engagement)
 
         Time-gate semantic mirrors legacy YAML automations
         (`_ Inverter DISABLE Battery Charge on 07:00` at 06:00:20 + `_ Inverter
@@ -100,16 +102,19 @@ class BatteryChargePolicy:
         is OFF in `[06:00, start_charge_hour)` and ON elsewhere. For
         start < 06:00, the block window wraps midnight:
         `[06:00, 24:00) U [00:00, start)`. When start is None, gate is
-        disabled and we defer to schedule.
+        disabled — schedule decides, default off.
         """
         if self.user_override_mode == OverrideMode.DISALLOWED:
             return False
         if self.user_override_mode == OverrideMode.ALLOWED:
             return True
-        # OFF (passthrough) — time-gate then schedule.
+        # Schedule CHARGE slot wins — overrides time-gate block.
+        if schedule_op.needs_charge_toggle:
+            return True
+        # Schedule says no — defer to time-gate.
         start = self.start_charge_hour_override
         if start is None:
-            return schedule_op.needs_charge_toggle
+            return False
         now_t = now.time()
         # Block window is `[BLOCK_WINDOW_START, start)`. If start < 06:00 the
         # window wraps midnight and we OR the two segments.

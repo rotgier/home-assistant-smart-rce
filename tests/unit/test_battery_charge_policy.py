@@ -190,6 +190,23 @@ class TestChargeAllowedTimeGate:
         )
         assert policy.charge_allowed(_at(9, 0), _idle_op()) is True
 
+    def test_schedule_charge_slot_beats_time_gate_block(self):
+        """Active CHARGE slot wins over time-gate BLOCK window.
+
+        Slots are explicit user/proposer intent — time-gate is the fallback.
+        If schedule says 'charge', we charge even at 09:00 with start=11:00.
+        """
+        from custom_components.smart_rce.domain.battery_schedule import (
+            BatteryScheduleEntry,
+        )
+
+        charge_op = BatteryOperation.from_entry(
+            BatteryScheduleEntry.default_for(SlotKind.CHARGE_MORNING)
+        )
+        policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
+        # 09:00 is in block window [06:00, 11:00) — but schedule says charge.
+        assert policy.charge_allowed(_at(9, 0), charge_op) is True
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # target_modbus_value
