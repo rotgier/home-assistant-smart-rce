@@ -123,24 +123,20 @@ class BatteryChargeCurrentActuator:
             async_track_time_interval(hass, self._on_periodic_tick, PERIODIC_REFRESH)
         )
         if hass.state == CoreState.running:
+            # HA already up (reload scenario) — fire reconcile directly. We're
+            # in sync __init__ context so the async _on_ha_started must be
+            # spawned as a task.
             tasks.run_background(
-                self._startup_reconcile(),
+                self._on_ha_started(None),
                 name="smart_rce_battery_charge_startup_reconcile",
             )
         else:
             hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, self._on_ha_started)
 
-    # ─── lifecycle helpers (callbacks registered in __init__) ───
+    # ─── lifecycle callbacks (async — HA awaits via async_run_hass_job) ───
 
-    @callback
-    def _on_periodic_tick(self, _now: datetime) -> None:
+    async def _on_periodic_tick(self, _now: datetime) -> None:
         """5-min drift refresh — refresh cache, log warning if diverged."""
-        self._tasks.run_background(
-            self._periodic_refresh(),
-            name="smart_rce_battery_charge_drift_refresh",
-        )
-
-    async def _periodic_refresh(self) -> None:
         async with self._lock:
             cached = self._repo.policy.modbus_current_value
             readback = await self._refresh_modbus_cache_inner()
@@ -154,15 +150,8 @@ class BatteryChargeCurrentActuator:
                     readback,
                 )
 
-    @callback
-    def _on_ha_started(self, _event: Event) -> None:
-        self._tasks.run_background(
-            self._startup_reconcile(),
-            name="smart_rce_battery_charge_startup_reconcile",
-        )
-
-    async def _startup_reconcile(self) -> None:
-        """Refresh Modbus cache once after HA-started signal."""
+    async def _on_ha_started(self, _event: Event) -> None:
+        """One-shot Modbus cache reconcile after HA fully started."""
         async with self._lock:
             await self._refresh_modbus_cache_inner()
 
