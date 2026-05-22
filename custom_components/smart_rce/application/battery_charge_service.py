@@ -60,13 +60,7 @@ class BatteryChargeService:
 
     @callback
     def update(self, schedule_op: BatteryOperation) -> None:
-        """Per-tick — cache schedule_op + trigger actuator state-diff.
-
-        Encapsulates the actuator dispatch so Ems doesn't know about the
-        Modbus write path — only that BatteryChargeService.update runs each
-        tick. State-diff inside the actuator decides whether to actually
-        write (no-op when target == cached Modbus value).
-        """
+        """Per-tick hook called from Ems.update_state."""
         self._last_schedule_op = schedule_op
         self._actuator.apply_if_changed(schedule_op, self._clock())
 
