@@ -32,7 +32,10 @@ from homeassistant.util.dt import now as now_local
 from .application.battery_charge_service import BatteryChargeService
 from .application.battery_schedule_service import BatteryScheduleService
 from .application.ems import Ems
+from .domain.dod_policy import DodPolicy
+from .domain.grid_export import GridExportManager
 from .domain.input_state import InputState
+from .domain.water_heater import WaterHeaterManager
 from .infrastructure.async_task_runner import AsyncTaskRunner
 from .infrastructure.battery_charge_current_actuator import BatteryChargeCurrentActuator
 from .infrastructure.battery_charge_repository import (
@@ -91,26 +94,29 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         actuator=battery_charge_actuator,
     )
 
+    # Domain managers — owned by factory (used to be Ems-internal but moved
+    # out so adapters can be constructor-injected without circular deps).
+    dod_policy = DodPolicy()
+    grid_export = GridExportManager()
+    water_heater = WaterHeaterManager()
+
+    # Driven adapters — take narrow domain refs (no Ems back-reference per
+    # commit ea381d9). DodPolicyRepository restored BEFORE Ems construction
+    # so the first update_state tick sees persisted target_dod (UNKNOWN-phase
+    # keep-state in DodPolicy.update preserves it until inputs settle).
+    dod_repository = DodPolicyRepository(hass, dod_policy, tasks)
+    await dod_repository.async_restore()
+    dod_logger = DodPolicyLogger(dod_policy)
+    # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
+    dod_actuator = DodPolicyActuator(hass, dod_policy, tasks)
+    grid_export_actuator = GridExportActuator(hass, grid_export, tasks)
+
     ems: Ems = Ems(
+        dod_policy=dod_policy,
+        grid_export=grid_export,
+        water_heater=water_heater,
         battery_schedule_service=battery_schedule_service,
         battery_charge_service=battery_charge_service,
-    )
-
-    # Driven adapters — instantiated here (they hold Ems reference), then
-    # attached to Ems for explicit dispatch within update_state. No listener
-    # registration — flow visible inline in Ems.update_state body.
-    # DodPolicyRepository: restore PRZED pierwszym update_state (chroni przed
-    # race condition po HA restart; UNKNOWN-phase keep-state w DodPolicy.update
-    # preserves persisted target_dod until inputs settle).
-    dod_repository = DodPolicyRepository(hass, ems.dod_policy, tasks)
-    await dod_repository.async_restore()
-
-    dod_logger = DodPolicyLogger(ems.dod_policy)
-    # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
-    dod_actuator = DodPolicyActuator(hass, ems.dod_policy, tasks)
-    grid_export_actuator = GridExportActuator(hass, ems.grid_export, tasks)
-
-    ems.attach_driven_adapters(
         dod_repository=dod_repository,
         dod_logger=dod_logger,
         dod_actuator=dod_actuator,

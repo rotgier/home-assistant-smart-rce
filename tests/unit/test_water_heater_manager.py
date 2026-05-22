@@ -9,34 +9,31 @@ from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 
 
 def _ems(*, charge_allowed: bool = True) -> Ems:
-    """Test fixture — Ems with stubbed battery_schedule deps + driven adapters.
+    """Test fixture — Ems with real WaterHeaterManager + stubbed everything else.
 
-    Driven adapters (dod_repository, dod_logger, dod_actuator, grid_export_actuator)
-    are dispatched explicitly from `Ems.update_state` after the listener-based
-    wiring was inlined (Etap 0 follow-up). Tests use MagicMock — calls become
-    no-ops.
-
-    `charge_allowed`: simulates the BatteryChargeService output (Etap B —
-    replaces legacy `state.battery_charge_toggle_on`). Default True =
-    "battery is actively charging" (= legacy toggle_on=True). Tests that
-    need "charging disabled" semantic pass `_ems(charge_allowed=False)`.
+    `charge_allowed`: simulates BatteryChargeService output (Etap B — replaces
+    legacy `state.battery_charge_toggle_on`). Default True = battery actively
+    charging. Tests needing 'disabled' semantic pass `_ems(charge_allowed=False)`.
     """
+    from custom_components.smart_rce.domain.dod_policy import DodPolicy
+    from custom_components.smart_rce.domain.grid_export import GridExportManager
+
     service = MagicMock()
     service.ems_interventions_blocked = False
     service.schedule_active_this_hour = False
     charge_service = MagicMock()
     charge_service.charge_allowed = charge_allowed
-    ems = Ems(
+    return Ems(
+        dod_policy=DodPolicy(),
+        grid_export=GridExportManager(),
+        water_heater=WaterHeaterManager(),
         battery_schedule_service=service,
         battery_charge_service=charge_service,
-    )
-    ems.attach_driven_adapters(
         dod_repository=MagicMock(),
         dod_logger=MagicMock(),
         dod_actuator=MagicMock(),
         grid_export_actuator=MagicMock(),
     )
-    return ems
 
 
 NOON = datetime(2026, 4, 16, 12, 0, tzinfo=TIMEZONE)

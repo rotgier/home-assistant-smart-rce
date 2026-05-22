@@ -72,54 +72,39 @@ _LOGGER = logging.getLogger(__name__)
 class Ems:
     def __init__(
         self,
-        battery_schedule_service: BatteryScheduleService | None = None,
-        battery_charge_service: BatteryChargeService | None = None,
-    ) -> None:
-        # Defaults to None for unit-test convenience (tests instantiate `Ems()`
-        # and exercise individual managers like `ems.water_heater.update(...)`
-        # without going through `update_state`). Production wiring in
-        # `ems_factory.create_ems` always passes both. Driven adapters
-        # (dod_repository, dod_logger, dod_actuator, grid_export_actuator) are
-        # attached post-construction via `attach_driven_adapters` because Ems
-        # itself is a dependency of those adapters (cyclical wiring resolved
-        # by ordering in factory: Ems first, then adapters, then attach).
-        # BatteryScheduleRepository is NOT held by Ems — accessed via
-        # battery_schedule_service properties (ems_interventions_blocked,
-        # is_active_this_hour). Etap C side fix: bounded context internals
-        # don't leak past the application service.
-        self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
-        self.last_input_state: InputState | None = None
-        self.rce_prices: EmsRcePrices = EmsRcePrices()
-        self.charge_slots: ChargeSlots = ChargeSlots()
-        self.discharge_slots: DischargeSlots = DischargeSlots()
-        self.water_heater: WaterHeaterManager = WaterHeaterManager()
-        self.grid_export: GridExportManager = GridExportManager()
-        self.dod_policy: DodPolicy = DodPolicy()
-        self.battery_schedule_service = battery_schedule_service
-        self.battery_charge_service = battery_charge_service
-        # Driven adapters — attached post-construction by factory.
-        # battery_charge_actuator is NOT here — it is owned by
-        # BatteryChargeService (encapsulation of the bounded context).
-        self._dod_repository: DodPolicyRepository | None = None
-        self._dod_logger: DodPolicyLogger | None = None
-        self._dod_actuator: DodPolicyActuator | None = None
-        self._grid_export_actuator: GridExportActuator | None = None
-
-    def attach_driven_adapters(
-        self,
         *,
+        # Domain managers — passed in (factory owns construction order).
+        dod_policy: DodPolicy,
+        grid_export: GridExportManager,
+        water_heater: WaterHeaterManager,
+        # Application services.
+        battery_schedule_service: BatteryScheduleService,
+        battery_charge_service: BatteryChargeService,
+        # Driven adapters (narrow domain refs — no Ems back-reference).
         dod_repository: DodPolicyRepository,
         dod_logger: DodPolicyLogger,
         dod_actuator: DodPolicyActuator,
         grid_export_actuator: GridExportActuator,
     ) -> None:
-        """Wire driven adapters after construction (factory call).
-
-        Adapters depend on `Ems` in their own constructors, so we can't pass
-        them via Ems.__init__ (would be cyclical). Factory creates Ems,
-        creates adapters (with Ems reference), then calls this to link them
-        for explicit dispatch in `update_state`.
-        """
+        # BatteryScheduleRepository is NOT held by Ems — accessed via
+        # battery_schedule_service properties (ems_interventions_blocked,
+        # schedule_active_this_hour). Etap C side fix: bounded context
+        # internals don't leak past the application service.
+        # BatteryChargeCurrentActuator similarly — owned by BatteryChargeService.
+        self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
+        self.last_input_state: InputState | None = None
+        # Ems-internal RCE state (no driven adapter, no external owner).
+        self.rce_prices: EmsRcePrices = EmsRcePrices()
+        self.charge_slots: ChargeSlots = ChargeSlots()
+        self.discharge_slots: DischargeSlots = DischargeSlots()
+        # Domain managers + adapters — constructor-injected (single-phase
+        # init; no more attach_driven_adapters since ea381d9 dropped Ems
+        # back-reference from adapters).
+        self.water_heater = water_heater
+        self.grid_export = grid_export
+        self.dod_policy = dod_policy
+        self.battery_schedule_service = battery_schedule_service
+        self.battery_charge_service = battery_charge_service
         self._dod_repository = dod_repository
         self._dod_logger = dod_logger
         self._dod_actuator = dod_actuator
