@@ -98,6 +98,8 @@ class BatteryChargeCurrentActuator:
         self._lock = asyncio.Lock()
         self._writes_enabled = writes_enabled
 
+    # ─── lifecycle setup (called once from factory) ───
+
     def schedule_periodic_refresh(self, entry: ConfigEntry) -> None:
         """Register 5-min drift refresh + post-HA-started startup reconcile.
 
@@ -126,11 +128,40 @@ class BatteryChargeCurrentActuator:
             )
 
     @callback
+    def _on_periodic_tick(self, _now: datetime) -> None:
+        """5-min drift refresh — refresh cache, log warning if diverged."""
+        self._tasks.run_background(
+            self._periodic_refresh(),
+            name="smart_rce_battery_charge_drift_refresh",
+        )
+
+    async def _periodic_refresh(self) -> None:
+        async with self._lock:
+            cached = self._repo.policy.modbus_current_value
+            readback = await self._refresh_modbus_cache_inner()
+            if readback is None:
+                return
+            if cached is not None and cached != readback:
+                _LOGGER.warning(
+                    "BatteryChargeCurrentActuator: drift detected — "
+                    "cached=%.1f, readback=%.1f",
+                    cached,
+                    readback,
+                )
+
+    @callback
     def _on_ha_started(self, _event: Event) -> None:
         self._tasks.run_background(
             self._startup_reconcile(),
             name="smart_rce_battery_charge_startup_reconcile",
         )
+
+    async def _startup_reconcile(self) -> None:
+        """Refresh Modbus cache once after HA-started signal."""
+        async with self._lock:
+            await self._refresh_modbus_cache_inner()
+
+    # ─── per-tick state-diff dispatch (called from BatteryChargeService.update) ───
 
     @callback
     def apply_if_changed(self, schedule_op: BatteryOperation, now: datetime) -> None:
@@ -173,36 +204,24 @@ class BatteryChargeCurrentActuator:
             await asyncio.sleep(WRITE_TO_READBACK_DELAY_SEC)
             await self._refresh_modbus_cache()
 
-    @callback
-    def _on_periodic_tick(self, _now: datetime) -> None:
-        """5-min drift refresh — refresh cache, log warning if diverged."""
-        self._tasks.run_background(
-            self._periodic_refresh(),
-            name="smart_rce_battery_charge_drift_refresh",
+    async def _set_parameter(self, value: float) -> None:
+        """Write Modbus parameter via goodwe.set_parameter."""
+        await self._hass.services.async_call(
+            "goodwe",
+            "set_parameter",
+            {
+                "device_id": GOODWE_DEVICE_ID,
+                "parameter": PARAMETER,
+                "value": str(value),
+            },
+            blocking=True,
         )
-
-    async def _periodic_refresh(self) -> None:
-        async with self._lock:
-            cached = self._repo.policy.modbus_current_value
-            readback = await self._refresh_modbus_cache_inner()
-            if readback is None:
-                return
-            if cached is not None and cached != readback:
-                _LOGGER.warning(
-                    "BatteryChargeCurrentActuator: drift detected — "
-                    "cached=%.1f, readback=%.1f",
-                    cached,
-                    readback,
-                )
-
-    async def _startup_reconcile(self) -> None:
-        """Refresh Modbus cache once after HA-started signal."""
-        async with self._lock:
-            await self._refresh_modbus_cache_inner()
 
     async def _refresh_modbus_cache(self) -> None:
         """Refresh Modbus cache (for call sites that already hold the lock)."""
         await self._refresh_modbus_cache_inner()
+
+    # ─── common helper — multi-caller (_periodic_refresh, _startup_reconcile, _refresh_modbus_cache) ───
 
     async def _refresh_modbus_cache_inner(self) -> float | None:
         """Call goodwe.get_parameter → read input_number → write to policy.
@@ -242,16 +261,3 @@ class BatteryChargeCurrentActuator:
             return None
         await self._repo.record_modbus_read(value, dt_util.now())
         return value
-
-    async def _set_parameter(self, value: float) -> None:
-        """Write Modbus parameter via goodwe.set_parameter."""
-        await self._hass.services.async_call(
-            "goodwe",
-            "set_parameter",
-            {
-                "device_id": GOODWE_DEVICE_ID,
-                "parameter": PARAMETER,
-                "value": str(value),
-            },
-            blocking=True,
-        )
