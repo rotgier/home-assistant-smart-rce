@@ -37,7 +37,8 @@ from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
@@ -69,10 +70,6 @@ WRITE_TO_READBACK_DELAY_SEC = 5
 # Periodic drift refresh interval.
 PERIODIC_REFRESH = timedelta(minutes=5)
 
-# Delay before initial post-startup reconcile (so Goodwe integration has
-# time to finish loading and register its services).
-STARTUP_RECONCILE_DELAY_SEC = 30
-
 
 class BatteryChargeCurrentActuator:
     """Driven adapter — applies BatteryChargePolicy.target_modbus_value to Modbus.
@@ -102,21 +99,36 @@ class BatteryChargeCurrentActuator:
         self._writes_enabled = writes_enabled
 
     def schedule_periodic_refresh(self, entry: ConfigEntry) -> None:
-        """Register 5-min drift refresh + delayed startup reconcile.
+        """Register 5-min drift refresh + post-HA-started startup reconcile.
 
         Called once from `ems_factory` after construction. Tied to entry
         lifecycle (unsubscribed on unload).
+
+        Startup reconcile waits for `EVENT_HOMEASSISTANT_STARTED` (or fires
+        immediately if HA is already running — reload scenario) so the
+        Goodwe integration is guaranteed to have registered its services
+        before we call `goodwe.get_parameter`. Pattern matches state_mapper
+        + weather_listener.
         """
         entry.async_on_unload(
             async_track_time_interval(
                 self._hass, self._on_periodic_tick, PERIODIC_REFRESH
             )
         )
-        # Delayed startup reconcile — Goodwe integration may not be ready
-        # at smart_rce setup time. Fire-and-forget; if it fails (goodwe not
-        # there yet) periodic refresh will catch up.
+        if self._hass.state == CoreState.running:
+            self._tasks.run_background(
+                self._startup_reconcile(),
+                name="smart_rce_battery_charge_startup_reconcile",
+            )
+        else:
+            self._hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED, self._on_ha_started
+            )
+
+    @callback
+    def _on_ha_started(self, _event: Event) -> None:
         self._tasks.run_background(
-            self._delayed_startup_reconcile(),
+            self._startup_reconcile(),
             name="smart_rce_battery_charge_startup_reconcile",
         )
 
@@ -183,9 +195,8 @@ class BatteryChargeCurrentActuator:
                     readback,
                 )
 
-    async def _delayed_startup_reconcile(self) -> None:
-        """Wait for goodwe integration to load, then refresh Modbus cache once."""
-        await asyncio.sleep(STARTUP_RECONCILE_DELAY_SEC)
+    async def _startup_reconcile(self) -> None:
+        """Refresh Modbus cache once after HA-started signal."""
         async with self._lock:
             await self._refresh_modbus_cache_inner()
 
