@@ -2,7 +2,6 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 from custom_components.smart_rce.application.ems import Ems
-from custom_components.smart_rce.domain.battery_schedule import BatterySchedule
 from custom_components.smart_rce.domain.grid_export import InterventionDirection
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import TIMEZONE
@@ -22,15 +21,12 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
     "battery is actively charging" (= legacy toggle_on=True). Tests that
     need "charging disabled" semantic pass `_ems(charge_allowed=False)`.
     """
-    repo = MagicMock()
-    repo.schedule = (
-        BatterySchedule()
-    )  # real default schedule (interventions_blocked=False)
     service = MagicMock()
+    service.ems_interventions_blocked = False
+    service.is_active_this_hour = MagicMock(return_value=False)
     charge_service = MagicMock()
     charge_service.charge_allowed = charge_allowed
     ems = Ems(
-        battery_schedule_repo=repo,
         battery_schedule_service=service,
         battery_charge_service=charge_service,
     )

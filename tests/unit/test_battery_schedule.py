@@ -435,3 +435,46 @@ class TestPersistenceRoundTrip:
         restored = BatterySchedule.from_dict(sch.to_dict())
         assert restored._interventions_blocked_override is True  # noqa: SLF001
         assert restored.ems_interventions_blocked is True
+
+    def test_last_disengaged_at_persisted(self):
+        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        # Engage at 20:30, then disengage at 20:45 (target reached: soc=5 < 10)
+        sch.compute_operation(_at(20, 30), 80.0)
+        sch.compute_operation(_at(20, 45), 5.0)
+        assert sch._last_disengaged_at == _at(20, 45)  # noqa: SLF001
+        restored = BatterySchedule.from_dict(sch.to_dict())
+        assert restored._last_disengaged_at == _at(20, 45)  # noqa: SLF001
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# is_active_this_hour — derived signal for grid_export step-aside window
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestIsActiveThisHour:
+    def test_idle_default_false(self):
+        sch = BatterySchedule()
+        assert sch.is_active_this_hour(_at(12, 0)) is False
+
+    def test_currently_engaging_true(self):
+        sch = BatterySchedule(today_discharge_evening=_enabled_evening())
+        sch.compute_operation(_at(20, 30), 80.0)
+        assert sch.is_active_this_hour(_at(20, 45)) is True
+
+    def test_disengaged_within_same_hour_true(self):
+        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch.compute_operation(_at(20, 30), 80.0)
+        sch.compute_operation(_at(20, 45), 5.0)  # disengage at 20:45
+        assert sch.is_active_this_hour(_at(20, 50)) is True  # same hour 20:00-21:00
+
+    def test_disengaged_next_hour_false(self):
+        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch.compute_operation(_at(20, 30), 80.0)
+        sch.compute_operation(_at(20, 45), 5.0)  # disengage at 20:45
+        assert sch.is_active_this_hour(_at(21, 0)) is False  # hour rolled
+
+    def test_disengaged_previous_hour_false(self):
+        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch.compute_operation(_at(20, 30), 80.0)
+        sch.compute_operation(_at(20, 45), 5.0)  # disengage at 20:45
+        assert sch.is_active_this_hour(_at(22, 0)) is False  # 2h later

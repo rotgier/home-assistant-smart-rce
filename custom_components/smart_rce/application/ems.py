@@ -49,9 +49,6 @@ from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import RcePrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
-from custom_components.smart_rce.infrastructure.battery_schedule_repository import (
-    BatteryScheduleRepository,
-)
 
 if TYPE_CHECKING:
     from custom_components.smart_rce.infrastructure.dod_policy_actuator import (
@@ -75,7 +72,6 @@ _LOGGER = logging.getLogger(__name__)
 class Ems:
     def __init__(
         self,
-        battery_schedule_repo: BatteryScheduleRepository | None = None,
         battery_schedule_service: BatteryScheduleService | None = None,
         battery_charge_service: BatteryChargeService | None = None,
     ) -> None:
@@ -87,6 +83,10 @@ class Ems:
         # attached post-construction via `attach_driven_adapters` because Ems
         # itself is a dependency of those adapters (cyclical wiring resolved
         # by ordering in factory: Ems first, then adapters, then attach).
+        # BatteryScheduleRepository is NOT held by Ems — accessed via
+        # battery_schedule_service properties (ems_interventions_blocked,
+        # is_active_this_hour). Etap C side fix: bounded context internals
+        # don't leak past the application service.
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self.last_input_state: InputState | None = None
         self.rce_prices: EmsRcePrices = EmsRcePrices()
@@ -95,7 +95,6 @@ class Ems:
         self.water_heater: WaterHeaterManager = WaterHeaterManager()
         self.grid_export: GridExportManager = GridExportManager()
         self.dod_policy: DodPolicy = DodPolicy()
-        self.battery_schedule_repo = battery_schedule_repo
         self.battery_schedule_service = battery_schedule_service
         self.battery_charge_service = battery_charge_service
         # Driven adapters — attached post-construction by factory.
@@ -136,8 +135,12 @@ class Ems:
             BatteryScheduleInput(battery_soc=state.battery_soc)
         )
 
-        # Single read after service — source of truth for downstream managers.
-        blocked = self.battery_schedule_repo.schedule.ems_interventions_blocked
+        # Source of truth for downstream managers — read via service properties,
+        # not via repo (Etap C side fix — Ems doesn't leak repo).
+        blocked = self.battery_schedule_service.ems_interventions_blocked
+        schedule_active_this_hour = self.battery_schedule_service.is_active_this_hour(
+            state.now
+        )
 
         # ─── 2. BatteryChargeService — caches schedule_op for derived queries ───
         # Service.charge_allowed + target_modbus_value become consistent with
@@ -156,6 +159,7 @@ class Ems:
             state,
             ems_interventions_blocked=blocked,
             battery_charge_allowed=charge_allowed,
+            ems_schedule_active_this_hour=schedule_active_this_hour,
         )
         self._grid_export_actuator.apply_if_changed(state)
 

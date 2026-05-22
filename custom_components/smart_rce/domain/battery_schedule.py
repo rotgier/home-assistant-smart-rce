@@ -425,6 +425,11 @@ class BatterySchedule:
     last_seen_date: date | None = None
     _currently_engaging: SlotKind | None = None
     _interventions_blocked_override: bool = False
+    # When a slot disengages, this records the timestamp so consumers can ask
+    # `is_active_this_hour(now)` — semantics matching legacy HA-side template
+    # `binary_sensor.ems_other_automation_active_this_hour` that GridExportManager
+    # uses to step aside in the clock hour following a smart_rce intervention.
+    _last_disengaged_at: datetime | None = None
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -437,6 +442,23 @@ class BatterySchedule:
         return self._interventions_blocked_override or (
             self._currently_engaging is not None
         )
+
+    def is_active_this_hour(self, now: datetime) -> bool:
+        """Return True if a slot is engaging OR disengaged within current clock hour.
+
+        Replaces HA-side `binary_sensor.ems_other_automation_active_this_hour`
+        signal (Etap C). Used by `GridExportManager.update` to step aside in
+        the post-intervention cleanup window (rest of the clock hour after a
+        smart_rce slot disengaged — avoids racing the inverter back to
+        intervention state immediately after we cleaned up).
+        """
+        if self._currently_engaging is not None:
+            return True
+        if self._last_disengaged_at is None:
+            return False
+        return self._last_disengaged_at.replace(
+            minute=0, second=0, microsecond=0
+        ) == now.replace(minute=0, second=0, microsecond=0)
 
     def today_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
         return {
@@ -500,6 +522,7 @@ class BatterySchedule:
                 )
             )
             self._currently_engaging = None
+            self._last_disengaged_at = now
             # Fall through — another slot might be ready to engage immediately.
 
         # 3. Find highest-precedence slot that should engage NOW.
@@ -556,6 +579,11 @@ class BatterySchedule:
                 self._currently_engaging.name if self._currently_engaging else None
             ),
             "interventions_blocked_override": self._interventions_blocked_override,
+            "last_disengaged_at": (
+                self._last_disengaged_at.isoformat()
+                if self._last_disengaged_at is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -580,6 +608,13 @@ class BatterySchedule:
             except KeyError:
                 currently_engaging = None
 
+        last_disengaged_at: datetime | None = None
+        if raw := data.get("last_disengaged_at"):
+            try:
+                last_disengaged_at = datetime.fromisoformat(raw)
+            except (TypeError, ValueError):
+                last_disengaged_at = None
+
         return cls(
             today_charge_morning=_entry("today", SlotKind.CHARGE_MORNING),
             today_discharge_morning=_entry("today", SlotKind.DISCHARGE_MORNING),
@@ -594,6 +629,7 @@ class BatterySchedule:
             _interventions_blocked_override=bool(
                 data.get("interventions_blocked_override", False)
             ),
+            _last_disengaged_at=last_disengaged_at,
         )
 
 

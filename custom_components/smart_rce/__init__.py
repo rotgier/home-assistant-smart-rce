@@ -42,9 +42,10 @@ PLATFORMS = [
 class SmartRceData:
     """Smart Rce Data.
 
-    `battery_schedule_repo` + `battery_schedule_service` are accessible via
-    `ems.battery_schedule_repo` / `ems.battery_schedule_service` — Ems is
-    their wiring point and exposes them publicly.
+    `battery_schedule_service` + `battery_charge_service` are accessible via
+    `ems.battery_schedule_service` / `ems.battery_charge_service` — Ems is
+    their wiring point and exposes them publicly. Repositories stay
+    encapsulated inside the services (Etap C cleanup).
     """
 
     ems: Ems

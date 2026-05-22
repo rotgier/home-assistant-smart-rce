@@ -92,7 +92,6 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     )
 
     ems: Ems = Ems(
-        battery_schedule_repo=battery_schedule_repo,
         battery_schedule_service=battery_schedule_service,
         battery_charge_service=battery_charge_service,
     )

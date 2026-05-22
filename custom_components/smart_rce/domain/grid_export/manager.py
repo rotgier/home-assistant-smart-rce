@@ -124,18 +124,24 @@ class GridExportManager:
         *,
         ems_interventions_blocked: bool = False,
         battery_charge_allowed: bool = True,
+        ems_schedule_active_this_hour: bool = False,
     ) -> None:
         """Re-evaluate intervention state from current InputState.
 
-        Called reactively by Ems on every state change. `ems_interventions_blocked`
-        and `battery_charge_allowed` are passed explicitly by Ems (sourced
-        from BatterySchedule and BatteryChargePolicy respectively, not from
-        InputState — Etap 0 + Etap B refactors).
+        Called reactively by Ems on every state change. `ems_interventions_blocked`,
+        `battery_charge_allowed`, and `ems_schedule_active_this_hour` are
+        passed explicitly by Ems (sourced from BatterySchedule and
+        BatteryChargePolicy, not from InputState — Etap 0 + B + C refactors).
+
+        `ems_schedule_active_this_hour` replaces the legacy InputState field
+        `other_ems_automation_active_this_hour` (HA template binary_sensor) —
+        Etap C migrated this signal into BatterySchedule itself.
 
         Flow:
-        1. Global guards (none_present_core, interventions_blocked) → set_neutral + return
+        1. Global guards (none_present_core, interventions_blocked,
+           schedule_active_this_hour) → set_neutral + return
         2. Active intervention: tick (hour_rollover, end_of_hour, delegate)
-           Or: try_enter (too_late_in_hour, other_automation, balance routing)
+           Or: try_enter (too_late_in_hour, balance routing)
         3. Apply disabled_override if strategy_mode != charge_adaptive
         4. Log
         """
@@ -162,9 +168,23 @@ class GridExportManager:
             )
             return
 
-        # External EMS automation managing Goodwe — exit any active intervention
-        # and stay neutral (entry + continue path). Listener guards the physical
-        # apply (does not overwrite automation's Goodwe settings).
+        # smart_rce BatterySchedule active this hour (engaged OR recently
+        # disengaged within current clock hour) — step aside to avoid racing
+        # the inverter back into intervention immediately after slot cleanup.
+        # Etap C: replaced legacy HA template binary_sensor.ems_other_automation_active_this_hour
+        # with derived signal from BatterySchedule (`is_active_this_hour`).
+        if ems_schedule_active_this_hour:
+            self._set_neutral("schedule_active_this_hour")
+            self._apply_disabled_override_if_needed(state)
+            self._log_after_update(
+                state, prev_active, prev_mode, prev_xset, battery_charge_allowed
+            )
+            return
+
+        # Legacy external EMS automation signal — kept in parallel with
+        # schedule_active_this_hour during migration period (Etap C deploy
+        # → Etap D drops this field). Both signals will indicate the same
+        # condition until legacy automations migrate to schedule slots.
         if state.other_ems_automation_active_this_hour is True:
             self._set_neutral("other_automation_active")
             self._apply_disabled_override_if_needed(state)

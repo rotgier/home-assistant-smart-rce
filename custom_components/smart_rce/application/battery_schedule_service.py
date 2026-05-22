@@ -105,6 +105,17 @@ class BatteryScheduleService:
 
         return op
 
+    # ─── Properties exposed to Ems + entities (avoid Ems leaking repo) ───
+
+    @property
+    def ems_interventions_blocked(self) -> bool:
+        """Combined user-override OR active engagement — read by DodPolicy / GridExport."""
+        return self._repo.schedule.ems_interventions_blocked
+
+    def is_active_this_hour(self, now: datetime) -> bool:
+        """Return True if engaged now OR disengaged within current clock hour."""
+        return self._repo.schedule.is_active_this_hour(now)
+
     # ─────── User override — public methods called from HA entities ───────
 
     @property
