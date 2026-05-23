@@ -31,7 +31,6 @@ from homeassistant.util.dt import now as now_local
 from .application.battery_charge_service import BatteryChargeService
 from .application.battery_schedule_service import BatteryScheduleService
 from .application.ems import Ems
-from .domain.dod_policy import DodPolicy
 from .domain.grid_export import GridExportManager
 from .domain.input_state import InputState
 from .domain.water_heater import WaterHeaterManager
@@ -81,16 +80,18 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
 
     # Domain managers — owned by factory (used to be Ems-internal but moved
     # out so adapters can be constructor-injected without circular deps).
-    dod_policy = DodPolicy()
     grid_export = GridExportManager()
     water_heater = WaterHeaterManager()
 
-    # Driven adapters — take narrow domain refs (no Ems back-reference per
-    # commit ea381d9). DodPolicyRepository restored BEFORE Ems construction
-    # so the first update_state tick sees persisted target_dod (UNKNOWN-phase
-    # keep-state in DodPolicy.update preserves it until inputs settle).
-    dod_repository = DodPolicyRepository(hass, dod_policy, tasks)
+    # DodPolicy is owned by DodPolicyRepository (parity with BatteryChargeRepository
+    # + BatteryScheduleRepository pattern). Factory pulls the ref AFTER async_restore
+    # so subsequent adapters (logger + actuator) get the persisted-state policy.
+    # Repo restored BEFORE Ems construction so the first update_state tick sees
+    # persisted target_dod (UNKNOWN-phase keep-state in DodPolicy.update preserves
+    # it until inputs settle).
+    dod_repository = DodPolicyRepository(hass, tasks)
     await dod_repository.async_restore()
+    dod_policy = dod_repository.policy
     dod_logger = DodPolicyLogger(dod_policy)
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
     dod_actuator = DodPolicyActuator(hass, dod_policy, tasks)
