@@ -86,7 +86,7 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     battery_charge_repo = BatteryChargeRepository(battery_charge_store, tasks)
     await battery_charge_repo.async_restore()
     battery_charge_actuator = BatteryChargeCurrentActuator(
-        hass, entry, battery_charge_repo, tasks
+        hass, entry, battery_charge_repo, tasks, writes_enabled=True
     )
     battery_charge_service = BatteryChargeService(
         repo=battery_charge_repo,
