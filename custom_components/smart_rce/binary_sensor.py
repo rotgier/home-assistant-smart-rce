@@ -82,6 +82,14 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         value_fn=lambda ems: ems.battery_charge_service.charge_allowed,
         icon="mdi:battery-charging",
     ),
+    EmsBinarySensorDescription(
+        name="Schedule Active This Hour",
+        # BatterySchedule.is_active_this_hour — True when a slot is currently
+        # engaging OR was disengaged within the current clock hour. Drives
+        # GridExportManager precedence (skip intervention if schedule active).
+        value_fn=lambda ems: ems.battery_schedule_service.schedule_active_this_hour,
+        icon="mdi:clock-check-outline",
+    ),
 )
 
 
