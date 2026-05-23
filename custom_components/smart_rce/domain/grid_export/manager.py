@@ -245,17 +245,16 @@ class GridExportManager:
             self._set_neutral("end_of_hour_cleanup")
             return
         # Delegate to intervention — intervention-specific exits + recompute.
-        # Only POSITIVE consumes start_charge_hour_override (pre-charge window).
-        if isinstance(self._active, PositiveIntervention):
-            result = self._active.continue_or_exit(
-                state,
-                battery_charge_allowed=battery_charge_allowed,
-                start_charge_hour_override=start_charge_hour_override,
-            )
-        else:
-            result = self._active.continue_or_exit(
-                state, battery_charge_allowed=battery_charge_allowed
-            )
+        # Uniform Protocol signature — NEGATIVE ignores start_charge_hour_override
+        # internally (no pre-charge window concern). NO isinstance check —
+        # that would break after `live_reload()` re-imports the class (instance
+        # of OLD class fails `isinstance(NEW_class)`); same pattern as
+        # `Direction.is_discharge` string compare rule (CLAUDE.md).
+        result = self._active.continue_or_exit(
+            state,
+            battery_charge_allowed=battery_charge_allowed,
+            start_charge_hour_override=start_charge_hour_override,
+        )
         if result.is_exit:
             self._set_neutral(result.exit_reason)
         else:

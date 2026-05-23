@@ -18,6 +18,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol
 
 if TYPE_CHECKING:
+    from datetime import time
+
     from custom_components.smart_rce.domain.input_state import InputState
 
 
@@ -56,10 +58,26 @@ class Intervention(Protocol):
     started_hour: int
     last_reason: str
 
-    @classmethod
-    def try_enter(cls, state: InputState) -> EntryResult: ...
+    # `try_enter` is NOT in the Protocol — manager dispatches by class
+    # explicitly (`PositiveIntervention.try_enter(...)` vs `NegativeIntervention.try_enter(...)`)
+    # because the choice of which intervention to enter depends on balance
+    # range routing, not polymorphism. Each class has its own try_enter
+    # signature with intervention-specific kwargs (Positive needs
+    # start_charge_hour_override for pre-charge window, Negative doesn't).
 
-    def continue_or_exit(self, state: InputState) -> ContinueResult: ...
+    def continue_or_exit(
+        self,
+        state: InputState,
+        *,
+        battery_charge_allowed: bool,
+        start_charge_hour_override: time | None,
+    ) -> ContinueResult:
+        """Run continue-or-exit logic — manager calls polymorphically.
+
+        Both interventions conform to this signature. NegativeIntervention
+        ignores `start_charge_hour_override` (no pre-charge window concern)
+        — delegates to a private impl method to signal intent explicitly.
+        """
 
 
 @dataclass(frozen=True)

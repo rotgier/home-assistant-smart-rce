@@ -61,7 +61,10 @@ Cross-cutting checks (manager handles, NOT in try_enter / continue_or_exit):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final
+
+if TYPE_CHECKING:
+    from datetime import time
 
 from custom_components.smart_rce.domain.grid_export.intervention import (
     CONTINUE,
@@ -211,11 +214,31 @@ class NegativeIntervention:
         return EntryResult.entered(intervention)
 
     def continue_or_exit(
+        self,
+        state: InputState,
+        *,
+        battery_charge_allowed: bool,
+        start_charge_hour_override: time | None,  # noqa: ARG002 — unused; Protocol uniform
+    ) -> ContinueResult:
+        """Protocol conformance entry — delegates to NEGATIVE-specific impl.
+
+        `start_charge_hour_override` is unused for NEGATIVE (no pre-charge
+        window concern — that's a POSITIVE-only entry gate). Kept in
+        signature for Protocol uniformity so manager can call polymorphically
+        on `self._active` without isinstance check. Delegation makes the
+        'we don't depend on this kwarg' intent explicit.
+        """
+        return self._do_continue_or_exit(
+            state, battery_charge_allowed=battery_charge_allowed
+        )
+
+    def _do_continue_or_exit(
         self, state: InputState, *, battery_charge_allowed: bool
     ) -> ContinueResult:
-        """Continue NEGATIVE intervention. Mutates self in-place on continue.
+        """NEGATIVE continue logic — exits + delegates to `_continue` for decision.
 
-        Caller (GridExportManager) MUST verify global guards first:
+        Caller (GridExportManager via `continue_or_exit`) MUST verify global
+        guards first:
         - hour_rollover (started_hour mismatch)
         - end_of_hour_cleanup (now ≥ XX:59:50)
         - no ems_interventions_blocked
