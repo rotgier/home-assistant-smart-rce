@@ -23,6 +23,7 @@ from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .domain.battery_charge_policy import OverrideMode
 from .domain.water_heater_reserved_policy import ReservedMode
+from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
 
@@ -66,6 +67,7 @@ class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
         self._service = entry.runtime_data.ems.battery_charge_service
         self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_allowed_override"
         self.entity_id = "select.ems_battery_charge_allowed_override"
+        self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -106,6 +108,7 @@ class EmsWaterHeaterReservedModeSelect(SelectEntity):
         self._service = entry.runtime_data.ems.water_heater_reserved_service
         self._attr_unique_id = f"{DOMAIN}_ems_water_heater_reserved_mode"
         self.entity_id = "select.ems_water_heater_reserved_mode"
+        self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

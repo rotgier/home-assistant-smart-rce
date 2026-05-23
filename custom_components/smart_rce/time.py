@@ -21,6 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
+from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
 
@@ -54,6 +55,7 @@ class EmsBatteryChargeStartHourOverrideTime(TimeEntity):
         self._service = entry.runtime_data.ems.battery_charge_service
         self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_start_hour_override"
         self.entity_id = "time.ems_battery_charge_start_hour_override"
+        self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

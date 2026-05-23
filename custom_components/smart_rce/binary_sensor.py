@@ -13,12 +13,13 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import SmartRceConfigEntry
 from .application.ems import Ems
+from .ems_device import ems_device_info
 
 UNIQUE_ID_PREFIX = "ems"
 
@@ -89,12 +90,7 @@ async def async_setup_entry(
     entry: SmartRceConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    # device_info = entry.runtime_data.rce_coordinator.device_info
-    device_info = DeviceInfo(
-        name="EMS",
-        identifiers={("ems", entry.entry_id)},
-        entry_type=DeviceEntryType.SERVICE,
-    )
+    device_info = ems_device_info(entry)
     ems = entry.runtime_data.ems
 
     sensors: list[EmsBinarySensorDescription] = [

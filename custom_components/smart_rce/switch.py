@@ -22,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
+from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
 
@@ -71,6 +72,7 @@ class EmsInterventionsBlockedSwitch(SwitchEntity):
         self._attr_unique_id = f"{DOMAIN}_ems_interventions_blocked"
         # Forces entity_id to switch.ems_interventions_blocked
         self.entity_id = "switch.ems_interventions_blocked"
+        self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to service user-override changes for UI refresh."""

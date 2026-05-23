@@ -19,6 +19,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
+from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
 
@@ -58,6 +59,7 @@ class EmsWaterHeaterReservedNumber(NumberEntity):
         self._service = entry.runtime_data.ems.water_heater_reserved_service
         self._attr_unique_id = f"{DOMAIN}_ems_water_heater_reserved"
         self.entity_id = "number.ems_water_heater_reserved"
+        self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
