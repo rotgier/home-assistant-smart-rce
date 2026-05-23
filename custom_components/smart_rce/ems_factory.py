@@ -26,7 +26,6 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
-from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import now as now_local
 
 from .application.battery_charge_service import BatteryChargeService
@@ -39,11 +38,7 @@ from .domain.water_heater import WaterHeaterManager
 from .infrastructure.async_task_runner import AsyncTaskRunner
 from .infrastructure.battery_charge_current_actuator import BatteryChargeCurrentActuator
 from .infrastructure.battery_charge_repository import BatteryChargeRepository
-from .infrastructure.battery_schedule_repository import (
-    STORAGE_KEY as BATTERY_SCHEDULE_STORAGE_KEY,
-    STORAGE_VERSION as BATTERY_SCHEDULE_STORAGE_VERSION,
-    BatteryScheduleRepository,
-)
+from .infrastructure.battery_schedule_repository import BatteryScheduleRepository
 from .infrastructure.dod_policy_actuator import DodPolicyActuator
 from .infrastructure.dod_policy_logger import DodPolicyLogger
 from .infrastructure.dod_policy_repository import DodPolicyRepository
@@ -61,10 +56,7 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
 
     # Battery schedule: repo + service must exist BEFORE Ems (constructor deps).
     # Repo restore from .storage/ — defaults to fresh schedule if no persisted state.
-    battery_schedule_store: Store[dict] = Store(
-        hass, BATTERY_SCHEDULE_STORAGE_VERSION, BATTERY_SCHEDULE_STORAGE_KEY
-    )
-    battery_schedule_repo = BatteryScheduleRepository(battery_schedule_store, tasks)
+    battery_schedule_repo = BatteryScheduleRepository(hass, tasks)
     await battery_schedule_repo.async_restore()
     battery_schedule_service = BatteryScheduleService(
         repo=battery_schedule_repo,
