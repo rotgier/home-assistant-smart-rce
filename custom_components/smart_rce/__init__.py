@@ -196,6 +196,8 @@ def live_reload():
     reload(
         import_module("custom_components.smart_rce.infrastructure.async_task_runner")
     )
+    # repository base BEFORE concrete repositories (they extend Repository[T]).
+    reload(import_module("custom_components.smart_rce.infrastructure.repository"))
     reload(
         import_module(
             "custom_components.smart_rce.infrastructure.battery_schedule_repository"

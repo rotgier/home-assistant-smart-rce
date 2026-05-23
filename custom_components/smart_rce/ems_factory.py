@@ -38,11 +38,7 @@ from .domain.input_state import InputState
 from .domain.water_heater import WaterHeaterManager
 from .infrastructure.async_task_runner import AsyncTaskRunner
 from .infrastructure.battery_charge_current_actuator import BatteryChargeCurrentActuator
-from .infrastructure.battery_charge_repository import (
-    STORAGE_KEY as BATTERY_CHARGE_STORAGE_KEY,
-    STORAGE_VERSION as BATTERY_CHARGE_STORAGE_VERSION,
-    BatteryChargeRepository,
-)
+from .infrastructure.battery_charge_repository import BatteryChargeRepository
 from .infrastructure.battery_schedule_repository import (
     STORAGE_KEY as BATTERY_SCHEDULE_STORAGE_KEY,
     STORAGE_VERSION as BATTERY_SCHEDULE_STORAGE_VERSION,
@@ -80,10 +76,7 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     # repo. Service owns actuator (encapsulation of bounded context — Ems
     # only sees the Service). Etap B migration replaces
     # input_boolean.battery_charge_max_current_toggle.
-    battery_charge_store: Store[dict] = Store(
-        hass, BATTERY_CHARGE_STORAGE_VERSION, BATTERY_CHARGE_STORAGE_KEY
-    )
-    battery_charge_repo = BatteryChargeRepository(battery_charge_store, tasks)
+    battery_charge_repo = BatteryChargeRepository(hass, tasks)
     await battery_charge_repo.async_restore()
     battery_charge_actuator = BatteryChargeCurrentActuator(
         hass, entry, battery_charge_repo, tasks, writes_enabled=True
