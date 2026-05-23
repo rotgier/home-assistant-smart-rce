@@ -319,10 +319,12 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.sensor.target_soc_matrix_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.ems_sensor"))
     reload(import_module("custom_components.smart_rce.sensor"))
+    reload(import_module("custom_components.smart_rce.ems_device"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
     reload(import_module("custom_components.smart_rce.switch"))
     reload(import_module("custom_components.smart_rce.select"))
     reload(import_module("custom_components.smart_rce.time"))
+    reload(import_module("custom_components.smart_rce.number"))
     reload(import_module("custom_components.smart_rce"))
 
 
