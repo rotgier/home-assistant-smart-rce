@@ -245,7 +245,7 @@ class WaterHeaterManager:
             elif is_negative:
                 reserved = 5500  # grzałki MUSZĄ off
             else:
-                reserved = 5500
+                reserved = 3000
         elif battery_charge_limit > 2:
             if is_negative:
                 reserved = 2000
