@@ -172,10 +172,6 @@ class BatteryChargeService:
 
         return _unsub
 
-    def _notify_start_charge_hour_listeners(self, value: time | None) -> None:
-        for cb in self._start_charge_hour_listeners:
-            cb(value)
-
     @callback
     def handle_start_charge_today_changed(
         self, event: StartChargeTodayChanged | None, now: datetime
@@ -206,3 +202,7 @@ class BatteryChargeService:
             value,
         )
         self._notify_start_charge_hour_listeners(value)
+
+    def _notify_start_charge_hour_listeners(self, value: time | None) -> None:
+        for cb in self._start_charge_hour_listeners:
+            cb(value)
