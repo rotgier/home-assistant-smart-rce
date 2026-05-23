@@ -22,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .domain.battery_charge_policy import OverrideMode
+from .domain.water_heater_reserved_policy import ReservedMode
 
 PARALLEL_UPDATES = 1
 
@@ -34,7 +35,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add smart_rce select entities."""
-    async_add_entities([EmsBatteryChargeAllowedOverrideSelect(entry)])
+    async_add_entities(
+        [
+            EmsBatteryChargeAllowedOverrideSelect(entry),
+            EmsWaterHeaterReservedModeSelect(entry),
+        ]
+    )
 
 
 class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
@@ -75,4 +81,43 @@ class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
 
     @callback
     def _on_change(self, _mode: OverrideMode) -> None:
+        self.async_write_ha_state()
+
+
+class EmsWaterHeaterReservedModeSelect(SelectEntity):
+    """Mode switch for water-heater reserved-power policy (AUTO / MANUAL).
+
+    - AUTO: service.compute_auto(now, input) drives the value
+      (currently stub = 3000; future: dynamic logic based on RCE prices +
+      PV forecast + weather).
+    - MANUAL: user-set value via `number.ems_water_heater_reserved` is used.
+
+    Persistence handled by `WaterHeaterReservedRepository` (own Store).
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Water Heater Reserved Mode"
+    _attr_should_poll = False
+    _attr_icon = "mdi:water-boiler-auto"
+    _attr_options = [m.value for m in ReservedMode]
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.water_heater_reserved_service
+        self._attr_unique_id = f"{DOMAIN}_ems_water_heater_reserved_mode"
+        self.entity_id = "select.ems_water_heater_reserved_mode"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_mode_listener(self._on_change))
+
+    @property
+    def current_option(self) -> str:
+        return self._service.mode.value
+
+    async def async_select_option(self, option: str) -> None:
+        await self._service.set_mode(ReservedMode(option))
+
+    @callback
+    def _on_change(self, _mode: ReservedMode) -> None:
         self.async_write_ha_state()

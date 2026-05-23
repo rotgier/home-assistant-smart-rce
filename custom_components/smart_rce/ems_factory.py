@@ -31,6 +31,7 @@ from homeassistant.util.dt import now as now_local
 from .application.battery_charge_service import BatteryChargeService
 from .application.battery_schedule_service import BatteryScheduleService
 from .application.ems import Ems
+from .application.water_heater_reserved_service import WaterHeaterReservedService
 from .domain.grid_export import GridExportManager
 from .domain.input_state import InputState
 from .domain.water_heater import WaterHeaterManager
@@ -43,6 +44,9 @@ from .infrastructure.dod_policy_logger import DodPolicyLogger
 from .infrastructure.dod_policy_repository import DodPolicyRepository
 from .infrastructure.grid_export_actuator import GridExportActuator
 from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
+from .infrastructure.water_heater_reserved_repository import (
+    WaterHeaterReservedRepository,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -97,12 +101,22 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     dod_actuator = DodPolicyActuator(hass, dod_policy, tasks)
     grid_export_actuator = GridExportActuator(hass, grid_export, tasks)
 
+    # Water heater reserved-power policy — user-configurable via NumberEntity
+    # (replaces hardcoded `reserved` in WaterHeaterManager._balanced_target).
+    water_heater_reserved_repo = WaterHeaterReservedRepository(hass, tasks)
+    await water_heater_reserved_repo.async_restore()
+    water_heater_reserved_service = WaterHeaterReservedService(
+        repo=water_heater_reserved_repo,
+        clock=now_local,
+    )
+
     ems: Ems = Ems(
         dod_policy=dod_policy,
         grid_export=grid_export,
         water_heater=water_heater,
         battery_schedule_service=battery_schedule_service,
         battery_charge_service=battery_charge_service,
+        water_heater_reserved_service=water_heater_reserved_service,
         dod_repository=dod_repository,
         dod_logger=dod_logger,
         dod_actuator=dod_actuator,

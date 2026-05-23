@@ -41,12 +41,17 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
         )
     )
     charge_service.charge_allowed = charge_allowed
+    # Reserved service mock returns historic default 5500 W — preserves test
+    # expectations from before the configurable reserved_balanced_full landed.
+    reserved_service = MagicMock()
+    reserved_service.update = MagicMock(return_value=5500)
     return Ems(
         dod_policy=DodPolicy(),
         grid_export=GridExportManager(),
         water_heater=WaterHeaterManager(),
         battery_schedule_service=service,
         battery_charge_service=charge_service,
+        water_heater_reserved_service=reserved_service,
         dod_repository=MagicMock(),
         dod_logger=MagicMock(),
         dod_actuator=MagicMock(),

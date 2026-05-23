@@ -32,6 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
+    Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
@@ -194,6 +195,9 @@ def live_reload():
     # reload AFTER battery_schedule.
     reload(import_module("custom_components.smart_rce.domain.battery_charge_policy"))
     reload(
+        import_module("custom_components.smart_rce.domain.water_heater_reserved_policy")
+    )
+    reload(
         import_module("custom_components.smart_rce.infrastructure.async_task_runner")
     )
     # repository base BEFORE concrete repositories (they extend Repository[T]).
@@ -210,11 +214,21 @@ def live_reload():
     )
     reload(
         import_module(
+            "custom_components.smart_rce.infrastructure.water_heater_reserved_repository"
+        )
+    )
+    reload(
+        import_module(
             "custom_components.smart_rce.application.battery_schedule_service"
         )
     )
     reload(
         import_module("custom_components.smart_rce.application.battery_charge_service")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.application.water_heater_reserved_service"
+        )
     )
     reload(import_module("custom_components.smart_rce.application.ems"))
     reload(import_module("custom_components.smart_rce.application"))

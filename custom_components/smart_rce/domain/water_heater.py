@@ -74,6 +74,7 @@ class WaterHeaterManager:
         grid_export_intervention: InterventionDirection | None = None,
         *,
         battery_charge_allowed: bool,
+        reserved_balanced_full: int = 5500,
     ) -> None:
         """Update target state based on PV/battery/heater config.
 
@@ -94,7 +95,11 @@ class WaterHeaterManager:
 
         current_state = self._current_state(state)
         target = self._determine_target(
-            state, current_state, grid_export_intervention, battery_charge_allowed
+            state,
+            current_state,
+            grid_export_intervention,
+            battery_charge_allowed,
+            reserved_balanced_full,
         )
 
         self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
@@ -141,6 +146,7 @@ class WaterHeaterManager:
         current_state: str,
         grid_export_intervention: InterventionDirection | None = None,
         battery_charge_allowed: bool = True,
+        reserved_balanced_full: int = 5500,
     ) -> str:
         pv_available = -state.consumption_minus_pv_2_minutes
         battery_soc = state.battery_soc
@@ -173,6 +179,7 @@ class WaterHeaterManager:
                 state.water_heater_strategy,
                 state.now,
                 grid_export_intervention,
+                reserved_balanced_full,
             )
         else:
             target = self._wasted_target(
@@ -225,6 +232,7 @@ class WaterHeaterManager:
         strategy: str | None,
         now: datetime,
         grid_export_intervention: InterventionDirection | None = None,
+        reserved_balanced_full: int = 5500,
     ) -> str:
         # Rezerwacja per battery_charge_limit (0, 1, 2, 7, 18A) i intervention.
         # NEGATIVE intervention: większy reserved (grzałki off priorytetowo),
@@ -245,7 +253,7 @@ class WaterHeaterManager:
             elif is_negative:
                 reserved = 5500  # grzałki MUSZĄ off
             else:
-                reserved = 3000
+                reserved = reserved_balanced_full
         elif battery_charge_limit > 2:
             if is_negative:
                 reserved = 2000

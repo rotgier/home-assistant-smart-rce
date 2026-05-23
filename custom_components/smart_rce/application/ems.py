@@ -37,6 +37,9 @@ from custom_components.smart_rce.application.battery_charge_service import (
 from custom_components.smart_rce.application.battery_schedule_service import (
     BatteryScheduleService,
 )
+from custom_components.smart_rce.application.water_heater_reserved_service import (
+    WaterHeaterReservedService,
+)
 from custom_components.smart_rce.domain.battery_schedule import BatteryScheduleInput
 from custom_components.smart_rce.domain.charge_slots import (
     DEFAULT_HEATER_RCE_THRESHOLD,
@@ -49,6 +52,9 @@ from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import RcePrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
+from custom_components.smart_rce.domain.water_heater_reserved_policy import (
+    WaterHeaterReservedInput,
+)
 
 if TYPE_CHECKING:
     from custom_components.smart_rce.infrastructure.dod_policy_actuator import (
@@ -80,6 +86,7 @@ class Ems:
         # Application services.
         battery_schedule_service: BatteryScheduleService,
         battery_charge_service: BatteryChargeService,
+        water_heater_reserved_service: WaterHeaterReservedService,
         # Driven adapters (narrow domain refs — no Ems back-reference).
         dod_repository: DodPolicyRepository,
         dod_logger: DodPolicyLogger,
@@ -105,6 +112,7 @@ class Ems:
         self.dod_policy = dod_policy
         self.battery_schedule_service = battery_schedule_service
         self.battery_charge_service = battery_charge_service
+        self.water_heater_reserved_service = water_heater_reserved_service
         self._dod_repository = dod_repository
         self._dod_logger = dod_logger
         self._dod_actuator = dod_actuator
@@ -135,10 +143,21 @@ class Ems:
         self._grid_export_actuator.apply_if_changed(state)
 
         # ─── 4. WaterHeaterManager (no driven adapter — pure recommendation) ───
+        # WaterHeaterReservedService computes reserved-power value per tick
+        # from current collaborator state (RCE / PV forecast / weather);
+        # passed as kwarg to keep WaterHeaterManager HASS-unaware.
+        reserved_balanced_full = self.water_heater_reserved_service.update(
+            WaterHeaterReservedInput(
+                rce_today=None,  # TODO: wire from self.rce_prices
+                pv_forecast_today=None,  # TODO: wire from pv_forecast_service
+                weather_summary=None,  # TODO: wire from weather_listener
+            )
+        )
         self.water_heater.update(
             state,
             self.grid_export.get_active_intervention(),
             battery_charge_allowed=charge_result.charge_allowed,
+            reserved_balanced_full=reserved_balanced_full,
         )
 
         # ─── 5. DodPolicy + persistence + logger + actuator ───
