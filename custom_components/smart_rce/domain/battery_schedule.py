@@ -443,6 +443,13 @@ class BatterySchedule:
             self._currently_engaging is not None
         )
 
+    def set_interventions_blocked_override(self, value: bool) -> bool:
+        """Idempotent mutator — returns True if changed."""
+        if self._interventions_blocked_override == value:
+            return False
+        self._interventions_blocked_override = value
+        return True
+
     def is_active_this_hour(self, now: datetime) -> bool:
         """Return True if a slot is engaging OR disengaged within current clock hour.
 

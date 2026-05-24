@@ -2,11 +2,11 @@
 
 Public API consumed by HA entities (switch, dashboard cards) and Ems:
 - `update(input)` — per-tick orchestration: calls aggregate compute_operation,
-  persists changed aggregate state. Etap 2D will add applier (HA service calls
-  to inverter) and notifier (telegram via script.notify_alert) dispatch.
+  persists changed aggregate state, notifies listeners when domain events
+  fired (preemptive — gotowe na Etap 2B observability sensors).
 - `user_override_active` — current user override state (property)
-- `set_user_override(value)` — UI-driven toggle (switch entity)
-- `add_user_override_listener(cb)` — subscribe to user override changes
+- `set_user_override(value)` — UI-driven async toggle (switch entity)
+- `add_listener(cb)` — single-registry refresh hook (inherited from `Service`)
 
 Repo is an internal collaborator (persistence); not exposed externally.
 Switch and other consumers reach BatterySchedule state through this service.
@@ -25,7 +25,6 @@ to Etap 2D — events are computed but NOT dispatched yet (logged debug only).
 from __future__ import annotations
 
 from collections.abc import Callable
-import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 import logging
@@ -34,6 +33,7 @@ from typing import TYPE_CHECKING
 from homeassistant.core import callback
 
 from ..domain.battery_schedule import BatteryOperation, BatteryScheduleInput
+from .service import Service
 
 
 @dataclass(frozen=True)
@@ -59,26 +59,21 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class BatteryScheduleService:
+class BatteryScheduleService(Service["BatteryScheduleRepository"]):
     """Application service. HASS-unaware — dependencies injected at construction.
 
-    Use case methods (set_user_override, add_user_override_listener) are the
-    external API for HA entities. Repository stays internal.
+    Use case methods (set_user_override, add_listener) are the external API
+    for HA entities. Repository stays internal.
     """
 
     def __init__(
         self,
         repo: BatteryScheduleRepository,
         clock: Callable[[], datetime],
-        tasks: AsyncTaskRunner,
+        tasks: AsyncTaskRunner,  # noqa: ARG002 — kept for future applier wiring
     ) -> None:
-        self._repo = repo
+        super().__init__(repo)
         self._clock = clock
-        self._tasks = tasks
-        self._user_override_listeners: list[Callable[[bool], None]] = []
-        self._last_user_override_state: bool = (
-            self._repo.schedule._interventions_blocked_override  # noqa: SLF001
-        )
         # Track last BatteryOperation to skip no-op applies (Etap 2D applier will
         # use this to avoid spurious Goodwe writes when the op didn't change).
         self._last_op: BatteryOperation = BatteryOperation.idle()
@@ -90,6 +85,10 @@ class BatteryScheduleService:
         Returns a snapshot of all values Ems needs to drive downstream managers
         (operation, ems_interventions_blocked, schedule_active_this_hour) —
         captured atomically AFTER compute_operation mutated the aggregate.
+
+        Fires `_notify_all()` when compute_operation emitted events (slot
+        engage/disengage/day_rolled) — preemptive for Etap 2B observability
+        sensors that will observe `_currently_engaging` state directly.
         """
         if input.battery_soc is None:
             return self._make_result(self._last_op)
@@ -102,9 +101,11 @@ class BatteryScheduleService:
         # ─── Persistence — repo save_if_changed checks dict equality internally ───
         self._repo.save_if_changed()
 
-        # ─── Events — log only in Etap 2A; notifier dispatch comes in Etap 2D ───
+        # ─── Events — log + notify subscribers on engagement state change ───
         for event in events:
             _LOGGER.info("BatteryScheduleEvent: %s", event)
+        if events:
+            self._notify_all()
 
         # ─── Apply — only when op changed; applier wired in Etap 2D ───
         if op != self._last_op:
@@ -140,48 +141,22 @@ class BatteryScheduleService:
         """True if engaged now OR disengaged within current clock hour."""
         return self._repo.schedule.is_active_this_hour(self._clock())
 
-    # ─────── User override — public methods called from HA entities ───────
-
     @property
     def user_override_active(self) -> bool:
         """Current user-controlled override state (without schedule-engagement part)."""
         return self._repo.schedule._interventions_blocked_override  # noqa: SLF001
 
-    def set_user_override(self, value: bool) -> None:
-        """UI-driven toggle of the user-controlled part of override.
+    # ─── User mutators ───
+
+    async def set_user_override(self, value: bool) -> None:
+        """UI-driven async toggle of the user-controlled part of override.
 
         Mutates `BatterySchedule._interventions_blocked_override`, persists
-        via repo (async fire-and-forget), and notifies listeners synchronously
-        on actual value change (so switch UI refreshes without waiting for
-        disk write to complete).
-
-        Schedule engagement is managed separately by `compute_operation`
-        — this method only controls the user-facing portion of
+        via repo (awaited), and notifies listeners on actual delta. Schedule
+        engagement is managed separately by `compute_operation` — this
+        method only controls the user-facing portion of
         `ems_interventions_blocked`.
         """
-        if self.user_override_active == value:
-            return
-        self._repo.schedule._interventions_blocked_override = value  # noqa: SLF001
-        self._repo.save_if_changed()
-        if value != self._last_user_override_state:
-            self._last_user_override_state = value
-            for cb in self._user_override_listeners:
-                cb(value)
-
-    def add_user_override_listener(
-        self, cb: Callable[[bool], None]
-    ) -> Callable[[], None]:
-        """Subscribe to user-override changes.
-
-        Fires when `set_user_override` actually changes the value. Does NOT
-        fire on schedule engagement changes — engagement affects the combined
-        `ems_interventions_blocked` property but is a different concept than
-        the user toggle. Returns unsubscribe callable.
-        """
-        self._user_override_listeners.append(cb)
-
-        def _unsub() -> None:
-            with contextlib.suppress(ValueError):
-                self._user_override_listeners.remove(cb)
-
-        return _unsub
+        await self._persist_and_notify(
+            self._repo.schedule.set_interventions_blocked_override(value)
+        )

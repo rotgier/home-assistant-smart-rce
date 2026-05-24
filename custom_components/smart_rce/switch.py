@@ -17,7 +17,7 @@ import logging
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
@@ -75,9 +75,9 @@ class EmsInterventionsBlockedSwitch(SwitchEntity):
         self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to service user-override changes for UI refresh."""
+        """Subscribe to service state changes for UI refresh."""
         await super().async_added_to_hass()
-        self.async_on_remove(self._service.add_user_override_listener(self._on_change))
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
 
     @property
     def is_on(self) -> bool:
@@ -85,12 +85,7 @@ class EmsInterventionsBlockedSwitch(SwitchEntity):
         return self._service.user_override_active
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        self._service.set_user_override(True)
+        await self._service.set_user_override(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        self._service.set_user_override(False)
-
-    @callback
-    def _on_change(self, _value: bool) -> None:
-        """Service notifies on user-override delta — refresh HA state."""
-        self.async_write_ha_state()
+        await self._service.set_user_override(False)
