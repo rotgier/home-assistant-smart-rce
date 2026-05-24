@@ -58,12 +58,7 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
         self._last_auto_value = self._repo.policy.compute_auto(self._clock(), input)
         return self._repo.policy.current_value(self._last_auto_value)
 
-    # ─── Properties (entity / Ems queries) ───
-
-    @property
-    def current_value(self) -> int:
-        """Last-computed effective value (MANUAL→manual_value, else cached auto)."""
-        return self._repo.policy.current_value(self._last_auto_value)
+    # ─── Properties (entity queries) ───
 
     @property
     def manual_value(self) -> int:
@@ -72,11 +67,6 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
     @property
     def mode(self) -> ReservedMode:
         return self._repo.policy.mode
-
-    @property
-    def auto_value(self) -> int:
-        """Last-computed auto value (cache; sensor diagnostic)."""
-        return self._last_auto_value
 
     # ─── User mutators ───
 

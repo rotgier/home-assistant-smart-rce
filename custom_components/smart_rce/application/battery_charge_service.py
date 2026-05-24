@@ -89,18 +89,8 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         return self._repo.policy.charge_allowed(self._clock(), self._last_schedule_op)
 
     @property
-    def target_modbus_value(self) -> float:
-        return self._repo.policy.target_modbus_value(
-            self._clock(), self._last_schedule_op
-        )
-
-    @property
     def modbus_current_value(self) -> float | None:
         return self._repo.policy.modbus_current_value
-
-    @property
-    def last_modbus_read_at(self) -> datetime | None:
-        return self._repo.policy.last_modbus_read_at
 
     @property
     def charge_allowed_override(self) -> OverrideMode:

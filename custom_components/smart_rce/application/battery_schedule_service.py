@@ -132,11 +132,6 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     # ─── Properties exposed to Ems + entities (avoid Ems leaking repo) ───
 
     @property
-    def ems_interventions_blocked(self) -> bool:
-        """Combined user-override OR active engagement — read by DodPolicy / GridExport."""
-        return self._repo.schedule.ems_interventions_blocked
-
-    @property
     def schedule_active_this_hour(self) -> bool:
         """True if engaged now OR disengaged within current clock hour."""
         return self._repo.schedule.is_active_this_hour(self._clock())
