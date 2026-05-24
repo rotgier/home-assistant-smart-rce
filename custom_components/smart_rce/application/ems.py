@@ -142,7 +142,17 @@ class Ems:
         )
         # Etap F TODO: _resolve_ems_operation(schedule_op, grid_op) — schedule
         # slots override grid intervention. For now grid_op is the only source.
-        self._goodwe_ems_actuator.apply_if_changed(grid_op)
+        # Skip apply when:
+        # - user flipped `switch.ems_interventions_blocked` ON (explicit
+        #   "smart_rce hands off") — lets user manually drive Goodwe via UI
+        #   without smart_rce overwriting the change next tick.
+        # - legacy YAML automation is writing Goodwe this hour
+        #   (`other_ems_automation_active_this_hour=True` — retires with Etap 2I-rest).
+        if (
+            not schedule_result.ems_interventions_blocked
+            and not state.other_ems_automation_active_this_hour
+        ):
+            self._goodwe_ems_actuator.apply_if_changed(grid_op)
 
         # ─── 4. WaterHeaterManager (no driven adapter — pure recommendation) ───
         # WaterHeaterReservedService computes reserved-power value per tick
