@@ -1,18 +1,18 @@
 """WaterHeaterReservedService — application orchestrator for reserved-power policy.
 
 Public API consumed by HA entities (NumberEntity, SelectEntity) and Ems:
-- `update(input)` — per-tick orchestration; caches latest auto value, returns
-  current_value (MANUAL→manual_value, AUTO→computed). Ems passes the result
-  to `WaterHeaterManager.update(state, reserved_balanced_full=...)`.
-- `current_value` / `manual_value` / `mode` — property reads for sensors + UI
+- `compute_current_value(input)` — pure decision (no mutation). Returns
+  the effective reserved-power value; Ems passes the result to
+  `WaterHeaterManager.update(state, reserved_balanced_full=...)`.
+- `manual_value` / `mode` — property reads for UI
 - `set_mode(mode)` / `set_manual_value(value)` — UI mutators (async; persist)
 - `add_listener(cb)` — single-registry refresh hook (inherited from `Service`)
 
 DDD application layer:
 - HASS-unaware (no `hass`, no HA service calls)
 - Dependencies injected via constructor (repo + clock)
-- Auto cache (`_last_auto_value`) is in-memory only — recomputed every tick.
-  Persisted state is mode + manual_value (in repo).
+- No in-memory cache — the computation is pure and inputs come per-tick
+  from Ems. Persisted state is mode + manual_value (in repo).
 """
 
 from __future__ import annotations
@@ -41,11 +41,11 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
         self._clock = clock
 
     @callback
-    def update(self, input: WaterHeaterReservedInput) -> int:
-        """Per-tick orchestration — return the effective reserved-power value.
+    def compute_current_value(self, input: WaterHeaterReservedInput) -> int:
+        """Return the effective reserved-power value (no mutation).
 
-        Called from Ems.update_state; the returned value is passed as
-        `reserved_balanced_full` kwarg to `WaterHeaterManager.update`.
+        Called per-tick from Ems.update_state; the returned value is passed
+        as `reserved_balanced_full` kwarg to `WaterHeaterManager.update`.
         Decision logic lives in the policy.
         """
         return self._repo.policy.compute_current_value(self._clock(), input)

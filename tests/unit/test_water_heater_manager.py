@@ -44,7 +44,7 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
     # Reserved service mock returns historic default 5500 W — preserves test
     # expectations from before the configurable reserved_balanced_full landed.
     reserved_service = MagicMock()
-    reserved_service.update = MagicMock(return_value=5500)
+    reserved_service.compute_current_value = MagicMock(return_value=5500)
     return Ems(
         dod_policy=DodPolicy(),
         grid_export=GridExportManager(),

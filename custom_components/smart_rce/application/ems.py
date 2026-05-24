@@ -146,11 +146,13 @@ class Ems:
         # WaterHeaterReservedService computes reserved-power value per tick
         # from current collaborator state (RCE / PV forecast / weather);
         # passed as kwarg to keep WaterHeaterManager HASS-unaware.
-        reserved_balanced_full = self.water_heater_reserved_service.update(
-            WaterHeaterReservedInput(
-                rce_today=None,  # TODO: wire from self.rce_prices
-                pv_forecast_today=None,  # TODO: wire from pv_forecast_service
-                weather_summary=None,  # TODO: wire from weather_listener
+        reserved_balanced_full = (
+            self.water_heater_reserved_service.compute_current_value(
+                WaterHeaterReservedInput(
+                    rce_today=None,  # TODO: wire from self.rce_prices
+                    pv_forecast_today=None,  # TODO: wire from pv_forecast_service
+                    weather_summary=None,  # TODO: wire from weather_listener
+                )
             )
         )
         self.water_heater.update(
