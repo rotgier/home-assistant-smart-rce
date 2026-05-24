@@ -32,7 +32,13 @@ from homeassistant.core import callback
 from ..domain.battery_charge_policy import OverrideMode
 from ..domain.battery_schedule import BatteryOperation
 from ..domain.charge_slots import StartChargeTodayChanged
+from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 from .service import Service
+
+if TYPE_CHECKING:
+    from ..infrastructure.battery_charge_current_actuator import (
+        BatteryChargeCurrentActuator,
+    )
 
 
 @dataclass(frozen=True)
@@ -49,16 +55,10 @@ class BatteryChargeUpdateResult:
     start_charge_hour_override: time | None
 
 
-if TYPE_CHECKING:
-    from ..infrastructure.battery_charge_current_actuator import (
-        BatteryChargeCurrentActuator,
-    )
-    from ..infrastructure.battery_charge_repository import BatteryChargeRepository
-
 _LOGGER = logging.getLogger(__name__)
 
 
-class BatteryChargeService(Service["BatteryChargeRepository"]):
+class BatteryChargeService(Service[BatteryChargeRepository]):
     """Application service. HASS-unaware — dependencies injected at construction."""
 
     def __init__(

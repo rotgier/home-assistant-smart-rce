@@ -19,24 +19,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime  # noqa: TC003 — used in constructor signature
-from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 
 from ..domain.water_heater_reserved_policy import ReservedMode, WaterHeaterReservedInput
+from ..infrastructure.water_heater_reserved_repository import (
+    WaterHeaterReservedRepository,
+)
 from .service import Service
-
-if TYPE_CHECKING:
-    from ..infrastructure.water_heater_reserved_repository import (
-        WaterHeaterReservedRepository,
-    )
-
 
 # Initial auto-cache value before first update tick — matches policy stub.
 _DEFAULT_AUTO_BOOTSTRAP = 3000
 
 
-class WaterHeaterReservedService(Service["WaterHeaterReservedRepository"]):
+class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
     """Application service. HASS-unaware — repo + clock injected at construction."""
 
     def __init__(

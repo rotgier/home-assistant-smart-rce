@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from homeassistant.core import callback
 
 from ..domain.battery_schedule import BatteryOperation, BatteryScheduleInput
+from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
 from .service import Service
 
 
@@ -54,12 +55,11 @@ class BatteryScheduleUpdateResult:
 
 if TYPE_CHECKING:
     from ..infrastructure.async_task_runner import AsyncTaskRunner
-    from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class BatteryScheduleService(Service["BatteryScheduleRepository"]):
+class BatteryScheduleService(Service[BatteryScheduleRepository]):
     """Application service. HASS-unaware — dependencies injected at construction.
 
     Use case methods (set_ems_interventions_blocked_override, add_listener)
