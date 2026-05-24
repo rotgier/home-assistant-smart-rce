@@ -22,23 +22,38 @@ from __future__ import annotations
 from collections.abc import Callable
 import contextlib
 
+from homeassistant.core import callback
+
 
 class Service[TRepo]:
-    """Base — listener registry + notify dispatch + persist-and-notify helper."""
+    """Base — listener registry + notify dispatch + persist-and-notify helpers."""
 
     def __init__(self, repo: TRepo) -> None:
         self._repo: TRepo = repo
         self._listeners: list[Callable[[], None]] = []
 
     async def _persist_and_notify(self, changed: bool) -> None:
-        """Persist + notify on True (mutator-returned-bool style).
+        """Async: persist + notify on True (mutator-returned-bool style).
 
-        Idempotent: when nothing changed (`changed == False`), this is a no-op.
-        Use after each policy mutator returning bool:
+        Use from async UI mutators where the caller awaits durability:
             await self._persist_and_notify(self._repo.policy.set_X(value))
+
+        Idempotent: when nothing changed (`changed == False`), no-op.
         """
         if changed:
             await self._repo.persist()
+            self._notify_all()
+
+    @callback
+    def _save_if_changed_and_notify(self, changed: bool) -> None:
+        """Sync: fire-and-forget save + notify on True.
+
+        Use from sync event-driven handlers (e.g. handle_start_charge_today_changed
+        called from Ems.update_hourly which is sync). save_if_changed dispatches
+        the persist via AsyncTaskRunner.run — caller does not block.
+        """
+        if changed:
+            self._repo.save_if_changed()
             self._notify_all()
 
     def add_listener(self, cb: Callable[[], None]) -> Callable[[], None]:

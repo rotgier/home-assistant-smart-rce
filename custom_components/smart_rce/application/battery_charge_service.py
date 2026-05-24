@@ -1,30 +1,27 @@
 """BatteryChargeService — application orchestrator + use case facade.
 
-Public API consumed by HA entities (select, sensors) and Ems:
+Public API consumed by HA entities (select, time, sensors) and Ems:
 - `update(schedule_op)` — per-tick orchestration; caches latest
   `BatteryOperation` so derived properties (`charge_allowed`,
   `target_modbus_value`) can be queried lazily by sensors/actuator.
-- `override_mode` / `set_override_mode(mode)` — select entity bridge
-- `charge_allowed` / `modbus_current_value` — sensor/actuator queries
-- `add_override_listener(cb)` — UI refresh after user toggle
+  Returns `BatteryChargeUpdateResult` (atomic snapshot for Ems).
+- `set_override_mode(mode)` / `set_start_charge_hour_override(value)` —
+  UI mutators (async; persist + notify).
+- `handle_start_charge_today_changed(event, now)` — sync event handler
+  from `Ems.update_hourly` carrying a `ChargeSlots` rotation event;
+  sticky-gates the auto-sync to bootstrap or `[00:00, 06:00)` window.
+- `add_listener(cb)` — single-registry refresh hook (inherited from `Service`).
 
 Repository is the internal collaborator (owns + persists policy). Service
 does NOT track `_last_charge_allowed` shadow state — the actuator's
 state-diff (target vs Modbus readback cache) is the single source for
 write triggers. Sensors fire `async_write_ha_state` from the Ems-level
 listener and HA core dedupes on attribute equality.
-
-DDD application layer:
-- HASS-unaware (no `hass`, no HA service calls)
-- Dependencies injected via constructor (repo + clock)
-- Use case methods compose domain mutations + repo persistence + listener
-  notifications explicitly
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-import contextlib
 from dataclasses import dataclass
 from datetime import datetime, time
 import logging
@@ -35,6 +32,7 @@ from homeassistant.core import callback
 from ..domain.battery_charge_policy import OverrideMode
 from ..domain.battery_schedule import BatteryOperation
 from ..domain.charge_slots import StartChargeTodayChanged
+from .service import Service
 
 
 @dataclass(frozen=True)
@@ -60,7 +58,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class BatteryChargeService:
+class BatteryChargeService(Service["BatteryChargeRepository"]):
     """Application service. HASS-unaware — dependencies injected at construction."""
 
     def __init__(
@@ -69,12 +67,10 @@ class BatteryChargeService:
         clock: Callable[[], datetime],
         actuator: BatteryChargeCurrentActuator,
     ) -> None:
-        self._repo = repo
+        super().__init__(repo)
         self._clock = clock
         self._actuator = actuator
         self._last_schedule_op: BatteryOperation = BatteryOperation.idle()
-        self._override_listeners: list[Callable[[OverrideMode], None]] = []
-        self._start_charge_hour_listeners: list[Callable[[time | None], None]] = []
 
     @callback
     def update(self, schedule_op: BatteryOperation) -> BatteryChargeUpdateResult:
@@ -114,63 +110,17 @@ class BatteryChargeService:
     def start_charge_hour_override(self) -> time | None:
         return self._repo.policy.start_charge_hour_override
 
-    # ─── User override — public mutators ───
+    # ─── User mutators ───
 
     async def set_override_mode(self, mode: OverrideMode) -> None:
         """UI-driven select option change. Persists + notifies listeners on delta."""
-        previous = self._repo.policy.user_override_mode
-        if previous == mode:
-            return
-        await self._repo.set_override_mode(mode)
-        _LOGGER.info(
-            "BatteryChargeService: override_mode %s → %s",
-            previous.value,
-            mode.value,
-        )
-        self._notify_override_listeners(mode)
-
-    def add_override_listener(
-        self, cb: Callable[[OverrideMode], None]
-    ) -> Callable[[], None]:
-        """Subscribe to override-mode changes. Returns unsubscribe callable."""
-        self._override_listeners.append(cb)
-
-        def _unsub() -> None:
-            with contextlib.suppress(ValueError):
-                self._override_listeners.remove(cb)
-
-        return _unsub
-
-    def _notify_override_listeners(self, mode: OverrideMode) -> None:
-        for cb in self._override_listeners:
-            cb(mode)
-
-    # ─── start_charge_hour_override — public mutators ───
+        await self._persist_and_notify(self._repo.policy.set_user_override_mode(mode))
 
     async def set_start_charge_hour_override(self, value: time | None) -> None:
         """UI-driven time entity change. Persists + notifies listeners on delta."""
-        previous = self._repo.policy.start_charge_hour_override
-        if previous == value:
-            return
-        await self._repo.set_start_charge_hour_override(value)
-        _LOGGER.info(
-            "BatteryChargeService: start_charge_hour_override %s → %s",
-            previous,
-            value,
+        await self._persist_and_notify(
+            self._repo.policy.set_start_charge_hour_override(value)
         )
-        self._notify_start_charge_hour_listeners(value)
-
-    def add_start_charge_hour_override_listener(
-        self, cb: Callable[[time | None], None]
-    ) -> Callable[[], None]:
-        """Subscribe to start_charge_hour_override changes."""
-        self._start_charge_hour_listeners.append(cb)
-
-        def _unsub() -> None:
-            with contextlib.suppress(ValueError):
-                self._start_charge_hour_listeners.remove(cb)
-
-        return _unsub
 
     @callback
     def handle_start_charge_today_changed(
@@ -191,18 +141,6 @@ class BatteryChargeService:
         previous = self._repo.policy.start_charge_hour_override
         if previous is not None and not (0 <= now.hour < 6):
             return  # sticky — user override survives outside midnight window
-        value = event.new_value
-        if previous == value:
-            return
-        self._repo.policy.set_start_charge_hour_override(value)
-        self._repo.save_if_changed()
-        _LOGGER.info(
-            "BatteryChargeService: auto-sync start_charge_hour_override %s → %s",
-            previous,
-            value,
+        self._save_if_changed_and_notify(
+            self._repo.policy.set_start_charge_hour_override(event.new_value)
         )
-        self._notify_start_charge_hour_listeners(value)
-
-    def _notify_start_charge_hour_listeners(self, value: time | None) -> None:
-        for cb in self._start_charge_hour_listeners:
-            cb(value)
