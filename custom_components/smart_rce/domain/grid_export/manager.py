@@ -43,6 +43,7 @@ from datetime import datetime, time
 import logging
 from typing import Final
 
+from custom_components.smart_rce.domain.ems_operation import EmsOperation
 from custom_components.smart_rce.domain.grid_export import negative, positive
 from custom_components.smart_rce.domain.grid_export.intervention import (
     Intervention,
@@ -126,21 +127,48 @@ class GridExportManager:
         battery_charge_allowed: bool = True,
         ems_schedule_active_this_hour: bool = False,
         start_charge_hour_override: time | None = None,
+    ) -> EmsOperation:
+        """Re-evaluate intervention state — returns target EmsOperation.
+
+        Manager keeps internal mutable state (`_active`, `_disabled_override_active`,
+        `last_decision_reason`) for sensor property accessors; the returned
+        `EmsOperation` is the canonical end-of-pipeline value consumed by
+        `GoodweEmsActuator` and (Etap F) `Ems._resolve_ems_operation`.
+        """
+        self._update_state(
+            state,
+            ems_interventions_blocked=ems_interventions_blocked,
+            battery_charge_allowed=battery_charge_allowed,
+            ems_schedule_active_this_hour=ems_schedule_active_this_hour,
+            start_charge_hour_override=start_charge_hour_override,
+        )
+        return self.current_ems_operation()
+
+    def current_ems_operation(self) -> EmsOperation:
+        """Snapshot of current recommendation as an EmsOperation."""
+        if self._active is None or self._disabled_override_active:
+            return EmsOperation.neutral(reason=self.last_decision_reason)
+        return EmsOperation.from_grid_intervention(
+            ems_mode=self._active.recommended_mode,  # type: ignore[arg-type]
+            power_limit_w=self._active.recommended_xset,
+            reason=self.last_decision_reason,
+        )
+
+    def _update_state(
+        self,
+        state: InputState,
+        *,
+        ems_interventions_blocked: bool = False,
+        battery_charge_allowed: bool = True,
+        ems_schedule_active_this_hour: bool = False,
+        start_charge_hour_override: time | None = None,
     ) -> None:
-        """Re-evaluate intervention state from current InputState.
-
-        Called reactively by Ems on every state change. `ems_interventions_blocked`,
-        `battery_charge_allowed`, and `ems_schedule_active_this_hour` are
-        passed explicitly by Ems (sourced from BatterySchedule and
-        BatteryChargePolicy, not from InputState — Etap 0 + B + C refactors).
-
-        `ems_schedule_active_this_hour` replaces the legacy InputState field
-        `other_ems_automation_active_this_hour` (HA template binary_sensor) —
-        Etap C migrated this signal into BatterySchedule itself.
+        """In-place state mutation — see `update` for description.
 
         Flow:
         1. Global guards (none_present_core, interventions_blocked,
-           schedule_active_this_hour) → set_neutral + return
+           schedule_active_this_hour, other_ems_automation_active_this_hour)
+           → set_neutral + return
         2. Active intervention: tick (hour_rollover, end_of_hour, delegate)
            Or: try_enter (too_late_in_hour, balance routing)
         3. Apply disabled_override if strategy_mode != charge_adaptive
