@@ -6,7 +6,7 @@ they are siblings, no circular dependency.
 
 Async mutators (`record_modbus_read`, `set_override_mode`,
 `set_start_charge_hour_override`) auto-persist *immediately* via `await
-self._persist()` so the actuator's drift-detection loop can rely on Modbus
+self.persist()` so the actuator's drift-detection loop can rely on Modbus
 state being on disk before the next refresh tick (ADR-018 ~1s crash safety).
 
 Two-phase init:
@@ -67,14 +67,14 @@ class BatteryChargeRepository(Repository[BatteryChargePolicy]):
         differs (avoids spurious disk writes during periodic drift checks).
         """
         if self._policy.record_modbus_read(value, at):
-            await self._persist()
+            await self.persist()
 
     async def set_override_mode(self, mode: OverrideMode) -> None:
         """Set user override + auto-persist on change."""
         if self._policy.set_user_override_mode(mode):
-            await self._persist()
+            await self.persist()
 
     async def set_start_charge_hour_override(self, value: time | None) -> None:
         """Set morning charge window start + auto-persist on change."""
         if self._policy.set_start_charge_hour_override(value):
-            await self._persist()
+            await self.persist()

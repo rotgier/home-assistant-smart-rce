@@ -1,15 +1,15 @@
 """Repository[T] — base class for aggregate persistence via HA Store.
 
-Template Method pattern: base provides `save_if_changed` + `_persist`;
+Template Method pattern: base provides `save_if_changed` + `persist`;
 child provides aggregate ref via `_get_aggregate()` + `STORAGE_KEY`
 ClassVar. Aggregate T must expose `to_dict() -> dict[str, Any]`. Restore
 (`async_restore`) is child's responsibility — aggregate construction varies
 (repo-owns: replace; external-policy: mutate fields in place).
 
 Persistence pattern (ADR-018, ~1s crash safety):
-- `save_if_changed()` is sync `@callback` — fires `_persist` as foreground
+- `save_if_changed()` is sync `@callback` — fires `persist` as foreground
   task via `AsyncTaskRunner.run` (must complete on shutdown).
-- `_persist()` is `await`-able directly from async mutators when immediate
+- `persist()` is `await`-able directly from async mutators when immediate
   persistence is required (e.g., BatteryChargeRepository.record_modbus_read
   — actuator drift detection requires disk state before next refresh tick).
 - Idempotent: dict-equality guard against `_last_saved`.
@@ -52,10 +52,10 @@ class Repository[T](ABC):
 
     @callback
     def save_if_changed(self) -> None:
-        """Sync wrapper — fires _persist via AsyncTaskRunner.run."""
-        self._tasks.run(self._persist(), name=f"smart_rce_{self.STORAGE_KEY}_save")
+        """Sync wrapper — fires persist via AsyncTaskRunner.run."""
+        self._tasks.run(self.persist(), name=f"smart_rce_{self.STORAGE_KEY}_save")
 
-    async def _persist(self) -> None:
+    async def persist(self) -> None:
         """Idempotent persist with dict-equality guard.
 
         Awaitable directly from async mutators (immediate persistence).

@@ -5,7 +5,7 @@ BatteryChargeRepository). Persisted state: mode + manual_value only —
 auto cache lives in WaterHeaterReservedService.
 
 Async mutators (`set_mode`, `set_manual_value`) auto-persist *immediately*
-via `await self._persist()` so NumberEntity / SelectEntity UI changes
+via `await self.persist()` so NumberEntity / SelectEntity UI changes
 become durable before HA returns the service-call response (~1s crash
 safety per ADR-018).
 
@@ -64,9 +64,9 @@ class WaterHeaterReservedRepository(Repository[WaterHeaterReservedPolicy]):
     async def set_mode(self, mode: ReservedMode) -> None:
         """Change mode + auto-persist on change."""
         if self._policy.set_mode(mode):
-            await self._persist()
+            await self.persist()
 
     async def set_manual_value(self, value: int) -> None:
         """Change manual value + auto-persist on change."""
         if self._policy.set_manual_value(value):
-            await self._persist()
+            await self.persist()
