@@ -4,8 +4,8 @@ Public API consumed by HA entities (switch, dashboard cards) and Ems:
 - `update(input)` — per-tick orchestration: calls aggregate compute_operation,
   persists changed aggregate state, notifies listeners when domain events
   fired (preemptive — gotowe na Etap 2B observability sensors).
-- `user_override_active` — current user override state (property)
-- `set_user_override(value)` — UI-driven async toggle (switch entity)
+- `ems_interventions_blocked_override` — current user override state (property)
+- `set_ems_interventions_blocked_override(value)` — UI-driven async toggle
 - `add_listener(cb)` — single-registry refresh hook (inherited from `Service`)
 
 Repo is an internal collaborator (persistence); not exposed externally.
@@ -62,8 +62,8 @@ _LOGGER = logging.getLogger(__name__)
 class BatteryScheduleService(Service["BatteryScheduleRepository"]):
     """Application service. HASS-unaware — dependencies injected at construction.
 
-    Use case methods (set_user_override, add_listener) are the external API
-    for HA entities. Repository stays internal.
+    Use case methods (set_ems_interventions_blocked_override, add_listener)
+    are the external API for HA entities. Repository stays internal.
     """
 
     def __init__(
@@ -142,21 +142,21 @@ class BatteryScheduleService(Service["BatteryScheduleRepository"]):
         return self._repo.schedule.is_active_this_hour(self._clock())
 
     @property
-    def user_override_active(self) -> bool:
-        """Current user-controlled override state (without schedule-engagement part)."""
-        return self._repo.schedule._interventions_blocked_override  # noqa: SLF001
+    def ems_interventions_blocked_override(self) -> bool:
+        """User-controlled half of `ems_interventions_blocked` (no engagement part)."""
+        return self._repo.schedule.ems_interventions_blocked_override
 
     # ─── User mutators ───
 
-    async def set_user_override(self, value: bool) -> None:
-        """UI-driven async toggle of the user-controlled part of override.
+    async def set_ems_interventions_blocked_override(self, value: bool) -> None:
+        """UI-driven async toggle of the user-controlled override flag.
 
         Mutates `BatterySchedule._interventions_blocked_override`, persists
         via repo (awaited), and notifies listeners on actual delta. Schedule
         engagement is managed separately by `compute_operation` — this
-        method only controls the user-facing portion of
-        `ems_interventions_blocked`.
+        method only controls the user-facing portion of the combined
+        `ems_interventions_blocked` derived property.
         """
         await self._persist_and_notify(
-            self._repo.schedule.set_interventions_blocked_override(value)
+            self._repo.schedule.set_ems_interventions_blocked_override(value)
         )

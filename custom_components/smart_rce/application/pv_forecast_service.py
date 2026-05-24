@@ -308,7 +308,7 @@ class PvForecastService:
           the optimal pre-charge window moves.
         """
         self._refresh_start_charge_hour()
-        self.forecast._recalculate_target_soc(dt_util.now())  # noqa: SLF001
+        self.forecast.recalculate_target_soc(dt_util.now())
         self._notify_listeners()
 
     @callback

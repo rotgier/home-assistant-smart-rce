@@ -167,6 +167,11 @@ class DodPolicy:
     _override_set_phase: Phase | None = None
     _prev_block: bool = False
 
+    @property
+    def prev_block(self) -> bool:
+        """Hysteresis keep-state for delegating phases (diagnostic read)."""
+        return self._prev_block
+
     def update(
         self,
         state: InputState,

@@ -82,10 +82,10 @@ class EmsInterventionsBlockedSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool:
         """User-controlled override only (not combined with schedule engagement)."""
-        return self._service.user_override_active
+        return self._service.ems_interventions_blocked_override
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self._service.set_user_override(True)
+        await self._service.set_ems_interventions_blocked_override(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self._service.set_user_override(False)
+        await self._service.set_ems_interventions_blocked_override(False)

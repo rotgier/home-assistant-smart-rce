@@ -52,5 +52,5 @@ class BatteryScheduleRepository(Repository[BatterySchedule]):
                 "(interventions_blocked=%s, engaging=%s)",
                 self.STORAGE_KEY,
                 self._schedule.ems_interventions_blocked,
-                self._schedule._currently_engaging,  # noqa: SLF001
+                self._schedule.currently_engaging,
             )

@@ -443,8 +443,23 @@ class BatterySchedule:
             self._currently_engaging is not None
         )
 
-    def set_interventions_blocked_override(self, value: bool) -> bool:
-        """Idempotent mutator — returns True if changed."""
+    @property
+    def ems_interventions_blocked_override(self) -> bool:
+        """User-controlled override flag (independent of slot engagement).
+
+        The combined `ems_interventions_blocked` property is True when EITHER
+        the user flipped this override OR a slot is currently engaging. This
+        accessor exposes only the user-driven half.
+        """
+        return self._interventions_blocked_override
+
+    @property
+    def currently_engaging(self) -> SlotKind | None:
+        """Slot currently being executed by the orchestrator (None when idle)."""
+        return self._currently_engaging
+
+    def set_ems_interventions_blocked_override(self, value: bool) -> bool:
+        """Idempotent mutator for the user-controlled override flag — True if changed."""
         if self._interventions_blocked_override == value:
             return False
         self._interventions_blocked_override = value

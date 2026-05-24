@@ -76,7 +76,7 @@ class DodPolicyLogger:
                 "DodPolicy restored: target_dod=%d phase=%s prev_block=%s",
                 curr_target,
                 curr_phase_value,
-                self._policy._prev_block,  # noqa: SLF001 — diagnostic read
+                self._policy.prev_block,
             )
 
         # INFO transition when target_dod flips
@@ -86,7 +86,7 @@ class DodPolicyLogger:
                 self._prev_target_dod,
                 curr_target,
                 curr_phase_value,
-                self._policy._prev_block,  # noqa: SLF001 — diagnostic read
+                self._policy.prev_block,
             )
 
         self._prev_target_dod = curr_target
@@ -102,7 +102,7 @@ class DodPolicyLogger:
         Reduces log spam — full dump max once per DOD_POLICY_LOG_THROTTLE_SEC
         when nothing changes.
         """
-        prev_block = self._policy._prev_block  # noqa: SLF001 — diagnostic read
+        prev_block = self._policy.prev_block
         snapshot_key = (phase_value, target_dod, prev_block)
         now = state.now
         if now is None:
