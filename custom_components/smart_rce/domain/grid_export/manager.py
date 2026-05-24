@@ -9,7 +9,7 @@ Exposes 4 read-only properties consumed by sensors:
 Plus mutable field:
 - last_decision_reason (str | None)
 
-Listener in infrastructure/grid_export_actuator.py reacts to sensor changes
+Listener in infrastructure/goodwe_ems_actuator.py reacts to sensor changes
 and calls number.goodwe_ems_power_limit + select.goodwe_ems_mode.
 
 Active window: post_charge → next day 7:00 (POSITIVE skips pre_charge —

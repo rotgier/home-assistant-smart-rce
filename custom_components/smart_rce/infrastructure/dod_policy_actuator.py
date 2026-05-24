@@ -1,7 +1,7 @@
 """DodPolicyActuator — driven adapter for inverter DoD via scene.apply.
 
 Apply `dod_policy.target_dod` to `number.goodwe_depth_of_discharge_on_grid`
-as fire-and-forget background task. Mirrors `grid_export_actuator.py` pattern
+as fire-and-forget background task. Mirrors `goodwe_ems_actuator.py` pattern
 (ADR-019) with two enhancements:
 
 1. **Read-back verification**: after each scene.apply, immediately re-read

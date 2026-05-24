@@ -16,7 +16,7 @@ Adaptery żyją w `infrastructure/`:
 - `dod_policy_repository.py` — DodPolicyRepository (driven: HA Storage)
 - `dod_policy_logger.py` — DodPolicyLogger (driven: Python logging)
 - `dod_policy_actuator.py` — DodPolicyActuator (driven: scene.apply)
-- `grid_export_actuator.py` — GridExportActuator (driven: scene.apply)
+- `goodwe_ems_actuator.py` — GoodweEmsActuator (driven: scene.apply, takes EmsOperation)
 - `rce_api.py` — RceApi (driven: HTTP RCE prices)
 """
 
@@ -42,7 +42,7 @@ from .infrastructure.battery_schedule_repository import BatteryScheduleRepositor
 from .infrastructure.dod_policy_actuator import DodPolicyActuator
 from .infrastructure.dod_policy_logger import DodPolicyLogger
 from .infrastructure.dod_policy_repository import DodPolicyRepository
-from .infrastructure.grid_export_actuator import GridExportActuator
+from .infrastructure.goodwe_ems_actuator import GoodweEmsActuator
 from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
 from .infrastructure.water_heater_reserved_repository import (
     WaterHeaterReservedRepository,
@@ -99,7 +99,7 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     dod_logger = DodPolicyLogger(dod_policy)
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
     dod_actuator = DodPolicyActuator(hass, dod_policy, tasks)
-    grid_export_actuator = GridExportActuator(hass, grid_export, tasks)
+    goodwe_ems_actuator = GoodweEmsActuator(hass, tasks)
 
     # Water heater reserved-power policy — user-configurable via NumberEntity
     # (replaces hardcoded `reserved` in WaterHeaterManager._balanced_target).
@@ -120,7 +120,7 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         dod_repository=dod_repository,
         dod_logger=dod_logger,
         dod_actuator=dod_actuator,
-        grid_export_actuator=grid_export_actuator,
+        goodwe_ems_actuator=goodwe_ems_actuator,
     )
 
     @callback

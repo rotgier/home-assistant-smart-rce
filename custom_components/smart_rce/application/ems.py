@@ -17,7 +17,7 @@ adapters that smart_rce owns moved to explicit dispatch.
 Dispatch order in `update_state` body — per-domain blocks (manager update +
 its associated driven adapters immediately after):
   1. BatteryScheduleService.update (may flip ems_interventions_blocked)
-  2. GridExportManager.update + GridExportActuator.apply_if_changed
+  2. GridExportManager.update + GoodweEmsActuator.apply_if_changed
   3. WaterHeaterManager.update (no driven adapter)
   4. DodPolicy.update + DodPolicyRepository.save_if_changed
      + DodPolicyLogger.log_if_changed + DodPolicyActuator.apply_if_changed
@@ -66,8 +66,8 @@ if TYPE_CHECKING:
     from custom_components.smart_rce.infrastructure.dod_policy_repository import (
         DodPolicyRepository,
     )
-    from custom_components.smart_rce.infrastructure.grid_export_actuator import (
-        GridExportActuator,
+    from custom_components.smart_rce.infrastructure.goodwe_ems_actuator import (
+        GoodweEmsActuator,
     )
 
 type CALLBACK_TYPE = Callable[[], None]
@@ -91,7 +91,7 @@ class Ems:
         dod_repository: DodPolicyRepository,
         dod_logger: DodPolicyLogger,
         dod_actuator: DodPolicyActuator,
-        grid_export_actuator: GridExportActuator,
+        goodwe_ems_actuator: GoodweEmsActuator,
     ) -> None:
         # BatteryScheduleRepository is NOT held by Ems — accessed via
         # battery_schedule_service properties (ems_interventions_blocked,
@@ -116,7 +116,7 @@ class Ems:
         self._dod_repository = dod_repository
         self._dod_logger = dod_logger
         self._dod_actuator = dod_actuator
-        self._grid_export_actuator = grid_export_actuator
+        self._goodwe_ems_actuator = goodwe_ems_actuator
 
     def update_state(self, state: InputState) -> None:
         self.last_input_state = state
@@ -129,18 +129,20 @@ class Ems:
         # ─── 2. BatteryChargeService — apply charge policy + atomic snapshot ───
         charge_result = self.battery_charge_service.update(schedule_result.operation)
 
-        # ─── 3. GridExportManager + its actuator (Goodwe scene.apply) ───
+        # ─── 3. GridExportManager + GoodweEmsActuator (Goodwe scene.apply) ───
         # grid_export PRZED water_heater — water_heater dostaje aktualny
         # `get_active_intervention()` (POSITIVE → reserved=3500W, NEGATIVE →
         # większy reserved by wymusić grzałki off).
-        self.grid_export.update(
+        grid_op = self.grid_export.update(
             state,
             ems_interventions_blocked=schedule_result.ems_interventions_blocked,
             battery_charge_allowed=charge_result.charge_allowed,
             ems_schedule_active_this_hour=schedule_result.schedule_active_this_hour,
             start_charge_hour_override=charge_result.start_charge_hour_override,
         )
-        self._grid_export_actuator.apply_if_changed(state)
+        # Etap F TODO: _resolve_ems_operation(schedule_op, grid_op) — schedule
+        # slots override grid intervention. For now grid_op is the only source.
+        self._goodwe_ems_actuator.apply_if_changed(grid_op)
 
         # ─── 4. WaterHeaterManager (no driven adapter — pure recommendation) ───
         # WaterHeaterReservedService computes reserved-power value per tick

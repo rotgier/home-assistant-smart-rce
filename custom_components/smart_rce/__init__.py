@@ -250,7 +250,7 @@ def live_reload():
         import_module("custom_components.smart_rce.infrastructure.dod_policy_actuator")
     )
     reload(
-        import_module("custom_components.smart_rce.infrastructure.grid_export_actuator")
+        import_module("custom_components.smart_rce.infrastructure.goodwe_ems_actuator")
     )
     reload(
         import_module(

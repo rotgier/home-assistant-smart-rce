@@ -168,7 +168,7 @@ def grid_export_scene_calls(scene_calls: list[ServiceCall]) -> list[ServiceCall]
     """Filter scene.apply calls to grid_export-related ones.
 
     DodPolicyActuator also uses scene.apply (writes DoD register). Tests for
-    GridExportActuator should filter to calls touching `select.goodwe_ems_mode`.
+    GoodweEmsActuator should filter to calls touching `select.goodwe_ems_mode`.
     """
     return [
         c for c in scene_calls if "select.goodwe_ems_mode" in c.data.get("entities", {})

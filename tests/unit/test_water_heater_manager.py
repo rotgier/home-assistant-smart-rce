@@ -55,7 +55,7 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
         dod_repository=MagicMock(),
         dod_logger=MagicMock(),
         dod_actuator=MagicMock(),
-        grid_export_actuator=MagicMock(),
+        goodwe_ems_actuator=MagicMock(),
     )
 
 
