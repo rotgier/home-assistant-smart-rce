@@ -3,19 +3,20 @@
 Aggregate root for water heater reservation power (`reserved` in
 `WaterHeaterManager._balanced_target` for `battery_charge_limit > 7`).
 Two modes:
-- AUTO: `compute_auto(now, input)` returns value (stub returns 3000 W;
-  TODO: dynamic logic based on RCE prices + PV forecast + weather)
-- MANUAL: returns `manual_value` set by user via UI (NumberEntity)
+- AUTO: `compute_current_value(now, input)` runs the stub (currently
+  returns 3000 W; TODO: dynamic logic based on RCE prices + PV forecast
+  + weather summary)
+- MANUAL: `compute_current_value` short-circuits and returns `manual_value`
+  set by user via UI (NumberEntity)
 
-Persisted state is minimal — only `mode` + `manual_value`. The auto cache
-(`_last_auto_value`) lives in `WaterHeaterReservedService` (in-memory,
-recomputed every tick).
+Persisted state is minimal — only `mode` + `manual_value`. No in-memory
+cache needed — the computation is pure and inputs come per-tick from Ems.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime  # noqa: TC003 — used in compute_auto signature
+from datetime import datetime  # noqa: TC003 — used in compute_current_value signature
 from enum import StrEnum
 from typing import Any
 
@@ -23,8 +24,9 @@ from typing import Any
 class ReservedMode(StrEnum):
     """Source of `reserved` value.
 
-    AUTO — service uses `compute_auto(now, input)` result.
-    MANUAL — service returns `manual_value` (user-set via NumberEntity).
+    AUTO — `compute_current_value` runs the computation (currently a stub).
+    MANUAL — `compute_current_value` short-circuits to `manual_value` set
+    via NumberEntity.
     """
 
     AUTO = "AUTO"
@@ -33,7 +35,7 @@ class ReservedMode(StrEnum):
 
 @dataclass(frozen=True)
 class WaterHeaterReservedInput:
-    """Inputs for compute_auto. All fields optional — None = unavailable.
+    """Inputs for compute_current_value. All fields optional — None = unavailable.
 
     Ems.update_state aggregates these from existing collaborators
     (RcePrices coordinator, pv_forecast_service, weather_listener) and
@@ -56,28 +58,21 @@ class WaterHeaterReservedPolicy:
     mode: ReservedMode = ReservedMode.AUTO
     manual_value: int = _DEFAULT_MANUAL
 
-    def compute_auto(
+    def compute_current_value(
         self,
         now: datetime,  # noqa: ARG002 — reserved for future logic
         input: WaterHeaterReservedInput,  # noqa: ARG002, A002 — reserved
     ) -> int:
-        """Pure decision based on inputs.
+        """Pure decision — return the effective reserved-power value.
 
-        Stub: returns constant 3000 W. TODO: replace with logic based on
-        RCE prices + PV forecast + weather summary (parity z planowanym
-        Etap 2G BatteryScheduleProposer).
-        """
-        return _DEFAULT_AUTO_STUB
-
-    def current_value(self, auto_value: int) -> int:
-        """Return value to use NOW given precomputed auto.
-
-        MANUAL → manual_value (user override)
-        AUTO → auto_value (passed by service — fresh per-tick cache)
+        MANUAL → `manual_value` (user override via NumberEntity).
+        AUTO → computed from inputs (stub: constant 3000 W). TODO: replace
+        with logic based on RCE prices + PV forecast + weather summary
+        (parity z planowanym Etap 2G BatteryScheduleProposer).
         """
         if self.mode == ReservedMode.MANUAL:
             return self.manual_value
-        return auto_value
+        return _DEFAULT_AUTO_STUB
 
     def set_mode(self, mode: ReservedMode) -> bool:
         """Idempotent — returns True if changed."""

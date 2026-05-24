@@ -28,9 +28,6 @@ from ..infrastructure.water_heater_reserved_repository import (
 )
 from .service import Service
 
-# Initial auto-cache value before first update tick — matches policy stub.
-_DEFAULT_AUTO_BOOTSTRAP = 3000
-
 
 class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
     """Application service. HASS-unaware — repo + clock injected at construction."""
@@ -42,21 +39,16 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
     ) -> None:
         super().__init__(repo)
         self._clock = clock
-        # In-memory cache of last auto-computed value (recomputed every tick
-        # by Ems.update_state — persistence is not needed since policy stub
-        # is deterministic given inputs).
-        self._last_auto_value: int = _DEFAULT_AUTO_BOOTSTRAP
 
     @callback
     def update(self, input: WaterHeaterReservedInput) -> int:
-        """Per-tick orchestration — called from Ems.update_state.
+        """Per-tick orchestration — return the effective reserved-power value.
 
-        1. Compute auto value from current inputs (stub returns 3000).
-        2. Cache it for property reads between ticks.
-        3. Return current_value: manual_value if MANUAL, else auto.
+        Called from Ems.update_state; the returned value is passed as
+        `reserved_balanced_full` kwarg to `WaterHeaterManager.update`.
+        Decision logic lives in the policy.
         """
-        self._last_auto_value = self._repo.policy.compute_auto(self._clock(), input)
-        return self._repo.policy.current_value(self._last_auto_value)
+        return self._repo.policy.compute_current_value(self._clock(), input)
 
     # ─── Properties (entity queries) ───
 

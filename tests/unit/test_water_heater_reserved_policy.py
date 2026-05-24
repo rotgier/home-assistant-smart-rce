@@ -19,12 +19,12 @@ def test_default_values():
     assert policy.manual_value == 3000
 
 
-def test_compute_auto_returns_stub_constant():
-    """Stub returns constant 3000 — independent of inputs."""
-    policy = WaterHeaterReservedPolicy()
-    assert policy.compute_auto(NOW, EMPTY_INPUT) == 3000
+def test_compute_current_value_auto_mode_returns_stub_constant():
+    """AUTO mode: stub returns constant 3000 — independent of inputs."""
+    policy = WaterHeaterReservedPolicy(mode=ReservedMode.AUTO)
+    assert policy.compute_current_value(NOW, EMPTY_INPUT) == 3000
     assert (
-        policy.compute_auto(
+        policy.compute_current_value(
             NOW,
             WaterHeaterReservedInput(
                 rce_today=[0.1, 0.2, 0.3],
@@ -36,18 +36,13 @@ def test_compute_auto_returns_stub_constant():
     )
 
 
-def test_current_value_auto_mode_returns_passed_auto():
-    policy = WaterHeaterReservedPolicy(mode=ReservedMode.AUTO)
-    assert policy.current_value(auto_value=4500) == 4500
-
-
-def test_current_value_manual_mode_returns_manual_value():
+def test_compute_current_value_manual_mode_returns_manual_value():
+    """MANUAL mode: manual_value short-circuits the auto branch."""
     policy = WaterHeaterReservedPolicy(
         mode=ReservedMode.MANUAL,
         manual_value=2500,
     )
-    # Auto value passed is ignored when MANUAL.
-    assert policy.current_value(auto_value=4500) == 2500
+    assert policy.compute_current_value(NOW, EMPTY_INPUT) == 2500
 
 
 def test_set_mode_idempotent():

@@ -85,7 +85,7 @@ class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
 class EmsWaterHeaterReservedModeSelect(SelectEntity):
     """Mode switch for water-heater reserved-power policy (AUTO / MANUAL).
 
-    - AUTO: service.compute_auto(now, input) drives the value
+    - AUTO: policy.compute_current_value(now, input) drives the value
       (currently stub = 3000; future: dynamic logic based on RCE prices +
       PV forecast + weather).
     - MANUAL: user-set value via `number.ems_water_heater_reserved` is used.
