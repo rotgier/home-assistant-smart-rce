@@ -361,29 +361,36 @@ class NegativeIntervention:
             return xset_signed, is_stay
         return xset_signed, is_stay  # bucket STOP — no clamp needed
 
-    def _commit(self, xset_signed: int, is_stay: bool, pv: float) -> ContinueResult:
+    def _commit(
+        self,
+        xset_signed: int,
+        is_stay: bool,
+        pv: float,  # noqa: ARG002 — kept for caller symmetry / future debug log
+    ) -> ContinueResult:
         """Translate signed bucket value → (mode, xset, reason) and mutate self.
 
         - xset_signed > 0 → charge_battery with xset = xset_signed
         - xset_signed = 0 → charge_battery with xset = 0 (bucket STOP — see
           module docstring for why STANDBY uses CHARGE_BATTERY, not DISCHARGE)
         - xset_signed < 0 → discharge_battery with xset = abs(xset_signed)
+
+        Reason omits `pv_avail` value — it fluctuates every tick and would
+        flicker the diagnostic sensor even while the bucket decision is
+        stable. Bucket-level identity (mode + xset) is enough for the
+        sensor; per-tick PV is captured in the DEBUG log snapshot.
         """
         prefix = "negative_stay" if is_stay else "negative"
-        pv_int = int(pv)
         self._xset_signed = xset_signed
         if xset_signed > 0:
             self.recommended_mode = _CHARGE_MODE
             self.recommended_xset = xset_signed
-            self.last_reason = f"{prefix}_charge_{xset_signed}W_pv_avail_{pv_int}"
+            self.last_reason = f"{prefix}_charge_{xset_signed}W"
         elif xset_signed == 0:
             self.recommended_mode = _STANDBY_MODE
             self.recommended_xset = 0
-            self.last_reason = f"{prefix}_stop_xset_0_pv_avail_{pv_int}"
+            self.last_reason = f"{prefix}_stop_xset_0"
         else:
             self.recommended_mode = _DISCHARGE_MODE
             self.recommended_xset = abs(xset_signed)
-            self.last_reason = (
-                f"{prefix}_discharge_{abs(xset_signed)}W_pv_avail_{pv_int}"
-            )
+            self.last_reason = f"{prefix}_discharge_{abs(xset_signed)}W"
         return CONTINUE

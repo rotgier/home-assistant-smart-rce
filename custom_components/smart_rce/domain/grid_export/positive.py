@@ -280,6 +280,9 @@ class PositiveIntervention:
         stabilizes oscillation at bucket boundaries.
         """
         # Hysteresis — current Xset stable when pv_available is in extended range.
+        # `pv_avail` value omitted from reason text — it fluctuates every tick
+        # and would flicker the diagnostic sensor even while the bucket
+        # decision is stable. Per-tick PV captured in DEBUG log snapshot.
         current_range = self._xset_range(self._current_xset_for_hysteresis)
         if current_range is not None:
             lower, upper = current_range
@@ -288,7 +291,7 @@ class PositiveIntervention:
                 return self._commit(
                     _CHARGE_MODE,
                     current,
-                    f"charge_adaptive_stay_{current}W_pv_avail_{int(pv_available)}",
+                    f"charge_adaptive_stay_{current}W",
                     current,
                 )
 
@@ -298,7 +301,7 @@ class PositiveIntervention:
             return self._commit(
                 _CHARGE_MODE,
                 xset,
-                f"charge_adaptive_{xset}W_pv_avail_{int(pv_available)}",
+                f"charge_adaptive_{xset}W",
                 xset,
             )
 
@@ -310,7 +313,7 @@ class PositiveIntervention:
         return self._commit(
             _AUTO_MODE,
             None,
-            f"charge_adaptive_auto_pv_avail_{int(pv_available)}",
+            "charge_adaptive_auto",
             None,
         )
 
