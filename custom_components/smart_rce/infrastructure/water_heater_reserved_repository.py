@@ -1,13 +1,12 @@
 """WaterHeaterReservedRepository — owns + persists WaterHeaterReservedPolicy.
 
-Extends `Repository[WaterHeaterReservedPolicy]` (parity with
-BatteryChargeRepository). Persisted state: mode + manual_value only —
-auto cache lives in WaterHeaterReservedService.
+Extends `Repository[WaterHeaterReservedPolicy]`. Persisted state: mode +
+manual_value only — auto cache lives in WaterHeaterReservedService.
 
-Async mutators (`set_mode`, `set_manual_value`) auto-persist *immediately*
-via `await self.persist()` so NumberEntity / SelectEntity UI changes
-become durable before HA returns the service-call response (~1s crash
-safety per ADR-018).
+User-facing mutators are NOT on the repository — they are on the service
+(Service[TRepo] base provides `_persist_and_notify` helper that mutates
+the aggregate's policy and then calls `repo.persist()`). The repo just
+owns the aggregate and the Store.
 
 Two-phase init:
 1. `__init__(hass, tasks)` — constructs default policy + Store
@@ -21,10 +20,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from ..domain.water_heater_reserved_policy import (
-    ReservedMode,
-    WaterHeaterReservedPolicy,
-)
+from ..domain.water_heater_reserved_policy import WaterHeaterReservedPolicy
 from .async_task_runner import AsyncTaskRunner
 from .repository import Repository
 
@@ -60,13 +56,3 @@ class WaterHeaterReservedRepository(Repository[WaterHeaterReservedPolicy]):
                 self._policy.mode.value,
                 self._policy.manual_value,
             )
-
-    async def set_mode(self, mode: ReservedMode) -> None:
-        """Change mode + auto-persist on change."""
-        if self._policy.set_mode(mode):
-            await self.persist()
-
-    async def set_manual_value(self, value: int) -> None:
-        """Change manual value + auto-persist on change."""
-        if self._policy.set_manual_value(value):
-            await self.persist()

@@ -14,7 +14,7 @@ import logging
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import UnitOfPower
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
@@ -63,7 +63,7 @@ class EmsWaterHeaterReservedNumber(NumberEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        self.async_on_remove(self._service.add_manual_value_listener(self._on_change))
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> float:
@@ -71,7 +71,3 @@ class EmsWaterHeaterReservedNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self._service.set_manual_value(int(value))
-
-    @callback
-    def _on_change(self, _value: int) -> None:
-        self.async_write_ha_state()
