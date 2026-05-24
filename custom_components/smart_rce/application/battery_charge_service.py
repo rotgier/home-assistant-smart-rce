@@ -5,8 +5,8 @@ Public API consumed by HA entities (select, time, sensors) and Ems:
   `BatteryOperation` so derived properties (`charge_allowed`,
   `target_modbus_value`) can be queried lazily by sensors/actuator.
   Returns `BatteryChargeUpdateResult` (atomic snapshot for Ems).
-- `set_override_mode(mode)` / `set_start_charge_hour_override(value)` —
-  UI mutators (async; persist + notify).
+- `set_charge_allowed_override(mode)` / `set_start_charge_hour_override(value)`
+  — UI mutators (async; persist + notify).
 - `handle_start_charge_today_changed(event, now)` — sync event handler
   from `Ems.update_hourly` carrying a `ChargeSlots` rotation event;
   sticky-gates the auto-sync to bootstrap or `[00:00, 06:00)` window.
@@ -103,8 +103,8 @@ class BatteryChargeService(Service["BatteryChargeRepository"]):
         return self._repo.policy.last_modbus_read_at
 
     @property
-    def override_mode(self) -> OverrideMode:
-        return self._repo.policy.user_override_mode
+    def charge_allowed_override(self) -> OverrideMode:
+        return self._repo.policy.charge_allowed_override
 
     @property
     def start_charge_hour_override(self) -> time | None:
@@ -112,9 +112,11 @@ class BatteryChargeService(Service["BatteryChargeRepository"]):
 
     # ─── User mutators ───
 
-    async def set_override_mode(self, mode: OverrideMode) -> None:
+    async def set_charge_allowed_override(self, mode: OverrideMode) -> None:
         """UI-driven select option change. Persists + notifies listeners on delta."""
-        await self._persist_and_notify(self._repo.policy.set_user_override_mode(mode))
+        await self._persist_and_notify(
+            self._repo.policy.set_charge_allowed_override(mode)
+        )
 
     async def set_start_charge_hour_override(self, value: time | None) -> None:
         """UI-driven time entity change. Persists + notifies listeners on delta."""

@@ -74,30 +74,30 @@ class TestChargeAllowed:
 
     def test_off_passthrough_to_schedule_charge(self):
         """OFF (passthrough) — CHARGE slot engagement enables charge."""
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.OFF)
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.OFF)
         assert policy.charge_allowed(_at(3), self._charge_morning_op()) is True
 
     def test_off_passthrough_discharge_does_not_enable(self):
         """OFF (passthrough) — DISCHARGE slot does NOT enable charge."""
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.OFF)
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.OFF)
         assert policy.charge_allowed(_at(20), self._discharge_evening_op()) is False
 
     def test_allowed_overrides_idle(self):
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.ALLOWED)
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.ALLOWED)
         assert policy.charge_allowed(_at(12), _idle_op()) is True
 
     def test_allowed_overrides_discharge_engagement(self):
         """User ALLOWED forces charge ON even during a DISCHARGE slot."""
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.ALLOWED)
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.ALLOWED)
         assert policy.charge_allowed(_at(20), self._discharge_evening_op()) is True
 
     def test_disallowed_blocks_schedule_charge(self):
         """User DISALLOWED forces charge OFF even during a CHARGE slot."""
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.DISALLOWED)
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.DISALLOWED)
         assert policy.charge_allowed(_at(3), self._charge_morning_op()) is False
 
     def test_disallowed_blocks_idle(self):
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.DISALLOWED)
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.DISALLOWED)
         assert policy.charge_allowed(_at(12), _idle_op()) is False
 
 
@@ -177,7 +177,7 @@ class TestChargeAllowedTimeGate:
     def test_disallowed_overrides_time_gate(self):
         """DISALLOWED beats time-gate even in the ALLOWED period."""
         policy = BatteryChargePolicy(
-            user_override_mode=OverrideMode.DISALLOWED,
+            charge_allowed_override=OverrideMode.DISALLOWED,
             start_charge_hour_override=time(2, 0),
         )
         assert policy.charge_allowed(_at(4, 0), _idle_op()) is False
@@ -185,7 +185,7 @@ class TestChargeAllowedTimeGate:
     def test_allowed_overrides_time_gate_block(self):
         """ALLOWED forces on even in the time-gate BLOCK window."""
         policy = BatteryChargePolicy(
-            user_override_mode=OverrideMode.ALLOWED,
+            charge_allowed_override=OverrideMode.ALLOWED,
             start_charge_hour_override=time(11, 0),
         )
         assert policy.charge_allowed(_at(9, 0), _idle_op()) is True
@@ -221,7 +221,7 @@ class TestTargetModbusValue:
         )
 
     def test_allowed_max(self):
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.ALLOWED)
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.ALLOWED)
         assert (
             policy.target_modbus_value(_at(12), _idle_op()) == CHARGE_CURRENT_MAX_AMPS
         )
@@ -238,14 +238,14 @@ class TestTargetModbusValue:
 
 class TestSetUserOverrideMode:
     def test_changes_returns_true(self):
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.OFF)
-        assert policy.set_user_override_mode(OverrideMode.ALLOWED) is True
-        assert policy.user_override_mode == OverrideMode.ALLOWED
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.OFF)
+        assert policy.set_charge_allowed_override(OverrideMode.ALLOWED) is True
+        assert policy.charge_allowed_override == OverrideMode.ALLOWED
 
     def test_same_returns_false(self):
-        policy = BatteryChargePolicy(user_override_mode=OverrideMode.OFF)
-        assert policy.set_user_override_mode(OverrideMode.OFF) is False
-        assert policy.user_override_mode == OverrideMode.OFF
+        policy = BatteryChargePolicy(charge_allowed_override=OverrideMode.OFF)
+        assert policy.set_charge_allowed_override(OverrideMode.OFF) is False
+        assert policy.charge_allowed_override == OverrideMode.OFF
 
 
 class TestRecordModbusRead:
@@ -283,35 +283,35 @@ class TestPersistence:
     def test_default_round_trip(self):
         policy = BatteryChargePolicy()
         restored = BatteryChargePolicy.from_dict(policy.to_dict())
-        assert restored.user_override_mode == OverrideMode.OFF
+        assert restored.charge_allowed_override == OverrideMode.OFF
         assert restored.modbus_current_value is None
         assert restored.last_modbus_read_at is None
 
     def test_full_round_trip(self):
         original = BatteryChargePolicy(
-            user_override_mode=OverrideMode.ALLOWED,
+            charge_allowed_override=OverrideMode.ALLOWED,
             _modbus_current_value=18.5,
             _last_modbus_read_at=_at(8, 15),
         )
         restored = BatteryChargePolicy.from_dict(original.to_dict())
-        assert restored.user_override_mode == OverrideMode.ALLOWED
+        assert restored.charge_allowed_override == OverrideMode.ALLOWED
         assert restored.modbus_current_value == 18.5
         assert restored.last_modbus_read_at == _at(8, 15)
 
     def test_invalid_override_mode_defaults_to_off(self):
-        restored = BatteryChargePolicy.from_dict({"user_override_mode": "GARBAGE"})
-        assert restored.user_override_mode == OverrideMode.OFF
+        restored = BatteryChargePolicy.from_dict({"charge_allowed_override": "GARBAGE"})
+        assert restored.charge_allowed_override == OverrideMode.OFF
 
     def test_invalid_modbus_value_becomes_none(self):
         restored = BatteryChargePolicy.from_dict(
-            {"user_override_mode": "OFF", "modbus_current_value": "not_a_number"}
+            {"charge_allowed_override": "OFF", "modbus_current_value": "not_a_number"}
         )
         assert restored.modbus_current_value is None
 
     def test_invalid_timestamp_becomes_none(self):
         restored = BatteryChargePolicy.from_dict(
             {
-                "user_override_mode": "OFF",
+                "charge_allowed_override": "OFF",
                 "last_modbus_read_at": "not_iso_datetime",
             }
         )
@@ -319,7 +319,7 @@ class TestPersistence:
 
     def test_missing_fields_use_defaults(self):
         restored = BatteryChargePolicy.from_dict({})
-        assert restored.user_override_mode == OverrideMode.OFF
+        assert restored.charge_allowed_override == OverrideMode.OFF
         assert restored.modbus_current_value is None
         assert restored.last_modbus_read_at is None
         assert restored.start_charge_hour_override is None
@@ -331,7 +331,7 @@ class TestPersistence:
 
     def test_invalid_start_charge_hour_becomes_none(self):
         restored = BatteryChargePolicy.from_dict(
-            {"user_override_mode": "OFF", "start_charge_hour_override": "not_iso"}
+            {"charge_allowed_override": "OFF", "start_charge_hour_override": "not_iso"}
         )
         assert restored.start_charge_hour_override is None
 

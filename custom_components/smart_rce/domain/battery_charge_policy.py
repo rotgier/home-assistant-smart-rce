@@ -63,7 +63,7 @@ class BatteryChargePolicy:
     `schedule_op`) — no shadow fields that mirror inputs.
     """
 
-    user_override_mode: OverrideMode = OverrideMode.OFF
+    charge_allowed_override: OverrideMode = OverrideMode.OFF
     _modbus_current_value: float | None = None
     _last_modbus_read_at: datetime | None = None
     # Etap B' time-gate: charging is BLOCKED in `[BLOCK_WINDOW_START=06:00,
@@ -104,9 +104,9 @@ class BatteryChargePolicy:
         `[06:00, 24:00) U [00:00, start)`. When start is None, gate is
         disabled — schedule decides, default off.
         """
-        if self.user_override_mode == OverrideMode.DISALLOWED:
+        if self.charge_allowed_override == OverrideMode.DISALLOWED:
             return False
-        if self.user_override_mode == OverrideMode.ALLOWED:
+        if self.charge_allowed_override == OverrideMode.ALLOWED:
             return True
         # Schedule CHARGE slot wins — overrides time-gate block.
         if schedule_op.needs_charge_toggle:
@@ -132,11 +132,11 @@ class BatteryChargePolicy:
             return CHARGE_CURRENT_MAX_AMPS
         return CHARGE_CURRENT_OFF_AMPS
 
-    def set_user_override_mode(self, mode: OverrideMode) -> bool:
-        """Mutate user override. Returns True if value changed (caller persists)."""
-        if self.user_override_mode == mode:
+    def set_charge_allowed_override(self, mode: OverrideMode) -> bool:
+        """Mutate the charge-allowed override mode. Returns True if value changed."""
+        if self.charge_allowed_override == mode:
             return False
-        self.user_override_mode = mode
+        self.charge_allowed_override = mode
         return True
 
     def set_start_charge_hour_override(self, value: time | None) -> bool:
@@ -160,7 +160,7 @@ class BatteryChargePolicy:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "user_override_mode": self.user_override_mode.value,
+            "charge_allowed_override": self.charge_allowed_override.value,
             "modbus_current_value": self._modbus_current_value,
             "last_modbus_read_at": (
                 self._last_modbus_read_at.isoformat()
@@ -176,8 +176,18 @@ class BatteryChargePolicy:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatteryChargePolicy:
-        """Restore from persisted dict. Tolerant of missing / bad fields."""
-        mode_raw = data.get("user_override_mode", OverrideMode.OFF.value)
+        """Restore from persisted dict. Tolerant of missing / bad fields.
+
+        Reads the new `charge_allowed_override` key (rename from previous
+        `user_override_mode` — domain-clearer naming). Legacy persisted
+        installs fall back to the old key during one migration cycle; on
+        next save the new key is written.
+        """
+        mode_raw = (
+            data.get("charge_allowed_override")
+            or data.get("user_override_mode")
+            or OverrideMode.OFF.value
+        )
         try:
             mode = OverrideMode(mode_raw)
         except ValueError:
@@ -214,7 +224,7 @@ class BatteryChargePolicy:
             start_charge = None
 
         return cls(
-            user_override_mode=mode,
+            charge_allowed_override=mode,
             _modbus_current_value=modbus_value,
             _last_modbus_read_at=last_read_at,
             start_charge_hour_override=start_charge,

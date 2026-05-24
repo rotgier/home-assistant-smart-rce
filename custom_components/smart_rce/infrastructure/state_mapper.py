@@ -196,7 +196,7 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "number.goodwe_depth_of_discharge_on_grid": set_depth_of_discharge,
     # `input_boolean.battery_charge_max_current_toggle` REMOVED (Etap B) —
     # replaced by smart_rce-owned select `select.ems_battery_charge_allowed_override`
-    # backed by `BatteryChargePolicy.user_override_mode`. Combined decision
+    # backed by `BatteryChargePolicy.charge_allowed_override`. Combined decision
     # (override + schedule) flows through `BatteryChargeService.charge_allowed`,
     # passed as kwarg to managers (no longer via InputState).
     # `input_boolean.ems_allow_discharge_override` REMOVED — replaced by

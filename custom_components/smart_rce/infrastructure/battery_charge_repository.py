@@ -9,7 +9,7 @@ they are siblings, no circular dependency.
 state every ~5s and the value must hit disk before the next refresh tick
 (ADR-018 ~1s crash safety promise).
 
-User-facing mutators (`set_override_mode`, `set_start_charge_hour_override`)
+User-facing mutators (`set_charge_allowed_override`, `set_start_charge_hour_override`)
 were dropped — the service mutates `policy.set_X(...)` directly and awaits
 `repo.persist()` via the inherited `Service._persist_and_notify` helper.
 
@@ -59,7 +59,7 @@ class BatteryChargeRepository(Repository[BatteryChargePolicy]):
                 "BatteryChargeRepository: restored from %s "
                 "(override=%s, modbus_value=%s, last_read=%s)",
                 self.STORAGE_KEY,
-                self._policy.user_override_mode.value,
+                self._policy.charge_allowed_override.value,
                 self._policy.modbus_current_value,
                 self._policy.last_modbus_read_at,
             )

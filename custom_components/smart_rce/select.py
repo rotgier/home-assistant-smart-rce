@@ -2,7 +2,7 @@
 
 Currently exposes one entity:
 - `select.ems_battery_charge_allowed_override` — three-state override for
-  `BatteryChargePolicy.user_override_mode`:
+  `BatteryChargePolicy.charge_allowed_override`:
     * OFF (passthrough) — schedule + time-gate decides
     * ALLOWED — force charge on
     * DISALLOWED — block charge
@@ -47,7 +47,7 @@ async def async_setup_entry(
 class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
     """User-controlled override of battery charge enablement.
 
-    Bridge to `BatteryChargePolicy.user_override_mode` via
+    Bridge to `BatteryChargePolicy.charge_allowed_override` via
     `BatteryChargeService`. The three values let the user:
     - OFF: let smart_rce decide (default — based on schedule + time-gate)
     - ALLOWED: force charging on (override schedule)
@@ -75,11 +75,11 @@ class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
 
     @property
     def current_option(self) -> str:
-        return self._service.override_mode.value
+        return self._service.charge_allowed_override.value
 
     async def async_select_option(self, option: str) -> None:
         # HA platform validates `option` against `_attr_options` before calling us.
-        await self._service.set_override_mode(OverrideMode(option))
+        await self._service.set_charge_allowed_override(OverrideMode(option))
 
 
 class EmsWaterHeaterReservedModeSelect(SelectEntity):
