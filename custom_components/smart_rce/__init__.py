@@ -217,6 +217,8 @@ def live_reload():
             "custom_components.smart_rce.infrastructure.water_heater_reserved_repository"
         )
     )
+    # service base BEFORE concrete services (they extend Service[TRepo]).
+    reload(import_module("custom_components.smart_rce.application.service"))
     reload(
         import_module(
             "custom_components.smart_rce.application.battery_schedule_service"
