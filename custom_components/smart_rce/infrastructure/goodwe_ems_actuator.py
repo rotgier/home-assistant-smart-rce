@@ -37,7 +37,7 @@ import asyncio
 import contextlib
 import logging
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
 
 from ..domain.ems_operation import EmsOperation
 from .async_task_runner import AsyncTaskRunner
@@ -51,9 +51,16 @@ GOODWE_EMS_POWER_LIMIT_NUMBER = "number.goodwe_ems_power_limit"
 class GoodweEmsActuator:
     """Driven adapter — apply EmsOperation to Goodwe via scene.apply."""
 
-    def __init__(self, hass: HomeAssistant, tasks: AsyncTaskRunner) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        tasks: AsyncTaskRunner,
+        *,
+        context_user_id: str,
+    ) -> None:
         self._hass = hass
         self._tasks = tasks
+        self._context = Context(user_id=context_user_id)
         self._lock = asyncio.Lock()
 
     @callback
@@ -105,7 +112,11 @@ class GoodweEmsActuator:
             entities[GOODWE_EMS_POWER_LIMIT_NUMBER] = str(target.power_limit_w)
         try:
             await self._hass.services.async_call(
-                "scene", "apply", {"entities": entities}, blocking=True
+                "scene",
+                "apply",
+                {"entities": entities},
+                blocking=True,
+                context=self._context,
             )
             _LOGGER.info(
                 "GoodweEmsActuator applied mode=%s xset=%s (source=%s reason=%s)",

@@ -51,7 +51,9 @@ from .infrastructure.water_heater_reserved_repository import (
 _LOGGER = logging.getLogger(__name__)
 
 
-async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
+async def create_ems(
+    hass: HomeAssistant, entry: ConfigEntry, *, context_user_id: str
+) -> Ems:
     """Composition root — wire domain (Ems) z driven + driving adapters."""
     # AsyncTaskRunner — shared by repo + service (and future adapters that
     # need to fire-and-forget tasks tied to this entry's lifecycle).
@@ -98,8 +100,12 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     dod_policy = dod_repository.policy
     dod_logger = DodPolicyLogger(dod_policy)
     # Replaces YAML automation `ems-set-dod-from-block-discharge` (per ADR-019).
-    dod_actuator = DodPolicyActuator(hass, dod_policy, tasks)
-    goodwe_ems_actuator = GoodweEmsActuator(hass, tasks)
+    dod_actuator = DodPolicyActuator(
+        hass, dod_policy, tasks, context_user_id=context_user_id
+    )
+    goodwe_ems_actuator = GoodweEmsActuator(
+        hass, tasks, context_user_id=context_user_id
+    )
 
     # Water heater reserved-power policy — user-configurable via NumberEntity
     # (replaces hardcoded `reserved` in WaterHeaterManager._balanced_target).

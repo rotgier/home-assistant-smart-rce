@@ -30,6 +30,9 @@ from .pv_forecast_factory import create_pv_forecast_service
 
 _LOGGER = logging.getLogger(__name__)
 
+SYSTEM_USER_NAME = "Smart RCE"
+CONF_USER_ID = "smart_rce_user_id"
+
 PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.NUMBER,
@@ -66,9 +69,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     """Set up Smart RCE as config entry."""
     _LOGGER.debug("async_setup_entry")
 
+    context_user_id = await _ensure_system_user(hass, entry)
+
     websession = async_get_clientsession(hass)
     rceApi = RceApi(websession)
-    ems: Ems = await create_ems(hass, entry)
+    ems: Ems = await create_ems(hass, entry, context_user_id=context_user_id)
     rce_coordinator = SmartRceDataUpdateCoordinator(hass, rceApi, ems, entry)
     weather_listener = WeatherForecastListener(hass, entry)
 
@@ -110,6 +115,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+async def _ensure_system_user(hass: HomeAssistant, entry: ConfigEntry) -> str:
+    """Get or create system user for HA Context attribution.
+
+    Stored in `entry.data[CONF_USER_ID]` so reload reuses the same user
+    (logbook attribution stays stable). Falls back to fresh create if the
+    stored user_id no longer exists (e.g. user got deleted manually).
+    """
+    stored_id = entry.data.get(CONF_USER_ID)
+    if stored_id:
+        user = await hass.auth.async_get_user(stored_id)
+        if user is not None:
+            return stored_id
+    user = await hass.auth.async_create_system_user(SYSTEM_USER_NAME)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_USER_ID: user.id}
+    )
+    return user.id
 
 
 def _register_services(

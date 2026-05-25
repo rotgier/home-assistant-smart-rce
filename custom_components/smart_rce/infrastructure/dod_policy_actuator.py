@@ -2,7 +2,7 @@
 
 Apply `dod_policy.target_dod` to `number.goodwe_depth_of_discharge_on_grid`
 as fire-and-forget background task. Mirrors `goodwe_ems_actuator.py` pattern
-(ADR-019) with two enhancements:
+(ADR-019) with three enhancements:
 
 1. **Read-back verification**: after each scene.apply, immediately re-read
    inverter state. scene.apply blocking=True awaits Modbus write + state
@@ -14,10 +14,10 @@ as fire-and-forget background task. Mirrors `goodwe_ems_actuator.py` pattern
    only if diverged. Self-healing across restarts and external drift (e.g.
    user manually changes DoD via UI, our next tick converges back to target).
 
-3. **Logbook entries**: each successful apply emits a structured logbook
-   entry (`name=DodPolicy`, `entity_id=number.goodwe_depth_of_discharge_on_grid`)
-   so HA UI Logbook history shows what set the DoD register and why
-   (target_dod + current phase).
+3. **Logbook attribution via Context**: scene.apply is called with a
+   `Context(user_id=...)` tied to the "Smart RCE" system user. HA logbook
+   resolves it to "Changed by Smart RCE" automatically — no custom logbook
+   entries needed (avoids the duplicate-entries problem of `async_log_entry`).
 
 Hexagonal pattern: **driven adapter (outbound)** — domain (DodPolicy)
 dictates target value, concrete impl applies via HA `scene.apply` service.
@@ -26,11 +26,9 @@ dictates target value, concrete impl applies via HA `scene.apply` service.
 import asyncio
 import logging
 
-from homeassistant.components.logbook import async_log_entry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
-from ..const import DOMAIN
 from ..domain.dod_policy import DodPolicy
 from .async_task_runner import AsyncTaskRunner
 
@@ -45,11 +43,17 @@ class DodPolicyActuator:
     """Driven adapter — applies DodPolicy.target_dod to inverter."""
 
     def __init__(
-        self, hass: HomeAssistant, policy: DodPolicy, tasks: AsyncTaskRunner
+        self,
+        hass: HomeAssistant,
+        policy: DodPolicy,
+        tasks: AsyncTaskRunner,
+        *,
+        context_user_id: str,
     ) -> None:
         self._hass = hass
         self._policy = policy
         self._tasks = tasks
+        self._context = Context(user_id=context_user_id)
         self._lock = asyncio.Lock()
         self._failed_apply_count: int = 0
         self._failed_count_hour: int | None = None
@@ -129,7 +133,12 @@ class DodPolicyActuator:
                 return
 
             self._failed_apply_count = 0
-            self._log_entry(target, previous=current)
+            _LOGGER.info(
+                "DodPolicyActuator: applied target_dod=%d (was %d, phase=%s)",
+                target,
+                current,
+                self._policy.current_phase.value,
+            )
 
     def _read_inverter_dod(self) -> int | None:
         """Read current DoD register value from HA state cache (Goodwe poll)."""
@@ -142,30 +151,18 @@ class DodPolicyActuator:
             return None
 
     async def _apply_scene(self, target: int) -> None:
-        """Apply target DoD via scene.apply (blocking=True awaits Modbus write)."""
+        """Apply target DoD via scene.apply (blocking=True awaits Modbus write).
+
+        `context=self._context` attributes the resulting state_changed event
+        to the "Smart RCE" system user — HA logbook renders this as
+        "Changed by Smart RCE" automatically.
+        """
         await self._hass.services.async_call(
             "scene",
             "apply",
             {"entities": {GOODWE_DOD_NUMBER: str(target)}},
             blocking=True,
-        )
-
-    def _log_entry(self, target: int, *, previous: int | None) -> None:
-        """Write structured logbook entry for traceability of DoD changes."""
-        phase = self._policy.current_phase.value
-        prev_str = str(previous) if previous is not None else "unknown"
-        async_log_entry(
-            self._hass,
-            name="DodPolicy",
-            message=f"target_dod {prev_str} → {target} (phase={phase})",
-            domain=DOMAIN,
-            entity_id=GOODWE_DOD_NUMBER,
-        )
-        _LOGGER.info(
-            "DodPolicyActuator: applied target_dod=%d (was %s, phase=%s)",
-            target,
-            prev_str,
-            phase,
+            context=self._context,
         )
 
     async def _notify_alert(
