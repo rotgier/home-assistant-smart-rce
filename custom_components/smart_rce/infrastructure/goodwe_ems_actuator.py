@@ -37,11 +37,12 @@ import asyncio
 import contextlib
 import logging
 
-from homeassistant.core import Context, HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback
 
 from ..domain.ems_operation import EmsOperation
 from .apply_guard import ApplyGuard
 from .async_task_runner import AsyncTaskRunner
+from .context_chain import fire_action_and_chain_context
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class GoodweEmsActuator:
     ) -> None:
         self._hass = hass
         self._tasks = tasks
-        self._context = Context(user_id=context_user_id)
+        self._context_user_id = context_user_id
         self._guard = ApplyGuard(hass, "GoodweEmsActuator")
         self._lock = asyncio.Lock()
 
@@ -119,13 +120,19 @@ class GoodweEmsActuator:
             and target.ems_mode != "auto"
         ):
             entities[GOODWE_EMS_POWER_LIMIT_NUMBER] = str(target.power_limit_w)
+        ctx = fire_action_and_chain_context(
+            self._hass,
+            self._context_user_id,
+            phase=target.source,
+            reason=target.reason,
+        )
         try:
             await self._hass.services.async_call(
                 "scene",
                 "apply",
                 {"entities": entities},
                 blocking=True,
-                context=self._context,
+                context=ctx,
             )
         except Exception:
             _LOGGER.exception(

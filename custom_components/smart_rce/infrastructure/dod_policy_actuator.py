@@ -28,11 +28,12 @@ dictates target value, concrete impl applies via HA `scene.apply` service.
 import asyncio
 import logging
 
-from homeassistant.core import Context, HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback
 
 from ..domain.dod_policy import DodPolicy
 from .apply_guard import ApplyGuard
 from .async_task_runner import AsyncTaskRunner
+from .context_chain import fire_action_and_chain_context
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ class DodPolicyActuator:
         self._hass = hass
         self._policy = policy
         self._tasks = tasks
-        self._context = Context(user_id=context_user_id)
+        self._context_user_id = context_user_id
         self._guard = ApplyGuard(hass, "DodPolicyActuator")
         self._lock = asyncio.Lock()
 
@@ -83,7 +84,7 @@ class DodPolicyActuator:
                 return
 
             try:
-                await self._apply_scene(target)
+                await self._apply_scene(target, previous=current)
             except Exception:
                 _LOGGER.exception(
                     "DodPolicyActuator: scene.apply raised for target=%d", target
@@ -141,17 +142,24 @@ class DodPolicyActuator:
         except (ValueError, TypeError):
             return None
 
-    async def _apply_scene(self, target: int) -> None:
+    async def _apply_scene(self, target: int, *, previous: int) -> None:
         """Apply target DoD via scene.apply (blocking=True awaits Modbus write).
 
-        `context=self._context` attributes the resulting state_changed event
-        to the "Smart RCE" system user — HA logbook renders this as
-        "Changed by Smart RCE" automatically.
+        Fires smart_rce_action event with phase/reason metadata first, then
+        passes a child Context to scene.apply. HA logbook renders the
+        resulting state_changed entry as "DoD changed to N triggered by
+        Smart RCE phase=X (reason=...)" via parent_id chain.
         """
+        ctx = fire_action_and_chain_context(
+            self._hass,
+            self._context_user_id,
+            phase=self._policy.current_phase.value,
+            reason=f"target_dod {previous} → {target}",
+        )
         await self._hass.services.async_call(
             "scene",
             "apply",
             {"entities": {GOODWE_DOD_NUMBER: str(target)}},
             blocking=True,
-            context=self._context,
+            context=ctx,
         )
