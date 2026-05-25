@@ -40,6 +40,7 @@ import logging
 from homeassistant.core import Context, HomeAssistant, callback
 
 from ..domain.ems_operation import EmsOperation
+from .apply_guard import ApplyGuard
 from .async_task_runner import AsyncTaskRunner
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class GoodweEmsActuator:
         self._hass = hass
         self._tasks = tasks
         self._context = Context(user_id=context_user_id)
+        self._guard = ApplyGuard(hass, "GoodweEmsActuator")
         self._lock = asyncio.Lock()
 
     @callback
@@ -75,7 +77,9 @@ class GoodweEmsActuator:
             current_mode, current_xset = self._read_inverter_state()
             if target.matches_inverter(current_mode, current_xset):
                 return
-            await self._apply_scene(target)
+            if self._guard.should_skip():
+                return
+            await self._apply_scene(target, current_mode, current_xset)
 
     def _read_inverter_state(self) -> tuple[str | None, int | None]:
         """Read observed Goodwe (mode, xset) from hass.states.
@@ -100,7 +104,12 @@ class GoodweEmsActuator:
                 xset = int(float(xset_state.state))
         return (mode, xset)
 
-    async def _apply_scene(self, target: EmsOperation) -> None:
+    async def _apply_scene(
+        self,
+        target: EmsOperation,
+        current_mode: str | None,
+        current_xset: int | None,
+    ) -> None:
         # scene.apply expects string-valued state per HA core's _convert_states.
         # power_limit_w only passed for active modes — Goodwe ignores it on auto.
         entities: dict[str, str] = {GOODWE_EMS_MODE_SELECT: target.ems_mode}
@@ -118,16 +127,26 @@ class GoodweEmsActuator:
                 blocking=True,
                 context=self._context,
             )
-            _LOGGER.info(
-                "GoodweEmsActuator applied mode=%s xset=%s (source=%s reason=%s)",
-                target.ems_mode,
-                target.power_limit_w,
-                target.source,
-                target.reason,
-            )
         except Exception:
             _LOGGER.exception(
                 "Failed to apply EmsOperation mode=%s xset=%s",
                 target.ems_mode,
                 target.power_limit_w,
             )
+            await self._guard.record_failure(
+                title="GoodweEms: apply failure",
+                message=(
+                    f"Target mode={target.ems_mode} xset={target.power_limit_w} "
+                    f"failed. Current state: mode={current_mode} xset={current_xset}. "
+                    f"Source: {target.source}."
+                ),
+            )
+            return
+        self._guard.record_success()
+        _LOGGER.info(
+            "GoodweEmsActuator applied mode=%s xset=%s (source=%s reason=%s)",
+            target.ems_mode,
+            target.power_limit_w,
+            target.source,
+            target.reason,
+        )
