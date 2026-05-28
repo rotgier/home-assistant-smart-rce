@@ -51,7 +51,7 @@ from homeassistant.core import HomeAssistant, callback
 from ..domain.ems_operation import EmsOperation
 from .apply_guard import ApplyGuard
 from .async_task_runner import AsyncTaskRunner
-from .context_chain import fire_action_and_chain_context
+from .context_chain import fire_action_event
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,10 +166,11 @@ class GoodweEmsActuator:
     async def _apply_scene(self, target: EmsOperation) -> None:
         """Apply target via scene.apply — 2 entities written atomically.
 
-        Fires smart_rce_action event with phase/reason metadata first, then
-        passes a child Context to scene.apply. HA logbook renders the
-        resulting state_changed entries as "EMS mode changed to X triggered
-        by Smart RCE phase=Y (reason=...)" via parent_id chain.
+        Fire smart_rce_action event with phase/reason metadata first, then
+        pass the SAME Context to scene.apply. HA logbook resolves the
+        resulting state_changed rows → smart_rce_action via context_lookup
+        (first-write-wins), renders "EMS mode changed to X triggered by
+        Smart RCE phase=Y (reason=...)" through our describer.
         """
         # scene.apply expects string-valued state per HA core's _convert_states.
         # power_limit_w only passed for active modes — Goodwe ignores it on auto.
@@ -180,7 +181,7 @@ class GoodweEmsActuator:
             and target.ems_mode != "auto"
         ):
             entities[GOODWE_EMS_POWER_LIMIT_NUMBER] = str(target.power_limit_w)
-        ctx = fire_action_and_chain_context(
+        ctx = fire_action_event(
             self._hass,
             phase=target.source,
             reason=target.reason,

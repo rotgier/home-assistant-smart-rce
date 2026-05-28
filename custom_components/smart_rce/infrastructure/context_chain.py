@@ -1,21 +1,31 @@
-"""HA Context chaining helper for smart_rce actuators.
+"""HA Context helper for smart_rce actuators — logbook attribution pattern.
 
 Mirrors the `EVENT_AUTOMATION_TRIGGERED` pattern from
 `homeassistant.components.automation`: fire a "smart_rce_action" event
-with phase/reason metadata, then return a child `Context(parent_id=...)`
-for the downstream `scene.apply` / `number.set_value` call.
+with phase/reason metadata, then reuse **the same** Context for the
+downstream `scene.apply` / `number.set_value` call.
 
-HA logbook describer (`custom_components/smart_rce/logbook.py`) renders
-the event as "triggered by Smart RCE phase=X" via parent_id chain
-walked by `logbook.processor.ContextAugmenter` — producing
-"DoD changed to 90 triggered by Smart RCE phase=X (reason=...)".
+Why same Context (not child `Context(parent_id=...)`):
+HA logbook's `ContextAugmenter.augment()` does NOT walk `parent_id`
+chain when resolving describer for a state_changed row. It calls
+`get_context(state.context_id)` which returns the FIRST row that wrote
+to `context_lookup[ctx_id]` (first-write-wins, chronological order —
+`logbook/processor.py:307`). If we use `Context(parent_id=...)` then
+CALL_SERVICE event has a NEW context_id (B), nothing else wrote B
+earlier → describer never reached, logbook shows "triggered by action
+Number: Set" (default CALL_SERVICE attribution).
 
-No system user / `user_id` involved — logbook attribution name comes
-from `LOGBOOK_ENTRY_NAME: "Smart RCE"` returned by the describer (see
-`logbook/processor.py:augment()` lines 478-493). HA's own automation
-follows the same pattern (`automation/__init__.py:795` creates
-`Context(parent_id=...)` without user_id; `automation/logbook.py`
-describer supplies the "automation X" name).
+Correct pattern: fire smart_rce_action with context A, pass SAME A to
+service.async_call. Both events share ctx=A. context_lookup[A] gets
+smart_rce_action (chronologically first, since fire is synchronous and
+happens before await services.async_call). State_changed.context_id=A
+→ get_context(A) → smart_rce_action row → describer renders
+"Smart RCE phase=X (reason=...)".
+
+Verified against 22.05 logbook example where automation chain
+"triggered by automation X triggered by time" worked — automation
+fires EVENT_AUTOMATION_TRIGGERED with trigger_context, then uses
+trigger_context (NOT child) for action service calls.
 """
 
 from __future__ import annotations
@@ -27,21 +37,26 @@ from homeassistant.core import Context, HomeAssistant
 from ..const import ATTR_PHASE, ATTR_REASON, EVENT_SMART_RCE_ACTION
 
 
-def fire_action_and_chain_context(
+def fire_action_event(
     hass: HomeAssistant,
     *,
     phase: str,
     reason: str | None = None,
 ) -> Context:
-    """Fire smart_rce_action + return chained Context for downstream service calls.
+    """Fire smart_rce_action event + return the SAME Context for service call.
 
-    Returns a Context whose `parent_id` is the fired event's context id —
-    pass it as `context=` to `hass.services.async_call(...)` so HA logbook
-    can walk the parent chain when rendering the resulting state change.
+    Pass the returned Context as `context=` to
+    `hass.services.async_call(...)`. Both the fired event and the
+    subsequent CALL_SERVICE / state_changed share the same context_id,
+    so HA logbook's context_lookup resolves to the smart_rce_action row
+    (first writer chronologically) and our describer renders the
+    "Smart RCE phase=X" attribution.
+
+    See module docstring for the why-not-child-Context rationale.
     """
-    trigger_ctx = Context()
+    ctx = Context()
     data: dict[str, Any] = {ATTR_PHASE: phase}
     if reason:
         data[ATTR_REASON] = reason
-    hass.bus.async_fire(EVENT_SMART_RCE_ACTION, data, context=trigger_ctx)
-    return Context(parent_id=trigger_ctx.id)
+    hass.bus.async_fire(EVENT_SMART_RCE_ACTION, data, context=ctx)
+    return ctx

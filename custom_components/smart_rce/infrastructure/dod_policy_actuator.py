@@ -21,11 +21,13 @@ Three enhancements over the basic write:
    only if diverged. Self-healing across restarts and external drift (e.g.
    user manually changes DoD via UI, our next tick converges back to target).
 
-3. **Logbook attribution via Context**: `number.set_value` is called with a
-   child Context whose parent fires `smart_rce_action` (phase + reason). HA
-   logbook walks the parent_id chain to render the resulting state_changed
-   as "triggered by Smart RCE phase=X" — analog to HA's native automation
-   describer (avoids the duplicate-entries problem of `async_log_entry`).
+3. **Logbook attribution via Context**: fire `smart_rce_action` event with
+   phase + reason, then pass the SAME Context to `number.set_value`. HA
+   logbook's `ContextAugmenter` resolves the resulting state_changed row
+   via `context_lookup[state.context_id]` (first-write-wins, chronological),
+   finds the smart_rce_action row (fired first, same ctx), and uses our
+   describer → "Smart RCE phase=X (reason=...)". Mirrors HA's automation
+   pattern (`automation/__init__.py:794`).
 
 Anti-spam + telegram alerts are delegated to `ApplyGuard`.
 
@@ -41,7 +43,7 @@ from homeassistant.core import HomeAssistant, callback
 from ..domain.dod_policy import DodPolicy
 from .apply_guard import ApplyGuard
 from .async_task_runner import AsyncTaskRunner
-from .context_chain import fire_action_and_chain_context
+from .context_chain import fire_action_event
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -129,12 +131,13 @@ class DodPolicyActuator:
     async def _apply(self, target: int, *, previous: int) -> None:
         """Apply target DoD via number.set_value (blocking=True awaits Modbus).
 
-        Fires smart_rce_action event with phase/reason metadata first, then
-        passes a child Context to number.set_value. HA logbook renders the
-        resulting state_changed entry as "DoD changed to N triggered by
-        Smart RCE phase=X (reason=...)" via parent_id chain.
+        Fire smart_rce_action event with phase/reason metadata first, then
+        pass the SAME Context to number.set_value. HA logbook resolves
+        state_changed → smart_rce_action via context_lookup (first-write-
+        wins), renders "DoD changed to N triggered by Smart RCE phase=X
+        (reason=...)" through our describer.
         """
-        ctx = fire_action_and_chain_context(
+        ctx = fire_action_event(
             self._hass,
             phase=self._policy.current_phase.value,
             reason=f"target_dod {previous} → {target}",

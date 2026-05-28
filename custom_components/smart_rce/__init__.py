@@ -234,7 +234,7 @@ def live_reload():
     # apply_guard BEFORE actuators (dod_policy_actuator + goodwe_ems_actuator
     # import ApplyGuard from it).
     reload(import_module("custom_components.smart_rce.infrastructure.apply_guard"))
-    # context_chain BEFORE actuators (both import fire_action_and_chain_context).
+    # context_chain BEFORE actuators (both import fire_action_event).
     reload(import_module("custom_components.smart_rce.infrastructure.context_chain"))
     # repository base BEFORE concrete repositories (they extend Repository[T]).
     reload(import_module("custom_components.smart_rce.infrastructure.repository"))
