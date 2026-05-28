@@ -129,10 +129,6 @@ def set_water_heater_strategy(entity: str, i: InputState, state: str) -> None:
     i.water_heater_strategy = state
 
 
-def set_rce_should_hold_for_peak(entity: str, i: InputState, state: str) -> None:
-    i.rce_should_hold_for_peak = map_on_off(entity, state)
-
-
 def set_is_workday(entity: str, i: InputState, state: str) -> None:
     i.is_workday = map_on_off(entity, state)
 
@@ -203,7 +199,9 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     # smart_rce-owned switch `switch.ems_interventions_blocked` backed by
     # `BatterySchedule.ems_interventions_blocked` (Etap 0).
     "input_select.ems_water_heater_strategy": set_water_heater_strategy,
-    "binary_sensor.rce_should_hold_for_peak": set_rce_should_hold_for_peak,
+    # `binary_sensor.rce_should_hold_for_peak` REMOVED — smart_rce computes
+    # this internally from `discharge_slots.max_upcoming_peak` + threshold.
+    # The HA template lives on for legacy automations + dashboards.
     "binary_sensor.workday": set_is_workday,
     "sensor.pv_power": set_pv_power,
     "sensor.pv_power_avg_2_minutes": set_pv_power_avg_2_minutes,

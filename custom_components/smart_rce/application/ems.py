@@ -40,6 +40,7 @@ from custom_components.smart_rce.application.battery_schedule_service import (
 from custom_components.smart_rce.application.water_heater_reserved_service import (
     WaterHeaterReservedService,
 )
+from custom_components.smart_rce.const import GROSS_MULTIPLIER
 from custom_components.smart_rce.domain.battery_schedule import BatteryScheduleInput
 from custom_components.smart_rce.domain.charge_slots import (
     DEFAULT_HEATER_RCE_THRESHOLD,
@@ -183,6 +184,7 @@ class Ems:
             state,
             ems_interventions_blocked=schedule_result.ems_interventions_blocked,
             start_charge_hour_override=charge_result.start_charge_hour_override,
+            rce_should_hold_for_peak=self._rce_should_hold_for_peak(state),
         )
         self._dod_repository.save_if_changed()
         self._dod_logger.log_if_changed(state)
@@ -274,6 +276,25 @@ class Ems:
         """
         event = self.charge_slots.update(rce_data, self._heater_threshold())
         self.battery_charge_service.handle_start_charge_today_changed(event, now)
+
+    def _rce_should_hold_for_peak(self, state: InputState) -> bool | None:
+        """Compare smart_rce-owned max_upcoming_peak vs user threshold.
+
+        Replaces external read of `binary_sensor.rce_should_hold_for_peak`
+        (HA template) — that was a 6-hop round-trip (smart_rce produces
+        `sensor.rce_max_upcoming_peak_gross` → HA template binary_sensor
+        → state_mapper → InputState → DodPolicy) for a value computable
+        locally. Eliminates post-reload partial-input flicker window.
+
+        Returns None when either signal is missing (no RCE prices yet, or
+        input_number threshold sensor transiently unavailable) — DodPolicy
+        guards with Phase.UNKNOWN to keep persisted state.
+        """
+        peak = self.discharge_slots.max_upcoming_peak
+        threshold = state.rce_high_price_threshold_gross
+        if peak is None or threshold is None:
+            return None
+        return peak.price * GROSS_MULTIPLIER > threshold
 
     def _heater_threshold(self) -> float:
         """Read input_number.heater_rce_threshold from last InputState (with fallback).
