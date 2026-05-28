@@ -221,12 +221,10 @@ class Ems:
         Awaits scene.apply directly (not via run_background which auto-cancels
         on unload).
         """
-        if self.grid_export.intervention_active:
-            _LOGGER.info("Ems.async_on_stop — dropping GridExport intervention")
-            self.grid_export.reset_intervention("stopping")
-        # Always push neutral — even when no active intervention, this is a
-        # safe idempotent reset (state-diff in GoodweEmsActuator skips if
-        # inverter already at auto).
+        if not self.grid_export.intervention_active:
+            return  # inverter already in auto — nothing to drop
+        _LOGGER.info("Ems.async_on_stop — dropping GridExport intervention")
+        self.grid_export.reset_intervention("stopping")
         await self._goodwe_ems_actuator.apply_now(
             EmsOperation.neutral(reason="stopping")
         )
