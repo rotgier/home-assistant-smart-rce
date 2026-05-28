@@ -56,13 +56,10 @@ class DodPolicyActuator:
         hass: HomeAssistant,
         policy: DodPolicy,
         tasks: AsyncTaskRunner,
-        *,
-        context_user_id: str,
     ) -> None:
         self._hass = hass
         self._policy = policy
         self._tasks = tasks
-        self._context_user_id = context_user_id
         self._guard = ApplyGuard(hass, "DodPolicyActuator")
         self._lock = asyncio.Lock()
 
@@ -139,7 +136,6 @@ class DodPolicyActuator:
         """
         ctx = fire_action_and_chain_context(
             self._hass,
-            self._context_user_id,
             phase=self._policy.current_phase.value,
             reason=f"target_dod {previous} → {target}",
         )

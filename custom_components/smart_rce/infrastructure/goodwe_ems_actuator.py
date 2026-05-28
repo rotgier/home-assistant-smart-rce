@@ -66,12 +66,9 @@ class GoodweEmsActuator:
         self,
         hass: HomeAssistant,
         tasks: AsyncTaskRunner,
-        *,
-        context_user_id: str,
     ) -> None:
         self._hass = hass
         self._tasks = tasks
-        self._context_user_id = context_user_id
         self._guard = ApplyGuard(hass, "GoodweEmsActuator")
         self._lock = asyncio.Lock()
 
@@ -175,7 +172,6 @@ class GoodweEmsActuator:
             entities[GOODWE_EMS_POWER_LIMIT_NUMBER] = str(target.power_limit_w)
         ctx = fire_action_and_chain_context(
             self._hass,
-            self._context_user_id,
             phase=target.source,
             reason=target.reason,
         )

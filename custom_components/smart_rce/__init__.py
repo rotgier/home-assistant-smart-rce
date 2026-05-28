@@ -30,7 +30,10 @@ from .pv_forecast_factory import create_pv_forecast_service
 
 _LOGGER = logging.getLogger(__name__)
 
-SYSTEM_USER_NAME = "Smart RCE"
+# Key used by an earlier code revision that created an HA system user
+# for Context attribution. Logbook actually reads names from describers,
+# not the auth store — so the user record is orphan now. Kept here as
+# a constant for the one-shot cleanup in `_cleanup_orphan_system_user`.
 CONF_USER_ID = "smart_rce_user_id"
 
 PLATFORMS = [
@@ -69,11 +72,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     """Set up Smart RCE as config entry."""
     _LOGGER.debug("async_setup_entry")
 
-    context_user_id = await _ensure_system_user(hass, entry)
+    await _cleanup_orphan_system_user(hass, entry)
 
     websession = async_get_clientsession(hass)
     rceApi = RceApi(websession)
-    ems: Ems = await create_ems(hass, entry, context_user_id=context_user_id)
+    ems: Ems = await create_ems(hass, entry)
     rce_coordinator = SmartRceDataUpdateCoordinator(hass, rceApi, ems, entry)
     weather_listener = WeatherForecastListener(hass, entry)
 
@@ -117,23 +120,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     return True
 
 
-async def _ensure_system_user(hass: HomeAssistant, entry: ConfigEntry) -> str:
-    """Get or create system user for HA Context attribution.
+async def _cleanup_orphan_system_user(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove the "Smart RCE" system user created by an earlier code version.
 
-    Stored in `entry.data[CONF_USER_ID]` so reload reuses the same user
-    (logbook attribution stays stable). Falls back to fresh create if the
-    stored user_id no longer exists (e.g. user got deleted manually).
+    Earlier commits created an auth user to pass `Context(user_id=...)` to
+    scene.apply, assuming HA logbook needed the user record to render
+    attribution. It does not — `logbook.processor.ContextAugmenter` reads
+    `LOGBOOK_ENTRY_NAME` directly from our describer for `smart_rce_action`
+    events. The system user was dead weight; remove it on first reload.
+
+    Idempotent: drops the user_id from entry.data and deletes the orphan
+    user record from .storage/auth. No-op if both were already cleaned.
     """
     stored_id = entry.data.get(CONF_USER_ID)
-    if stored_id:
-        user = await hass.auth.async_get_user(stored_id)
-        if user is not None:
-            return stored_id
-    user = await hass.auth.async_create_system_user(SYSTEM_USER_NAME)
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, CONF_USER_ID: user.id}
-    )
-    return user.id
+    if not stored_id:
+        return
+    user = await hass.auth.async_get_user(stored_id)
+    if user is not None:
+        await hass.auth.async_remove_user(user)
+        _LOGGER.info("Removed orphan system user 'Smart RCE' (id=%s)", stored_id)
+    new_data = {k: v for k, v in entry.data.items() if k != CONF_USER_ID}
+    hass.config_entries.async_update_entry(entry, data=new_data)
 
 
 def _register_services(
