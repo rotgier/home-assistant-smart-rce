@@ -273,15 +273,12 @@ class DodPolicy:
 
         hour = state.now.hour
 
-        # TEMPORARY EXPERIMENT 2026-05-28 ~22:05 — extend evening window
-        # 19:00..23:00 (was 22:00) to force a phase change EVENING_DISCHARGE
-        # → NIGHT_PRESERVE post-deploy. Verifies that the logbook attribution
-        # fix (commit 914c7bd) actually renders "Smart RCE phase=X" on the
-        # resulting DoD apply. REVERT to `22` after observing.
-        if hour >= 23 or hour < 7:
+        # Night phases 22:00..07:00 (next day)
+        if hour >= 22 or hour < 7:
             return self._night_phase(state)
 
-        if 19 <= hour < 23:
+        # Evening 19:00..22:00 — workday vs weekend distinction
+        if 19 <= hour < 22:
             return self._evening_phase(state, should_hold_for_peak)
 
         # Afternoon 13:00..19:00 — peak preserve OR dynamic hysteresis
