@@ -178,7 +178,7 @@ class DodPolicy:
         *,
         ems_interventions_blocked: bool = False,
         start_charge_hour_override: time | None = None,
-        rce_should_hold_for_peak: bool | None = None,
+        should_hold_for_peak: bool | None = None,
     ) -> None:
         """Compute target_dod for this tick.
 
@@ -186,7 +186,7 @@ class DodPolicy:
         is_workday_tomorrow) plus kwargs from Ems:
         - `ems_interventions_blocked` from BatteryScheduleService
         - `start_charge_hour_override` from BatteryChargeService (Etap B'-2)
-        - `rce_should_hold_for_peak` computed by Ems from smart_rce-owned
+        - `should_hold_for_peak` computed by Ems from smart_rce-owned
           `discharge_slots.max_upcoming_peak` vs user threshold
           (`state.rce_high_price_threshold_gross`) — was previously read back
           from `binary_sensor.rce_should_hold_for_peak` HA template via
@@ -203,7 +203,7 @@ class DodPolicy:
             state,
             ems_interventions_blocked,
             start_charge_hour_override,
-            rce_should_hold_for_peak,
+            should_hold_for_peak,
         )
 
         if new_phase == Phase.UNKNOWN:
@@ -256,7 +256,7 @@ class DodPolicy:
         state: InputState,
         ems_interventions_blocked: bool = False,
         start_charge_hour_override: time | None = None,
-        rce_should_hold_for_peak: bool | None = None,
+        should_hold_for_peak: bool | None = None,
     ) -> Phase:
         """Dispatch to phase by priority — first match wins.
 
@@ -279,11 +279,11 @@ class DodPolicy:
 
         # Evening 19:00..22:00 — workday vs weekend distinction
         if 19 <= hour < 22:
-            return self._evening_phase(state, rce_should_hold_for_peak)
+            return self._evening_phase(state, should_hold_for_peak)
 
         # Afternoon 13:00..19:00 — peak preserve OR dynamic hysteresis
         if 13 <= hour < 19:
-            if rce_should_hold_for_peak is None:
+            if should_hold_for_peak is None:
                 # Either max_upcoming_peak hasn't been computed yet
                 # (discharge_slots.update not yet called after reload) or the
                 # user threshold sensor (state.rce_high_price_threshold_gross)
@@ -293,7 +293,7 @@ class DodPolicy:
                 # potentially partial exported_wh / pv_5min and may flip
                 # target_dod 0↔90).
                 return Phase.UNKNOWN
-            if rce_should_hold_for_peak is True:
+            if should_hold_for_peak is True:
                 return Phase.AFTERNOON_STATIC
             return Phase.AFTERNOON_DYNAMIC
 
@@ -311,9 +311,7 @@ class DodPolicy:
         return Phase.WORKDAY_POST_CHARGE
 
     @staticmethod
-    def _evening_phase(
-        state: InputState, rce_should_hold_for_peak: bool | None
-    ) -> Phase:
+    def _evening_phase(state: InputState, should_hold_for_peak: bool | None) -> Phase:
         """19:00..22:00 — workday discharge OR weekend preserve/free.
 
         - Workday today → DISCHARGE (DoD=90): cover expensive evening peak load.
@@ -330,7 +328,7 @@ class DodPolicy:
         if state.is_workday is True:
             return Phase.EVENING_DISCHARGE
         # Weekend today
-        if rce_should_hold_for_peak is True:
+        if should_hold_for_peak is True:
             return Phase.EVENING_PRESERVE
         if state.is_workday_tomorrow is True:
             return Phase.EVENING_PRESERVE

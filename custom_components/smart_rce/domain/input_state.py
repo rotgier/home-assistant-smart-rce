@@ -54,7 +54,7 @@ class InputState:
     # baterią a grzałkami w trybie BALANCED. Opcje: NORMAL (domyślny algorytm),
     # BATTERY_FIRST (reserved=4500 gdy battery_charge_limit>7).
 
-    # `rce_should_hold_for_peak` REMOVED — was previously read from HA
+    # `should_hold_for_peak` REMOVED — was previously read from HA
     # template `binary_sensor.rce_should_hold_for_peak`, but smart_rce
     # already owns `discharge_slots.max_upcoming_peak` so it's a 6-hop
     # round-trip through HA for a value computable locally. Now Ems
