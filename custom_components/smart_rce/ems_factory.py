@@ -24,6 +24,7 @@ from datetime import datetime
 import logging
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util.dt import now as now_local
@@ -143,5 +144,17 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
 
     # Driving adapter: HA state_changed event listener.
     listen_for_state_changes(hass, entry, ems)
+
+    # Pre-shutdown cleanup — drop GridExport intervention so the inverter
+    # ends in a deterministic state (auto). Delegated to Ems application
+    # service (which knows which domain managers need to be reset before
+    # HA dies). EVENT_HOMEASSISTANT_STOP fires ~30s before shutdown so
+    # there's headroom for the awaited scene.apply.
+    async def _on_hass_stop(event):
+        await ems.async_on_hass_stop()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_hass_stop)
+    )
 
     return ems

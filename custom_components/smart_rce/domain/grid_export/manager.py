@@ -119,6 +119,19 @@ class GridExportManager:
         """
         return self.intervention_direction
 
+    def reset_intervention(self, reason: str) -> None:
+        """Drop active intervention — exposed for pre-shutdown / external pause.
+
+        Equivalent to internal `_set_neutral`, but as a public domain method.
+        After call, `intervention_active=False`, `recommended_ems_mode=auto`,
+        and `last_decision_reason=reason`. Next `update()` re-evaluates from
+        scratch. Used by `Ems.async_on_hass_stop` to leave the inverter in
+        a deterministic state before HA shutdown (avoids stale `_active` if
+        smart_rce process dies mid-intervention, since manager state is not
+        persisted).
+        """
+        self._set_neutral(reason)
+
     def update(
         self,
         state: InputState,

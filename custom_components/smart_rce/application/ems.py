@@ -47,6 +47,7 @@ from custom_components.smart_rce.domain.charge_slots import (
 )
 from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
 from custom_components.smart_rce.domain.dod_policy import DodPolicy
+from custom_components.smart_rce.domain.ems_operation import EmsOperation
 from custom_components.smart_rce.domain.ems_rce_prices import EmsRcePrices
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
@@ -194,6 +195,36 @@ class Ems:
         # owned by BatteryChargeService and dispatched inside its update()
         # above — no Ems-level reference (encapsulation per bounded context).
         self._async_update_listeners()
+
+    async def async_on_hass_stop(self) -> None:
+        """Pre-shutdown cleanup — drop GridExport intervention.
+
+        GridExportManager._active is NOT persisted (per-hour decision; utility
+        meter resets hourly anyway). If HA dies mid-intervention, the next
+        start would have to re-establish from scratch — meanwhile the inverter
+        sits in whatever mode/xset was last applied. We bail out cleanly here:
+        reset_intervention() + apply neutral via GoodweEmsActuator so the
+        inverter goes back to auto. Next start recomputes from fresh state.
+
+        BatterySchedule + DodPolicy + BatteryCharge persist their state via
+        Store and resume cleanly on reload — we don't touch them here. Future
+        BatterySchedule slots (Etap 2A/2D long-running discharge / charge
+        windows) MUST stay engaged across HA restart, so reset is GridExport-
+        specific.
+
+        Called from EVENT_HOMEASSISTANT_STOP listener (registered in
+        ems_factory). Awaits scene.apply directly (not via run_background
+        which auto-cancels on unload).
+        """
+        if self.grid_export.intervention_active:
+            _LOGGER.info("Ems.async_on_hass_stop — dropping GridExport intervention")
+            self.grid_export.reset_intervention("ha_stop")
+        # Always push neutral — even when no active intervention, this is a
+        # safe idempotent reset (state-diff in GoodweEmsActuator skips if
+        # inverter already at auto).
+        await self._goodwe_ems_actuator.apply_now(
+            EmsOperation.neutral(reason="ha_stop")
+        )
 
     def update_rce(self, now: datetime, data: RcePrices) -> None:
         if not data:

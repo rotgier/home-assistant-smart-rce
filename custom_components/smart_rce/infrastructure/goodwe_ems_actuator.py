@@ -79,6 +79,16 @@ class GoodweEmsActuator:
             self._dispatch(target), name="smart_rce_goodwe_ems_apply"
         )
 
+    async def apply_now(self, target: EmsOperation) -> None:
+        """Await dispatch synchronously — for shutdown / startup flows.
+
+        Bypasses the background task runner (which auto-cancels on unload)
+        and awaits scene.apply directly. Use from EVENT_HOMEASSISTANT_STOP
+        listener so the final inverter state is committed before HA dies;
+        run_background's task would be cancelled mid-write.
+        """
+        await self._dispatch(target)
+
     async def _dispatch(self, target: EmsOperation) -> None:
         async with self._lock:
             current_mode, current_xset = self._read_inverter_state()
