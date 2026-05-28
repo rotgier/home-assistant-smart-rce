@@ -76,7 +76,19 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         self._clock = clock
         # Track last BatteryOperation to skip no-op applies (Etap 2D applier will
         # use this to avoid spurious Goodwe writes when the op didn't change).
-        self._last_op: BatteryOperation = BatteryOperation.idle()
+        #
+        # Reconstruct from persisted schedule state so the first post-reload
+        # tick (which may have battery_soc=None during HA state cache warm-up)
+        # returns the slot that was engaged pre-reload rather than `idle()`.
+        # Without this, a long-running CHARGE/DISCHARGE slot would briefly
+        # report `idle` to downstream consumers (e.g. BatteryChargeService
+        # would flip `needs_charge_toggle` False → write Modbus → flicker).
+        engaging = self._repo.schedule.currently_engaging
+        if engaging is not None:
+            entry = self._repo.schedule.today_entry_for(engaging)
+            self._last_op: BatteryOperation = BatteryOperation.from_entry(entry)
+        else:
+            self._last_op = BatteryOperation.idle()
 
     @callback
     def update(self, input: BatteryScheduleInput) -> BatteryScheduleUpdateResult:
@@ -130,6 +142,16 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         )
 
     # ─── Properties exposed to Ems + entities (avoid Ems leaking repo) ───
+
+    @property
+    def last_op(self) -> BatteryOperation:
+        """Last computed BatteryOperation — exposed for cross-service seeding.
+
+        Used by ems_factory to seed BatteryChargeService._last_schedule_op
+        on startup so sensor reads immediately after reload reflect the
+        persisted engagement instead of `idle()`.
+        """
+        return self._last_op
 
     @property
     def schedule_active_this_hour(self) -> bool:

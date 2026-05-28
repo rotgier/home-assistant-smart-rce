@@ -66,11 +66,17 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         repo: BatteryChargeRepository,
         clock: Callable[[], datetime],
         actuator: BatteryChargeCurrentActuator,
+        initial_schedule_op: BatteryOperation = BatteryOperation.idle(),
     ) -> None:
         super().__init__(repo)
         self._clock = clock
         self._actuator = actuator
-        self._last_schedule_op: BatteryOperation = BatteryOperation.idle()
+        # `_last_schedule_op` is cached for sensor property reads (charge_allowed
+        # below). Factory passes `initial_schedule_op` from BatteryScheduleService
+        # so the first post-reload sensor read reflects the persisted engagement
+        # (not `idle()` default) — matches the reconstruct-from-storage pattern
+        # in BatteryScheduleService.__init__.
+        self._last_schedule_op: BatteryOperation = initial_schedule_op
 
     @callback
     def update(self, schedule_op: BatteryOperation) -> BatteryChargeUpdateResult:

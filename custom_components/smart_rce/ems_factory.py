@@ -81,6 +81,13 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         repo=battery_charge_repo,
         clock=now_local,
         actuator=battery_charge_actuator,
+        # Seed _last_schedule_op from BatteryScheduleService (which itself
+        # reconstructed from persisted `_currently_engaging`) so sensor reads
+        # immediately after reload reflect persisted slot engagement, not
+        # `idle()`. Without this seed BatteryChargeCurrentActuator could write
+        # Modbus charge_current=0 on the first tick even if a CHARGE_MORNING
+        # slot was engaged pre-reload.
+        initial_schedule_op=battery_schedule_service.last_op,
     )
 
     # Domain managers — owned by factory (used to be Ems-internal but moved
