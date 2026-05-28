@@ -118,12 +118,12 @@ class GoodweEmsActuator:
                     target.power_limit_w,
                 )
                 await self._guard.record_failure(
-                    title="Smart RCE: błąd zapisu EMS",
+                    title="Smart RCE: EMS write failed",
                     message=(
-                        f"Nie udało się ustawić trybu EMS na falowniku. "
-                        f"Cel: mode={target.ems_mode}, xset={target.power_limit_w}. "
-                        f"Aktualnie: mode={current_mode}, xset={current_xset}. "
-                        f"Źródło: {target.source}."
+                        f"Could not set EMS mode on inverter. "
+                        f"Target: mode={target.ems_mode}, xset={target.power_limit_w}. "
+                        f"Current: mode={current_mode}, xset={current_xset}. "
+                        f"Source: {target.source}."
                     ),
                 )
                 return
@@ -225,12 +225,12 @@ class GoodweEmsActuator:
             post_xset,
         )
         await self._guard.record_failure(
-            title="Smart RCE: cichy błąd zapisu EMS",
+            title="Smart RCE: EMS silent write failure",
             message=(
-                f"Tryb EMS nie propagował się na falownik. "
-                f"Cel: mode={target.ems_mode}, xset={target.power_limit_w}. "
-                f"Po zapisie: mode={post_mode}, xset={post_xset}. "
-                f"Źródło: {target.source}."
+                f"EMS mode did not propagate to inverter. "
+                f"Target: mode={target.ems_mode}, xset={target.power_limit_w}. "
+                f"Post-write: mode={post_mode}, xset={post_xset}. "
+                f"Source: {target.source}."
             ),
         )
         return False

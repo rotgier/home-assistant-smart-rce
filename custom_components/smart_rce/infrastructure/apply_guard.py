@@ -26,7 +26,7 @@ from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
-NOTIFY_ALERT_SCRIPT = "script.notify_alert"
+NOTIFY_ALERT_SCRIPT = "script.notify_alert_en"
 DEFAULT_MAX_FAILED_PER_HOUR = 10
 
 
@@ -76,10 +76,10 @@ class ApplyGuard:
         await self._notify(title, message)
         if self._failed_count == self._max:
             await self._notify(
-                title=f"Smart RCE: limit prób ({self._name})",
+                title=f"Smart RCE: retry limit reached ({self._name})",
                 message=(
-                    f"Osiągnięto {self._max} nieudanych prób zapisu w godzinie "
-                    f"{self._failed_hour}. Wstrzymuję ponowne próby do kolejnej godziny."
+                    f"Reached {self._max} failed write attempts in hour "
+                    f"{self._failed_hour}. Muting retries until next hour."
                 ),
             )
 

@@ -2,9 +2,10 @@
 
 Subscribes to `BatteryScheduleEvent` emissions from
 `BatterySchedule.compute_operation` (wired via `BatteryScheduleService.update`).
-Fires `script.notify_alert` (with voice call) for `EMERGENCY` slots
-(evening discharge — user is awake) and `script.notify_text` (text only)
-for `NORMAL` slots (morning slots — would wake user up).
+Fires `script.notify_alert_en` (with voice call, English TTS) for
+`EMERGENCY` slots (evening discharge — user is awake) and
+`script.notify_text` (text only) for `NORMAL` slots (morning slots
+must not wake the user).
 
 `DayRolled` events are NOT notified (internal-only midnight roll —
 emitting telegram for every day boundary would be spam).
@@ -15,8 +16,10 @@ this adapter decides HOW (telegram channels). Dispatch is fire-and-forget
 via `AsyncTaskRunner.run_background` — notify failures must not block
 the per-tick update flow.
 
-Polish messages match `automations.yaml` convention (emoji + title +
-descriptive message with key data).
+Messages are in English (emoji + title + descriptive message with key
+data) — paired with `script.notify_alert_en` voice call (en-US TTS).
+Other automations in the HA config remain Polish (paired with the
+original `script.notify_alert`).
 """
 
 from __future__ import annotations
@@ -25,26 +28,20 @@ import logging
 
 from homeassistant.core import HomeAssistant, callback
 
-from ..domain.battery_schedule import (
-    BatteryScheduleEvent,
-    DayRolled,
-    NotificationLevel,
-    SlotDisengaged,
-    SlotEngaged,
-)
+from ..domain.battery_schedule import BatteryScheduleEvent, NotificationLevel
 from .async_task_runner import AsyncTaskRunner
 
 _LOGGER = logging.getLogger(__name__)
 
-NOTIFY_ALERT_SCRIPT = "script.notify_alert"
+NOTIFY_ALERT_SCRIPT = "script.notify_alert_en"
 NOTIFY_TEXT_SCRIPT = "script.notify_text"
 
-# Polish translations for disengage reasons (DisengageReason Literal in
-# battery_schedule.py — keep keys in sync if new reasons are added).
-_DISENGAGE_REASON_PL: dict[str, str] = {
-    "target_reached": "cel SoC osiągnięty",
-    "window_ended": "okno czasowe zakończone",
-    "disabled": "slot wyłączony",
+# English labels for DisengageReason Literal — keep keys in sync with
+# battery_schedule.py if new reasons are added.
+_DISENGAGE_REASON_LABEL: dict[str, str] = {
+    "target_reached": "target SoC reached",
+    "window_ended": "time window ended",
+    "disabled": "slot disabled",
 }
 
 
@@ -95,29 +92,37 @@ class BatteryScheduleNotifier:
     def _render(
         event: BatteryScheduleEvent,
     ) -> tuple[str, str, NotificationLevel] | None:
-        """Render event → (title, message, level) or None to skip notify."""
-        if isinstance(event, SlotEngaged):
+        """Render event → (title, message, level) or None to skip notify.
+
+        Uses `type(event).__name__` string compare instead of `isinstance` —
+        same pattern as `Direction.is_discharge` (CLAUDE.md cross-cutting
+        rule). `isinstance` works against class identity, which `live_reload()`
+        breaks: the old persisted class object becomes != to the re-imported
+        new one, and an instance built BEFORE reload fails `isinstance(NEW)`
+        even though structurally identical. Today both event and notifier are
+        created in the same tick (transient, post-reload imports), so
+        `isinstance` would technically work — string compare is defensive.
+        """
+        event_type = type(event).__name__
+        if event_type == "SlotEngaged":
             level = event.slot.value.notification_level
             return (
                 f"🔋 BatterySchedule: {event.slot.name} start",
-                f"Slot {event.slot.name} rozpoczęty, SoC={event.soc:.1f}%.",
+                f"Slot {event.slot.name} started at SoC={event.soc:.1f}%.",
                 level,
             )
-        if isinstance(event, SlotDisengaged):
+        if event_type == "SlotDisengaged":
             level = event.slot.value.notification_level
-            reason_pl = _DISENGAGE_REASON_PL.get(event.reason, event.reason)
+            reason_label = _DISENGAGE_REASON_LABEL.get(event.reason, event.reason)
             return (
-                f"🏁 BatterySchedule: {event.slot.name} koniec",
+                f"🏁 BatterySchedule: {event.slot.name} end",
                 (
-                    f"Slot {event.slot.name} zakończony, "
-                    f"SoC={event.soc:.1f}%, powód: {reason_pl}."
+                    f"Slot {event.slot.name} ended at SoC={event.soc:.1f}%, "
+                    f"reason: {reason_label}."
                 ),
                 level,
             )
-        if isinstance(event, DayRolled):
+        if event_type == "DayRolled":
             return None  # midnight roll — internal only, no telegram
-        _LOGGER.warning(
-            "BatteryScheduleNotifier: unhandled event type %s",
-            type(event).__name__,
-        )
+        _LOGGER.warning("BatteryScheduleNotifier: unhandled event type %s", event_type)
         return None

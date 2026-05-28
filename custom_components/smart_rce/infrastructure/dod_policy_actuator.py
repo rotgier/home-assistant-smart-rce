@@ -96,11 +96,11 @@ class DodPolicyActuator:
                     target,
                 )
                 await self._guard.record_failure(
-                    title="Smart RCE: błąd zapisu DoD",
+                    title="Smart RCE: DoD write failed",
                     message=(
-                        f"Nie udało się ustawić DoD na falowniku. "
-                        f"Cel {target}, aktualnie {current}. "
-                        f"Wyjątek przy zapisie."
+                        f"Could not set DoD on inverter. "
+                        f"Target {target}, current {current}. "
+                        f"Write raised an exception."
                     ),
                 )
                 return
@@ -177,10 +177,10 @@ class DodPolicyActuator:
             post_write,
         )
         await self._guard.record_failure(
-            title="Smart RCE: cichy błąd zapisu DoD",
+            title="Smart RCE: DoD silent write failure",
             message=(
-                f"DoD nie propagował się na falownik. "
-                f"Cel {target}, po zapisie {post_write}."
+                f"DoD did not propagate to inverter. "
+                f"Target {target}, post-write {post_write}."
             ),
         )
         return False
