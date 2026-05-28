@@ -70,9 +70,11 @@ class TestBlockPreCharge:
             (-0.001, 800.0, True, False),  # surplus, but forced reset wins
             (-0.010, None, True, False),
             # Default reset: exported < 50 AND no instant_surplus
-            (0.030, None, True, False),
+            # pv_5min=None in [0, 100) dead zone → keep prev_block (defensive)
+            # — without surplus signal we cannot reset arbitrarily. See
+            # test_dead_zone_pv_none_keeps_state below for the boundary cases.
             (0.030, 200.0, True, False),  # pv in dead zone, not surplus
-            (0.000, None, True, False),
+            (0.030, 0.0, True, False),  # pv = 0, no surplus → reset
             # Extended keep-state: exported < 50 AND instant_surplus → keep
             (0.030, 700.0, True, True),
             (0.005, 800.0, True, True),  # hour-boundary scenario
@@ -82,7 +84,8 @@ class TestBlockPreCharge:
             (0.060, None, False, False),
             (0.080, 200.0, True, True),
             (0.080, 200.0, False, False),
-            # Reset boundary 50: exactly 50 → not <50 → keep state
+            # Reset boundary 50: exactly 50 → not <50 → keep state.
+            # pv_5min=None at >=50 also keeps state (above dead-zone guard).
             (0.050, None, True, True),
             (0.050, None, False, False),
             # SET boundary 100: 99 Wh dead zone (not >=100), 100 SETs
@@ -117,6 +120,25 @@ class TestBlockPreCharge:
                 prev_block=False,
             )
             is False
+        )
+
+    @pytest.mark.parametrize("prev_block", [True, False])
+    @pytest.mark.parametrize("exported_kwh", [0.0, 0.020, 0.049])
+    def test_dead_zone_pv_none_keeps_state(self, exported_kwh: float, prev_block: bool):
+        """Defensive: dead zone [0, 50) with pv_5min=None → keep prev_block.
+
+        Without the surplus signal we cannot tell "no surplus, reset" from
+        "surplus pending, keep" → conservative keep-state instead of
+        arbitrary reset. Without this guard the first tick after smart_rce
+        reload would flip target_dod 0↔90 when HA state cache transient
+        kept avg_5min unavailable.
+        """
+        assert (
+            block_pre_charge(
+                _state(exported_energy_hourly=exported_kwh, pv_available_5min=None),
+                prev_block=prev_block,
+            )
+            is prev_block
         )
 
 

@@ -96,6 +96,19 @@ class TestPhaseDispatch:
         s = _state(now=_at(14), rce_should_hold_for_peak=False)
         assert p._compute_phase(s) == Phase.AFTERNOON_DYNAMIC
 
+    def test_afternoon_rce_should_hold_none_is_unknown(self):
+        """Afternoon hour + rce_should_hold_for_peak=None → UNKNOWN.
+
+        Template sensor unavailable post-reload would otherwise fall through
+        to AFTERNOON_DYNAMIC and run block_afternoon_dynamic on partial
+        exported_wh / pv_5min → flip target_dod 0↔90 against persisted state.
+        UNKNOWN makes update() keep the persisted phase + target_dod until
+        the template sensor publishes a value.
+        """
+        p = DodPolicy()
+        s = _state(now=_at(14), rce_should_hold_for_peak=None)
+        assert p._compute_phase(s) == Phase.UNKNOWN
+
     def test_afternoon_static_applies_on_weekend_too(self):
         p = DodPolicy()
         s = _state(now=_weekend_at(15), is_workday=False, rce_should_hold_for_peak=True)

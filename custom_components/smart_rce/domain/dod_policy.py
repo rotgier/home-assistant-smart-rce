@@ -274,6 +274,14 @@ class DodPolicy:
 
         # Afternoon 13:00..19:00 — peak preserve OR dynamic hysteresis
         if 13 <= hour < 19:
+            if state.rce_should_hold_for_peak is None:
+                # Template sensor unavailable (typical for first tick after
+                # smart_rce config_entry reload — HA state cache transient).
+                # Fall through to UNKNOWN so update() keeps persisted phase
+                # + target_dod instead of arbitrarily picking DYNAMIC (which
+                # then runs block_afternoon_dynamic on potentially partial
+                # exported_wh / pv_5min and may flip target_dod 0↔90).
+                return Phase.UNKNOWN
             if state.rce_should_hold_for_peak is True:
                 return Phase.AFTERNOON_STATIC
             return Phase.AFTERNOON_DYNAMIC

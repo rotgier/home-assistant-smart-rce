@@ -56,19 +56,29 @@ def block_pre_charge(state: InputState, prev_block: bool) -> bool:
     hour but PV surplus is continuous).
 
     Defensive: exported_energy_hourly=None → return prev_block (sensor missing).
+    Defensive: in dead zone [0, 100) with pv_available_5min=None → return
+    prev_block. Without the surplus signal we cannot distinguish "no surplus,
+    reset" from "surplus pending, keep" → conservative keep-state instead of
+    arbitrary reset (which would otherwise flip target_dod 0→90 on first tick
+    after smart_rce reload when HA state cache had not yet refreshed the
+    avg_5min template).
     """
     if state.exported_energy_hourly is None:
         return prev_block
 
     exported_wh = state.exported_energy_hourly * 1000  # kWh → Wh
-    pv_5min = state.pv_available_5min
-    instant_surplus = pv_5min is not None and pv_5min > PV_AVAIL_5MIN_SURPLUS_W
 
     if exported_wh >= DISCHARGE_HYSTERESIS_SET_WH:
         return True
     if exported_wh < 0:
         # Forced reset — hourly net import (NEGATIVE may take over)
         return False
+
+    # Dead zone [0, 100) — instant_surplus is the deciding signal.
+    if state.pv_available_5min is None:
+        return prev_block
+
+    instant_surplus = state.pv_available_5min > PV_AVAIL_5MIN_SURPLUS_W
     if exported_wh < DISCHARGE_HYSTERESIS_RESET_WH and not instant_surplus:
         # Default below-threshold reset (no PV surplus to extend keep zone)
         return False
