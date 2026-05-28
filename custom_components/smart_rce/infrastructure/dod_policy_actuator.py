@@ -1,8 +1,13 @@
-"""DodPolicyActuator — driven adapter for inverter DoD via scene.apply.
+"""DodPolicyActuator — driven adapter for inverter DoD via number.set_value.
 
 Apply `dod_policy.target_dod` to `number.goodwe_depth_of_discharge_on_grid`
-as fire-and-forget background task. Mirrors `goodwe_ems_actuator.py` pattern
-(ADR-019) with three enhancements:
+as fire-and-forget background task. Uses `number.set_value` directly (one
+entity = no scene.apply orchestration overhead — scene.apply unwraps to
+async_reproduce_state which dispatches to the same number platform anyway).
+GoodweEmsActuator still uses scene.apply because it sets 2 entities
+atomically (select.goodwe_ems_mode + number.goodwe_ems_power_limit).
+
+Three enhancements over the basic write:
 
 1. **Read-back verification**: after each scene.apply, immediately re-read
    inverter state. scene.apply blocking=True awaits Modbus write + state
@@ -14,15 +19,16 @@ as fire-and-forget background task. Mirrors `goodwe_ems_actuator.py` pattern
    only if diverged. Self-healing across restarts and external drift (e.g.
    user manually changes DoD via UI, our next tick converges back to target).
 
-3. **Logbook attribution via Context**: scene.apply is called with a
-   `Context(user_id=...)` tied to the "Smart RCE" system user. HA logbook
-   resolves it to "Changed by Smart RCE" automatically — no custom logbook
-   entries needed (avoids the duplicate-entries problem of `async_log_entry`).
+3. **Logbook attribution via Context**: `number.set_value` is called with a
+   child Context whose parent fires `smart_rce_action` (phase + reason). HA
+   logbook walks the parent_id chain to render the resulting state_changed
+   as "triggered by Smart RCE phase=X" — analog to HA's native automation
+   describer (avoids the duplicate-entries problem of `async_log_entry`).
 
 Anti-spam + telegram alerts are delegated to `ApplyGuard`.
 
 Hexagonal pattern: **driven adapter (outbound)** — domain (DodPolicy)
-dictates target value, concrete impl applies via HA `scene.apply` service.
+dictates target value, concrete impl applies via HA `number.set_value`.
 """
 
 import asyncio
@@ -84,16 +90,18 @@ class DodPolicyActuator:
                 return
 
             try:
-                await self._apply_scene(target, previous=current)
+                await self._apply(target, previous=current)
             except Exception:
                 _LOGGER.exception(
-                    "DodPolicyActuator: scene.apply raised for target=%d", target
+                    "DodPolicyActuator: number.set_value raised for target=%d",
+                    target,
                 )
                 await self._guard.record_failure(
-                    title="DodPolicy: DoD apply failure",
+                    title="Smart RCE: błąd zapisu DoD",
                     message=(
-                        f"Target {target} not propagated to inverter. "
-                        f"Current state: {current}. Reason: apply_exception."
+                        f"Nie udało się ustawić DoD na falowniku. "
+                        f"Cel {target}, aktualnie {current}. "
+                        f"Wyjątek przy zapisie."
                     ),
                 )
                 return
@@ -116,10 +124,10 @@ class DodPolicyActuator:
                     post_write,
                 )
                 await self._guard.record_failure(
-                    title="DodPolicy: DoD apply failure",
+                    title="Smart RCE: cichy błąd zapisu DoD",
                     message=(
-                        f"Target {target} not propagated to inverter. "
-                        f"Current state: {post_write}. Reason: silent_fail."
+                        f"DoD nie propagował się na falownik. "
+                        f"Cel {target}, po zapisie {post_write}."
                     ),
                 )
                 return
@@ -142,11 +150,11 @@ class DodPolicyActuator:
         except (ValueError, TypeError):
             return None
 
-    async def _apply_scene(self, target: int, *, previous: int) -> None:
-        """Apply target DoD via scene.apply (blocking=True awaits Modbus write).
+    async def _apply(self, target: int, *, previous: int) -> None:
+        """Apply target DoD via number.set_value (blocking=True awaits Modbus).
 
         Fires smart_rce_action event with phase/reason metadata first, then
-        passes a child Context to scene.apply. HA logbook renders the
+        passes a child Context to number.set_value. HA logbook renders the
         resulting state_changed entry as "DoD changed to N triggered by
         Smart RCE phase=X (reason=...)" via parent_id chain.
         """
@@ -157,9 +165,9 @@ class DodPolicyActuator:
             reason=f"target_dod {previous} → {target}",
         )
         await self._hass.services.async_call(
-            "scene",
-            "apply",
-            {"entities": {GOODWE_DOD_NUMBER: str(target)}},
+            "number",
+            "set_value",
+            {"entity_id": GOODWE_DOD_NUMBER, "value": float(target)},
             blocking=True,
             context=ctx,
         )

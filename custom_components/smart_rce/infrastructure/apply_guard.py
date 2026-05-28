@@ -76,10 +76,10 @@ class ApplyGuard:
         await self._notify(title, message)
         if self._failed_count == self._max:
             await self._notify(
-                title=f"{self._name}: retry limit reached",
+                title=f"Smart RCE: limit prób ({self._name})",
                 message=(
-                    f"Reached {self._max} failed apply attempts in hour "
-                    f"{self._failed_hour}. Muting retries until next hour boundary."
+                    f"Osiągnięto {self._max} nieudanych prób zapisu w godzinie "
+                    f"{self._failed_hour}. Wstrzymuję ponowne próby do kolejnej godziny."
                 ),
             )
 

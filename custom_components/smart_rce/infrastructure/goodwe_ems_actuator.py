@@ -141,11 +141,12 @@ class GoodweEmsActuator:
                 target.power_limit_w,
             )
             await self._guard.record_failure(
-                title="GoodweEms: apply failure",
+                title="Smart RCE: błąd zapisu EMS",
                 message=(
-                    f"Target mode={target.ems_mode} xset={target.power_limit_w} "
-                    f"failed. Current state: mode={current_mode} xset={current_xset}. "
-                    f"Source: {target.source}."
+                    f"Nie udało się ustawić trybu EMS na falowniku. "
+                    f"Cel: mode={target.ems_mode}, xset={target.power_limit_w}. "
+                    f"Aktualnie: mode={current_mode}, xset={current_xset}. "
+                    f"Źródło: {target.source}."
                 ),
             )
             return
