@@ -85,6 +85,18 @@ class GoodweEmsActuator:
     async def _dispatch(self, target: EmsOperation) -> None:
         async with self._lock:
             current_mode, current_xset = self._read_inverter_state()
+            if current_mode is None:
+                # Goodwe integration not yet loaded (typical at HA startup —
+                # smart_rce loads before goodwe) or entity transiently
+                # unavailable. Skip without alert; next ems tick will retry
+                # once the goodwe entity is ready. Without this guard the
+                # apply would proceed (matches_inverter(None,_) → False),
+                # scene.apply would raise on the missing entity, and
+                # ApplyGuard would spam telegram on every HA startup.
+                _LOGGER.debug(
+                    "GoodweEmsActuator: skipping — inverter entity unavailable"
+                )
+                return
             if target.matches_inverter(current_mode, current_xset):
                 return
             if self._guard.should_skip():
@@ -124,10 +136,10 @@ class GoodweEmsActuator:
     def _read_inverter_state(self) -> tuple[str | None, int | None]:
         """Read observed Goodwe (mode, xset) from hass.states.
 
-        Returns (None, None) when the Goodwe entity is unavailable —
-        treated as "unknown current state", which forces an apply on the
-        first dispatch (defensive: better to push state once than skip
-        forever if entity boot-up race kept the entity unknown).
+        Returns (None, None) when the Goodwe entity is unavailable.
+        `_dispatch` treats None mode as "goodwe not loaded yet" and skips
+        the apply (avoids scene.apply on missing entity → telegram spam
+        at startup).
         """
         mode_state = self._hass.states.get(GOODWE_EMS_MODE_SELECT)
         if mode_state is None or mode_state.state in ("unknown", "unavailable"):

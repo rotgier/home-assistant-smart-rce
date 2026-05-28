@@ -164,13 +164,24 @@ class BatteryChargeCurrentActuator:
         Compares target (derived) vs cached Modbus value. If equal: skip
         (no Modbus traffic). If different: spawn background apply task.
 
+        Skips when cache is None — goodwe integration not yet loaded
+        (typical at HA startup) or recent reads failed. Startup reconcile
+        (EVENT_HOMEASSISTANT_STARTED) + periodic refresh (5 min) populate
+        the cache; without this guard every tick during the boot window
+        would attempt write_setting → exception → log noise.
+
         No-op when `writes_enabled=False` (two-stage deploy safety).
         """
         if not self._writes_enabled:
             return
-        target = self._repo.policy.target_modbus_value(now, schedule_op)
         current = self._repo.policy.modbus_current_value
-        if current is not None and target == current:
+        if current is None:
+            _LOGGER.debug(
+                "BatteryChargeCurrentActuator: skipping — Modbus cache unavailable"
+            )
+            return
+        target = self._repo.policy.target_modbus_value(now, schedule_op)
+        if target == current:
             return
         self._tasks.run_background(
             self._dispatch_apply(target),
