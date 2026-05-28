@@ -153,12 +153,13 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     listen_for_state_changes(hass, entry, ems)
 
     # Pre-shutdown cleanup — drop GridExport intervention so the inverter
-    # ends in a deterministic state (auto). Delegated to Ems application
-    # service (which knows which domain managers need to be reset before
-    # HA dies). EVENT_HOMEASSISTANT_STOP fires ~30s before shutdown so
-    # there's headroom for the awaited scene.apply.
+    # ends in a deterministic state (auto). Delegated to Ems.async_on_stop()
+    # (HASS-unaware application lifecycle hook); the factory is the only
+    # place that knows about EVENT_HOMEASSISTANT_STOP. EVENT_HOMEASSISTANT_STOP
+    # fires ~30s before shutdown so there's headroom for the awaited
+    # scene.apply.
     async def _on_hass_stop(event):
-        await ems.async_on_hass_stop()
+        await ems.async_on_stop()
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_hass_stop)
