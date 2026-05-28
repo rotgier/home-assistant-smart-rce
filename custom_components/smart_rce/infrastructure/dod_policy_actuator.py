@@ -9,10 +9,12 @@ atomically (select.goodwe_ems_mode + number.goodwe_ems_power_limit).
 
 Three enhancements over the basic write:
 
-1. **Read-back verification**: after each scene.apply, immediately re-read
-   inverter state. scene.apply blocking=True awaits Modbus write + state
-   refresh, so post-write state SHOULD reflect new value. If not → silent
-   failure → Telegram alert.
+1. **Read-back verification**: after each number.set_value, immediately
+   re-read inverter state. blocking=True awaits the Goodwe entity's
+   async_set_native_value, which write_settings + sets attr + fires
+   async_write_ha_state — so HA state cache reflects the new value as
+   soon as the await returns. If post-read still diverges → silent
+   failure (Modbus reject, integration bug) → Telegram alert.
 
 2. **No persisted `_last_applied`**: the inverter state itself is the source
    of truth. Each tick reads inverter state, compares with target, writes
