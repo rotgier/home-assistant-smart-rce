@@ -39,6 +39,7 @@ from .domain.water_heater import WaterHeaterManager
 from .infrastructure.async_task_runner import AsyncTaskRunner
 from .infrastructure.battery_charge_current_actuator import BatteryChargeCurrentActuator
 from .infrastructure.battery_charge_repository import BatteryChargeRepository
+from .infrastructure.battery_schedule_notifier import BatteryScheduleNotifier
 from .infrastructure.battery_schedule_repository import BatteryScheduleRepository
 from .infrastructure.dod_policy_actuator import DodPolicyActuator
 from .infrastructure.dod_policy_logger import DodPolicyLogger
@@ -58,14 +59,19 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     # need to fire-and-forget tasks tied to this entry's lifecycle).
     tasks = AsyncTaskRunner(hass, entry)
 
-    # Battery schedule: repo + service must exist BEFORE Ems (constructor deps).
-    # Repo restore from .storage/ — defaults to fresh schedule if no persisted state.
+    # Battery schedule: repo + notifier + service must exist BEFORE Ems
+    # (constructor deps). Repo restore from .storage/ — defaults to fresh
+    # schedule if no persisted state. Notifier is fire-and-forget telegram
+    # adapter dispatched on SlotEngaged/SlotDisengaged events emitted by
+    # compute_operation (Etap F.2).
     battery_schedule_repo = BatteryScheduleRepository(hass, tasks)
     await battery_schedule_repo.async_restore()
+    battery_schedule_notifier = BatteryScheduleNotifier(hass, tasks)
     battery_schedule_service = BatteryScheduleService(
         repo=battery_schedule_repo,
         clock=now_local,
         tasks=tasks,
+        notifier=battery_schedule_notifier,
     )
 
     # Battery charge: repo owns BatteryChargePolicy. Actuator depends on

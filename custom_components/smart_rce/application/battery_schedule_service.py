@@ -55,6 +55,7 @@ class BatteryScheduleUpdateResult:
 
 if TYPE_CHECKING:
     from ..infrastructure.async_task_runner import AsyncTaskRunner
+    from ..infrastructure.battery_schedule_notifier import BatteryScheduleNotifier
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,9 +72,11 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         repo: BatteryScheduleRepository,
         clock: Callable[[], datetime],
         tasks: AsyncTaskRunner,  # noqa: ARG002 — kept for future applier wiring
+        notifier: BatteryScheduleNotifier | None = None,
     ) -> None:
         super().__init__(repo)
         self._clock = clock
+        self._notifier = notifier
         # Track last BatteryOperation to skip no-op applies (Etap 2D applier will
         # use this to avoid spurious Goodwe writes when the op didn't change).
         #
@@ -113,9 +116,15 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         # ─── Persistence — repo save_if_changed checks dict equality internally ───
         self._repo.save_if_changed()
 
-        # ─── Events — log + notify subscribers on engagement state change ───
+        # ─── Events — log + telegram (notifier) + listener fan-out ───
+        # Notifier dispatch is fire-and-forget (background task) — slot
+        # engage/disengage telegrams must not block per-tick update flow.
+        # _notify_all() refreshes UI listeners (sensors observing
+        # `_currently_engaging` state directly).
         for event in events:
             _LOGGER.info("BatteryScheduleEvent: %s", event)
+            if self._notifier is not None:
+                self._notifier.notify(event)
         if events:
             self._notify_all()
 

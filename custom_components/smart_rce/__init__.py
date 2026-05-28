@@ -253,6 +253,13 @@ def live_reload():
             "custom_components.smart_rce.infrastructure.water_heater_reserved_repository"
         )
     )
+    # battery_schedule_notifier BEFORE battery_schedule_service (service
+    # constructor takes notifier as optional kwarg).
+    reload(
+        import_module(
+            "custom_components.smart_rce.infrastructure.battery_schedule_notifier"
+        )
+    )
     # service base BEFORE concrete services (they extend Service[TRepo]).
     reload(import_module("custom_components.smart_rce.application.service"))
     reload(
