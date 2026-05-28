@@ -3,7 +3,8 @@
 Unified representation of "what should the inverter EMS do right now".
 Produced by:
 - `GridExportManager.update` — intervention-driven (POSITIVE/NEGATIVE)
-- (Etap F) `BatterySchedule` slots — schedule-driven (charge/discharge windows)
+- `BatterySchedule` slots — schedule-driven (charge/discharge windows)
+  via `from_battery_operation` factory
 
 Consumed by `GoodweEmsActuator.apply_if_changed(target)` which writes
 `select.goodwe_ems_mode` + `number.goodwe_ems_power_limit` via scene.apply.
@@ -13,14 +14,27 @@ between competing sources is handled in `Ems._resolve_ems_operation`).
 
 `ems_mode`/`power_limit_w` are the Goodwe inverter registers; "auto" is
 the neutral state — Goodwe ignores power_limit_w when mode=auto.
+
+`EmsMode` mirrors the subset of `select.goodwe_ems_mode` values smart_rce
+emits. Per ADR-017 new automations use EMS modes (sell_power/discharge_pv/
+charge_battery) instead of operation_mode (which clears EMS state). Battery
+schedule slots typically use `discharge_pv` (morning/evening) or
+`charge_battery` (charge slots); GridExportManager interventions use
+`charge_battery` (POSITIVE absorb surplus) or `discharge_battery`
+(NEGATIVE cover deficit).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-EmsMode = Literal["auto", "discharge_battery", "charge_battery"]
+if TYPE_CHECKING:
+    from .battery_schedule import BatteryOperation
+
+EmsMode = Literal[
+    "auto", "discharge_battery", "charge_battery", "discharge_pv", "sell_power"
+]
 EmsOperationSource = Literal["neutral", "grid_export", "schedule"]
 
 
@@ -48,6 +62,27 @@ class EmsOperation:
             power_limit_w=power_limit_w,
             source="grid_export",
             reason=reason,
+        )
+
+    @classmethod
+    def from_battery_operation(cls, op: BatteryOperation) -> EmsOperation:
+        """BatterySchedule slot engaged — schedule-driven recommendation.
+
+        Bridges `BatteryOperation` (slot-aware VO with `notification_level` +
+        `needs_charge_toggle`) into `EmsOperation` (inverter-write VO). The
+        notification_level + slot context is dispatched separately by the
+        Notifier (Etap F.2); EmsOperation only carries what the actuator
+        needs to write.
+
+        Caller (`Ems._resolve_ems_operation`) decides whether schedule_op
+        takes precedence over grid_op (it does, when not idle) — this
+        factory just translates, doesn't decide.
+        """
+        return cls(
+            ems_mode=op.ems_mode.value,  # StrEnum → Literal string
+            power_limit_w=op.power_limit_w,
+            source="schedule",
+            reason=f"slot={op.slot.name}" if op.slot is not None else None,
         )
 
     @property

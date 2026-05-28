@@ -41,7 +41,10 @@ from custom_components.smart_rce.application.water_heater_reserved_service impor
     WaterHeaterReservedService,
 )
 from custom_components.smart_rce.const import GROSS_MULTIPLIER
-from custom_components.smart_rce.domain.battery_schedule import BatteryScheduleInput
+from custom_components.smart_rce.domain.battery_schedule import (
+    BatteryOperation,
+    BatteryScheduleInput,
+)
 from custom_components.smart_rce.domain.charge_slots import (
     DEFAULT_HEATER_RCE_THRESHOLD,
     ChargeSlots,
@@ -142,8 +145,13 @@ class Ems:
             ems_schedule_active_this_hour=schedule_result.schedule_active_this_hour,
             start_charge_hour_override=charge_result.start_charge_hour_override,
         )
-        # Etap F TODO: _resolve_ems_operation(schedule_op, grid_op) — schedule
-        # slots override grid intervention. For now grid_op is the only source.
+        # Resolve final EmsOperation — schedule slot takes precedence over
+        # grid intervention. Today schedule slots are disabled by default so
+        # schedule_op is always idle → grid_op passes through unchanged. Once
+        # Etap 2C/2E activates settable slots, an engaged CHARGE_*/DISCHARGE_*
+        # slot will preempt POSITIVE/NEGATIVE intervention for the slot's
+        # duration.
+        #
         # Skip apply when:
         # - user flipped `switch.ems_interventions_blocked` ON (explicit
         #   "smart_rce hands off") — lets user manually drive Goodwe via UI
@@ -154,7 +162,8 @@ class Ems:
             not schedule_result.ems_interventions_blocked
             and not state.other_ems_automation_active_this_hour
         ):
-            self._goodwe_ems_actuator.apply_if_changed(grid_op)
+            final_op = self._resolve_ems_operation(schedule_result.operation, grid_op)
+            self._goodwe_ems_actuator.apply_if_changed(final_op)
 
         # ─── 4. WaterHeaterManager (no driven adapter — pure recommendation) ───
         # WaterHeaterReservedService computes reserved-power value per tick
@@ -276,6 +285,30 @@ class Ems:
         """
         event = self.charge_slots.update(rce_data, self._heater_threshold())
         self.battery_charge_service.handle_start_charge_today_changed(event, now)
+
+    def _resolve_ems_operation(
+        self, schedule_op: BatteryOperation, grid_op: EmsOperation
+    ) -> EmsOperation:
+        """Pick final inverter target — schedule beats grid intervention.
+
+        Precedence (highest first):
+        1. Schedule slot engaged (`schedule_op` not idle) → schedule wins.
+           BatterySchedule slots are explicit user/proposer intent
+           (e.g. peak hour evening discharge to target_soc=33%); they
+           preempt the per-hour intervention machinery to avoid mid-slot
+           races between POSITIVE/NEGATIVE and slot's own ems_mode.
+        2. Grid intervention (`grid_op`) — POSITIVE/NEGATIVE recommendation
+           from `GridExportManager` for the current hour.
+        3. Neutral (auto) — implicit when grid_op is also neutral.
+
+        Schedule operations carry richer context (notification_level,
+        slot kind) which the Notifier (Etap F.2) consumes from events;
+        `EmsOperation.from_battery_operation` strips that down to just
+        what the actuator needs to write.
+        """
+        if not schedule_op.is_idle:
+            return EmsOperation.from_battery_operation(schedule_op)
+        return grid_op
 
     def _should_hold_for_peak(self, state: InputState) -> bool | None:
         """Compare smart_rce-owned max_upcoming_peak vs user threshold.
