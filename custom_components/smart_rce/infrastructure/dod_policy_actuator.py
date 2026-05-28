@@ -106,31 +106,8 @@ class DodPolicyActuator:
                 )
                 return
 
-            # scene.apply blocking=True → after await, inverter state MUST reflect
-            # the new value. If not, silent failure (Modbus reject, integration bug).
-            post_write = self._read_inverter_dod()
-            if post_write is None:
-                # Defensive: state momentarily unavailable post-write. Don't
-                # alert — next tick will re-verify.
-                _LOGGER.warning(
-                    "DodPolicyActuator: post_write read returned None for target=%d",
-                    target,
-                )
-                return
-            if post_write != target:
-                _LOGGER.error(
-                    "DodPolicyActuator: silent fail — target=%d post_write=%s",
-                    target,
-                    post_write,
-                )
-                await self._guard.record_failure(
-                    title="Smart RCE: cichy błąd zapisu DoD",
-                    message=(
-                        f"DoD nie propagował się na falownik. "
-                        f"Cel {target}, po zapisie {post_write}."
-                    ),
-                )
-                return
+            if not await self._verify_applied(target):
+                return  # mismatch already alerted via guard
 
             self._guard.record_success()
             _LOGGER.info(
@@ -171,3 +148,41 @@ class DodPolicyActuator:
             blocking=True,
             context=ctx,
         )
+
+    async def _verify_applied(self, target: int) -> bool:
+        """Read-back check after number.set_value (silent-fail detection).
+
+        number.set_value blocking=True → after await, inverter state SHOULD
+        reflect the new value. If not, silent failure (Modbus reject,
+        integration bug).
+
+        Returns:
+            True  — target matches post-write state (or transient read=None,
+                    next tick re-verifies, no alert)
+            False — mismatch detected; failure recorded via guard (alert fired)
+
+        """
+        post_write = self._read_inverter_dod()
+        if post_write is None:
+            # Defensive: state momentarily unavailable post-write. Don't
+            # alert — next tick will re-verify.
+            _LOGGER.warning(
+                "DodPolicyActuator: post_write read returned None for target=%d",
+                target,
+            )
+            return True
+        if post_write == target:
+            return True
+        _LOGGER.error(
+            "DodPolicyActuator: silent fail — target=%d post_write=%s",
+            target,
+            post_write,
+        )
+        await self._guard.record_failure(
+            title="Smart RCE: cichy błąd zapisu DoD",
+            message=(
+                f"DoD nie propagował się na falownik. "
+                f"Cel {target}, po zapisie {post_write}."
+            ),
+        )
+        return False
