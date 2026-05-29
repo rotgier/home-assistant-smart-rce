@@ -338,16 +338,39 @@ class DodPolicy:
 
     @staticmethod
     def _night_phase(state: InputState) -> Phase:
-        """22:00..07:00 — preserve when workday tomorrow, else free.
+        """22:00..07:00 — preserve when the morning ahead is a workday, else free.
 
-        Simplified rule: only `is_workday_tomorrow` decides. Morning RCE-price
-        check (`discharge_slots.best_morning_discharge_slot`) intentionally
-        dropped — that slot is computed for emergency morning discharge only
-        (5:00..7:00 window) and not reliable as preservation trigger.
+        "Morning ahead" depends on which half of the night phase we're in:
+        - Pre-midnight (hour >= 22): morning ahead = tomorrow → check
+          `is_workday_tomorrow`.
+        - Post-midnight (hour < 7): morning ahead = today → check
+          `is_workday`. HA's `binary_sensor.workday` reflects the calendar
+          date that started at midnight, which AT 02:00 IS the morning we
+          care about — so it's the right signal here.
+
+        Bug fixed 2026-05-29: previously `_night_phase` always read
+        `is_workday_tomorrow`. From midnight onwards that signal points to
+        day+2 instead of "morning ahead". The specific failure observed:
+        Thu 23:00 → tomorrow=Fri workday → preserve (DoD=0); Fri 00:00 →
+        tomorrow=Sat weekend → NIGHT_FREE (DoD=90) — but Friday morning is
+        still a workday, so we should have stayed preserved through to
+        07:00.
+
+        Caller guarantees `state.now is not None` (checked in
+        `_compute_phase`); `state.is_workday` / `is_workday_tomorrow` may
+        be None → UNKNOWN keeps persisted state.
+
+        Morning RCE-price check (`discharge_slots.best_morning_discharge_slot`)
+        intentionally dropped — that slot is computed for emergency morning
+        discharge only (5:00..7:00 window) and not reliable as preservation
+        trigger.
         """
-        if state.is_workday_tomorrow is True:
+        morning_is_workday = (
+            state.is_workday_tomorrow if state.now.hour >= 22 else state.is_workday
+        )
+        if morning_is_workday is True:
             return Phase.NIGHT_PRESERVE
-        if state.is_workday_tomorrow is None:
+        if morning_is_workday is None:
             return Phase.UNKNOWN
         return Phase.NIGHT_FREE
 

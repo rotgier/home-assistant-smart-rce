@@ -167,18 +167,45 @@ class TestPhaseDispatch:
         s = _state(now=_weekend_at(23), is_workday_tomorrow=False)
         assert p._compute_phase(s) == Phase.NIGHT_FREE
 
-    def test_night_unknown_when_workday_tomorrow_missing(self):
-        """workday_tomorrow=None at night → UNKNOWN keep-state."""
+    def test_night_unknown_when_workday_tomorrow_missing_pre_midnight(self):
+        """workday_tomorrow=None pre-midnight → UNKNOWN keep-state."""
         p = DodPolicy()
         s = _state(now=_at(23))
         s.is_workday_tomorrow = None
         assert p._compute_phase(s) == Phase.UNKNOWN
 
-    def test_night_at_3am(self):
-        """Night phases also cover 00:00..07:00 (hour < 7 OR hour ≥ 22)."""
+    def test_night_at_3am_workday_today_preserves(self):
+        """Post-midnight workday morning ahead → NIGHT_PRESERVE.
+
+        Regression for the bug fixed 2026-05-29 — previously
+        `_night_phase` always read `is_workday_tomorrow`. AT 03:00 Friday
+        tomorrow=Saturday (weekend), but Friday morning is still a workday
+        and we must preserve. Fix reads `is_workday` (today, which AT
+        03:00 IS the morning ahead).
+
+        Test setup: Monday 03:00 → today=Mon workday=True → preserve.
+        """
         p = DodPolicy()
-        s = _state(now=_at(3), is_workday_tomorrow=True)
+        s = _state(now=_at(3), is_workday=True, is_workday_tomorrow=False)
+        # is_workday_tomorrow=False (e.g. simulated Mon→Tue with Tue holiday)
+        # — should still preserve, post-midnight uses is_workday (today=Mon).
         assert p._compute_phase(s) == Phase.NIGHT_PRESERVE
+
+    def test_night_at_3am_weekend_today_free(self):
+        """Post-midnight weekend morning ahead → NIGHT_FREE.
+
+        Saturday 03:00 → today=Sat weekend → free (no morning load).
+        """
+        p = DodPolicy()
+        s = _state(now=_weekend_at(3), is_workday=False, is_workday_tomorrow=False)
+        assert p._compute_phase(s) == Phase.NIGHT_FREE
+
+    def test_night_post_midnight_unknown_when_workday_today_missing(self):
+        """workday=None post-midnight → UNKNOWN keep-state."""
+        p = DodPolicy()
+        s = _state(now=_at(3))
+        s.is_workday = None
+        assert p._compute_phase(s) == Phase.UNKNOWN
 
     def test_unknown_when_now_missing(self):
         p = DodPolicy()
