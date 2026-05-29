@@ -42,6 +42,7 @@ def fire_action_event_for_ctx(
     *,
     phase: str,
     reason: str | None = None,
+    parent_context: Context | None = None,
 ) -> Context:
     """Fire smart_rce_action event + return the SAME Context for service call.
 
@@ -53,8 +54,19 @@ def fire_action_event_for_ctx(
     "Smart RCE phase=X" attribution.
 
     See module docstring for the why-not-child-Context rationale.
+
+    `parent_context` propagates upstream attribution when smart_rce
+    actions are user-initiated (e.g. one-shot discharge button — Etap 2F).
+    The returned Context inherits `user_id` (audit: who triggered) and
+    sets `parent_id = parent_context.id` (trace chain back to the click).
+    Pass-through for automatic ticks (Ems.update_state from per-tick
+    state mapper) — caller leaves `parent_context=None` and we create a
+    fresh Context (no user attribution; smart_rce is the sole initiator).
     """
-    ctx = Context()
+    ctx = Context(
+        user_id=parent_context.user_id if parent_context else None,
+        parent_id=parent_context.id if parent_context else None,
+    )
     data: dict[str, Any] = {ATTR_PHASE: phase}
     if reason:
         data[ATTR_REASON] = reason
