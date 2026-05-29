@@ -21,6 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
+from .domain.battery_schedule import SlotKind
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -34,7 +35,17 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add smart_rce time entities."""
-    async_add_entities([EmsBatteryChargeStartHourOverrideTime(entry)])
+    async_add_entities(
+        [
+            EmsBatteryChargeStartHourOverrideTime(entry),
+            BatteryScheduleSlotTime(
+                entry, kind=SlotKind.DISCHARGE_EVENING, field="start"
+            ),
+            BatteryScheduleSlotTime(
+                entry, kind=SlotKind.DISCHARGE_EVENING, field="end"
+            ),
+        ]
+    )
 
 
 class EmsBatteryChargeStartHourOverrideTime(TimeEntity):
@@ -67,3 +78,46 @@ class EmsBatteryChargeStartHourOverrideTime(TimeEntity):
 
     async def async_set_value(self, value: time) -> None:
         await self._service.set_start_charge_hour_override(value)
+
+
+class BatteryScheduleSlotTime(TimeEntity):
+    """Edit start/end time of a today_<kind> BatterySchedule slot.
+
+    Etap 2C — validation entity for today_discharge_evening start + end.
+    `field` ∈ {"start", "end"} — determines which entry field is mutated
+    and which UI label appears. Etap 2E extends to all 8 slot kinds × 2
+    fields = 16 time entities total.
+
+    Validation: `BatteryScheduleEntry.__post_init__` enforces
+    `start < end` when `enabled=True`. ValueError propagates to HA
+    service call failure if user tries to set end <= start while slot
+    is enabled.
+    """
+
+    _attr_has_entity_name = False
+    _attr_should_poll = False
+    _attr_icon = "mdi:clock-outline"
+
+    def __init__(
+        self, entry: SmartRceConfigEntry, *, kind: SlotKind, field: str
+    ) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.battery_schedule_service
+        self._kind = kind
+        self._field = field  # "start" or "end"
+        slug = f"today_{kind.name.lower()}_{field}"
+        self._attr_name = f"EMS Schedule Today {kind.name.replace('_', ' ').title()} {field.capitalize()}"
+        self._attr_unique_id = f"{DOMAIN}_ems_schedule_{slug}"
+        self.entity_id = f"time.ems_schedule_{slug}"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> time | None:
+        return getattr(self._service.today_slot(self._kind), self._field)
+
+    async def async_set_value(self, value: time) -> None:
+        await self._service.set_today_slot(self._kind, **{self._field: value})

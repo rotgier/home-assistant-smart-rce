@@ -32,7 +32,12 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 
-from ..domain.battery_schedule import BatteryOperation, BatteryScheduleInput
+from ..domain.battery_schedule import (
+    BatteryOperation,
+    BatteryScheduleEntry,
+    BatteryScheduleInput,
+    SlotKind,
+)
 from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
 from .service import Service
 
@@ -197,4 +202,24 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """
         await self._persist_and_notify(
             self._repo.schedule.set_ems_interventions_blocked_override(value)
+        )
+
+    # ─── Slot read/write (Etap 2C) ───
+
+    def today_slot(self, kind: SlotKind) -> BatteryScheduleEntry:
+        """Return today_<kind> entry — used by UI entities for read-side."""
+        return self._repo.schedule.today_entry_for(kind)
+
+    async def set_today_slot(self, kind: SlotKind, **changes: object) -> None:
+        """Mutate today_<kind> entry fields. Persists + notifies on delta.
+
+        Each entity (switch/time/number) calls this with a single keyword
+        (enabled / start / end / target_soc) — service forwards to the
+        aggregate which builds a new BatteryScheduleEntry via
+        `with_changes(**kwargs)`. ValueError raised here propagates to the
+        entity callback (HA renders to user as service call failure —
+        UI restricts ranges, but defense in depth).
+        """
+        await self._persist_and_notify(
+            self._repo.schedule.set_today_slot(kind, **changes)
         )

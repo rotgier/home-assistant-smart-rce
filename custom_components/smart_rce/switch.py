@@ -22,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
+from .domain.battery_schedule import SlotKind
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -35,7 +36,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add smart_rce switch entities."""
-    async_add_entities([EmsInterventionsBlockedSwitch(entry)])
+    async_add_entities(
+        [
+            EmsInterventionsBlockedSwitch(entry),
+            BatteryScheduleSlotEnabledSwitch(entry, kind=SlotKind.DISCHARGE_EVENING),
+        ]
+    )
 
 
 class EmsInterventionsBlockedSwitch(SwitchEntity):
@@ -89,3 +95,49 @@ class EmsInterventionsBlockedSwitch(SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self._service.set_ems_interventions_blocked_override(False)
+
+
+class BatteryScheduleSlotEnabledSwitch(SwitchEntity):
+    """Toggle the `enabled` field of a today_<kind> BatterySchedule slot.
+
+    Etap 2C — validation entity for today_discharge_evening (single slot).
+    Etap 2E will instantiate 7 more (today + tomorrow × 4 kinds, minus the
+    1 already here) via the same class.
+
+    `kind` is structural — determines which slot field is mutated. Entity
+    name + entity_id derive from `kind` so each slot has stable identity
+    across reloads.
+
+    Persistence: `BatteryScheduleRepository` (own Store, ~1s crash safety
+    via SAVE_DELAY=0). Restored at startup before entity init.
+    """
+
+    _attr_has_entity_name = False
+    _attr_should_poll = False
+    _attr_icon = "mdi:battery-clock"
+
+    def __init__(self, entry: SmartRceConfigEntry, *, kind: SlotKind) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.battery_schedule_service
+        self._kind = kind
+        slug = f"today_{kind.name.lower()}_enabled"
+        self._attr_name = (
+            f"EMS Schedule Today {kind.name.replace('_', ' ').title()} Enabled"
+        )
+        self._attr_unique_id = f"{DOMAIN}_ems_schedule_{slug}"
+        self.entity_id = f"switch.ems_schedule_{slug}"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def is_on(self) -> bool:
+        return self._service.today_slot(self._kind).enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._service.set_today_slot(self._kind, enabled=True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._service.set_today_slot(self._kind, enabled=False)

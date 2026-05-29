@@ -365,6 +365,23 @@ class BatteryScheduleEntry:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# Dispatch maps for `BatterySchedule.set_slot` — keyed by (scope, kind) where
+# scope ∈ {"today", "tomorrow"}. Module-level rather than inline so the
+# aggregate doesn't carry the boilerplate.
+_TODAY_FIELD_NAME: Final[dict[SlotKind, str]] = {
+    SlotKind.CHARGE_MORNING: "today_charge_morning",
+    SlotKind.DISCHARGE_MORNING: "today_discharge_morning",
+    SlotKind.CHARGE_AFTERNOON: "today_charge_afternoon",
+    SlotKind.DISCHARGE_EVENING: "today_discharge_evening",
+}
+_TOMORROW_FIELD_NAME: Final[dict[SlotKind, str]] = {
+    SlotKind.CHARGE_MORNING: "tomorrow_charge_morning",
+    SlotKind.DISCHARGE_MORNING: "tomorrow_discharge_morning",
+    SlotKind.CHARGE_AFTERNOON: "tomorrow_charge_afternoon",
+    SlotKind.DISCHARGE_EVENING: "tomorrow_discharge_evening",
+}
+
+
 @dataclass
 class BatterySchedule:
     """Aggregate root — 4 named slots × 2 days = 8 entries.
@@ -500,6 +517,32 @@ class BatterySchedule:
 
     def today_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
         return self.today_entries()[kind]
+
+    def tomorrow_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
+        return self.tomorrow_entries()[kind]
+
+    def set_today_slot(self, kind: SlotKind, **changes: Any) -> bool:
+        """Replace today_<kind> entry with given field changes. True if changed.
+
+        Used by Etap 2C/2E settable entities (UI mutators). Calls
+        `entry.with_changes(**kwargs)` which returns a new frozen
+        BatteryScheduleEntry; `__post_init__` validates target_soc range
+        and start < end (raises ValueError on invalid input). Caller is
+        responsible for persisting via repo.save_if_changed().
+        """
+        return self._set_slot(_TODAY_FIELD_NAME[kind], changes)
+
+    def set_tomorrow_slot(self, kind: SlotKind, **changes: Any) -> bool:
+        """Replace tomorrow_<kind> entry. See `set_today_slot` for semantics."""
+        return self._set_slot(_TOMORROW_FIELD_NAME[kind], changes)
+
+    def _set_slot(self, field_name: str, changes: dict[str, Any]) -> bool:
+        current: BatteryScheduleEntry = getattr(self, field_name)
+        new_entry = current.with_changes(**changes)
+        if new_entry == current:
+            return False
+        setattr(self, field_name, new_entry)
+        return True
 
     # ─── compute_operation — pure decision function w/ aggregate state mutations ───
 
