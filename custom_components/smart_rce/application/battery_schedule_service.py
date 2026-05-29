@@ -153,6 +153,18 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     # ─── Properties exposed to Ems + entities (avoid Ems leaking repo) ───
 
     @property
+    def currently_engaging(self) -> str:
+        """Name of currently engaged SlotKind, or 'IDLE' when no slot active.
+
+        String form exposed for `sensor.ems_battery_schedule_currently_engaging`
+        (Etap 2B observability) — sensor reads this directly. Underlying
+        aggregate field is `SlotKind | None`; we stringify here so the sensor
+        doesn't need to know about the enum.
+        """
+        slot = self._repo.schedule.currently_engaging
+        return slot.name if slot is not None else "IDLE"
+
+    @property
     def last_op(self) -> BatteryOperation:
         """Last computed BatteryOperation — exposed for cross-service seeding.
 

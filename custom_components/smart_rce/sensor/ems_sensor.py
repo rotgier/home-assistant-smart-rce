@@ -144,4 +144,14 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: ems.battery_charge_service.modbus_current_value,
         icon="mdi:current-dc",
     ),
+    EmsSensorDescription(
+        name="Battery Schedule Currently Engaging",
+        # Slot kind name (e.g. "DISCHARGE_EVENING") or "IDLE" when no slot
+        # active. Diagnostic — UI shows which schedule slot is driving the
+        # inverter right now. Updates on engage/disengage events emitted by
+        # BatterySchedule.compute_operation (per-tick fan-out via service
+        # listeners). Etap 2B observability.
+        value_fn=lambda ems: ems.battery_schedule_service.currently_engaging,
+        icon="mdi:battery-clock",
+    ),
 )
