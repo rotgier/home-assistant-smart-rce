@@ -37,7 +37,7 @@ from homeassistant.core import Context, HomeAssistant
 from ..const import ATTR_PHASE, ATTR_REASON, EVENT_SMART_RCE_ACTION
 
 
-def fire_action_event(
+def fire_action_event_for_ctx(
     hass: HomeAssistant,
     *,
     phase: str,

@@ -51,7 +51,7 @@ from homeassistant.core import HomeAssistant, callback
 from ..domain.ems_operation import EmsOperation
 from .apply_guard import ApplyGuard
 from .async_task_runner import AsyncTaskRunner
-from .context_chain import fire_action_event
+from .context_provider import fire_action_event_for_ctx
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ class GoodweEmsActuator:
             and target.ems_mode != "auto"
         ):
             entities[GOODWE_EMS_POWER_LIMIT_NUMBER] = str(target.power_limit_w)
-        ctx = fire_action_event(
+        ctx = fire_action_event_for_ctx(
             self._hass,
             phase=target.source,
             reason=target.reason,

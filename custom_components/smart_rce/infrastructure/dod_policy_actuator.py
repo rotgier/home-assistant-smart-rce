@@ -43,7 +43,7 @@ from homeassistant.core import HomeAssistant, callback
 from ..domain.dod_policy import DodPolicy
 from .apply_guard import ApplyGuard
 from .async_task_runner import AsyncTaskRunner
-from .context_chain import fire_action_event
+from .context_provider import fire_action_event_for_ctx
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class DodPolicyActuator:
         wins), renders "DoD changed to N triggered by Smart RCE phase=X
         (reason=...)" through our describer.
         """
-        ctx = fire_action_event(
+        ctx = fire_action_event_for_ctx(
             self._hass,
             phase=self._policy.current_phase.value,
             reason=f"target_dod {previous} → {target}",
