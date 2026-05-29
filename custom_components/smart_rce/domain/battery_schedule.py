@@ -41,7 +41,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import Enum, StrEnum
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, Protocol
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Input DTO — what the schedule needs from outside on each tick
@@ -273,8 +273,17 @@ class BatteryScheduleEntry:
             target_soc=kind.profile.default_target_soc,
         )
 
-    def with_changes(self, **kwargs: Any) -> BatteryScheduleEntry:
-        return dataclasses.replace(self, **kwargs)
+    def with_enabled(self, value: bool) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, enabled=value)
+
+    def with_start(self, value: time) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, start=value)
+
+    def with_end(self, value: time) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, end=value)
+
+    def with_target_soc(self, value: float) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, target_soc=value)
 
     # ─── window + target predicates ───
 
@@ -361,25 +370,79 @@ class BatteryScheduleEntry:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Commands — mutating actions for slot entries (Command pattern)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+Scope = Literal["today", "tomorrow"]
+
+
+class SlotCommand(Protocol):
+    """A mutating action targeting a single slot entry in the aggregate.
+
+    Aggregate calls `apply_to_entry(current)` to obtain the new Entry value;
+    aggregate owns the read-modify-write lifecycle, Command owns the
+    transformation. Adding a new editable field = new Command class (no
+    changes to aggregate or service — Open/Closed).
+    """
+
+    scope: Scope
+    kind: SlotKind
+
+    def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry: ...
+
+
+@dataclass(frozen=True)
+class SetSlotEnabledCommand:
+    scope: Scope
+    kind: SlotKind
+    value: bool
+
+    def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry:
+        return entry.with_enabled(self.value)
+
+
+@dataclass(frozen=True)
+class SetSlotStartCommand:
+    scope: Scope
+    kind: SlotKind
+    value: time
+
+    def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry:
+        return entry.with_start(self.value)
+
+
+@dataclass(frozen=True)
+class SetSlotEndCommand:
+    scope: Scope
+    kind: SlotKind
+    value: time
+
+    def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry:
+        return entry.with_end(self.value)
+
+
+@dataclass(frozen=True)
+class SetSlotTargetSocCommand:
+    scope: Scope
+    kind: SlotKind
+    value: float
+
+    def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry:
+        return entry.with_target_soc(self.value)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # BatterySchedule — aggregate root
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# Dispatch maps for `BatterySchedule.set_slot` — keyed by (scope, kind) where
-# scope ∈ {"today", "tomorrow"}. Module-level rather than inline so the
-# aggregate doesn't carry the boilerplate.
-_TODAY_FIELD_NAME: Final[dict[SlotKind, str]] = {
-    SlotKind.CHARGE_MORNING: "today_charge_morning",
-    SlotKind.DISCHARGE_MORNING: "today_discharge_morning",
-    SlotKind.CHARGE_AFTERNOON: "today_charge_afternoon",
-    SlotKind.DISCHARGE_EVENING: "today_discharge_evening",
-}
-_TOMORROW_FIELD_NAME: Final[dict[SlotKind, str]] = {
-    SlotKind.CHARGE_MORNING: "tomorrow_charge_morning",
-    SlotKind.DISCHARGE_MORNING: "tomorrow_discharge_morning",
-    SlotKind.CHARGE_AFTERNOON: "tomorrow_charge_afternoon",
-    SlotKind.DISCHARGE_EVENING: "tomorrow_discharge_evening",
-}
+def _default_today() -> dict[SlotKind, BatteryScheduleEntry]:
+    return {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
+
+
+def _default_tomorrow() -> dict[SlotKind, BatteryScheduleEntry]:
+    return {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
 
 
 @dataclass
@@ -399,45 +462,9 @@ class BatterySchedule:
     Implemented in `roll_day()`; called by compute_operation in Etap 2A.
     """
 
-    today_charge_morning: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.CHARGE_MORNING
-        )
-    )
-    today_discharge_morning: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.DISCHARGE_MORNING
-        )
-    )
-    today_charge_afternoon: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.CHARGE_AFTERNOON
-        )
-    )
-    today_discharge_evening: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.DISCHARGE_EVENING
-        )
-    )
-    tomorrow_charge_morning: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.CHARGE_MORNING
-        )
-    )
-    tomorrow_discharge_morning: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.DISCHARGE_MORNING
-        )
-    )
-    tomorrow_charge_afternoon: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.CHARGE_AFTERNOON
-        )
-    )
-    tomorrow_discharge_evening: BatteryScheduleEntry = field(
-        default_factory=lambda: BatteryScheduleEntry.default_for(
-            SlotKind.DISCHARGE_EVENING
-        )
+    _today: dict[SlotKind, BatteryScheduleEntry] = field(default_factory=_default_today)
+    _tomorrow: dict[SlotKind, BatteryScheduleEntry] = field(
+        default_factory=_default_tomorrow
     )
     last_seen_date: date | None = None
     _currently_engaging: SlotKind | None = None
@@ -500,48 +527,34 @@ class BatterySchedule:
         ) == now.replace(minute=0, second=0, microsecond=0)
 
     def today_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
-        return {
-            SlotKind.CHARGE_MORNING: self.today_charge_morning,
-            SlotKind.DISCHARGE_MORNING: self.today_discharge_morning,
-            SlotKind.CHARGE_AFTERNOON: self.today_charge_afternoon,
-            SlotKind.DISCHARGE_EVENING: self.today_discharge_evening,
-        }
+        return dict(self._today)
 
     def tomorrow_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
-        return {
-            SlotKind.CHARGE_MORNING: self.tomorrow_charge_morning,
-            SlotKind.DISCHARGE_MORNING: self.tomorrow_discharge_morning,
-            SlotKind.CHARGE_AFTERNOON: self.tomorrow_charge_afternoon,
-            SlotKind.DISCHARGE_EVENING: self.tomorrow_discharge_evening,
-        }
+        return dict(self._tomorrow)
 
     def today_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
-        return self.today_entries()[kind]
+        return self._today[kind]
 
     def tomorrow_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
-        return self.tomorrow_entries()[kind]
+        return self._tomorrow[kind]
 
-    def set_today_slot(self, kind: SlotKind, **changes: Any) -> bool:
-        """Replace today_<kind> entry with given field changes. True if changed.
+    def apply_slot_command(self, cmd: SlotCommand) -> bool:
+        """Apply a slot Command to the targeted entry. True if entry changed.
 
-        Used by Etap 2C/2E settable entities (UI mutators). Calls
-        `entry.with_changes(**kwargs)` which returns a new frozen
-        BatteryScheduleEntry; `__post_init__` validates target_soc range
-        and start < end (raises ValueError on invalid input). Caller is
-        responsible for persisting via repo.save_if_changed().
+        Aggregate owns the read-modify-write lifecycle and dict storage;
+        Command owns the transformation (`apply_to_entry`). New editable
+        field = new Command class (no changes here). Caller is responsible
+        for persisting via repo.save_if_changed().
+
+        `BatteryScheduleEntry.__post_init__` validates invariants (target_soc
+        range, start < end when enabled) and raises ValueError on bad input.
         """
-        return self._set_slot(_TODAY_FIELD_NAME[kind], changes)
-
-    def set_tomorrow_slot(self, kind: SlotKind, **changes: Any) -> bool:
-        """Replace tomorrow_<kind> entry. See `set_today_slot` for semantics."""
-        return self._set_slot(_TOMORROW_FIELD_NAME[kind], changes)
-
-    def _set_slot(self, field_name: str, changes: dict[str, Any]) -> bool:
-        current: BatteryScheduleEntry = getattr(self, field_name)
-        new_entry = current.with_changes(**changes)
+        target = self._today if cmd.scope == "today" else self._tomorrow
+        current = target[cmd.kind]
+        new_entry = cmd.apply_to_entry(current)
         if new_entry == current:
             return False
-        setattr(self, field_name, new_entry)
+        target[cmd.kind] = new_entry
         return True
 
     # ─── compute_operation — pure decision function w/ aggregate state mutations ───
@@ -614,29 +627,13 @@ class BatterySchedule:
         Idempotent — orchestrator should compare `last_seen_date` and call
         once per midnight crossing (Etap 2A).
         """
-        self.today_charge_morning = self.tomorrow_charge_morning
-        self.today_discharge_morning = self.tomorrow_discharge_morning
-        self.today_charge_afternoon = self.tomorrow_charge_afternoon
-        self.today_discharge_evening = self.tomorrow_discharge_evening
-        self.tomorrow_charge_morning = BatteryScheduleEntry.default_for(
-            SlotKind.CHARGE_MORNING
-        )
-        self.tomorrow_discharge_morning = BatteryScheduleEntry.default_for(
-            SlotKind.DISCHARGE_MORNING
-        )
-        self.tomorrow_charge_afternoon = BatteryScheduleEntry.default_for(
-            SlotKind.CHARGE_AFTERNOON
-        )
-        self.tomorrow_discharge_evening = BatteryScheduleEntry.default_for(
-            SlotKind.DISCHARGE_EVENING
-        )
+        self._today = self._tomorrow
+        self._tomorrow = _default_tomorrow()
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "today": {k.name: e.to_dict() for k, e in self.today_entries().items()},
-            "tomorrow": {
-                k.name: e.to_dict() for k, e in self.tomorrow_entries().items()
-            },
+            "today": {k.name: e.to_dict() for k, e in self._today.items()},
+            "tomorrow": {k.name: e.to_dict() for k, e in self._tomorrow.items()},
             "last_seen_date": (
                 self.last_seen_date.isoformat() if self.last_seen_date else None
             ),
@@ -681,14 +678,8 @@ class BatterySchedule:
                 last_disengaged_at = None
 
         return cls(
-            today_charge_morning=_entry("today", SlotKind.CHARGE_MORNING),
-            today_discharge_morning=_entry("today", SlotKind.DISCHARGE_MORNING),
-            today_charge_afternoon=_entry("today", SlotKind.CHARGE_AFTERNOON),
-            today_discharge_evening=_entry("today", SlotKind.DISCHARGE_EVENING),
-            tomorrow_charge_morning=_entry("tomorrow", SlotKind.CHARGE_MORNING),
-            tomorrow_discharge_morning=_entry("tomorrow", SlotKind.DISCHARGE_MORNING),
-            tomorrow_charge_afternoon=_entry("tomorrow", SlotKind.CHARGE_AFTERNOON),
-            tomorrow_discharge_evening=_entry("tomorrow", SlotKind.DISCHARGE_EVENING),
+            _today={k: _entry("today", k) for k in SlotKind},
+            _tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
             last_seen_date=last_seen_date,
             _currently_engaging=currently_engaging,
             _interventions_blocked_override=bool(

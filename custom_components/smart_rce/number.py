@@ -19,7 +19,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import SlotKind
+from .domain.battery_schedule import SetSlotTargetSocCommand, SlotKind
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -120,4 +120,6 @@ class BatteryScheduleSlotTargetSocNumber(NumberEntity):
         return self._service.today_slot(self._kind).target_soc
 
     async def async_set_native_value(self, value: float) -> None:
-        await self._service.set_today_slot(self._kind, target_soc=value)
+        await self._service.handle_slot_command(
+            SetSlotTargetSocCommand(scope="today", kind=self._kind, value=value)
+        )

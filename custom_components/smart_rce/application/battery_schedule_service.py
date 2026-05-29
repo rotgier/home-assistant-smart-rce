@@ -36,6 +36,7 @@ from ..domain.battery_schedule import (
     BatteryOperation,
     BatteryScheduleEntry,
     BatteryScheduleInput,
+    SlotCommand,
     SlotKind,
 )
 from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
@@ -210,16 +211,18 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """Return today_<kind> entry — used by UI entities for read-side."""
         return self._repo.schedule.today_entry_for(kind)
 
-    async def set_today_slot(self, kind: SlotKind, **changes: object) -> None:
-        """Mutate today_<kind> entry fields. Persists + notifies on delta.
+    async def handle_slot_command(self, cmd: SlotCommand) -> None:
+        """Apply a slot Command to the aggregate. Persists + notifies on delta.
 
-        Each entity (switch/time/number) calls this with a single keyword
-        (enabled / start / end / target_soc) — service forwards to the
-        aggregate which builds a new BatteryScheduleEntry via
-        `with_changes(**kwargs)`. ValueError raised here propagates to the
-        entity callback (HA renders to user as service call failure —
-        UI restricts ranges, but defense in depth).
+        Entities (switch/time/number) construct a typed Command (e.g.
+        `SetSlotEnabledCommand`) and forward it through this method. The
+        aggregate owns the read-modify-write lifecycle via
+        `apply_slot_command`; the Command owns the transformation
+        (`apply_to_entry`). Adding a new editable field = new Command class
+        with no change to the service.
+
+        `BatteryScheduleEntry.__post_init__` validates invariants and raises
+        ValueError on bad input — propagates to the entity callback (HA
+        renders as service call failure; UI restricts ranges, defense in depth).
         """
-        await self._persist_and_notify(
-            self._repo.schedule.set_today_slot(kind, **changes)
-        )
+        await self._persist_and_notify(self._repo.schedule.apply_slot_command(cmd))

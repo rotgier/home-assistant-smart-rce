@@ -270,6 +270,21 @@ def _enabled_evening(target=10.0, behavior=SlotBehavior.IMMEDIATE):
     )
 
 
+def _schedule(
+    *,
+    today: dict[SlotKind, BatteryScheduleEntry] | None = None,
+    tomorrow: dict[SlotKind, BatteryScheduleEntry] | None = None,
+) -> BatterySchedule:
+    """Test factory — start from defaults, override specific slots."""
+    today_dict = {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
+    if today:
+        today_dict.update(today)
+    tomorrow_dict = {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
+    if tomorrow:
+        tomorrow_dict.update(tomorrow)
+    return BatterySchedule(_today=today_dict, _tomorrow=tomorrow_dict)
+
+
 def _enabled_charge_afternoon(target=80.0, behavior=SlotBehavior.IMMEDIATE):
     return BatteryScheduleEntry(
         kind=SlotKind.CHARGE_AFTERNOON,
@@ -289,7 +304,7 @@ class TestComputeOperationIdle:
         assert evts == []
 
     def test_outside_all_windows_is_idle(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening())
+        sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         op, evts = sch.compute_operation(_at(15, 0), 50.0)
         assert op.is_idle is True
         assert evts == []
@@ -297,7 +312,7 @@ class TestComputeOperationIdle:
 
 class TestComputeOperationEngagement:
     def test_engage_emits_event_and_sets_currently_engaging(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening())
+        sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         op, evts = sch.compute_operation(_at(20, 30), 80.0)
         assert op.slot == SlotKind.DISCHARGE_EVENING
         assert len(evts) == 1
@@ -307,14 +322,16 @@ class TestComputeOperationEngagement:
         assert sch._currently_engaging == SlotKind.DISCHARGE_EVENING  # noqa: SLF001
 
     def test_stays_engaged_no_event_no_change(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening())
+        sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         sch.compute_operation(_at(20, 30), 80.0)
         op, evts = sch.compute_operation(_at(20, 31), 75.0)
         assert op.slot == SlotKind.DISCHARGE_EVENING
         assert evts == []
 
     def test_disengage_on_target_reached(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch = _schedule(
+            today={SlotKind.DISCHARGE_EVENING: _enabled_evening(target=10.0)}
+        )
         sch.compute_operation(_at(20, 30), 80.0)
         op, evts = sch.compute_operation(_at(20, 45), 5.0)  # below target
         assert op.is_idle is True
@@ -323,7 +340,7 @@ class TestComputeOperationEngagement:
         assert evts[0].reason == "target_reached"
 
     def test_disengage_on_window_ended(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening())
+        sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         sch.compute_operation(_at(20, 30), 80.0)
         op, evts = sch.compute_operation(_at(22, 0), 50.0)  # at end (exclusive)
         assert op.is_idle is True
@@ -336,10 +353,12 @@ class TestComputeOperationEngagement:
         Faster-than-expected SoC drop would make DELAYED_TO_END "wait" again,
         but hysteresis on `_currently_engaging` keeps the slot active.
         """
-        sch = BatterySchedule(
-            today_discharge_evening=_enabled_evening(
-                target=10.0, behavior=SlotBehavior.DELAYED_TO_END
-            )
+        sch = _schedule(
+            today={
+                SlotKind.DISCHARGE_EVENING: _enabled_evening(
+                    target=10.0, behavior=SlotBehavior.DELAYED_TO_END
+                )
+            }
         )
         # At 20:32:30 should_apply_now=True (sec_to_end == time_to_complete).
         op1, _ = sch.compute_operation(_at(20, 32), 80.0)
@@ -347,8 +366,12 @@ class TestComputeOperationEngagement:
         assert op1.is_idle is True
 
         # Engage at 20:33 (sec_to_end < needed → True under IMMEDIATE-equivalent).
-        sch_imm = BatterySchedule(
-            today_discharge_evening=_enabled_evening(behavior=SlotBehavior.IMMEDIATE)
+        sch_imm = _schedule(
+            today={
+                SlotKind.DISCHARGE_EVENING: _enabled_evening(
+                    behavior=SlotBehavior.IMMEDIATE
+                )
+            }
         )
         sch_imm.compute_operation(_at(20, 30), 80.0)
         # SoC dropping faster than expected — hysteresis keeps engaged.
@@ -371,9 +394,11 @@ class TestComputeOperationPrecedence:
             target_soc=10.0,
             behavior=SlotBehavior.IMMEDIATE,
         )
-        sch = BatterySchedule(
-            today_discharge_evening=evening,
-            today_charge_afternoon=_enabled_charge_afternoon(),
+        sch = _schedule(
+            today={
+                SlotKind.DISCHARGE_EVENING: evening,
+                SlotKind.CHARGE_AFTERNOON: _enabled_charge_afternoon(),
+            }
         )
         op, evts = sch.compute_operation(_at(18, 45), 80.0)
         assert op.slot == SlotKind.DISCHARGE_EVENING
@@ -392,9 +417,7 @@ class TestDayRoll:
         assert all(not isinstance(e, DayRolled) for e in evts)
 
     def test_midnight_crossing_emits_day_rolled_and_shifts_tomorrow_to_today(self):
-        sch = BatterySchedule(
-            tomorrow_discharge_evening=_enabled_evening(),
-        )
+        sch = _schedule(tomorrow={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         # Day 22 — establish last_seen_date.
         sch.compute_operation(_at(23, 0, day=22), 50.0)
         # Day 23 — roll happens.
@@ -417,7 +440,7 @@ class TestDayRoll:
 
 class TestPersistenceRoundTrip:
     def test_currently_engaging_persisted(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening())
+        sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         sch.compute_operation(_at(20, 30), 80.0)
         assert sch._currently_engaging == SlotKind.DISCHARGE_EVENING  # noqa: SLF001
         restored = BatterySchedule.from_dict(sch.to_dict())
@@ -437,7 +460,9 @@ class TestPersistenceRoundTrip:
         assert restored.ems_interventions_blocked is True
 
     def test_last_disengaged_at_persisted(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch = _schedule(
+            today={SlotKind.DISCHARGE_EVENING: _enabled_evening(target=10.0)}
+        )
         # Engage at 20:30, then disengage at 20:45 (target reached: soc=5 < 10)
         sch.compute_operation(_at(20, 30), 80.0)
         sch.compute_operation(_at(20, 45), 5.0)
@@ -457,24 +482,30 @@ class TestIsActiveThisHour:
         assert sch.is_active_this_hour(_at(12, 0)) is False
 
     def test_currently_engaging_true(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening())
+        sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         sch.compute_operation(_at(20, 30), 80.0)
         assert sch.is_active_this_hour(_at(20, 45)) is True
 
     def test_disengaged_within_same_hour_true(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch = _schedule(
+            today={SlotKind.DISCHARGE_EVENING: _enabled_evening(target=10.0)}
+        )
         sch.compute_operation(_at(20, 30), 80.0)
         sch.compute_operation(_at(20, 45), 5.0)  # disengage at 20:45
         assert sch.is_active_this_hour(_at(20, 50)) is True  # same hour 20:00-21:00
 
     def test_disengaged_next_hour_false(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch = _schedule(
+            today={SlotKind.DISCHARGE_EVENING: _enabled_evening(target=10.0)}
+        )
         sch.compute_operation(_at(20, 30), 80.0)
         sch.compute_operation(_at(20, 45), 5.0)  # disengage at 20:45
         assert sch.is_active_this_hour(_at(21, 0)) is False  # hour rolled
 
     def test_disengaged_previous_hour_false(self):
-        sch = BatterySchedule(today_discharge_evening=_enabled_evening(target=10.0))
+        sch = _schedule(
+            today={SlotKind.DISCHARGE_EVENING: _enabled_evening(target=10.0)}
+        )
         sch.compute_operation(_at(20, 30), 80.0)
         sch.compute_operation(_at(20, 45), 5.0)  # disengage at 20:45
         assert sch.is_active_this_hour(_at(22, 0)) is False  # 2h later

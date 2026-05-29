@@ -21,7 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import SlotKind
+from .domain.battery_schedule import SetSlotEndCommand, SetSlotStartCommand, SlotKind
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -39,10 +39,16 @@ async def async_setup_entry(
         [
             EmsBatteryChargeStartHourOverrideTime(entry),
             BatteryScheduleSlotTime(
-                entry, kind=SlotKind.DISCHARGE_EVENING, field="start"
+                entry,
+                kind=SlotKind.DISCHARGE_EVENING,
+                field="start",
+                command_cls=SetSlotStartCommand,
             ),
             BatteryScheduleSlotTime(
-                entry, kind=SlotKind.DISCHARGE_EVENING, field="end"
+                entry,
+                kind=SlotKind.DISCHARGE_EVENING,
+                field="end",
+                command_cls=SetSlotEndCommand,
             ),
         ]
     )
@@ -99,12 +105,18 @@ class BatteryScheduleSlotTime(TimeEntity):
     _attr_icon = "mdi:clock-outline"
 
     def __init__(
-        self, entry: SmartRceConfigEntry, *, kind: SlotKind, field: str
+        self,
+        entry: SmartRceConfigEntry,
+        *,
+        kind: SlotKind,
+        field: str,
+        command_cls: type[SetSlotStartCommand | SetSlotEndCommand],
     ) -> None:
         self._entry = entry
         self._service = entry.runtime_data.ems.battery_schedule_service
         self._kind = kind
-        self._field = field  # "start" or "end"
+        self._field = field  # "start" or "end" — read-side label + getattr
+        self._command_cls = command_cls
         slug = f"today_{kind.name.lower()}_{field}"
         self._attr_name = f"EMS Schedule Today {kind.name.replace('_', ' ').title()} {field.capitalize()}"
         self._attr_unique_id = f"{DOMAIN}_ems_schedule_{slug}"
@@ -120,4 +132,6 @@ class BatteryScheduleSlotTime(TimeEntity):
         return getattr(self._service.today_slot(self._kind), self._field)
 
     async def async_set_value(self, value: time) -> None:
-        await self._service.set_today_slot(self._kind, **{self._field: value})
+        await self._service.handle_slot_command(
+            self._command_cls(scope="today", kind=self._kind, value=value)
+        )

@@ -22,7 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import SlotKind
+from .domain.battery_schedule import SetSlotEnabledCommand, SlotKind
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -137,7 +137,11 @@ class BatteryScheduleSlotEnabledSwitch(SwitchEntity):
         return self._service.today_slot(self._kind).enabled
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self._service.set_today_slot(self._kind, enabled=True)
+        await self._service.handle_slot_command(
+            SetSlotEnabledCommand(scope="today", kind=self._kind, value=True)
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self._service.set_today_slot(self._kind, enabled=False)
+        await self._service.handle_slot_command(
+            SetSlotEnabledCommand(scope="today", kind=self._kind, value=False)
+        )
