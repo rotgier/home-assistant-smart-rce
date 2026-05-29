@@ -123,7 +123,7 @@ class ChargeSlots:
     @staticmethod
     def compute(
         day_prices: RceDayPrices | None,
-        heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,
+        heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,  # noqa: ARG004
     ) -> ChargeWindow | None:
         """Algorytm: dobór najlepszego okna ładowania dla pojedynczego dnia."""
         if day_prices is None or not day_prices.hour_price:
@@ -131,9 +131,16 @@ class ChargeSlots:
         prices: list[float] = list(day_prices.hour_price)
         start_charge_hours = calculate_start_charge_hours(prices)
         best_n = find_best_consecutive_hours(prices, start_charge_hours)
-        new_n, shifted_start = shift_earlier_if_cheap(
-            prices, start_charge_hours[best_n], best_n, heater_threshold
-        )
+        # NOTE 2026-05-29: shift_earlier_if_cheap disabled. Anchor-based
+        # heuristic (prices[end] as benchmark) misfires on bimodal price
+        # profiles where find_best picks N for low mean but last hour is
+        # an outlier (e.g. 2026-05-29: window [10-17] mean=8 with h17=460
+        # — shift dorzucił h09=260 PLN/MWh blocking PV export at ~32 gr/kWh).
+        # Rework planned: skip shift when ≥3 cheap hours in original window
+        # AND weather forecast 1-2h before window start is partly-cloudy
+        # or better (most reliable forecast horizon). Function kept (unit
+        # tests + CSV diagnostic fixture still exercise it pure).
+        new_n, shifted_start = best_n, start_charge_hours[best_n]
         # Half-hour shift dla N=3: bateria startuje w połowie pierwszej godziny.
         # Dla N>3 (po shift) start_hour to plain integer.
         if new_n == INITIAL_BEST_CONSECUTIVE_HOURS:
