@@ -183,6 +183,7 @@ class Ems:
             self.grid_export.get_active_intervention(),
             battery_charge_allowed=charge_result.charge_allowed,
             reserved_balanced_full=reserved_balanced_full,
+            only_upgrade=self.water_heater_reserved_service.only_upgrade,
         )
 
         # ─── 5. DodPolicy + persistence + logger + actuator ───

@@ -39,6 +39,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             EmsInterventionsBlockedSwitch(entry),
+            EmsWaterHeaterOnlyUpgradeSwitch(entry),
             *[
                 BatteryScheduleSlotEnabledSwitch(entry, scope=scope, kind=kind)
                 for scope in ("today", "tomorrow")
@@ -99,6 +100,47 @@ class EmsInterventionsBlockedSwitch(SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self._service.set_ems_interventions_blocked_override(False)
+
+
+class EmsWaterHeaterOnlyUpgradeSwitch(SwitchEntity):
+    """User-controlled override — heaters fire only when upgrade > baseline.
+
+    Cloudy-day toggle: when a short PV peak briefly satisfies baseline
+    threshold, the resulting short heater burst is unwanted (better to
+    let surplus go to grid for later battery charge). With this switch ON,
+    `WaterHeaterManager.target` requires upgrade STRICTLY > baseline before
+    firing heaters. Override is ignored when `battery_charge_limit <= 2`
+    (battery near-full, reserved alone covers remaining demand).
+
+    Persistence: handled by `WaterHeaterReservedRepository` (shared aggregate
+    with mode/manual_value). Restored at startup before entity init.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Water Heater Only Upgrade"
+    _attr_should_poll = False
+    _attr_icon = "mdi:arrow-up-bold-circle-outline"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.water_heater_reserved_service
+        self._attr_unique_id = f"{DOMAIN}_ems_water_heater_only_upgrade"
+        self.entity_id = "switch.ems_water_heater_only_upgrade"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def is_on(self) -> bool:
+        return self._service.only_upgrade
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._service.set_only_upgrade(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._service.set_only_upgrade(False)
 
 
 class BatteryScheduleSlotEnabledSwitch(SwitchEntity):

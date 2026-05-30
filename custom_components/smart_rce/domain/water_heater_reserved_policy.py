@@ -53,10 +53,18 @@ _DEFAULT_AUTO_STUB = 3000
 
 @dataclass
 class WaterHeaterReservedPolicy:
-    """Persisted state — mode + manual_value. Auto cache lives in service."""
+    """Persisted state — mode + manual_value + only_upgrade.
+
+    Auto cache lives in service. `only_upgrade` is a user-facing override:
+    when True, heaters fire only when the BALANCED upgrade level strictly
+    exceeds baseline (see WaterHeaterManager.target). Cloudy days where
+    intermittent PV peaks would otherwise trigger short heater bursts —
+    user prefers to let surplus go to grid for later battery charging.
+    """
 
     mode: ReservedMode = ReservedMode.AUTO
     manual_value: int = _DEFAULT_MANUAL
+    only_upgrade: bool = False
 
     def compute_current_value(
         self,
@@ -88,10 +96,18 @@ class WaterHeaterReservedPolicy:
         self.manual_value = value
         return True
 
+    def set_only_upgrade(self, value: bool) -> bool:
+        """Idempotent — returns True if changed."""
+        if self.only_upgrade == value:
+            return False
+        self.only_upgrade = value
+        return True
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode.value,
             "manual_value": self.manual_value,
+            "only_upgrade": self.only_upgrade,
         }
 
     @classmethod
@@ -104,4 +120,5 @@ class WaterHeaterReservedPolicy:
         return cls(
             mode=mode,
             manual_value=int(data.get("manual_value", _DEFAULT_MANUAL)),
+            only_upgrade=bool(data.get("only_upgrade", False)),
         )

@@ -44,7 +44,6 @@ def _state(
             -pv_available_5min if pv_available_5min is not None else None
         ),
         exported_energy_hourly=exported_energy_hourly,
-        heater_mode="BALANCED",
         depth_of_discharge=None,
         is_workday=True,
         now=datetime(2026, 4, 20, 8, 30, tzinfo=TIMEZONE),

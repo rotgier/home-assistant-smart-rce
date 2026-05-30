@@ -117,16 +117,8 @@ def set_exported_energy_hourly(entity: str, i: InputState, state: str) -> None:
     i.exported_energy_hourly = map_float(entity, state)
 
 
-def set_heater_mode(entity: str, i: InputState, state: str) -> None:
-    i.heater_mode = state
-
-
 def set_depth_of_discharge(entity: str, i: InputState, state: str) -> None:
     i.depth_of_discharge = map_float(entity, state)
-
-
-def set_water_heater_strategy(entity: str, i: InputState, state: str) -> None:
-    i.water_heater_strategy = state
 
 
 def set_is_workday(entity: str, i: InputState, state: str) -> None:
@@ -188,7 +180,6 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "sensor.house_consumption_minus_heaters_minus_pv_avg_2_minutes": set_consumption_minus_pv_2_minutes,
     "sensor.house_consumption_minus_heaters_minus_pv_avg_5_minutes": set_consumption_minus_pv_5_minutes,
     "sensor.total_export_import_hourly": set_exported_energy_hourly,
-    "input_select.ems_water_heater_mode": set_heater_mode,
     "number.goodwe_depth_of_discharge_on_grid": set_depth_of_discharge,
     # `input_boolean.battery_charge_max_current_toggle` REMOVED (Etap B) —
     # replaced by smart_rce-owned select `select.ems_battery_charge_allowed_override`
@@ -198,7 +189,10 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     # `input_boolean.ems_allow_discharge_override` REMOVED — replaced by
     # smart_rce-owned switch `switch.ems_interventions_blocked` backed by
     # `BatterySchedule.ems_interventions_blocked` (Etap 0).
-    "input_select.ems_water_heater_strategy": set_water_heater_strategy,
+    # `input_select.ems_water_heater_mode` + `input_select.ems_water_heater_strategy`
+    # REMOVED — BALANCED is now the only mode (ASAP/WASTED dropped). Replaced
+    # by `switch.ems_water_heater_only_upgrade` (smart_rce-owned, backed by
+    # `WaterHeaterReservedPolicy.only_upgrade`).
     # `binary_sensor.rce_should_hold_for_peak` REMOVED — smart_rce computes
     # this internally from `discharge_slots.max_upcoming_peak` + threshold.
     # The HA template lives on for legacy automations + dashboards.

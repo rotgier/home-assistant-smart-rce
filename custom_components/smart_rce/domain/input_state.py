@@ -24,7 +24,6 @@ class InputState:
     # Ujemne = PV > cons (surplus trend). Używane w post-charge dla
     # continuous check block_discharge (hysteresis -500/0).
     exported_energy_hourly: float | None = None
-    heater_mode: str | None = None
     depth_of_discharge: float | None = (
         None  # % (number.goodwe_depth_of_discharge_on_grid)
     )
@@ -48,11 +47,6 @@ class InputState:
     # as keyword argument to `DodPolicy.update` and `GridExportManager.update`
     # (mirrors `ems_interventions_blocked` Etap 0 + `battery_charge_allowed`
     # Etap B patterns).
-
-    water_heater_strategy: str | None = None
-    # input_select.ems_water_heater_strategy — strategia rezerwacji PV między
-    # baterią a grzałkami w trybie BALANCED. Opcje: NORMAL (domyślny algorytm),
-    # BATTERY_FIRST (reserved=4500 gdy battery_charge_limit>7).
 
     # `should_hold_for_peak` REMOVED — was previously read from HA
     # template `binary_sensor.rce_should_hold_for_peak`, but smart_rce

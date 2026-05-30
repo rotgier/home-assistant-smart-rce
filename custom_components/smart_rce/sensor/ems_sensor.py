@@ -1,4 +1,4 @@
-"""EmsSensor — EMS diagnostic sensors (heater_budget, balanced_baseline)."""
+"""EmsSensor — EMS diagnostic sensors (heater_budget, heater_baseline, etc.)."""
 
 from __future__ import annotations
 
@@ -82,25 +82,25 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: ems.water_heater.balanced_heater_budget,
+        value_fn=lambda ems: ems.water_heater.heater_budget,
         icon="mdi:lightning-bolt",
     ),
     EmsSensorDescription(
-        name="Balanced Baseline",
-        value_fn=lambda ems: ems.water_heater.balanced_baseline,
+        name="Heater Baseline",
+        value_fn=lambda ems: ems.water_heater.heater_baseline,
         icon="mdi:heating-coil",
     ),
     EmsSensorDescription(
-        name="Balanced Upgrade Target",
-        value_fn=lambda ems: ems.water_heater.balanced_upgrade_target,
+        name="Heater Upgrade Target",
+        value_fn=lambda ems: ems.water_heater.heater_upgrade_target,
         icon="mdi:arrow-up-bold-circle",
     ),
     EmsSensorDescription(
-        name="Balanced Export Bonus W",
+        name="Heater Export Bonus",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: ems.water_heater.balanced_export_bonus_w,
+        value_fn=lambda ems: ems.water_heater.heater_export_bonus,
         icon="mdi:transmission-tower-export",
     ),
     EmsSensorDescription(

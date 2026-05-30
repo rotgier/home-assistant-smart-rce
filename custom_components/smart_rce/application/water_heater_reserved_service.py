@@ -60,6 +60,11 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
     def mode(self) -> ReservedMode:
         return self._repo.policy.mode
 
+    @property
+    def only_upgrade(self) -> bool:
+        """When True, heaters fire only when upgrade > baseline (BALANCED logic)."""
+        return self._repo.policy.only_upgrade
+
     # ─── User mutators ───
 
     async def set_mode(self, mode: ReservedMode) -> None:
@@ -69,3 +74,7 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
     async def set_manual_value(self, value: int) -> None:
         """UI-driven manual_value change. Persists + notifies listeners on delta."""
         await self._persist_and_notify(self._repo.policy.set_manual_value(value))
+
+    async def set_only_upgrade(self, value: bool) -> None:
+        """UI-driven only_upgrade toggle. Persists + notifies listeners on delta."""
+        await self._persist_and_notify(self._repo.policy.set_only_upgrade(value))
