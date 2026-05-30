@@ -244,9 +244,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
     def oneshot_params(self, direction: Direction) -> OneShotParams:
         """User-editable one-shot defaults for the given direction."""
-        if direction.is_discharge:
-            return self._repo.schedule.discharge_oneshot_params
-        return self._repo.schedule.charge_oneshot_params
+        return self._repo.schedule.oneshot_params(direction)
 
     async def handle_start_oneshot(self, direction: Direction) -> None:
         """Start a one-shot operation in the given direction. Persists + notifies."""

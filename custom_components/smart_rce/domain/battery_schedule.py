@@ -540,7 +540,7 @@ class SetSlotTargetSocCommand:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# One-shot Commands — operate on aggregate (not on Entry like SlotCommand)
+# One-shot Commands — operate on aggregate (lifecycle) or params (apply_to_params)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -556,16 +556,36 @@ class CancelOneShotCommand:
     """Cancel active one-shot operation (no-op if none)."""
 
 
+class OneShotParamsCommand(Protocol):
+    """A mutating action targeting OneShotParams for one direction.
+
+    Same pattern as `SlotCommand.apply_to_entry`: Command owns the
+    transformation, aggregate owns the read-modify-write lifecycle and
+    dict storage. New editable param field = new Command class (no
+    changes to aggregate or service — Open/Closed).
+    """
+
+    direction: Direction
+
+    def apply_to_params(self, params: OneShotParams) -> OneShotParams: ...
+
+
 @dataclass(frozen=True)
 class SetOneShotTargetSocCommand:
     direction: Direction
     value: float
+
+    def apply_to_params(self, params: OneShotParams) -> OneShotParams:
+        return params.with_target_soc(self.value)
 
 
 @dataclass(frozen=True)
 class SetOneShotEndTimeCommand:
     direction: Direction
     value: time
+
+    def apply_to_params(self, params: OneShotParams) -> OneShotParams:
+        return params.with_end_time(self.value)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -581,12 +601,42 @@ def _default_tomorrow() -> dict[SlotKind, BatteryScheduleEntry]:
     return {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
 
 
-def _default_discharge_oneshot_params() -> OneShotParams:
-    return OneShotParams(target_soc=10.0, end_time=time(22, 0))
+def _default_oneshot_params() -> dict[Direction, OneShotParams]:
+    return {
+        DISCHARGE: OneShotParams(target_soc=10.0, end_time=time(22, 0)),
+        CHARGE: OneShotParams(target_soc=100.0, end_time=time(6, 0)),
+    }
 
 
-def _default_charge_oneshot_params() -> OneShotParams:
-    return OneShotParams(target_soc=100.0, end_time=time(6, 0))
+def _restore_oneshot_params(
+    data: dict[str, Any],
+) -> dict[Direction, OneShotParams]:
+    """Restore one-shot params dict from persisted state with backward compat.
+
+    Preferred format (current): nested under "oneshot_params" keyed by
+    Direction.name. Falls back to legacy flat keys ("discharge_oneshot_params"
+    / "charge_oneshot_params") from pre-dict-refactor deploys.
+    """
+    defaults = _default_oneshot_params()
+    nested = data.get("oneshot_params")
+    if nested:
+        return {
+            DISCHARGE: OneShotParams.from_dict(
+                nested.get("DISCHARGE", {}), default=defaults[DISCHARGE]
+            ),
+            CHARGE: OneShotParams.from_dict(
+                nested.get("CHARGE", {}), default=defaults[CHARGE]
+            ),
+        }
+    # Legacy flat keys — restore from pre-refactor format if present.
+    return {
+        DISCHARGE: OneShotParams.from_dict(
+            data.get("discharge_oneshot_params", {}), default=defaults[DISCHARGE]
+        ),
+        CHARGE: OneShotParams.from_dict(
+            data.get("charge_oneshot_params", {}), default=defaults[CHARGE]
+        ),
+    }
 
 
 @dataclass
@@ -623,11 +673,8 @@ class BatterySchedule:
     # clears in compute_operation on target_reached / expired, or via
     # cancel_oneshot() on user button.
     _oneshot: OneShotOperation | None = None
-    _discharge_oneshot_params: OneShotParams = field(
-        default_factory=_default_discharge_oneshot_params
-    )
-    _charge_oneshot_params: OneShotParams = field(
-        default_factory=_default_charge_oneshot_params
+    _oneshot_params: dict[Direction, OneShotParams] = field(
+        default_factory=_default_oneshot_params
     )
 
     @property
@@ -664,15 +711,19 @@ class BatterySchedule:
         """Active one-shot operation, or None when idle."""
         return self._oneshot
 
+    def oneshot_params(self, direction: Direction) -> OneShotParams:
+        """User-editable one-shot defaults for the given direction."""
+        return self._oneshot_params[direction]
+
     @property
     def discharge_oneshot_params(self) -> OneShotParams:
         """User-editable one-shot defaults for discharge direction."""
-        return self._discharge_oneshot_params
+        return self._oneshot_params[DISCHARGE]
 
     @property
     def charge_oneshot_params(self) -> OneShotParams:
         """User-editable one-shot defaults for charge direction."""
-        return self._charge_oneshot_params
+        return self._oneshot_params[CHARGE]
 
     def set_ems_interventions_blocked_override(self, value: bool) -> bool:
         """Idempotent mutator for the user-controlled override flag — True if changed."""
@@ -713,11 +764,7 @@ class BatterySchedule:
         """
         if self._oneshot is not None:
             return []
-        params = (
-            self._discharge_oneshot_params
-            if direction.is_discharge
-            else self._charge_oneshot_params
-        )
+        params = self._oneshot_params[direction]
         end_at = datetime.combine(now.date(), params.end_time, tzinfo=now.tzinfo)
         if end_at <= now:
             end_at = end_at + timedelta(days=1)
@@ -739,27 +786,18 @@ class BatterySchedule:
         self._last_disengaged_at = now
         return [OneShotEnded(operation=cancelled, reason="cancelled", at=now)]
 
-    def apply_oneshot_command(
-        self,
-        cmd: SetOneShotTargetSocCommand | SetOneShotEndTimeCommand,
-    ) -> bool:
-        """Update stored one-shot params for the targeted direction. True if changed."""
-        is_discharge = cmd.direction.is_discharge
-        current = (
-            self._discharge_oneshot_params
-            if is_discharge
-            else self._charge_oneshot_params
-        )
-        if isinstance(cmd, SetOneShotTargetSocCommand):
-            new = current.with_target_soc(cmd.value)
-        else:
-            new = current.with_end_time(cmd.value)
+    def apply_oneshot_command(self, cmd: OneShotParamsCommand) -> bool:
+        """Update stored one-shot params via Command. True if changed.
+
+        Aggregate owns the dict storage; Command owns the transformation
+        (`apply_to_params`). New editable param field = new Command class
+        with no change here (Open/Closed).
+        """
+        current = self._oneshot_params[cmd.direction]
+        new = cmd.apply_to_params(current)
         if new == current:
             return False
-        if is_discharge:
-            self._discharge_oneshot_params = new
-        else:
-            self._charge_oneshot_params = new
+        self._oneshot_params[cmd.direction] = new
         return True
 
     def today_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
@@ -906,8 +944,9 @@ class BatterySchedule:
                 else None
             ),
             "oneshot": self._oneshot.to_dict() if self._oneshot is not None else None,
-            "discharge_oneshot_params": self._discharge_oneshot_params.to_dict(),
-            "charge_oneshot_params": self._charge_oneshot_params.to_dict(),
+            "oneshot_params": {
+                d.name: p.to_dict() for d, p in self._oneshot_params.items()
+            },
         }
 
     @classmethod
@@ -943,14 +982,7 @@ class BatterySchedule:
         if raw_oneshot := data.get("oneshot"):
             oneshot = OneShotOperation.from_dict(raw_oneshot)
 
-        discharge_params = OneShotParams.from_dict(
-            data.get("discharge_oneshot_params", {}),
-            default=_default_discharge_oneshot_params(),
-        )
-        charge_params = OneShotParams.from_dict(
-            data.get("charge_oneshot_params", {}),
-            default=_default_charge_oneshot_params(),
-        )
+        oneshot_params = _restore_oneshot_params(data)
 
         return cls(
             _today={k: _entry("today", k) for k in SlotKind},
@@ -962,8 +994,7 @@ class BatterySchedule:
             ),
             _last_disengaged_at=last_disengaged_at,
             _oneshot=oneshot,
-            _discharge_oneshot_params=discharge_params,
-            _charge_oneshot_params=charge_params,
+            _oneshot_params=oneshot_params,
         )
 
 
