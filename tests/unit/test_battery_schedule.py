@@ -702,15 +702,15 @@ class TestOneShotParamsCommands:
         sch = BatterySchedule()
         cmd = SetOneShotTargetSocCommand(direction=DISCHARGE, value=25.0)
         assert sch.apply_oneshot_command(cmd) is True
-        assert sch.discharge_oneshot_params.target_soc == 25.0
+        assert sch.oneshot_params(DISCHARGE).target_soc == 25.0
         # Charge params untouched
-        assert sch.charge_oneshot_params.target_soc == 100.0
+        assert sch.oneshot_params(CHARGE).target_soc == 100.0
 
     def test_set_end_time_for_charge(self):
         sch = BatterySchedule()
         cmd = SetOneShotEndTimeCommand(direction=CHARGE, value=time(7, 30))
         assert sch.apply_oneshot_command(cmd) is True
-        assert sch.charge_oneshot_params.end_time == time(7, 30)
+        assert sch.oneshot_params(CHARGE).end_time == time(7, 30)
 
     def test_idempotent(self):
         sch = BatterySchedule()
@@ -742,5 +742,5 @@ class TestOneShotPersistence:
             SetOneShotEndTimeCommand(direction=CHARGE, value=time(8, 0))
         )
         restored = BatterySchedule.from_dict(sch.to_dict())
-        assert restored.discharge_oneshot_params.target_soc == 15.0
-        assert restored.charge_oneshot_params.end_time == time(8, 0)
+        assert restored.oneshot_params(DISCHARGE).target_soc == 15.0
+        assert restored.oneshot_params(CHARGE).end_time == time(8, 0)

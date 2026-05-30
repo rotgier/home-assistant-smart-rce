@@ -715,16 +715,6 @@ class BatterySchedule:
         """User-editable one-shot defaults for the given direction."""
         return self._oneshot_params[direction]
 
-    @property
-    def discharge_oneshot_params(self) -> OneShotParams:
-        """User-editable one-shot defaults for discharge direction."""
-        return self._oneshot_params[DISCHARGE]
-
-    @property
-    def charge_oneshot_params(self) -> OneShotParams:
-        """User-editable one-shot defaults for charge direction."""
-        return self._oneshot_params[CHARGE]
-
     def set_ems_interventions_blocked_override(self, value: bool) -> bool:
         """Idempotent mutator for the user-controlled override flag — True if changed."""
         if self._interventions_blocked_override == value:
