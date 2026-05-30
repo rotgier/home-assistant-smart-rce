@@ -3,14 +3,21 @@
 Unified representation of "what should the inverter EMS do right now".
 Produced by:
 - `GridExportManager.update` — intervention-driven (POSITIVE/NEGATIVE)
-- `BatterySchedule` slots — schedule-driven (charge/discharge windows)
-  via `from_battery_operation` factory
+- `BatterySchedule` slots/one-shots — schedule-driven (charge/discharge
+  windows or ad-hoc engagements). `BatteryOperation` HAS-A `EmsOperation`
+  (composition) — caller (`Ems._resolve_ems_operation`) extracts
+  `schedule_op.ems_op` when the schedule branch wins; schedule-produced
+  ops then flow into GoodweEmsActuator without further translation.
 
 Consumed by `GoodweEmsActuator.apply_if_changed(target)` which writes
 `select.goodwe_ems_mode` + `number.goodwe_ems_power_limit` via scene.apply.
 
 `source` is diagnostic (drives sensor labels; resolution precedence
 between competing sources is handled in `Ems._resolve_ems_operation`).
+`reason` is a free-form diagnostic string — e.g. "slot=DISCHARGE_EVENING"
+or "oneshot=DISCHARGE" for schedule-produced ops, intervention-specific
+strings for grid_export — surfaced in logbook/ApplyGuard messages, NOT
+parsed programmatically.
 
 `ems_mode`/`power_limit_w` are the Goodwe inverter registers; "auto" is
 the neutral state — Goodwe ignores power_limit_w when mode=auto.
@@ -27,14 +34,24 @@ schedule slots typically use `discharge_pv` (morning/evening) or
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from enum import StrEnum
+from typing import Literal
 
-if TYPE_CHECKING:
-    from .battery_schedule import BatteryOperation
 
-EmsMode = Literal[
-    "auto", "discharge_battery", "charge_battery", "discharge_pv", "sell_power"
-]
+class EmsMode(StrEnum):
+    """Mirror of `select.goodwe_ems_mode` values we care about.
+
+    Per ADR-017 new automations use EMS modes (sell_power/discharge_pv/
+    charge_battery) instead of operation_mode (which clears EMS state).
+    """
+
+    AUTO = "auto"
+    DISCHARGE_BATTERY = "discharge_battery"
+    CHARGE_BATTERY = "charge_battery"
+    SELL_POWER = "sell_power"
+    DISCHARGE_PV = "discharge_pv"
+
+
 EmsOperationSource = Literal["neutral", "grid_export", "schedule"]
 
 
@@ -50,7 +67,12 @@ class EmsOperation:
     @classmethod
     def neutral(cls, reason: str | None = None) -> EmsOperation:
         """No intervention — Goodwe runs its default auto policy."""
-        return cls(ems_mode="auto", power_limit_w=None, source="neutral", reason=reason)
+        return cls(
+            ems_mode=EmsMode.AUTO,
+            power_limit_w=None,
+            source="neutral",
+            reason=reason,
+        )
 
     @classmethod
     def from_grid_intervention(
@@ -64,41 +86,15 @@ class EmsOperation:
             reason=reason,
         )
 
-    @classmethod
-    def from_battery_operation(cls, op: BatteryOperation) -> EmsOperation:
-        """BatterySchedule engagement (scheduled slot or one-shot) — schedule-driven.
-
-        Bridges `BatteryOperation` (slot/one-shot-aware VO with
-        `notification_level` + `needs_charge_toggle`) into `EmsOperation`
-        (inverter-write VO). The notification_level + slot/one-shot context
-        is dispatched separately by the Notifier (Etap F.2); EmsOperation
-        only carries what the actuator needs to write.
-
-        `source="schedule"` covers both scheduled slots and one-shot
-        operations (BatterySchedule aggregate is the canonical source);
-        `reason` distinguishes via `slot=X` vs `oneshot=DIRECTION`.
-
-        Caller (`Ems._resolve_ems_operation`) decides whether schedule_op
-        takes precedence over grid_op (it does, when not idle) — this
-        factory just translates, doesn't decide.
-        """
-        if op.slot is not None:
-            reason = f"slot={op.slot.name}"
-        elif op.oneshot_direction is not None:
-            reason = f"oneshot={op.oneshot_direction.name}"
-        else:
-            reason = None
-        return cls(
-            ems_mode=op.ems_mode.value,  # StrEnum → Literal string
-            power_limit_w=op.power_limit_w,
-            source="schedule",
-            reason=reason,
-        )
-
     @property
     def is_neutral(self) -> bool:
         """True when mode=auto (no override of Goodwe default behavior)."""
-        return self.ems_mode == "auto"
+        return self.ems_mode == EmsMode.AUTO
+
+    @property
+    def is_idle(self) -> bool:
+        """Alias of is_neutral — symmetry with BatteryOperation.is_idle forward."""
+        return self.is_neutral
 
     def matches_inverter(
         self, current_mode: str | None, current_power_limit: int | None

@@ -292,22 +292,23 @@ class Ems:
         """Pick final inverter target — schedule beats grid intervention.
 
         Precedence (highest first):
-        1. Schedule slot engaged (`schedule_op` not idle) → schedule wins.
-           BatterySchedule slots are explicit user/proposer intent
-           (e.g. peak hour evening discharge to target_soc=33%); they
-           preempt the per-hour intervention machinery to avoid mid-slot
-           races between POSITIVE/NEGATIVE and slot's own ems_mode.
+        1. Schedule engaged (`schedule_op` not idle: scheduled slot or
+           one-shot) → schedule wins. BatterySchedule engagements are
+           explicit user/proposer intent (e.g. peak hour evening discharge
+           to target_soc=33%); they preempt the per-hour intervention
+           machinery to avoid mid-engagement races between POSITIVE/NEGATIVE
+           and the engagement's own ems_mode.
         2. Grid intervention (`grid_op`) — POSITIVE/NEGATIVE recommendation
            from `GridExportManager` for the current hour.
         3. Neutral (auto) — implicit when grid_op is also neutral.
 
-        Schedule operations carry richer context (notification_level,
-        slot kind) which the Notifier (Etap F.2) consumes from events;
-        `EmsOperation.from_battery_operation` strips that down to just
-        what the actuator needs to write.
+        `BatteryOperation` HAS-A `EmsOperation` (composition) — the schedule
+        branch extracts `.ems_op` (pure inverter target). The
+        `needs_charge_toggle` metadata in BatteryOperation is consumed
+        separately by `BatteryChargePolicy` (not by GoodweEmsActuator).
         """
         if not schedule_op.is_idle:
-            return EmsOperation.from_battery_operation(schedule_op)
+            return schedule_op.ems_op
         return grid_op
 
     def _should_hold_for_peak(self, state: InputState) -> bool | None:

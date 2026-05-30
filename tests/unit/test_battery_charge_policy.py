@@ -58,7 +58,7 @@ class TestChargeAllowed:
         )
 
         entry = BatteryScheduleEntry.default_for(SlotKind.CHARGE_MORNING)
-        return BatteryOperation.from_entry(entry)
+        return entry.to_battery_operation()
 
     def _discharge_evening_op(self) -> BatteryOperation:
         from custom_components.smart_rce.domain.battery_schedule import (
@@ -66,7 +66,7 @@ class TestChargeAllowed:
         )
 
         entry = BatteryScheduleEntry.default_for(SlotKind.DISCHARGE_EVENING)
-        return BatteryOperation.from_entry(entry)
+        return entry.to_battery_operation()
 
     def test_default_off_no_engagement(self):
         policy = BatteryChargePolicy()  # OverrideMode.OFF, no schedule
@@ -200,9 +200,9 @@ class TestChargeAllowedTimeGate:
             BatteryScheduleEntry,
         )
 
-        charge_op = BatteryOperation.from_entry(
-            BatteryScheduleEntry.default_for(SlotKind.CHARGE_MORNING)
-        )
+        charge_op = BatteryScheduleEntry.default_for(
+            SlotKind.CHARGE_MORNING
+        ).to_battery_operation()
         policy = BatteryChargePolicy(start_charge_hour_override=time(11, 0))
         # 09:00 is in block window [06:00, 11:00) — but schedule says charge.
         assert policy.charge_allowed(_at(9, 0), charge_op) is True

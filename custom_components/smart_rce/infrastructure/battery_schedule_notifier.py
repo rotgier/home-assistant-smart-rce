@@ -134,7 +134,7 @@ class BatteryScheduleNotifier:
                     f"Ad-hoc {op.direction.name.lower()} to {op.target_soc:.0f}% "
                     f"until {op.end_at.strftime('%H:%M')}."
                 ),
-                NotificationLevel.NORMAL,
+                op.notification_level,
             )
         if event_type == "OneShotEnded":
             op = event.operation
@@ -145,7 +145,7 @@ class BatteryScheduleNotifier:
                     f"Ad-hoc {op.direction.name.lower()} ended, "
                     f"reason: {reason_label}."
                 ),
-                NotificationLevel.NORMAL,
+                op.notification_level,
             )
         _LOGGER.warning("BatteryScheduleNotifier: unhandled event type %s", event_type)
         return None

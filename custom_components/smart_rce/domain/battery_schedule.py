@@ -43,6 +43,8 @@ from datetime import date, datetime, time, timedelta
 from enum import Enum, StrEnum
 from typing import Any, Final, Literal, Protocol
 
+from .ems_operation import EmsMode, EmsOperation
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Input DTO — what the schedule needs from outside on each tick
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,20 +68,6 @@ class BatteryScheduleInput:
 # ─────────────────────────────────────────────────────────────────────────────
 # Enums
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class EmsMode(StrEnum):
-    """Mirror of `select.goodwe_ems_mode` values we care about.
-
-    Per ADR-017, new automations use EMS modes (sell_power/discharge_pv/
-    charge_battery) instead of operation_mode (which clears EMS state).
-    """
-
-    AUTO = "auto"
-    DISCHARGE_BATTERY = "discharge_battery"
-    CHARGE_BATTERY = "charge_battery"
-    SELL_POWER = "sell_power"
-    DISCHARGE_PV = "discharge_pv"
 
 
 class NotificationLevel(StrEnum):
@@ -285,6 +273,24 @@ class BatteryScheduleEntry:
     def with_target_soc(self, value: float) -> BatteryScheduleEntry:
         return dataclasses.replace(self, target_soc=value)
 
+    def to_battery_operation(self) -> BatteryOperation:
+        """Build BatteryOperation (output) from this slot entry.
+
+        Caller (aggregate `compute_operation` / `current_operation`) uses this
+        to translate engaged slot → ems_op + needs_charge_toggle without
+        BatteryOperation having to know Entry's internals.
+        """
+        d = self.kind.direction
+        return BatteryOperation(
+            ems_op=EmsOperation(
+                ems_mode=d.ems_mode,
+                power_limit_w=d.power_limit_w,
+                source="schedule",
+                reason=f"slot={self.kind.name}",
+            ),
+            needs_charge_toggle=d.needs_charge_toggle,
+        )
+
     # ─── window + target predicates ───
 
     def is_in_window(self, now: datetime) -> bool:
@@ -394,6 +400,11 @@ class OneShotOperation:
     target_soc: float
     end_at: datetime
     started_at: datetime
+    # Always NORMAL — deliberate user action, voice escalation at arbitrary
+    # hours is disruptive. Not configurable in UI. If EMERGENCY semantics
+    # needed for evening peak, use scheduled slot DISCHARGE_EVENING (where
+    # SlotProfile carries notification_level=EMERGENCY).
+    notification_level: NotificationLevel = NotificationLevel.NORMAL
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.target_soc <= 100.0:
@@ -410,6 +421,24 @@ class OneShotOperation:
         if self.direction.is_discharge:
             return current_soc <= self.target_soc
         return current_soc >= self.target_soc
+
+    def to_battery_operation(self) -> BatteryOperation:
+        """Build BatteryOperation (output) from this active one-shot.
+
+        Symmetric with `BatteryScheduleEntry.to_battery_operation` — keeps
+        the "how a source translates to BatteryOperation" logic with the
+        source itself (Tell-Don't-Ask), not on BatteryOperation.
+        """
+        d = self.direction
+        return BatteryOperation(
+            ems_op=EmsOperation(
+                ems_mode=d.ems_mode,
+                power_limit_w=d.power_limit_w,
+                source="schedule",
+                reason=f"oneshot={d.name}",
+            ),
+            needs_charge_toggle=d.needs_charge_toggle,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -726,10 +755,10 @@ class BatterySchedule:
         on engage/disengage transitions.
         """
         if self._oneshot is not None:
-            return BatteryOperation.from_oneshot(self._oneshot)
+            return self._oneshot.to_battery_operation()
         if self._currently_engaging is not None:
             entry = self._today[self._currently_engaging]
-            return BatteryOperation.from_entry(entry)
+            return entry.to_battery_operation()
         return BatteryOperation.idle()
 
     def set_ems_interventions_blocked_override(self, value: bool) -> bool:
@@ -872,7 +901,7 @@ class BatterySchedule:
         if self._oneshot is not None:
             reason = self._oneshot_disengage_reason(now, current_soc)
             if reason is None:
-                return BatteryOperation.from_oneshot(self._oneshot), events
+                return self._oneshot.to_battery_operation(), events
             events.append(OneShotEnded(operation=self._oneshot, reason=reason, at=now))
             self._oneshot = None
             self._last_disengaged_at = now
@@ -883,7 +912,7 @@ class BatterySchedule:
             disengage_reason = _disengage_reason(entry, now, current_soc)
             if disengage_reason is None:
                 # Stay engaged — sticky hysteresis trumps DELAYED_TO_END flicker.
-                return BatteryOperation.from_entry(entry), events
+                return entry.to_battery_operation(), events
             events.append(
                 SlotDisengaged(
                     slot=self._currently_engaging,
@@ -901,7 +930,7 @@ class BatterySchedule:
         if entry is not None:
             events.append(SlotEngaged(slot=entry.kind, soc=current_soc, at=now))
             self._currently_engaging = entry.kind
-            return BatteryOperation.from_entry(entry), events
+            return entry.to_battery_operation(), events
 
         return BatteryOperation.idle(), events
 
@@ -1052,71 +1081,46 @@ def _sec_until_today(now: datetime, end: time) -> float:
 
 @dataclass(frozen=True)
 class BatteryOperation:
-    """Desired battery operation at this moment.
+    """Schedule output: EmsOperation + local battery management metadata.
 
-    Output of `BatterySchedule.compute_operation`. Consumed by
-    `BatteryOperationApplier` (Etap 2D, infrastructure) which translates fields
-    into HA service calls. Equality is structural — service compares vs
-    `_last_op` to skip no-op applies.
+    HAS-A `EmsOperation` (Goodwe inverter target — consumed by
+    GoodweEmsActuator via `.ems_op`) plus `needs_charge_toggle` (local
+    `switch.battery_charge_max_current_toggle` BMS guard — consumed by
+    BatteryChargePolicy, separate concern from Goodwe writes).
 
-    NO `ems_override_active` field — `schedule.ems_interventions_blocked` is
-    the canonical source of truth (read by Ems body and passed explicitly to
-    DodPolicy/GridExportManager). NO `dod_force` — DodPolicy reacts via
-    `INTERVENTIONS_BLOCKED` phase.
+    Composition over inheritance — schedule **produces** an EmsOperation
+    + extra metadata; it is not itself an inverter target. Caller
+    (`Ems._resolve_ems_operation`) extracts `.ems_op` when it needs the
+    pure inverter target.
 
-    `slot` carries the SlotKind responsible for this op (or None for idle).
-    Used by Applier/Notifier to dispatch by kind without parsing strings.
+    `ems_op.source="schedule"` for both slot-driven and one-shot ops;
+    `ems_op.reason` carries identity: `"slot=DISCHARGE_EVENING"` /
+    `"oneshot=DISCHARGE"` / None when idle. Diagnostic-only — no
+    programmatic parsing required.
+
+    NO `ems_override_active` field — `schedule.ems_interventions_blocked`
+    is the canonical source of truth (read by Ems body and passed
+    explicitly to DodPolicy/GridExportManager). NO `dod_force` — DodPolicy
+    reacts via `INTERVENTIONS_BLOCKED` phase.
     """
 
-    ems_mode: EmsMode
-    power_limit_w: int | None
-    needs_charge_toggle: bool
-    notification_level: NotificationLevel
-    slot: SlotKind | None
-    oneshot_direction: Direction | None = None
+    ems_op: EmsOperation
+    needs_charge_toggle: bool = False
 
     @property
     def is_idle(self) -> bool:
-        return self.slot is None and self.oneshot_direction is None
-
-    @property
-    def is_oneshot(self) -> bool:
-        return self.oneshot_direction is not None
+        """Forward to ems_op — engagement is driven by inverter target state."""
+        return self.ems_op.is_idle
 
     @classmethod
     def idle(cls) -> BatteryOperation:
-        return cls(
-            ems_mode=EmsMode.AUTO,
-            power_limit_w=None,
-            needs_charge_toggle=False,
-            notification_level=NotificationLevel.NORMAL,
-            slot=None,
-        )
+        return cls(ems_op=EmsOperation.neutral(), needs_charge_toggle=False)
 
-    @classmethod
-    def from_entry(cls, entry: BatteryScheduleEntry) -> BatteryOperation:
-        d = entry.kind.direction
-        return cls(
-            ems_mode=d.ems_mode,
-            power_limit_w=d.power_limit_w,
-            needs_charge_toggle=d.needs_charge_toggle,
-            notification_level=entry.kind.profile.notification_level,
-            slot=entry.kind,
-        )
-
-    @classmethod
-    def from_oneshot(cls, op: OneShotOperation) -> BatteryOperation:
-        d = op.direction
-        return cls(
-            ems_mode=d.ems_mode,
-            power_limit_w=d.power_limit_w,
-            needs_charge_toggle=d.needs_charge_toggle,
-            # Always NORMAL — one-shot is deliberate user action, no voice
-            # call needed (and EMERGENCY would be jarring at arbitrary hours).
-            notification_level=NotificationLevel.NORMAL,
-            slot=None,
-            oneshot_direction=d,
-        )
+    # Sources construct BatteryOperation themselves via
+    # `BatteryScheduleEntry.to_battery_operation()` and
+    # `OneShotOperation.to_battery_operation()` — keeps the translation
+    # knowledge with the source class (Tell-Don't-Ask), so BatteryOperation
+    # doesn't have to know its possible sources.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

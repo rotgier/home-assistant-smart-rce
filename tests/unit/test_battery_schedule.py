@@ -229,28 +229,28 @@ class TestBatteryOperation:
     def test_idle(self):
         op = BatteryOperation.idle()
         assert op.is_idle is True
-        assert op.ems_mode == EmsMode.AUTO
-        assert op.power_limit_w is None
+        assert op.ems_op.ems_mode == EmsMode.AUTO
+        assert op.ems_op.power_limit_w is None
         assert op.needs_charge_toggle is False
-        assert op.slot is None
+        assert op.ems_op.reason is None
 
     def test_from_discharge_evening_entry(self):
         entry = BatteryScheduleEntry.default_for(SlotKind.DISCHARGE_EVENING)
-        op = BatteryOperation.from_entry(entry)
+        op = entry.to_battery_operation()
         assert op.is_idle is False
-        assert op.slot == SlotKind.DISCHARGE_EVENING
-        assert op.ems_mode == EmsMode.DISCHARGE_PV
-        assert op.power_limit_w == 6000
+        assert op.ems_op.reason == "slot=DISCHARGE_EVENING"
+        assert op.ems_op.ems_mode == EmsMode.DISCHARGE_PV
+        assert op.ems_op.power_limit_w == 6000
         assert op.needs_charge_toggle is False
-        assert op.notification_level == NotificationLevel.EMERGENCY
+        assert op.ems_op.source == "schedule"
 
     def test_from_charge_morning_entry(self):
         entry = BatteryScheduleEntry.default_for(SlotKind.CHARGE_MORNING)
-        op = BatteryOperation.from_entry(entry)
-        assert op.slot == SlotKind.CHARGE_MORNING
-        assert op.ems_mode == EmsMode.CHARGE_BATTERY
+        op = entry.to_battery_operation()
+        assert op.ems_op.reason == "slot=CHARGE_MORNING"
+        assert op.ems_op.ems_mode == EmsMode.CHARGE_BATTERY
         assert op.needs_charge_toggle is True  # BMS guard
-        assert op.notification_level == NotificationLevel.NORMAL
+        assert op.ems_op.source == "schedule"
 
     def test_equality_value_based(self):
         op1 = BatteryOperation.idle()
@@ -319,7 +319,7 @@ class TestComputeOperationEngagement:
     def test_engage_emits_event_and_sets_currently_engaging(self):
         sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         op, evts = sch.compute_operation(_at(20, 30), 80.0)
-        assert op.slot == SlotKind.DISCHARGE_EVENING
+        assert op.ems_op.reason == "slot=DISCHARGE_EVENING"
         assert len(evts) == 1
         assert isinstance(evts[0], SlotEngaged)
         assert evts[0].slot == SlotKind.DISCHARGE_EVENING
@@ -330,7 +330,7 @@ class TestComputeOperationEngagement:
         sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         sch.compute_operation(_at(20, 30), 80.0)
         op, evts = sch.compute_operation(_at(20, 31), 75.0)
-        assert op.slot == SlotKind.DISCHARGE_EVENING
+        assert op.ems_op.reason == "slot=DISCHARGE_EVENING"
         assert evts == []
 
     def test_disengage_on_target_reached(self):
@@ -381,7 +381,7 @@ class TestComputeOperationEngagement:
         sch_imm.compute_operation(_at(20, 30), 80.0)
         # SoC dropping faster than expected — hysteresis keeps engaged.
         op2, _ = sch_imm.compute_operation(_at(20, 31), 40.0)
-        assert op2.slot == SlotKind.DISCHARGE_EVENING  # still engaged
+        assert op2.ems_op.reason == "slot=DISCHARGE_EVENING"  # still engaged
 
 
 class TestComputeOperationPrecedence:
@@ -406,7 +406,7 @@ class TestComputeOperationPrecedence:
             }
         )
         op, evts = sch.compute_operation(_at(18, 45), 80.0)
-        assert op.slot == SlotKind.DISCHARGE_EVENING
+        assert op.ems_op.reason == "slot=DISCHARGE_EVENING"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -435,7 +435,7 @@ class TestDayRoll:
         assert rolled[0].from_date == date(2026, 5, 22)
         assert rolled[0].to_date == date(2026, 5, 23)
         assert len(engaged) == 1
-        assert op.slot == SlotKind.DISCHARGE_EVENING
+        assert op.ems_op.reason == "slot=DISCHARGE_EVENING"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -637,8 +637,8 @@ class TestOneShotComputeOperation:
         # Start one-shot CHARGE — should win over scheduled DISCHARGE
         sch.start_oneshot(CHARGE, _at(20, 30))
         op, _ = sch.compute_operation(_at(20, 30), 80.0)
-        assert op.is_oneshot is True
-        assert op.oneshot_direction == CHARGE
+        assert op.ems_op.reason == "oneshot=CHARGE"
+        assert op.is_idle is False
         # Scheduled slot did NOT engage despite being in-window
         assert sch.currently_engaging is None
 
