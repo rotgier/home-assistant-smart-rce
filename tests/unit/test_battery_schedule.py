@@ -55,6 +55,7 @@ class TestDirection:
             ems_mode=DISCHARGE.ems_mode,
             power_limit_w=DISCHARGE.power_limit_w,
             needs_charge_toggle=DISCHARGE.needs_charge_toggle,
+            rate_zones=DISCHARGE.rate_zones,
         )
         assert other_discharge.is_discharge is True
         # `is` would fail here in real reload scenario; equality works because
@@ -171,10 +172,42 @@ class TestEntryPredicates:
         entry = self._evening(target_soc=10.0)
         assert entry.time_to_complete_at(5.0) == 0.0
 
-    def test_time_to_complete_at_proportional_to_delta(self):
+    def test_time_to_complete_at_zone_aware(self):
+        """DISCHARGE 80→10 sums across 4 zones (FAST + BMS-COMP + ANOMALY + FAST END)."""
         entry = self._evening(target_soc=10.0)
-        # rate_sec_per_pct = 75 (from default profile)
-        assert entry.time_to_complete_at(80.0) == 70 * 75
+        # 80→25: 55pp × 75 sec/pp = 4125 sec (FAST ZONE)
+        # 25→16: 9pp × 36 sec/pp = 324 sec (BMS-COMP)
+        # 16→14: 2pp × 97 sec/pp = 194 sec (ANOMALY)
+        # 14→10: 4pp × 34 sec/pp = 136 sec (FAST END)
+        # Total: 4779 sec
+        assert entry.time_to_complete_at(80.0) == pytest.approx(4779.0, abs=1.0)
+
+    def test_time_to_complete_at_pure_fast_zone(self):
+        """DISCHARGE 100→30 stays in FAST ZONE → 70pp × 75 = 5250 sec."""
+        entry = self._evening(target_soc=30.0)
+        assert entry.time_to_complete_at(100.0) == pytest.approx(70 * 75, abs=1.0)
+
+    def test_time_to_complete_at_charge_uniform(self):
+        """CHARGE keeps constant 75 sec/pp (no empirical zones yet)."""
+        entry = BatteryScheduleEntry(
+            kind=SlotKind.CHARGE_MORNING,
+            enabled=True,
+            start=time(2, 0),
+            end=time(6, 0),
+            target_soc=100.0,
+        )
+        # 30→100: 70pp × 75 = 5250 sec
+        assert entry.time_to_complete_at(30.0) == pytest.approx(70 * 75, abs=1.0)
+
+    def test_time_to_complete_at_full_discharge(self):
+        """DISCHARGE 100→10 matches empirical ~104 min (zone-aware sum)."""
+        entry = self._evening(target_soc=10.0)
+        # 100→25: 75pp × 75 = 5625 sec (FAST ZONE)
+        # 25→16: 9pp × 36 = 324 sec
+        # 16→14: 2pp × 97 = 194 sec
+        # 14→10: 4pp × 34 = 136 sec
+        # Total: 6279 sec ≈ 104.65 min (vs empirical ~104 min — match)
+        assert entry.time_to_complete_at(100.0) == pytest.approx(6279.0, abs=1.0)
 
 
 class TestShouldApplyNow:
@@ -207,17 +240,18 @@ class TestShouldApplyNow:
         assert entry.should_apply_now(_at(20, 30), 80.0) is True
 
     def test_delayed_to_end_waits_when_slack(self):
-        """80% → 10% = 70pp × 75s = 5250s needed. Window 20-22 = 7200s slack."""
+        """80% → 10% via zone-aware: 4779s needed. Window 20-22 = 7200s slack."""
         entry = self._evening(behavior=SlotBehavior.DELAYED_TO_END)
-        # At 20:00, sec_to_end = 7200, time_to_complete = 5250 → wait.
+        # At 20:00, sec_to_end = 7200, time_to_complete = 4779 → wait.
         assert entry.should_apply_now(_at(20, 0), 80.0) is False
 
     def test_delayed_to_end_engages_when_just_in_time(self):
-        """sec_to_end <= time_to_complete → engage."""
-        entry = self._evening(behavior=SlotBehavior.DELAYED_TO_END, target_soc=10.0)
-        # 5250s needed. Threshold at 22:00 - 5250s = 20:32:30. At 20:33 sec_to_end
-        # = 5220s ≤ 5250s → engage.
-        assert entry.should_apply_now(_at(20, 33), 80.0) is True
+        """sec_to_end <= time_to_complete → engage. Pure FAST ZONE test."""
+        # target_soc=30 → 80→30 stays in FAST ZONE: 50pp × 75 = 3750 sec.
+        # Threshold at 22:00 - 3750s = 20:57:30. At 20:58 sec_to_end = 3720s
+        # ≤ 3750s → engage.
+        entry = self._evening(behavior=SlotBehavior.DELAYED_TO_END, target_soc=30.0)
+        assert entry.should_apply_now(_at(20, 58), 80.0) is True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

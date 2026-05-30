@@ -99,13 +99,51 @@ class SlotBehavior(StrEnum):
 
 
 @dataclass(frozen=True)
+class RateZone:
+    """SoC range with associated rate (seconds to traverse 1 pp).
+
+    Zone covers `[soc_from, soc_to)` (half-open — `soc_to` exclusive).
+    Used to model non-linear inverter behavior: BMS-compressed mid-range
+    (25→16% discharges fast as pp represent less energy), calibration
+    pauses (16→14%), and post-calibration fast end (14→10%). See
+    `research/2026-05-04-battery-discharge-per-pp.csv` for empirical
+    data.
+    """
+
+    soc_from: float
+    soc_to: float
+    sec_per_pp: float
+
+
+# DISCHARGE rate zones — empirical from 2026-05-04 morning discharge session
+# (DISCHARGE_BATTERY @ 6kW, BMS ~5kW effective). FAST ZONE covers 25-100
+# (covers normal evening discharge 100→30); below 25 we hit BMS quirks.
+DISCHARGE_RATE_ZONES: Final[tuple[RateZone, ...]] = (
+    # FAST ZONE — typical discharge, ~75 sec/pp consistent
+    RateZone(soc_from=25.0, soc_to=100.01, sec_per_pp=75.0),
+    # BMS-COMP — middle range compresses pp (BMS lookup table), fast
+    RateZone(soc_from=16.0, soc_to=25.0, sec_per_pp=36.0),
+    # ANOMALY — calibration pause window
+    RateZone(soc_from=14.0, soc_to=16.0, sec_per_pp=97.0),
+    # FAST END — after calibration, fast again
+    RateZone(soc_from=0.0, soc_to=14.0, sec_per_pp=34.0),
+)
+
+# CHARGE rate zones — no empirical data yet, uniform 75 sec/pp stub.
+# TODO: collect empirical data + replace with zones analogous to discharge.
+CHARGE_RATE_ZONES: Final[tuple[RateZone, ...]] = (
+    RateZone(soc_from=0.0, soc_to=100.01, sec_per_pp=75.0),
+)
+
+
+@dataclass(frozen=True)
 class Direction:
     """Battery flow direction (DISCHARGE / CHARGE) + per-direction settings.
 
     Two module-level singleton instances: `DISCHARGE` and `CHARGE`. Every
     `SlotKind` references one. Carries everything that's the same across
     all slots of that direction (EMS mode, power limit, charge toggle
-    requirement). Per-slot variation lives in `SlotProfile`.
+    requirement, rate zones). Per-slot variation lives in `SlotProfile`.
 
     Comparison: NEVER use `is` (breaks after `live_reload()`). Use
     `direction.is_discharge` / `direction.is_charge` properties or
@@ -116,6 +154,7 @@ class Direction:
     ems_mode: EmsMode
     power_limit_w: int
     needs_charge_toggle: bool
+    rate_zones: tuple[RateZone, ...]
 
     @property
     def is_discharge(self) -> bool:
@@ -134,6 +173,7 @@ DISCHARGE: Final = Direction(
     # DISCHARGE_BATTERY without needing a second EMS mode in the matrix.
     power_limit_w=6000,
     needs_charge_toggle=False,
+    rate_zones=DISCHARGE_RATE_ZONES,
 )
 
 
@@ -146,14 +186,29 @@ CHARGE: Final = Direction(
     # charge — BMS guard. Today set via service call; will be migrated to a
     # smart_rce-owned switch with continuous DodPolicy-like control in a
     # separate plan (Etap 3).
+    rate_zones=CHARGE_RATE_ZONES,
 )
 
 
-# Default inverter rate (seconds per 1% SoC change at the EMS power_limit).
-# 75 s/% observed from the evening 6000W discharge automation. Symmetric
-# estimate for charge until measured separately. Hardcoded — per-entry
-# override is post-MVP.
-DEFAULT_RATE_SEC_PER_PCT: Final[float] = 75.0
+def seconds_for_range(
+    low_soc: float, high_soc: float, zones: tuple[RateZone, ...]
+) -> float:
+    """Sum sec_per_pp across zones covering the [low_soc, high_soc] range.
+
+    Pure function — directional sense lives in caller (discharge passes
+    target as low, current as high; charge swaps). Returns 0 when range
+    inverted or empty. SoC outside zone coverage contributes 0 (caller's
+    responsibility — zones should fully cover the relevant SoC domain).
+    """
+    if low_soc >= high_soc:
+        return 0.0
+    total = 0.0
+    for zone in zones:
+        overlap_low = max(low_soc, zone.soc_from)
+        overlap_high = min(high_soc, zone.soc_to)
+        if overlap_high > overlap_low:
+            total += (overlap_high - overlap_low) * zone.sec_per_pp
+    return total
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,13 +218,17 @@ DEFAULT_RATE_SEC_PER_PCT: Final[float] = 75.0
 
 @dataclass(frozen=True)
 class SlotProfile:
-    """Per-kind metadata: direction (shared) + slot-specific defaults & policy."""
+    """Per-kind metadata: direction (shared) + slot-specific defaults & policy.
+
+    Rate (sec/pp) lives on `direction.rate_zones` — per-direction zones
+    cover non-linear inverter behavior across SoC range. No per-kind rate
+    override (all DISCHARGE slots share same zones).
+    """
 
     direction: Direction
     notification_level: NotificationLevel
     default_window: tuple[time, time]
     default_target_soc: float
-    rate_sec_per_pct: float = DEFAULT_RATE_SEC_PER_PCT
 
 
 class SlotKind(Enum):
@@ -310,15 +369,22 @@ class BatteryScheduleEntry:
         return current_soc >= self.target_soc
 
     def time_to_complete_at(self, current_soc: float) -> float:
-        """Seconds needed to reach target_soc at the default inverter rate.
+        """Seconds needed to reach target_soc via zone-aware rate model.
 
-        Returns 0 if already at target. Symmetric for charge/discharge —
-        absolute SoC delta × rate. Never negative.
+        Sums sec_per_pp across `direction.rate_zones` for the [low, high]
+        range. For DISCHARGE: range = [target_soc, current_soc]. For CHARGE:
+        range = [current_soc, target_soc]. Returns 0 if already at target.
+
+        Zone-aware vs constant 75 sec/pp matters for full-depth discharges
+        (100→10%): empirical 104 min vs constant-model 112.5 min — DELAYED
+        engagement starts ~8 min later, less time at extreme SoC.
         """
         if self.soc_target_reached(current_soc):
             return 0.0
-        delta = abs(current_soc - self.target_soc)
-        return delta * self.kind.profile.rate_sec_per_pct
+        direction = self.kind.direction
+        if direction.is_discharge:
+            return seconds_for_range(self.target_soc, current_soc, direction.rate_zones)
+        return seconds_for_range(current_soc, self.target_soc, direction.rate_zones)
 
     def should_apply_now(self, now: datetime, current_soc: float) -> bool:
         """Whether orchestrator should actively engage EMS mode at `now`.
