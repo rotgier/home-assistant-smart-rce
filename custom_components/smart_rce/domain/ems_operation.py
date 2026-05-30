@@ -66,23 +66,33 @@ class EmsOperation:
 
     @classmethod
     def from_battery_operation(cls, op: BatteryOperation) -> EmsOperation:
-        """BatterySchedule slot engaged — schedule-driven recommendation.
+        """BatterySchedule engagement (scheduled slot or one-shot) — schedule-driven.
 
-        Bridges `BatteryOperation` (slot-aware VO with `notification_level` +
-        `needs_charge_toggle`) into `EmsOperation` (inverter-write VO). The
-        notification_level + slot context is dispatched separately by the
-        Notifier (Etap F.2); EmsOperation only carries what the actuator
-        needs to write.
+        Bridges `BatteryOperation` (slot/one-shot-aware VO with
+        `notification_level` + `needs_charge_toggle`) into `EmsOperation`
+        (inverter-write VO). The notification_level + slot/one-shot context
+        is dispatched separately by the Notifier (Etap F.2); EmsOperation
+        only carries what the actuator needs to write.
+
+        `source="schedule"` covers both scheduled slots and one-shot
+        operations (BatterySchedule aggregate is the canonical source);
+        `reason` distinguishes via `slot=X` vs `oneshot=DIRECTION`.
 
         Caller (`Ems._resolve_ems_operation`) decides whether schedule_op
         takes precedence over grid_op (it does, when not idle) — this
         factory just translates, doesn't decide.
         """
+        if op.slot is not None:
+            reason = f"slot={op.slot.name}"
+        elif op.oneshot_direction is not None:
+            reason = f"oneshot={op.oneshot_direction.name}"
+        else:
+            reason = None
         return cls(
             ems_mode=op.ems_mode.value,  # StrEnum → Literal string
             power_limit_w=op.power_limit_w,
             source="schedule",
-            reason=f"slot={op.slot.name}" if op.slot is not None else None,
+            reason=reason,
         )
 
     @property

@@ -715,6 +715,23 @@ class BatterySchedule:
         """User-editable one-shot defaults for the given direction."""
         return self._oneshot_params[direction]
 
+    def current_operation(self) -> BatteryOperation:
+        """Read-only snapshot of the BatteryOperation implied by current state.
+
+        Precedence mirrors `compute_operation`: one-shot > scheduled engaging
+        slot > idle. Pure read — no mutation. Use case: post-reload
+        reconstruction of `BatteryScheduleService._last_op` (before first
+        `compute_operation` tick has a chance to set it). compute_operation
+        keeps its own inline branches because it also mutates aggregate state
+        on engage/disengage transitions.
+        """
+        if self._oneshot is not None:
+            return BatteryOperation.from_oneshot(self._oneshot)
+        if self._currently_engaging is not None:
+            entry = self._today[self._currently_engaging]
+            return BatteryOperation.from_entry(entry)
+        return BatteryOperation.idle()
+
     def set_ems_interventions_blocked_override(self, value: bool) -> bool:
         """Idempotent mutator for the user-controlled override flag — True if changed."""
         if self._interventions_blocked_override == value:

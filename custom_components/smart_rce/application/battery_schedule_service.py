@@ -89,21 +89,16 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         super().__init__(repo)
         self._clock = clock
         self._notifier = notifier
-        # Track last BatteryOperation to skip no-op applies (Etap 2D applier will
-        # use this to avoid spurious Goodwe writes when the op didn't change).
+        # Track last BatteryOperation to skip no-op applies (Etap 2D applier
+        # uses this to avoid spurious Goodwe writes when the op didn't change).
         #
         # Reconstruct from persisted schedule state so the first post-reload
         # tick (which may have battery_soc=None during HA state cache warm-up)
-        # returns the slot that was engaged pre-reload rather than `idle()`.
-        # Without this, a long-running CHARGE/DISCHARGE slot would briefly
-        # report `idle` to downstream consumers (e.g. BatteryChargeService
-        # would flip `needs_charge_toggle` False → write Modbus → flicker).
-        engaging = self._repo.schedule.currently_engaging
-        if engaging is not None:
-            entry = self._repo.schedule.today_entry_for(engaging)
-            self._last_op: BatteryOperation = BatteryOperation.from_entry(entry)
-        else:
-            self._last_op = BatteryOperation.idle()
+        # returns the engagement that was active pre-reload rather than `idle()`.
+        # Without this, a long-running engagement would briefly report `idle`
+        # to downstream consumers (e.g. BatteryChargeService would flip
+        # `needs_charge_toggle` False → write Modbus → flicker).
+        self._last_op: BatteryOperation = self._repo.schedule.current_operation()
 
     @callback
     def update(self, input: BatteryScheduleInput) -> BatteryScheduleUpdateResult:
