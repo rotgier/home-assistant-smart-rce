@@ -19,7 +19,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import SetSlotTargetSocCommand, SlotKind
+from .domain.battery_schedule import Scope, SetSlotTargetSocCommand, SlotKind
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -36,7 +36,11 @@ async def async_setup_entry(
     async_add_entities(
         [
             EmsWaterHeaterReservedNumber(entry),
-            BatteryScheduleSlotTargetSocNumber(entry, kind=SlotKind.DISCHARGE_EVENING),
+            *[
+                BatteryScheduleSlotTargetSocNumber(entry, scope=scope, kind=kind)
+                for scope in ("today", "tomorrow")
+                for kind in SlotKind
+            ],
         ]
     )
 
@@ -80,10 +84,9 @@ class EmsWaterHeaterReservedNumber(NumberEntity):
 
 
 class BatteryScheduleSlotTargetSocNumber(NumberEntity):
-    """Edit target_soc of a today_<kind> BatterySchedule slot.
+    """Edit target_soc of a <scope>_<kind> BatterySchedule slot.
 
-    Etap 2C — validation entity for today_discharge_evening target_soc.
-    Etap 2E extends to all 8 slot kinds. Range 0-100% with 1% step.
+    Etap 2E — instantiated for all 8 slots. Range 0-100% with 1% step.
 
     Validation: `BatteryScheduleEntry.__post_init__` enforces
     `0 <= target_soc <= 100`. UI restricts via min/max, this is the
@@ -99,13 +102,17 @@ class BatteryScheduleSlotTargetSocNumber(NumberEntity):
     _attr_native_step = 1
     _attr_mode = NumberMode.BOX
 
-    def __init__(self, entry: SmartRceConfigEntry, *, kind: SlotKind) -> None:
+    def __init__(
+        self, entry: SmartRceConfigEntry, *, scope: Scope, kind: SlotKind
+    ) -> None:
         self._entry = entry
         self._service = entry.runtime_data.ems.battery_schedule_service
+        self._scope = scope
         self._kind = kind
-        slug = f"today_{kind.name.lower()}_target_soc"
+        slug = f"{scope}_{kind.name.lower()}_target_soc"
         self._attr_name = (
-            f"EMS Schedule Today {kind.name.replace('_', ' ').title()} Target SoC"
+            f"EMS Schedule {scope.title()} "
+            f"{kind.name.replace('_', ' ').title()} Target SoC"
         )
         self._attr_unique_id = f"{DOMAIN}_ems_schedule_{slug}"
         self.entity_id = f"number.ems_schedule_{slug}"
@@ -117,9 +124,9 @@ class BatteryScheduleSlotTargetSocNumber(NumberEntity):
 
     @property
     def native_value(self) -> float:
-        return self._service.today_slot(self._kind).target_soc
+        return self._service.slot(self._scope, self._kind).target_soc
 
     async def async_set_native_value(self, value: float) -> None:
         await self._service.handle_slot_command(
-            SetSlotTargetSocCommand(scope="today", kind=self._kind, value=value)
+            SetSlotTargetSocCommand(scope=self._scope, kind=self._kind, value=value)
         )

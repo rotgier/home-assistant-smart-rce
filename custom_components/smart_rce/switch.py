@@ -22,7 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import SetSlotEnabledCommand, SlotKind
+from .domain.battery_schedule import Scope, SetSlotEnabledCommand, SlotKind
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -39,7 +39,11 @@ async def async_setup_entry(
     async_add_entities(
         [
             EmsInterventionsBlockedSwitch(entry),
-            BatteryScheduleSlotEnabledSwitch(entry, kind=SlotKind.DISCHARGE_EVENING),
+            *[
+                BatteryScheduleSlotEnabledSwitch(entry, scope=scope, kind=kind)
+                for scope in ("today", "tomorrow")
+                for kind in SlotKind
+            ],
         ]
     )
 
@@ -98,15 +102,12 @@ class EmsInterventionsBlockedSwitch(SwitchEntity):
 
 
 class BatteryScheduleSlotEnabledSwitch(SwitchEntity):
-    """Toggle the `enabled` field of a today_<kind> BatterySchedule slot.
+    """Toggle the `enabled` field of a <scope>_<kind> BatterySchedule slot.
 
-    Etap 2C — validation entity for today_discharge_evening (single slot).
-    Etap 2E will instantiate 7 more (today + tomorrow × 4 kinds, minus the
-    1 already here) via the same class.
-
-    `kind` is structural — determines which slot field is mutated. Entity
-    name + entity_id derive from `kind` so each slot has stable identity
-    across reloads.
+    Etap 2E — instantiated for all 8 slots (today + tomorrow × 4 kinds).
+    `scope` + `kind` together identify which entry is mutated. Entity name
+    + entity_id derive from both so each slot has stable identity across
+    reloads.
 
     Persistence: `BatteryScheduleRepository` (own Store, ~1s crash safety
     via SAVE_DELAY=0). Restored at startup before entity init.
@@ -116,13 +117,17 @@ class BatteryScheduleSlotEnabledSwitch(SwitchEntity):
     _attr_should_poll = False
     _attr_icon = "mdi:battery-clock"
 
-    def __init__(self, entry: SmartRceConfigEntry, *, kind: SlotKind) -> None:
+    def __init__(
+        self, entry: SmartRceConfigEntry, *, scope: Scope, kind: SlotKind
+    ) -> None:
         self._entry = entry
         self._service = entry.runtime_data.ems.battery_schedule_service
+        self._scope = scope
         self._kind = kind
-        slug = f"today_{kind.name.lower()}_enabled"
+        slug = f"{scope}_{kind.name.lower()}_enabled"
         self._attr_name = (
-            f"EMS Schedule Today {kind.name.replace('_', ' ').title()} Enabled"
+            f"EMS Schedule {scope.title()} "
+            f"{kind.name.replace('_', ' ').title()} Enabled"
         )
         self._attr_unique_id = f"{DOMAIN}_ems_schedule_{slug}"
         self.entity_id = f"switch.ems_schedule_{slug}"
@@ -134,14 +139,14 @@ class BatteryScheduleSlotEnabledSwitch(SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._service.today_slot(self._kind).enabled
+        return self._service.slot(self._scope, self._kind).enabled
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self._service.handle_slot_command(
-            SetSlotEnabledCommand(scope="today", kind=self._kind, value=True)
+            SetSlotEnabledCommand(scope=self._scope, kind=self._kind, value=True)
         )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self._service.handle_slot_command(
-            SetSlotEnabledCommand(scope="today", kind=self._kind, value=False)
+            SetSlotEnabledCommand(scope=self._scope, kind=self._kind, value=False)
         )

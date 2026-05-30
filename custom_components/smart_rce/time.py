@@ -21,7 +21,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import SetSlotEndCommand, SetSlotStartCommand, SlotKind
+from .domain.battery_schedule import (
+    Scope,
+    SetSlotEndCommand,
+    SetSlotStartCommand,
+    SlotKind,
+)
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -35,21 +40,25 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add smart_rce time entities."""
+    time_fields: list[tuple[str, type[SetSlotStartCommand | SetSlotEndCommand]]] = [
+        ("start", SetSlotStartCommand),
+        ("end", SetSlotEndCommand),
+    ]
     async_add_entities(
         [
             EmsBatteryChargeStartHourOverrideTime(entry),
-            BatteryScheduleSlotTime(
-                entry,
-                kind=SlotKind.DISCHARGE_EVENING,
-                field="start",
-                command_cls=SetSlotStartCommand,
-            ),
-            BatteryScheduleSlotTime(
-                entry,
-                kind=SlotKind.DISCHARGE_EVENING,
-                field="end",
-                command_cls=SetSlotEndCommand,
-            ),
+            *[
+                BatteryScheduleSlotTime(
+                    entry,
+                    scope=scope,
+                    kind=kind,
+                    field=field,
+                    command_cls=command_cls,
+                )
+                for scope in ("today", "tomorrow")
+                for kind in SlotKind
+                for field, command_cls in time_fields
+            ],
         ]
     )
 
@@ -87,12 +96,12 @@ class EmsBatteryChargeStartHourOverrideTime(TimeEntity):
 
 
 class BatteryScheduleSlotTime(TimeEntity):
-    """Edit start/end time of a today_<kind> BatterySchedule slot.
+    """Edit start/end time of a <scope>_<kind> BatterySchedule slot.
 
-    Etap 2C — validation entity for today_discharge_evening start + end.
-    `field` ∈ {"start", "end"} — determines which entry field is mutated
-    and which UI label appears. Etap 2E extends to all 8 slot kinds × 2
-    fields = 16 time entities total.
+    Etap 2E — instantiated for all 8 slots × 2 fields = 16 time entities.
+    `field` ∈ {"start", "end"} — determines read-side label/getattr and
+    pairs with the appropriate Command class (`SetSlotStartCommand` /
+    `SetSlotEndCommand`).
 
     Validation: `BatteryScheduleEntry.__post_init__` enforces
     `start < end` when `enabled=True`. ValueError propagates to HA
@@ -108,17 +117,22 @@ class BatteryScheduleSlotTime(TimeEntity):
         self,
         entry: SmartRceConfigEntry,
         *,
+        scope: Scope,
         kind: SlotKind,
         field: str,
         command_cls: type[SetSlotStartCommand | SetSlotEndCommand],
     ) -> None:
         self._entry = entry
         self._service = entry.runtime_data.ems.battery_schedule_service
+        self._scope = scope
         self._kind = kind
         self._field = field  # "start" or "end" — read-side label + getattr
         self._command_cls = command_cls
-        slug = f"today_{kind.name.lower()}_{field}"
-        self._attr_name = f"EMS Schedule Today {kind.name.replace('_', ' ').title()} {field.capitalize()}"
+        slug = f"{scope}_{kind.name.lower()}_{field}"
+        self._attr_name = (
+            f"EMS Schedule {scope.title()} "
+            f"{kind.name.replace('_', ' ').title()} {field.capitalize()}"
+        )
         self._attr_unique_id = f"{DOMAIN}_ems_schedule_{slug}"
         self.entity_id = f"time.ems_schedule_{slug}"
         self._attr_device_info = ems_device_info(entry)
@@ -129,9 +143,9 @@ class BatteryScheduleSlotTime(TimeEntity):
 
     @property
     def native_value(self) -> time | None:
-        return getattr(self._service.today_slot(self._kind), self._field)
+        return getattr(self._service.slot(self._scope, self._kind), self._field)
 
     async def async_set_value(self, value: time) -> None:
         await self._service.handle_slot_command(
-            self._command_cls(scope="today", kind=self._kind, value=value)
+            self._command_cls(scope=self._scope, kind=self._kind, value=value)
         )

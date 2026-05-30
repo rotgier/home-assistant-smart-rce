@@ -36,6 +36,7 @@ from ..domain.battery_schedule import (
     BatteryOperation,
     BatteryScheduleEntry,
     BatteryScheduleInput,
+    Scope,
     SlotCommand,
     SlotKind,
 )
@@ -207,9 +208,11 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
     # ─── Slot read/write (Etap 2C) ───
 
-    def today_slot(self, kind: SlotKind) -> BatteryScheduleEntry:
-        """Return today_<kind> entry — used by UI entities for read-side."""
-        return self._repo.schedule.today_entry_for(kind)
+    def slot(self, scope: Scope, kind: SlotKind) -> BatteryScheduleEntry:
+        """Return <scope>_<kind> entry — read-side for UI entities."""
+        if scope == "today":
+            return self._repo.schedule.today_entry_for(kind)
+        return self._repo.schedule.tomorrow_entry_for(kind)
 
     async def handle_slot_command(self, cmd: SlotCommand) -> None:
         """Apply a slot Command to the aggregate. Persists + notifies on delta.
