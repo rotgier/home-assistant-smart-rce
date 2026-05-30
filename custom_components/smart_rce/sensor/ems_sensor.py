@@ -155,7 +155,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         icon="mdi:battery-clock",
     ),
     EmsSensorDescription(
-        name="EMS One-Shot Active",
+        name="One-Shot Active",
         # One-shot operation summary: "IDLE", "DISCHARGE → 15% until 17:30",
         # or "CHARGE → 80% until 06:00". Etap 2F — surfaces ad-hoc engagement
         # state for dashboard cards. Aggregate flips on
