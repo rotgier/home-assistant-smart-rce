@@ -146,20 +146,21 @@ class Ems:
             start_charge_hour_override=charge_result.start_charge_hour_override,
         )
         # Resolve final EmsOperation — schedule slot takes precedence over
-        # grid intervention. Today schedule slots are disabled by default so
-        # schedule_op is always idle → grid_op passes through unchanged. Once
-        # Etap 2C/2E activates settable slots, an engaged CHARGE_*/DISCHARGE_*
-        # slot will preempt POSITIVE/NEGATIVE intervention for the slot's
-        # duration.
+        # grid intervention. Active CHARGE_*/DISCHARGE_* slot preempts
+        # POSITIVE/NEGATIVE intervention for the slot's duration.
         #
         # Skip apply when:
         # - user flipped `switch.ems_interventions_blocked` ON (explicit
         #   "smart_rce hands off") — lets user manually drive Goodwe via UI
-        #   without smart_rce overwriting the change next tick.
+        #   without smart_rce overwriting the change next tick. **User-only**
+        #   override flag, NOT combined `ems_interventions_blocked` (which
+        #   includes schedule engagement — skipping on that would deadlock:
+        #   schedule engaging would prevent applier from writing the
+        #   engagement's ems_mode to Goodwe, leaving inverter on stale state).
         # - legacy YAML automation is writing Goodwe this hour
         #   (`other_ems_automation_active_this_hour=True` — retires with Etap 2I-rest).
         if (
-            not schedule_result.ems_interventions_blocked
+            not schedule_result.ems_interventions_blocked_override
             and not state.other_ems_automation_active_this_hour
         ):
             final_op = self._resolve_ems_operation(schedule_result.operation, grid_op)

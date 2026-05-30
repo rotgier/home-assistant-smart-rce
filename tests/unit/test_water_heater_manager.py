@@ -30,6 +30,7 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
         return_value=BatteryScheduleUpdateResult(
             operation=BatteryOperation.idle(),
             ems_interventions_blocked=False,
+            ems_interventions_blocked_override=False,
             schedule_active_this_hour=False,
         )
     )
@@ -740,6 +741,7 @@ def _ems_with_only_upgrade(only_upgrade: bool, *, charge_allowed: bool = True) -
         return_value=BatteryScheduleUpdateResult(
             operation=BatteryOperation.idle(),
             ems_interventions_blocked=False,
+            ems_interventions_blocked_override=False,
             schedule_active_this_hour=False,
         )
     )

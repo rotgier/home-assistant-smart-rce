@@ -62,6 +62,7 @@ class BatteryScheduleUpdateResult:
 
     operation: BatteryOperation
     ems_interventions_blocked: bool
+    ems_interventions_blocked_override: bool
     schedule_active_this_hour: bool
 
 
@@ -152,6 +153,9 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         return BatteryScheduleUpdateResult(
             operation=op,
             ems_interventions_blocked=self._repo.schedule.ems_interventions_blocked,
+            ems_interventions_blocked_override=(
+                self._repo.schedule.ems_interventions_blocked_override
+            ),
             schedule_active_this_hour=self._repo.schedule.is_active_this_hour(
                 self._clock()
             ),
