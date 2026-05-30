@@ -968,9 +968,13 @@ class BatterySchedule:
         events: list[BatteryScheduleEvent] = []
 
         # 1. Day roll detection
+        # TODO: temporarily disabled — today's slots persist across midnight so
+        # user's customizations apply every day until explicit edit. Tomorrow
+        # tab in UI is currently vestigial. Switch to Option B (tomorrow =
+        # deepcopy(today) on roll) when we want tomorrow-overrides back.
         if self.last_seen_date is not None and self.last_seen_date != now.date():
             events.append(DayRolled(from_date=self.last_seen_date, to_date=now.date()))
-            self.roll_day()
+            # self.roll_day()  # disabled — see TODO above
         self.last_seen_date = now.date()
 
         # 2. One-shot — precedence #0 (beats every scheduled slot).

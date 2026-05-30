@@ -455,21 +455,26 @@ class TestDayRoll:
         assert sch.last_seen_date == date(2026, 5, 22)
         assert all(not isinstance(e, DayRolled) for e in evts)
 
-    def test_midnight_crossing_emits_day_rolled_and_shifts_tomorrow_to_today(self):
+    def test_midnight_crossing_emits_day_rolled_but_roll_disabled(self):
+        # Roll is temporarily disabled — today's slots persist across midnight,
+        # tomorrow's slots stay in tomorrow. DayRolled event still fires for
+        # observability but no state shift happens.
         sch = _schedule(tomorrow={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
         # Day 22 — establish last_seen_date.
         sch.compute_operation(_at(23, 0, day=22), 50.0)
-        # Day 23 — roll happens.
+        # Day 23 — DayRolled fires, but tomorrow does NOT shift to today.
         op, evts = sch.compute_operation(_at(20, 30, day=23), 80.0)
-        # DayRolled emitted PLUS SlotEngaged (because tomorrow_discharge_evening
-        # rolled into today_discharge_evening and is in-window).
         rolled = [e for e in evts if isinstance(e, DayRolled)]
         engaged = [e for e in evts if isinstance(e, SlotEngaged)]
         assert len(rolled) == 1
         assert rolled[0].from_date == date(2026, 5, 22)
         assert rolled[0].to_date == date(2026, 5, 23)
-        assert len(engaged) == 1
-        assert op.ems_op.reason == "slot=DISCHARGE_EVENING"
+        # No engagement — today_discharge_evening still at default (disabled).
+        assert len(engaged) == 0
+        assert op.is_idle
+        # Tomorrow slot still present in tomorrow (not shifted).
+        assert sch.tomorrow_entry_for(SlotKind.DISCHARGE_EVENING).enabled is True
+        assert sch.today_entry_for(SlotKind.DISCHARGE_EVENING).enabled is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
