@@ -42,6 +42,8 @@ _DISENGAGE_REASON_LABEL: dict[str, str] = {
     "target_reached": "target SoC reached",
     "window_ended": "time window ended",
     "disabled": "slot disabled",
+    "expired": "deadline expired",
+    "cancelled": "cancelled by user",
 }
 
 
@@ -124,5 +126,26 @@ class BatteryScheduleNotifier:
             )
         if event_type == "DayRolled":
             return None  # midnight roll — internal only, no telegram
+        if event_type == "OneShotStarted":
+            op = event.operation
+            return (
+                f"⚡ One-Shot {op.direction.name} start",
+                (
+                    f"Ad-hoc {op.direction.name.lower()} to {op.target_soc:.0f}% "
+                    f"until {op.end_at.strftime('%H:%M')}."
+                ),
+                NotificationLevel.NORMAL,
+            )
+        if event_type == "OneShotEnded":
+            op = event.operation
+            reason_label = _DISENGAGE_REASON_LABEL.get(event.reason, event.reason)
+            return (
+                f"🏁 One-Shot {op.direction.name} end",
+                (
+                    f"Ad-hoc {op.direction.name.lower()} ended, "
+                    f"reason: {reason_label}."
+                ),
+                NotificationLevel.NORMAL,
+            )
         _LOGGER.warning("BatteryScheduleNotifier: unhandled event type %s", event_type)
         return None

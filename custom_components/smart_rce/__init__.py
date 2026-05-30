@@ -38,6 +38,7 @@ CONF_USER_ID = "smart_rce_user_id"
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
@@ -366,6 +367,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.sensor"))
     reload(import_module("custom_components.smart_rce.ems_device"))
     reload(import_module("custom_components.smart_rce.binary_sensor"))
+    reload(import_module("custom_components.smart_rce.button"))
     reload(import_module("custom_components.smart_rce.switch"))
     reload(import_module("custom_components.smart_rce.select"))
     reload(import_module("custom_components.smart_rce.time"))

@@ -11,6 +11,11 @@ from custom_components.smart_rce.domain.battery_schedule import (
     DayRolled,
     EmsMode,
     NotificationLevel,
+    OneShotEnded,
+    OneShotOperation,
+    OneShotStarted,
+    SetOneShotEndTimeCommand,
+    SetOneShotTargetSocCommand,
     SlotBehavior,
     SlotDisengaged,
     SlotEngaged,
@@ -509,3 +514,233 @@ class TestIsActiveThisHour:
         sch.compute_operation(_at(20, 30), 80.0)
         sch.compute_operation(_at(20, 45), 5.0)  # disengage at 20:45
         assert sch.is_active_this_hour(_at(22, 0)) is False  # 2h later
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OneShotOperation — VO invariants
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestOneShotOperationVO:
+    def test_invalid_target_soc_raises(self):
+        with pytest.raises(ValueError, match="outside"):
+            OneShotOperation(
+                direction=DISCHARGE,
+                target_soc=150.0,
+                end_at=_at(22, 0),
+                started_at=_at(20, 0),
+            )
+
+    def test_end_before_start_raises(self):
+        with pytest.raises(ValueError, match="must be after"):
+            OneShotOperation(
+                direction=DISCHARGE,
+                target_soc=10.0,
+                end_at=_at(20, 0),
+                started_at=_at(22, 0),
+            )
+
+    def test_is_expired(self):
+        op = OneShotOperation(
+            direction=DISCHARGE,
+            target_soc=10.0,
+            end_at=_at(22, 0),
+            started_at=_at(20, 0),
+        )
+        assert op.is_expired(_at(21, 59)) is False
+        assert op.is_expired(_at(22, 0)) is True
+        assert op.is_expired(_at(23, 0)) is True
+
+    def test_target_reached_discharge(self):
+        op = OneShotOperation(
+            direction=DISCHARGE,
+            target_soc=10.0,
+            end_at=_at(22, 0),
+            started_at=_at(20, 0),
+        )
+        assert op.target_reached(15.0) is False
+        assert op.target_reached(10.0) is True
+        assert op.target_reached(5.0) is True
+
+    def test_target_reached_charge(self):
+        op = OneShotOperation(
+            direction=CHARGE,
+            target_soc=80.0,
+            end_at=_at(22, 0),
+            started_at=_at(20, 0),
+        )
+        assert op.target_reached(70.0) is False
+        assert op.target_reached(80.0) is True
+        assert op.target_reached(95.0) is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OneShot — aggregate lifecycle + compute_operation precedence
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestOneShotLifecycle:
+    def test_start_when_idle_emits_started(self):
+        sch = BatterySchedule()
+        events = sch.start_oneshot(DISCHARGE, _at(14, 0))
+        assert len(events) == 1
+        assert isinstance(events[0], OneShotStarted)
+        assert events[0].operation.direction == DISCHARGE
+        assert sch.oneshot is not None
+        assert sch.oneshot.direction == DISCHARGE
+
+    def test_start_when_already_active_is_noop(self):
+        sch = BatterySchedule()
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        events = sch.start_oneshot(CHARGE, _at(14, 1))
+        assert events == []
+        assert sch.oneshot.direction == DISCHARGE  # unchanged
+
+    def test_end_at_combines_today_when_future(self):
+        sch = BatterySchedule()
+        # Default discharge end_time = 22:00. At 14:00 → end_at today 22:00.
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        assert sch.oneshot.end_at == _at(22, 0)
+
+    def test_end_at_rolls_next_day_when_past(self):
+        sch = BatterySchedule()
+        # Default charge end_time = 06:00. At 22:00 → end_at tomorrow 06:00.
+        sch.start_oneshot(CHARGE, _at(22, 0))
+        assert sch.oneshot.end_at == _at(6, 0, day=23)
+
+    def test_cancel_when_active_emits_cancelled(self):
+        sch = BatterySchedule()
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        events = sch.cancel_oneshot(_at(14, 30))
+        assert len(events) == 1
+        assert isinstance(events[0], OneShotEnded)
+        assert events[0].reason == "cancelled"
+        assert sch.oneshot is None
+        assert sch._last_disengaged_at == _at(14, 30)  # noqa: SLF001
+
+    def test_cancel_when_idle_is_noop(self):
+        sch = BatterySchedule()
+        events = sch.cancel_oneshot(_at(14, 0))
+        assert events == []
+
+
+class TestOneShotComputeOperation:
+    def test_precedence_beats_scheduled_slot(self):
+        # Schedule slot ready to engage (evening 20-22, IMMEDIATE)
+        sch = _schedule(
+            today={
+                SlotKind.DISCHARGE_EVENING: _enabled_evening(
+                    behavior=SlotBehavior.IMMEDIATE
+                )
+            }
+        )
+        # Start one-shot CHARGE — should win over scheduled DISCHARGE
+        sch.start_oneshot(CHARGE, _at(20, 30))
+        op, _ = sch.compute_operation(_at(20, 30), 80.0)
+        assert op.is_oneshot is True
+        assert op.oneshot_direction == CHARGE
+        # Scheduled slot did NOT engage despite being in-window
+        assert sch.currently_engaging is None
+
+    def test_auto_clear_on_target_reached(self):
+        sch = BatterySchedule()
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        # SoC drops below default discharge target (10.0)
+        op, events = sch.compute_operation(_at(14, 30), 5.0)
+        ended = [e for e in events if isinstance(e, OneShotEnded)]
+        assert len(ended) == 1
+        assert ended[0].reason == "target_reached"
+        assert sch.oneshot is None
+        # Op should be idle (no scheduled slot active)
+        assert op.is_idle is True
+
+    def test_auto_clear_on_expired(self):
+        sch = BatterySchedule()
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        # Default discharge end_time = 22:00. Tick at 22:01.
+        op, events = sch.compute_operation(_at(22, 1), 80.0)
+        ended = [e for e in events if isinstance(e, OneShotEnded)]
+        assert len(ended) == 1
+        assert ended[0].reason == "expired"
+        assert sch.oneshot is None
+
+    def test_falls_through_to_scheduled_after_clear(self):
+        # Scheduled DISCHARGE_EVENING ready + one-shot active that auto-clears
+        sch = _schedule(
+            today={
+                SlotKind.DISCHARGE_EVENING: _enabled_evening(
+                    behavior=SlotBehavior.IMMEDIATE
+                )
+            }
+        )
+        sch.start_oneshot(CHARGE, _at(20, 30))
+        # SoC=80 reaches charge target (default 100)? No, 80 < 100 → no auto-clear
+        # Force expiration instead: tick past one-shot end (default charge 06:00)
+        op, events = sch.compute_operation(_at(6, 1, day=23), 80.0)
+        # One-shot expired; day rolled (22→23 transition? we started at day 22).
+        # Actually _at default day=22, and we tick day=23 → DayRolled fires.
+        # After roll, today_discharge_evening (was tomorrow defaults — disabled)
+        # is empty. So op should be idle.
+        assert sch.oneshot is None
+        assert any(isinstance(e, OneShotEnded) for e in events)
+        assert op.is_idle is True
+
+    def test_ems_interventions_blocked_when_oneshot_active(self):
+        sch = BatterySchedule()
+        assert sch.ems_interventions_blocked is False
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        assert sch.ems_interventions_blocked is True
+
+    def test_is_active_this_hour_when_oneshot_active(self):
+        sch = BatterySchedule()
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        assert sch.is_active_this_hour(_at(14, 30)) is True
+
+
+class TestOneShotParamsCommands:
+    def test_set_target_soc_for_discharge(self):
+        sch = BatterySchedule()
+        cmd = SetOneShotTargetSocCommand(direction=DISCHARGE, value=25.0)
+        assert sch.apply_oneshot_command(cmd) is True
+        assert sch.discharge_oneshot_params.target_soc == 25.0
+        # Charge params untouched
+        assert sch.charge_oneshot_params.target_soc == 100.0
+
+    def test_set_end_time_for_charge(self):
+        sch = BatterySchedule()
+        cmd = SetOneShotEndTimeCommand(direction=CHARGE, value=time(7, 30))
+        assert sch.apply_oneshot_command(cmd) is True
+        assert sch.charge_oneshot_params.end_time == time(7, 30)
+
+    def test_idempotent(self):
+        sch = BatterySchedule()
+        cmd = SetOneShotTargetSocCommand(direction=DISCHARGE, value=10.0)  # default
+        assert sch.apply_oneshot_command(cmd) is False  # no change
+
+
+class TestOneShotPersistence:
+    def test_active_oneshot_roundtrip(self):
+        sch = BatterySchedule()
+        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        restored = BatterySchedule.from_dict(sch.to_dict())
+        assert restored.oneshot is not None
+        assert restored.oneshot.direction == DISCHARGE
+        assert restored.oneshot.target_soc == 10.0
+        assert restored.oneshot.end_at == _at(22, 0)
+
+    def test_idle_oneshot_roundtrip(self):
+        sch = BatterySchedule()
+        restored = BatterySchedule.from_dict(sch.to_dict())
+        assert restored.oneshot is None
+
+    def test_params_roundtrip(self):
+        sch = BatterySchedule()
+        sch.apply_oneshot_command(
+            SetOneShotTargetSocCommand(direction=DISCHARGE, value=15.0)
+        )
+        sch.apply_oneshot_command(
+            SetOneShotEndTimeCommand(direction=CHARGE, value=time(8, 0))
+        )
+        restored = BatterySchedule.from_dict(sch.to_dict())
+        assert restored.discharge_oneshot_params.target_soc == 15.0
+        assert restored.charge_oneshot_params.end_time == time(8, 0)

@@ -22,7 +22,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .domain.battery_schedule import (
+    CHARGE,
+    DISCHARGE,
+    Direction,
     Scope,
+    SetOneShotEndTimeCommand,
     SetSlotEndCommand,
     SetSlotStartCommand,
     SlotKind,
@@ -59,6 +63,8 @@ async def async_setup_entry(
                 for kind in SlotKind
                 for field, command_cls in time_fields
             ],
+            OneShotEndTime(entry, direction=DISCHARGE),
+            OneShotEndTime(entry, direction=CHARGE),
         ]
     )
 
@@ -148,4 +154,40 @@ class BatteryScheduleSlotTime(TimeEntity):
     async def async_set_value(self, value: time) -> None:
         await self._service.handle_slot_command(
             self._command_cls(scope=self._scope, kind=self._kind, value=value)
+        )
+
+
+class OneShotEndTime(TimeEntity):
+    """Edit end_time param for one-shot operations (per direction).
+
+    Time-of-day; aggregate combines with `now.date()` when user presses
+    Execute. If end_time <= now.time(), aggregate rolls to next day (e.g.
+    discharge until 06:00 started at 22:00 ends tomorrow 06:00).
+    """
+
+    _attr_has_entity_name = False
+    _attr_should_poll = False
+    _attr_icon = "mdi:clock-end"
+
+    def __init__(self, entry: SmartRceConfigEntry, *, direction: Direction) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.battery_schedule_service
+        self._direction = direction
+        slug = f"oneshot_{direction.name.lower()}_end_time"
+        self._attr_name = f"EMS One-Shot {direction.name.title()} End Time"
+        self._attr_unique_id = f"{DOMAIN}_{slug}"
+        self.entity_id = f"time.smart_rce_{slug}"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> time:
+        return self._service.oneshot_params(self._direction).end_time
+
+    async def async_set_value(self, value: time) -> None:
+        await self._service.handle_oneshot_command(
+            SetOneShotEndTimeCommand(direction=self._direction, value=value)
         )

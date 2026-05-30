@@ -19,7 +19,15 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import Scope, SetSlotTargetSocCommand, SlotKind
+from .domain.battery_schedule import (
+    CHARGE,
+    DISCHARGE,
+    Direction,
+    Scope,
+    SetOneShotTargetSocCommand,
+    SetSlotTargetSocCommand,
+    SlotKind,
+)
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -41,6 +49,8 @@ async def async_setup_entry(
                 for scope in ("today", "tomorrow")
                 for kind in SlotKind
             ],
+            OneShotTargetSocNumber(entry, direction=DISCHARGE),
+            OneShotTargetSocNumber(entry, direction=CHARGE),
         ]
     )
 
@@ -129,4 +139,45 @@ class BatteryScheduleSlotTargetSocNumber(NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         await self._service.handle_slot_command(
             SetSlotTargetSocCommand(scope=self._scope, kind=self._kind, value=value)
+        )
+
+
+class OneShotTargetSocNumber(NumberEntity):
+    """Edit target_soc param for one-shot operations (per direction).
+
+    Stored in `BatterySchedule._{discharge,charge}_oneshot_params`. Used when
+    user presses Execute button — aggregate reads stored params to build the
+    OneShotOperation.
+    """
+
+    _attr_has_entity_name = False
+    _attr_should_poll = False
+    _attr_icon = "mdi:battery-charging-50"
+    _attr_native_unit_of_measurement = "%"
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, entry: SmartRceConfigEntry, *, direction: Direction) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.battery_schedule_service
+        self._direction = direction
+        slug = f"oneshot_{direction.name.lower()}_target_soc"
+        self._attr_name = f"EMS One-Shot {direction.name.title()} Target SoC"
+        self._attr_unique_id = f"{DOMAIN}_{slug}"
+        self.entity_id = f"number.smart_rce_{slug}"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return self._service.oneshot_params(self._direction).target_soc
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._service.handle_oneshot_command(
+            SetOneShotTargetSocCommand(direction=self._direction, value=value)
         )

@@ -154,4 +154,23 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: ems.battery_schedule_service.currently_engaging,
         icon="mdi:battery-clock",
     ),
+    EmsSensorDescription(
+        name="EMS One-Shot Active",
+        # One-shot operation summary: "IDLE", "DISCHARGE → 15% until 17:30",
+        # or "CHARGE → 80% until 06:00". Etap 2F — surfaces ad-hoc engagement
+        # state for dashboard cards. Aggregate flips on
+        # start_oneshot/cancel_oneshot or auto-clear in compute_operation
+        # (target_reached/expired).
+        value_fn=lambda ems: _format_oneshot(ems.battery_schedule_service.oneshot),
+        icon="mdi:flash-outline",
+    ),
 )
+
+
+def _format_oneshot(op) -> str:
+    if op is None:
+        return "IDLE"
+    return (
+        f"{op.direction.name} → {op.target_soc:.0f}% "
+        f"until {op.end_at.strftime('%H:%M')}"
+    )

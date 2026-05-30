@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from enum import Enum, StrEnum
 from typing import Any, Final, Literal, Protocol
 
@@ -370,6 +370,113 @@ class BatteryScheduleEntry:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OneShotOperation — synthetic ad-hoc engagement (highest precedence)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+OneShotDisengageReason = Literal["target_reached", "expired", "cancelled"]
+
+
+@dataclass(frozen=True)
+class OneShotOperation:
+    """Active ad-hoc battery operation overriding scheduled slots.
+
+    Created when user presses "Execute" — lives in `BatterySchedule._oneshot`
+    until target_reached/expired (auto-clear in compute_operation) or
+    cancelled (user button). Precedence #0 — beats every scheduled slot.
+
+    Uses absolute datetimes (not time-of-day) so it handles cross-midnight
+    cleanly: user can set end_time=06:00 at 22:00 today, aggregate combines
+    into tomorrow 06:00 when creating this VO.
+    """
+
+    direction: Direction
+    target_soc: float
+    end_at: datetime
+    started_at: datetime
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.target_soc <= 100.0:
+            raise ValueError(f"target_soc {self.target_soc} outside [0, 100]")
+        if self.end_at <= self.started_at:
+            raise ValueError(
+                f"end_at {self.end_at} must be after started_at {self.started_at}"
+            )
+
+    def is_expired(self, now: datetime) -> bool:
+        return now >= self.end_at
+
+    def target_reached(self, current_soc: float) -> bool:
+        if self.direction.is_discharge:
+            return current_soc <= self.target_soc
+        return current_soc >= self.target_soc
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "direction": self.direction.name,
+            "target_soc": self.target_soc,
+            "end_at": self.end_at.isoformat(),
+            "started_at": self.started_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OneShotOperation | None:
+        try:
+            direction = DISCHARGE if data["direction"] == "DISCHARGE" else CHARGE
+            return cls(
+                direction=direction,
+                target_soc=float(data["target_soc"]),
+                end_at=datetime.fromisoformat(data["end_at"]),
+                started_at=datetime.fromisoformat(data["started_at"]),
+            )
+        except (KeyError, ValueError, TypeError):
+            return None
+
+
+@dataclass(frozen=True)
+class OneShotParams:
+    """User-editable defaults for one-shot operations (per direction).
+
+    `end_time` is time-of-day; aggregate combines it with current date when
+    starting a one-shot. If end_time <= now.time(), aggregate rolls to next
+    day (e.g. discharge until 06:00 started at 22:00 ends tomorrow 06:00).
+    """
+
+    target_soc: float
+    end_time: time
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.target_soc <= 100.0:
+            raise ValueError(f"target_soc {self.target_soc} outside [0, 100]")
+
+    def with_target_soc(self, value: float) -> OneShotParams:
+        return dataclasses.replace(self, target_soc=value)
+
+    def with_end_time(self, value: time) -> OneShotParams:
+        return dataclasses.replace(self, end_time=value)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_soc": self.target_soc,
+            "end_time": self.end_time.isoformat(timespec="minutes"),
+        }
+
+    @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], *, default: OneShotParams
+    ) -> OneShotParams:
+        try:
+            return cls(
+                target_soc=float(data.get("target_soc", default.target_soc)),
+                end_time=time.fromisoformat(
+                    data.get("end_time", default.end_time.isoformat(timespec="minutes"))
+                ),
+            )
+        except (ValueError, TypeError):
+            return default
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Commands — mutating actions for slot entries (Command pattern)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -433,6 +540,35 @@ class SetSlotTargetSocCommand:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# One-shot Commands — operate on aggregate (not on Entry like SlotCommand)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class StartOneShotCommand:
+    """Execute one-shot operation in given direction using stored params."""
+
+    direction: Direction
+
+
+@dataclass(frozen=True)
+class CancelOneShotCommand:
+    """Cancel active one-shot operation (no-op if none)."""
+
+
+@dataclass(frozen=True)
+class SetOneShotTargetSocCommand:
+    direction: Direction
+    value: float
+
+
+@dataclass(frozen=True)
+class SetOneShotEndTimeCommand:
+    direction: Direction
+    value: time
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # BatterySchedule — aggregate root
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -443,6 +579,14 @@ def _default_today() -> dict[SlotKind, BatteryScheduleEntry]:
 
 def _default_tomorrow() -> dict[SlotKind, BatteryScheduleEntry]:
     return {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
+
+
+def _default_discharge_oneshot_params() -> OneShotParams:
+    return OneShotParams(target_soc=10.0, end_time=time(22, 0))
+
+
+def _default_charge_oneshot_params() -> OneShotParams:
+    return OneShotParams(target_soc=100.0, end_time=time(6, 0))
 
 
 @dataclass
@@ -469,22 +613,35 @@ class BatterySchedule:
     last_seen_date: date | None = None
     _currently_engaging: SlotKind | None = None
     _interventions_blocked_override: bool = False
-    # When a slot disengages, this records the timestamp so consumers can ask
-    # `is_active_this_hour(now)` — semantics matching legacy HA-side template
-    # `binary_sensor.ems_other_automation_active_this_hour` that GridExportManager
-    # uses to step aside in the clock hour following a smart_rce intervention.
+    # When a slot or one-shot disengages, records the timestamp so consumers
+    # can ask `is_active_this_hour(now)` — semantics matching legacy HA-side
+    # template `binary_sensor.ems_other_automation_active_this_hour` that
+    # GridExportManager uses to step aside in the clock hour following any
+    # smart_rce intervention.
     _last_disengaged_at: datetime | None = None
+    # One-shot operation state: when set, beats every scheduled slot. Auto-
+    # clears in compute_operation on target_reached / expired, or via
+    # cancel_oneshot() on user button.
+    _oneshot: OneShotOperation | None = None
+    _discharge_oneshot_params: OneShotParams = field(
+        default_factory=_default_discharge_oneshot_params
+    )
+    _charge_oneshot_params: OneShotParams = field(
+        default_factory=_default_charge_oneshot_params
+    )
 
     @property
     def ems_interventions_blocked(self) -> bool:
         """True when smart_rce's internal interventions should step aside.
 
-        Either user manually flipped the override (switch.ems_interventions_blocked)
-        or orchestrator engaged a slot (charge/discharge active). Both reasons
-        make DodPolicy stay at DoD=90.
+        Any of: user manually flipped the override, orchestrator engaged a
+        scheduled slot, or a one-shot operation is active. All three make
+        DodPolicy stay at DoD=90 and GridExportManager step aside.
         """
-        return self._interventions_blocked_override or (
-            self._currently_engaging is not None
+        return (
+            self._interventions_blocked_override
+            or self._currently_engaging is not None
+            or self._oneshot is not None
         )
 
     @property
@@ -502,6 +659,21 @@ class BatterySchedule:
         """Slot currently being executed by the orchestrator (None when idle)."""
         return self._currently_engaging
 
+    @property
+    def oneshot(self) -> OneShotOperation | None:
+        """Active one-shot operation, or None when idle."""
+        return self._oneshot
+
+    @property
+    def discharge_oneshot_params(self) -> OneShotParams:
+        """User-editable one-shot defaults for discharge direction."""
+        return self._discharge_oneshot_params
+
+    @property
+    def charge_oneshot_params(self) -> OneShotParams:
+        """User-editable one-shot defaults for charge direction."""
+        return self._charge_oneshot_params
+
     def set_ems_interventions_blocked_override(self, value: bool) -> bool:
         """Idempotent mutator for the user-controlled override flag — True if changed."""
         if self._interventions_blocked_override == value:
@@ -510,7 +682,7 @@ class BatterySchedule:
         return True
 
     def is_active_this_hour(self, now: datetime) -> bool:
-        """Return True if a slot is engaging OR disengaged within current clock hour.
+        """Return True if a slot/one-shot is engaging OR disengaged within current clock hour.
 
         Replaces HA-side `binary_sensor.ems_other_automation_active_this_hour`
         signal (Etap C). Used by `GridExportManager.update` to step aside in
@@ -518,13 +690,77 @@ class BatterySchedule:
         smart_rce slot disengaged — avoids racing the inverter back to
         intervention state immediately after we cleaned up).
         """
-        if self._currently_engaging is not None:
+        if self._currently_engaging is not None or self._oneshot is not None:
             return True
         if self._last_disengaged_at is None:
             return False
         return self._last_disengaged_at.replace(
             minute=0, second=0, microsecond=0
         ) == now.replace(minute=0, second=0, microsecond=0)
+
+    # ─── One-shot lifecycle ───
+
+    def start_oneshot(
+        self, direction: Direction, now: datetime
+    ) -> list[BatteryScheduleEvent]:
+        """Start one-shot using stored params for given direction. Emits OneShotStarted.
+
+        No-op if a one-shot is already active (returns empty events list).
+        Builds end_at by combining stored `end_time` (time-of-day) with
+        `now.date()`. If end_time <= now.time(), rolls to next day — handles
+        cross-midnight ("discharge until 06:00" started at 22:00 → tomorrow
+        06:00).
+        """
+        if self._oneshot is not None:
+            return []
+        params = (
+            self._discharge_oneshot_params
+            if direction.is_discharge
+            else self._charge_oneshot_params
+        )
+        end_at = datetime.combine(now.date(), params.end_time, tzinfo=now.tzinfo)
+        if end_at <= now:
+            end_at = end_at + timedelta(days=1)
+        op = OneShotOperation(
+            direction=direction,
+            target_soc=params.target_soc,
+            end_at=end_at,
+            started_at=now,
+        )
+        self._oneshot = op
+        return [OneShotStarted(operation=op, at=now)]
+
+    def cancel_oneshot(self, now: datetime) -> list[BatteryScheduleEvent]:
+        """Cancel active one-shot. Emits OneShotEnded(reason='cancelled') if was active."""
+        if self._oneshot is None:
+            return []
+        cancelled = self._oneshot
+        self._oneshot = None
+        self._last_disengaged_at = now
+        return [OneShotEnded(operation=cancelled, reason="cancelled", at=now)]
+
+    def apply_oneshot_command(
+        self,
+        cmd: SetOneShotTargetSocCommand | SetOneShotEndTimeCommand,
+    ) -> bool:
+        """Update stored one-shot params for the targeted direction. True if changed."""
+        is_discharge = cmd.direction.is_discharge
+        current = (
+            self._discharge_oneshot_params
+            if is_discharge
+            else self._charge_oneshot_params
+        )
+        if isinstance(cmd, SetOneShotTargetSocCommand):
+            new = current.with_target_soc(cmd.value)
+        else:
+            new = current.with_end_time(cmd.value)
+        if new == current:
+            return False
+        if is_discharge:
+            self._discharge_oneshot_params = new
+        else:
+            self._charge_oneshot_params = new
+        return True
 
     def today_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
         return dict(self._today)
@@ -584,7 +820,19 @@ class BatterySchedule:
             self.roll_day()
         self.last_seen_date = now.date()
 
-        # 2. Already engaging? Stick until target_reached / window_ended / disabled.
+        # 2. One-shot — precedence #0 (beats every scheduled slot).
+        # Auto-clears on target_reached/expired; falls through to scheduled
+        # logic after clearing so a scheduled slot can immediately take over
+        # if it's in-window.
+        if self._oneshot is not None:
+            reason = self._oneshot_disengage_reason(now, current_soc)
+            if reason is None:
+                return BatteryOperation.from_oneshot(self._oneshot), events
+            events.append(OneShotEnded(operation=self._oneshot, reason=reason, at=now))
+            self._oneshot = None
+            self._last_disengaged_at = now
+
+        # 3. Already engaging? Stick until target_reached / window_ended / disabled.
         if self._currently_engaging is not None:
             entry = self.today_entry_for(self._currently_engaging)
             disengage_reason = _disengage_reason(entry, now, current_soc)
@@ -603,7 +851,7 @@ class BatterySchedule:
             self._last_disengaged_at = now
             # Fall through — another slot might be ready to engage immediately.
 
-        # 3. Find highest-precedence slot that should engage NOW.
+        # 4. Find highest-precedence slot that should engage NOW.
         entry = self._find_engaging_entry(now, current_soc)
         if entry is not None:
             events.append(SlotEngaged(slot=entry.kind, soc=current_soc, at=now))
@@ -620,6 +868,17 @@ class BatterySchedule:
             today[k] for k in _PRECEDENCE if today[k].should_apply_now(now, current_soc)
         ]
         return engaging[-1] if engaging else None
+
+    def _oneshot_disengage_reason(
+        self, now: datetime, current_soc: float
+    ) -> OneShotDisengageReason | None:
+        if self._oneshot is None:
+            return None
+        if self._oneshot.is_expired(now):
+            return "expired"
+        if self._oneshot.target_reached(current_soc):
+            return "target_reached"
+        return None
 
     def roll_day(self) -> None:
         """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
@@ -646,6 +905,9 @@ class BatterySchedule:
                 if self._last_disengaged_at is not None
                 else None
             ),
+            "oneshot": self._oneshot.to_dict() if self._oneshot is not None else None,
+            "discharge_oneshot_params": self._discharge_oneshot_params.to_dict(),
+            "charge_oneshot_params": self._charge_oneshot_params.to_dict(),
         }
 
     @classmethod
@@ -677,6 +939,19 @@ class BatterySchedule:
             except (TypeError, ValueError):
                 last_disengaged_at = None
 
+        oneshot: OneShotOperation | None = None
+        if raw_oneshot := data.get("oneshot"):
+            oneshot = OneShotOperation.from_dict(raw_oneshot)
+
+        discharge_params = OneShotParams.from_dict(
+            data.get("discharge_oneshot_params", {}),
+            default=_default_discharge_oneshot_params(),
+        )
+        charge_params = OneShotParams.from_dict(
+            data.get("charge_oneshot_params", {}),
+            default=_default_charge_oneshot_params(),
+        )
+
         return cls(
             _today={k: _entry("today", k) for k in SlotKind},
             _tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
@@ -686,6 +961,9 @@ class BatterySchedule:
                 data.get("interventions_blocked_override", False)
             ),
             _last_disengaged_at=last_disengaged_at,
+            _oneshot=oneshot,
+            _discharge_oneshot_params=discharge_params,
+            _charge_oneshot_params=charge_params,
         )
 
 
@@ -757,10 +1035,15 @@ class BatteryOperation:
     needs_charge_toggle: bool
     notification_level: NotificationLevel
     slot: SlotKind | None
+    oneshot_direction: Direction | None = None
 
     @property
     def is_idle(self) -> bool:
-        return self.slot is None
+        return self.slot is None and self.oneshot_direction is None
+
+    @property
+    def is_oneshot(self) -> bool:
+        return self.oneshot_direction is not None
 
     @classmethod
     def idle(cls) -> BatteryOperation:
@@ -781,6 +1064,20 @@ class BatteryOperation:
             needs_charge_toggle=d.needs_charge_toggle,
             notification_level=entry.kind.profile.notification_level,
             slot=entry.kind,
+        )
+
+    @classmethod
+    def from_oneshot(cls, op: OneShotOperation) -> BatteryOperation:
+        d = op.direction
+        return cls(
+            ems_mode=d.ems_mode,
+            power_limit_w=d.power_limit_w,
+            needs_charge_toggle=d.needs_charge_toggle,
+            # Always NORMAL — one-shot is deliberate user action, no voice
+            # call needed (and EMERGENCY would be jarring at arbitrary hours).
+            notification_level=NotificationLevel.NORMAL,
+            slot=None,
+            oneshot_direction=d,
         )
 
 
@@ -828,3 +1125,26 @@ class DayRolled(BatteryScheduleEvent):
 
     from_date: date
     to_date: date
+
+
+@dataclass(frozen=True)
+class OneShotStarted(BatteryScheduleEvent):
+    """One-shot operation just started — user pressed Execute."""
+
+    operation: OneShotOperation
+    at: datetime
+
+
+@dataclass(frozen=True)
+class OneShotEnded(BatteryScheduleEvent):
+    """One-shot operation ended.
+
+    `reason` distinguishes:
+    - "target_reached" — SoC reached target (normal completion)
+    - "expired" — `now >= end_at` reached
+    - "cancelled" — user pressed Cancel button
+    """
+
+    operation: OneShotOperation
+    reason: OneShotDisengageReason
+    at: datetime

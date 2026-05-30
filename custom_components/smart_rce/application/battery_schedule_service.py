@@ -36,7 +36,12 @@ from ..domain.battery_schedule import (
     BatteryOperation,
     BatteryScheduleEntry,
     BatteryScheduleInput,
+    Direction,
+    OneShotOperation,
+    OneShotParams,
     Scope,
+    SetOneShotEndTimeCommand,
+    SetOneShotTargetSocCommand,
     SlotCommand,
     SlotKind,
 )
@@ -229,3 +234,50 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         renders as service call failure; UI restricts ranges, defense in depth).
         """
         await self._persist_and_notify(self._repo.schedule.apply_slot_command(cmd))
+
+    # ─── One-shot (Etap 2F) ───
+
+    @property
+    def oneshot(self) -> OneShotOperation | None:
+        """Active one-shot operation, or None when idle."""
+        return self._repo.schedule.oneshot
+
+    def oneshot_params(self, direction: Direction) -> OneShotParams:
+        """User-editable one-shot defaults for the given direction."""
+        if direction.is_discharge:
+            return self._repo.schedule.discharge_oneshot_params
+        return self._repo.schedule.charge_oneshot_params
+
+    async def handle_start_oneshot(self, direction: Direction) -> None:
+        """Start a one-shot operation in the given direction. Persists + notifies."""
+        events = self._repo.schedule.start_oneshot(direction, self._clock())
+        if not events:
+            return
+        await self._repo.persist()
+        for event in events:
+            _LOGGER.info("BatteryScheduleEvent: %s", event)
+            if self._notifier is not None:
+                self._notifier.notify(event)
+        self._notify_all()
+
+    async def handle_cancel_oneshot(self) -> None:
+        """Cancel active one-shot. Persists + notifies if was active."""
+        events = self._repo.schedule.cancel_oneshot(self._clock())
+        if not events:
+            return
+        await self._repo.persist()
+        for event in events:
+            _LOGGER.info("BatteryScheduleEvent: %s", event)
+            if self._notifier is not None:
+                self._notifier.notify(event)
+        self._notify_all()
+
+    async def handle_oneshot_command(
+        self, cmd: SetOneShotTargetSocCommand | SetOneShotEndTimeCommand
+    ) -> None:
+        """Apply one-shot params Command. Persists + notifies on delta.
+
+        `OneShotParams.__post_init__` validates target_soc range and raises
+        ValueError on bad input — propagates to entity callback.
+        """
+        await self._persist_and_notify(self._repo.schedule.apply_oneshot_command(cmd))
