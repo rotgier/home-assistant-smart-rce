@@ -67,8 +67,8 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         icon="mdi:battery-arrow-down-outline",
     ),
     EmsBinarySensorDescription(
-        name="Balanced Upgrade Active",
-        value_fn=lambda ems: ems.water_heater.balanced_upgrade_active,
+        name="Heater Upgrade Active",
+        value_fn=lambda ems: ems.water_heater.heater_upgrade_active,
         icon="mdi:arrow-up-bold",
     ),
     EmsBinarySensorDescription(

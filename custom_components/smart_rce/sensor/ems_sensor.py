@@ -25,7 +25,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class EmsSensor(StateWriterMixin):
-    """EMS diagnostic sensor (heater_budget, balanced_baseline)."""
+    """EMS diagnostic sensor (heater_budget, heater_baseline, etc.)."""
 
     _attr_has_entity_name = True
     entity_description: EmsSensorDescription
