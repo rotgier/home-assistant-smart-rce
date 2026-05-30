@@ -273,6 +273,9 @@ class BatteryScheduleEntry:
     def with_target_soc(self, value: float) -> BatteryScheduleEntry:
         return dataclasses.replace(self, target_soc=value)
 
+    def with_behavior(self, value: SlotBehavior) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, behavior=value)
+
     def to_battery_operation(self) -> BatteryOperation:
         """Build BatteryOperation (output) from this slot entry.
 
@@ -566,6 +569,16 @@ class SetSlotTargetSocCommand:
 
     def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry:
         return entry.with_target_soc(self.value)
+
+
+@dataclass(frozen=True)
+class SetSlotBehaviorCommand:
+    scope: Scope
+    kind: SlotKind
+    value: SlotBehavior
+
+    def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry:
+        return entry.with_behavior(self.value)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
