@@ -1,32 +1,45 @@
-"""PvForecastService — application service orchestrating weather-adjusted PV estimates.
+"""PvForecastService — application service orchestrating PV forecast pipeline.
 
-DDD application layer (analog Ems in application/ems.py): read from driving
-adapters (Solcast, weather) → call domain `PvForecast.update_*` → notify
-listeners. State + algorithms live in domain — Service is pure orchestration.
+DDD application layer. Reads driving adapters (Solcast, weather, live rates,
+charge slots) and pushes data as semantic VOs to two domain aggregates:
 
-HASS-FREE: dependencies injected by `pv_forecast_factory.py` (composition
-root). Service does not know about HomeAssistant — sync→async wrapping
-(`hass.async_create_task` for daily refresh) is done in the factory.
+- `PvForecastCatalog` — owns "what PV looks like": 8 forecast strategies +
+  extrapolation + PV-side live signals (live_pv_power_w, bucket_so_far,
+  derivative, stability).
+- `PvForecast` — owns "what battery target SoC results from forecast +
+  consumption": target_soc_* cache + consumption profiles + cons-side live
+  signal + pre-charge gates.
 
-Public callbacks (`on_*`) are wired in the factory:
-- weather_listener.async_add_listener(service.on_weather_update)
-- async_track_state_change_event(SOLCAST_*, service.on_solcast_*_change)
-- async_track_time_change(05:55, factory wrapper → service.refresh_profiles)
+Service writes via VOs (`LivePvSignals`, `TargetSocInputs`), never field-by-
+field. Catalog update methods are trigger-source-named (match HA events);
+service does NOT know which strategies a trigger touches.
+
+Update sequence per tick:
+1. `_refresh_inputs()` — read 4 PV signals + 1 cons signal + 2 start_charge
+   gates from `LiveRateReader` / `ChargeSlots`; push to catalog/forecast as VOs.
+2. `catalog.update_from_X(...)` or `catalog.tick_minute(...)` — catalog
+   refreshes affected forecast strategies + raw solcast_live.
+3. `forecast.recalculate_target_soc(catalog, now)` — derive target_soc_*
+   from catalog state + consumption profiles.
+4. `_notify_listeners()` — fan out to sensors.
+
+HASS-FREE: dependencies injected by `pv_forecast_factory.py`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date
 import logging
 
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
-from ..domain import pv_forecast, pv_forecast_extrapolation
+from ..domain import pv_forecast
 from ..domain.charge_slots import ChargeSlots
-from ..domain.pv_forecast import PvForecast, WeatherConditionAtHour
+from ..domain.pv_forecast import PvForecast, TargetSocInputs, WeatherConditionAtHour
+from ..domain.pv_forecast_catalog import LivePvSignals, PvForecastCatalog
 from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -45,11 +58,12 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class PvForecastService:
-    """Orchestrates Solcast/weather reads → PvForecast aggregate updates → listeners."""
+    """Orchestrates Solcast/weather reads → catalog updates → target_soc recalc → listeners."""
 
     def __init__(
         self,
         hass: HomeAssistant,
+        catalog: PvForecastCatalog,
         forecast: PvForecast,
         solcast: SolcastReader,
         weather_listener: WeatherForecastListener,
@@ -60,6 +74,7 @@ class PvForecastService:
         charge_slots: ChargeSlots,
     ) -> None:
         self._hass = hass
+        self.catalog = catalog
         self.forecast = forecast
         self._solcast = solcast
         self._weather_listener = weather_listener
@@ -76,156 +91,69 @@ class PvForecastService:
         self._profile_retry_cancel: Callable[[], None] | None = None
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
 
+    # ─── Public orchestration ──────────────────────────────────────────────
+
     def recalculate_all(self) -> None:
-        """Recalculate all forecasts (at_6, live, tomorrow) + extrapolated + notify."""
+        """Recalculate every forecast variant + target_soc + notify (weather refresh / init)."""
         self._recalculate_at6()
         self._recalculate_live()
         self._recalculate_tomorrow()
-        self._recalculate_extrapolated()
+        self._tick_extrapolated()
+        self._recalculate_target_soc_now()
         self._notify_listeners()
 
-    def _recalculate_extrapolated(self) -> None:
-        """Recompute extrapolated live variants — called every minute + after forecast updates.
+    # ─── HA event callbacks ────────────────────────────────────────────────
 
-        Synchronous — operates on cached `_realized_pv_today` (refreshed by
-        `refresh_realized_pv` async path on minute tick / startup).
+    @callback
+    def on_weather_update(self) -> None:
+        """Weather forecast changed — recalculate all (history+forecast affects all)."""
+        self.recalculate_all()
+
+    @callback
+    def on_solcast_at6_change(self, event: Event) -> None:
+        """Solcast at_6 snapshot changed — refresh AT_6 strategy + target_soc."""
+        self._recalculate_at6()
+        self._recalculate_target_soc_now()
+        self._notify_listeners()
+
+    @callback
+    def on_solcast_live_change(self, event: Event) -> None:
+        """Solcast live changed — refresh LIVE + extrap variants + target_soc."""
+        self._recalculate_live()
+        self._tick_extrapolated()
+        self._recalculate_target_soc_now()
+        self._notify_listeners()
+
+    @callback
+    def on_solcast_tomorrow_change(self, event: Event) -> None:
+        """Solcast tomorrow changed — refresh TOMORROW_AT_6 + TOMORROW_LIVE + target_soc."""
+        self._recalculate_tomorrow()
+        self._recalculate_target_soc_now()
+        self._notify_listeners()
+
+    @callback
+    def on_charge_slots_change(self) -> None:
+        """Coordinator updated — `ChargeSlots.tomorrow` may have shifted.
+
+        Catches: initial setup race (ChargeSlots empty during first
+        `recalculate_all`) and runtime shift after RCE-tomorrow prices
+        arrive ~14:00 and optimal pre-charge window moves.
         """
-        if not self.forecast.adjusted_live:
-            self.forecast.extrapolated_live_pattern = (
-                pv_forecast.ExtrapolatedLive.empty()
-            )
-            self.forecast.extrapolated_live_proportional = (
-                pv_forecast.ExtrapolatedLive.empty()
-            )
-            self.forecast.extrapolated_live_band = pv_forecast.ExtrapolatedLive.empty()
-            self.forecast.extrapolated_live_band_recent = (
-                pv_forecast.ExtrapolatedLive.empty()
-            )
-            return
+        self._refresh_inputs(dt_util.now())
+        self._recalculate_target_soc_now()
+        self._notify_listeners()
 
-        now = dt_util.now()
-        pv_w = self._live_rates.read_pv_power_w()
-        cons_w = self._live_rates.read_consumption_w()
-        pv_so_far_kwh = self._live_rates.read_pv_bucket_so_far_kwh()
-        # Pre-charge gate (used by target_soc calculation inside extrapolations
-        # + propagated to non-extrapolated target_soc via `self.forecast`).
-        sch = self._live_rates.read_start_charge_hour_today_override()
-        self.forecast.start_charge_hour_today = sch
-        # Refresh aggregate state used by chart patch + extrapolations
-        # (mirrors what `_refresh_start_charge_hour` does for the
-        # update_at_6 / update_live paths — the minute tick lands here
-        # directly so we set the fields explicitly).
-        self.forecast.live_pv_power_w = pv_w
-        self.forecast.live_consumption_w = cons_w
-        self.forecast.pv_bucket_so_far_kwh = pv_so_far_kwh
-        self.forecast.live_pv_derivative_w_per_min = (
-            self._live_rates.read_pv_derivative_w_per_min()
-        )
-        self.forecast.pv_stability_stable = self._live_rates.read_pv_stability_stable()
+    @callback
+    def on_minute_tick(self) -> None:
+        """Per-minute cron — refresh extrap variants + target_soc."""
+        self._tick_extrapolated()
+        self._recalculate_target_soc_now()
+        self._notify_listeners()
 
-        # Domain owns the chart in-progress patch — uniform across `live` +
-        # `at_6` + all strategy variants. No-op when live signals missing.
-        # update_live / update_at_6 paths already patch on fresh forecast;
-        # here the per-minute tick refreshes both with newer pv_w / so_far.
-        self.forecast.apply_chart_in_progress_patch(now)
-
-        self.forecast.extrapolated_live_pattern = (
-            pv_forecast_extrapolation.extrapolate_calibrated_pattern(
-                self.forecast.adjusted_live,
-                self.forecast.solcast_live,
-                now,
-                pv_so_far_kwh,
-                self._realized_pv_today,
-                pv_power_w_5min=pv_w,
-                consumption_w=cons_w,
-                start_charge_hour=sch,
-            )
-        )
-        self.forecast.extrapolated_live_proportional = (
-            pv_forecast_extrapolation.extrapolate_proportional_median(
-                self.forecast.adjusted_live,
-                self.forecast.solcast_live,
-                now,
-                pv_so_far_kwh,
-                self._realized_pv_today,
-                pv_power_w_5min=pv_w,
-                consumption_w=cons_w,
-                start_charge_hour=sch,
-            )
-        )
-        self.forecast.extrapolated_live_band = (
-            pv_forecast_extrapolation.extrapolate_band_clamped(
-                self.forecast.adjusted_live,
-                self.forecast.solcast_live,
-                now,
-                pv_so_far_kwh,
-                self._realized_pv_today,
-                pv_power_w_5min=pv_w,
-                consumption_w=cons_w,
-                start_charge_hour=sch,
-            )
-        )
-        self.forecast.extrapolated_live_band_recent = (
-            pv_forecast_extrapolation.extrapolate_band_clamped_recent(
-                self.forecast.adjusted_live,
-                self.forecast.solcast_live,
-                now,
-                pv_so_far_kwh,
-                self._realized_pv_today,
-                pv_power_w_5min=pv_w,
-                consumption_w=cons_w,
-                start_charge_hour=sch,
-            )
-        )
-
-    async def refresh_realized_pv(self) -> None:
-        """Fetch today's realized PV per bucket from recorder; cache for next recalc."""
-        try:
-            self._realized_pv_today = await self._realized_pv_loader.fetch_today(
-                dt_util.now().date()
-            )
-        except Exception:  # noqa: BLE001 — defensive, don't crash integration
-            _LOGGER.exception("Failed to fetch realized PV history")
-
-    def _refresh_start_charge_hour(self) -> None:
-        """Refresh forecast.start_charge_hour_{today,tomorrow}.
-
-        Called before each recalc path so target_soc variants inside
-        `PvForecast._recalculate_target_soc` see the current pre-charge
-        gates:
-        - today  : `input_datetime.rce_start_charge_hour_today_override`
-          (user manual override, stable HA state outside smart_rce).
-        - tomorrow: `ChargeSlots.tomorrow.start_hour` — domain source,
-          owned by the same integration. Sourcing from the domain (vs.
-          reading `sensor.rce_start_charge_hour_tomorrow_time` we publish
-          ourselves) avoids a self-referential race where the sensor is
-          still `unavailable` during the first recalc after a reload.
-        """
-        self.forecast.start_charge_hour_today = (
-            self._live_rates.read_start_charge_hour_today_override()
-        )
-        tomorrow_slot = self._charge_slots.tomorrow
-        self.forecast.start_charge_hour_tomorrow = (
-            int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
-        )
-        # Live signals propagated to the aggregate. Used by:
-        # - `ConsumptionProfile.to_view` / `AdjustedPvForecast.to_profile`
-        #   in `_recalculate_target_soc` (integrate in-progress vs current power)
-        # - `PvForecast.apply_chart_in_progress_patch` (chart in-progress dot
-        #   reflects realized so-far + 5-min extrapolation)
-        # - extrapolation `_compute_*_score` (current bucket realized rate)
-        self.forecast.live_consumption_w = self._live_rates.read_consumption_w()
-        self.forecast.live_pv_power_w = self._live_rates.read_pv_power_w()
-        self.forecast.pv_bucket_so_far_kwh = (
-            self._live_rates.read_pv_bucket_so_far_kwh()
-        )
-        self.forecast.live_pv_derivative_w_per_min = (
-            self._live_rates.read_pv_derivative_w_per_min()
-        )
-        self.forecast.pv_stability_stable = self._live_rates.read_pv_stability_stable()
+    # ─── Catalog update paths (semantic, no field writes) ──────────────────
 
     def _recalculate_at6(self) -> None:
-        """Recalculate AT6 forecast.
+        """Refresh AT_6 forecast strategy.
 
         Before 6:01 — use live Solcast (has forecast fetched at 22:00).
         After 6:01 — use at_6 snapshot (fresh for today).
@@ -238,84 +166,86 @@ class PvForecastService:
         if not solcast_periods:
             return
         weather = self._build_weather(now.date())
-        self._refresh_start_charge_hour()
-        self.forecast.update_at_6(solcast_periods, weather, now)
+        self._refresh_inputs(now)
+        self.catalog.update_from_solcast_at_6(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
-        """Recalculate live weather-adjusted forecast."""
+        """Refresh LIVE forecast strategy + raw solcast_live for extrap."""
         solcast_periods = self._solcast.read_live()
         if not solcast_periods:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
-        self._refresh_start_charge_hour()
-        self.forecast.update_live(solcast_periods, weather, now)
+        self._refresh_inputs(now)
+        self.catalog.update_from_solcast_live(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
-        """Recalculate tomorrow forecast — both AT6 and LIVE variants."""
+        """Refresh TOMORROW_AT_6 + TOMORROW_LIVE — both variants from same source."""
         solcast_periods = self._solcast.read_tomorrow()
         if not solcast_periods:
             return
         now = dt_util.now()
-        tomorrow = (now + timedelta(days=1)).date()
-        weather = self._build_weather(tomorrow)
-        self._refresh_start_charge_hour()
-        self.forecast.update_tomorrow(solcast_periods, weather, now)
+        weather = self._build_weather(now.date())
+        self._refresh_inputs(now)
+        self.catalog.update_from_solcast_tomorrow(solcast_periods, weather, now)
 
-    def _build_weather(self, day: date) -> list[WeatherConditionAtHour]:
-        """Combine weather history (past hours) + live forecast (future hours).
+    def _tick_extrapolated(self) -> None:
+        """Per-minute extrap recompute + chart in-progress patch (catalog-internal)."""
+        now = dt_util.now()
+        self._refresh_inputs(now)
+        self.catalog.tick_minute(
+            now=now,
+            realized_pv_today=self._realized_pv_today,
+            consumption_w=self.forecast.inputs.live_consumption_w,
+            start_charge_hour=self.forecast.inputs.start_charge_hour_today,
+        )
 
-        Multi-caller helper — used by 3× `_recalculate_*`. Pure orchestration:
-        read 2 sources + delegate merge to domain `merge_weather_conditions`.
+    # ─── TargetSoc recalc (forecast aggregate) ─────────────────────────────
+
+    def _recalculate_target_soc_now(self) -> None:
+        """Pull current catalog state + recompute target_soc_*. Cheap (pure)."""
+        self.forecast.recalculate_target_soc(self.catalog, dt_util.now())
+
+    # ─── Input VO builders — read boundary, push to aggregates ─────────────
+
+    def _refresh_inputs(self, now) -> None:  # noqa: ARG002 — kept for parity / future use
+        """Read live signals + pre-charge gates; push to catalog/forecast as VOs.
+
+        Single helper replacing the previous 10-field write pattern. Service
+        knows the boundary readers (LiveRateReader, ChargeSlots), aggregates
+        receive atomic snapshots via their semantic update methods.
         """
-        history = self._weather_history.get_conditions_for_date(day)
-        forecast = self._weather_listener.forecast_conditions
-        return pv_forecast.merge_weather_conditions(history, forecast)
+        self.catalog.refresh_live_signals(
+            LivePvSignals(
+                pv_power_w=self._live_rates.read_pv_power_w(),
+                bucket_so_far_kwh=self._live_rates.read_pv_bucket_so_far_kwh(),
+                derivative_w_per_min=self._live_rates.read_pv_derivative_w_per_min(),
+                stability_stable=self._live_rates.read_pv_stability_stable(),
+            )
+        )
+        tomorrow_slot = self._charge_slots.tomorrow
+        self.forecast.refresh_inputs(
+            TargetSocInputs(
+                live_consumption_w=self._live_rates.read_consumption_w(),
+                start_charge_hour_today=(
+                    self._live_rates.read_start_charge_hour_today_override()
+                ),
+                start_charge_hour_tomorrow=(
+                    int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
+                ),
+            )
+        )
 
-    @callback
-    def on_weather_update(self) -> None:
-        """Weather forecast changed — recalculate all (history+forecast affects all)."""
-        self.recalculate_all()
+    # ─── Consumption profiles refresh (async I/O paths) ────────────────────
 
-    @callback
-    def on_solcast_at6_change(self, event: Event) -> None:
-        """Solcast at_6 snapshot changed — recalculate at_6."""
-        self._recalculate_at6()
-        self._notify_listeners()
-
-    @callback
-    def on_solcast_live_change(self, event: Event) -> None:
-        """Solcast live changed — recalculate live + extrapolated."""
-        self._recalculate_live()
-        self._recalculate_extrapolated()
-        self._notify_listeners()
-
-    @callback
-    def on_solcast_tomorrow_change(self, event: Event) -> None:
-        """Solcast tomorrow changed — recalculate tomorrow."""
-        self._recalculate_tomorrow()
-        self._notify_listeners()
-
-    @callback
-    def on_charge_slots_change(self) -> None:
-        """Coordinator updated — `ChargeSlots.tomorrow` may have shifted.
-
-        Wired against `rce_coordinator.async_add_listener`. Triggers on
-        each successful coordinator refresh; cheap, idempotent. Catches:
-        - initial setup race (ChargeSlots is empty during the first
-          `recalculate_all` because first_refresh hasn't run yet),
-        - runtime shift after the RCE-tomorrow prices arrive ~14:00 and
-          the optimal pre-charge window moves.
-        """
-        self._refresh_start_charge_hour()
-        self.forecast.recalculate_target_soc(dt_util.now())
-        self._notify_listeners()
-
-    @callback
-    def on_minute_tick(self) -> None:
-        """Per-minute cron — refresh extrapolated variants (remaining_fraction shrinks)."""
-        self._recalculate_extrapolated()
-        self._notify_listeners()
+    async def refresh_realized_pv(self) -> None:
+        """Fetch today's realized PV per bucket from recorder; cache for next recalc."""
+        try:
+            self._realized_pv_today = await self._realized_pv_loader.fetch_today(
+                dt_util.now().date()
+            )
+        except Exception:  # noqa: BLE001 — defensive, don't crash integration
+            _LOGGER.exception("Failed to fetch realized PV history")
 
     async def refresh_profiles_full(self) -> None:
         """Full refresh (today + tomorrow anchors) + recalc + listener notify.
@@ -334,7 +264,7 @@ class PvForecastService:
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
             _LOGGER.exception("Failed to refresh consumption profiles (full)")
             return
-        self.forecast.recalculate_target_soc(now)
+        self.forecast.recalculate_target_soc(self.catalog, now)
         self._notify_listeners()
         self._maybe_schedule_profile_retry()
 
@@ -355,7 +285,7 @@ class PvForecastService:
         except Exception:  # noqa: BLE001 — defensive
             _LOGGER.exception("Failed to refresh consumption profiles (tomorrow)")
             return
-        self.forecast.recalculate_target_soc(now)
+        self.forecast.recalculate_target_soc(self.catalog, now)
         self._notify_listeners()
 
     def _maybe_schedule_profile_retry(self) -> None:
@@ -391,6 +321,18 @@ class PvForecastService:
         if self._profile_retry_cancel is not None:
             self._profile_retry_cancel()
             self._profile_retry_cancel = None
+
+    # ─── Helpers + listener fan-out ────────────────────────────────────────
+
+    def _build_weather(self, day: date) -> list[WeatherConditionAtHour]:
+        """Combine weather history (past hours) + live forecast (future hours).
+
+        Pure orchestration: read 2 sources + delegate merge to domain
+        `merge_weather_conditions`.
+        """
+        history = self._weather_history.get_conditions_for_date(day)
+        forecast = self._weather_listener.forecast_conditions
+        return pv_forecast.merge_weather_conditions(history, forecast)
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         """Register listener for forecast/SoC change events. Returns unsubscribe fn."""

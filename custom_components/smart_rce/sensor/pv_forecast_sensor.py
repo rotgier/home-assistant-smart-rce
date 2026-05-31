@@ -15,7 +15,7 @@ from ..application.pv_forecast_service import PvForecastService
 from ..const import DOMAIN
 from ..coordinator import SmartRceDataUpdateCoordinator
 from ..domain.bucket import Bucket
-from ..domain.pv_forecast import PvForecast
+from ..domain.pv_forecast_catalog import PvForecastCatalog, PvStrategy
 from ._state_writer_mixin import StateWriterMixin
 
 UNIQUE_ID_PREFIX: Final = DOMAIN
@@ -121,47 +121,47 @@ def _target_soc_trace_attrs(result, profile=None) -> dict[str, Any]:
     return attrs
 
 
-def _effective_derivative(forecast: PvForecast) -> float:
+def _effective_derivative(catalog: PvForecastCatalog) -> float:
     """Return the derivative to feed the ramp formula, gated on stability.
 
-    Returns `live_pv_derivative_w_per_min` when the stability binary is
+    Returns `signals.derivative_w_per_min` when the stability binary is
     True AND the value is available; 0.0 otherwise. A 0.0 derivative
     collapses the ramp integral back to the constant-power formula —
     so callers can pass this unconditionally to `Bucket.full_bucket_kwh`.
     """
-    if (
-        forecast.pv_stability_stable
-        and forecast.live_pv_derivative_w_per_min is not None
-    ):
-        return forecast.live_pv_derivative_w_per_min
+    signals = catalog.signals
+    if signals.stability_stable and signals.derivative_w_per_min is not None:
+        return signals.derivative_w_per_min
     return 0.0
 
 
-def _bucket_end_constant_kwh(forecast: PvForecast) -> float | None:
-    """Projected in-progress bucket kWh assuming constant `live_pv_power_w`."""
-    if forecast.live_pv_power_w is None or forecast.pv_bucket_so_far_kwh is None:
+def _bucket_end_constant_kwh(catalog: PvForecastCatalog) -> float | None:
+    """Projected in-progress bucket kWh assuming constant `signals.pv_power_w`."""
+    signals = catalog.signals
+    if signals.pv_power_w is None or signals.bucket_so_far_kwh is None:
         return None
     return Bucket.full_bucket_kwh(
-        dt_util.now(), forecast.live_pv_power_w, forecast.pv_bucket_so_far_kwh
+        dt_util.now(), signals.pv_power_w, signals.bucket_so_far_kwh
     )
 
 
-def _bucket_end_derivative_kwh(forecast: PvForecast) -> float | None:
+def _bucket_end_derivative_kwh(catalog: PvForecastCatalog) -> float | None:
     """Projected in-progress bucket kWh using ramp when derivative is stable."""
-    if forecast.live_pv_power_w is None or forecast.pv_bucket_so_far_kwh is None:
+    signals = catalog.signals
+    if signals.pv_power_w is None or signals.bucket_so_far_kwh is None:
         return None
     return Bucket.full_bucket_kwh(
         dt_util.now(),
-        forecast.live_pv_power_w,
-        forecast.pv_bucket_so_far_kwh,
-        derivative_w_per_min=_effective_derivative(forecast),
+        signals.pv_power_w,
+        signals.bucket_so_far_kwh,
+        derivative_w_per_min=_effective_derivative(catalog),
     )
 
 
-def _bucket_end_derivative_delta_kwh(forecast: PvForecast) -> float | None:
+def _bucket_end_derivative_delta_kwh(catalog: PvForecastCatalog) -> float | None:
     """Derivative-aware minus constant projection — zero when ramp inactive."""
-    deriv_kwh = _bucket_end_derivative_kwh(forecast)
-    const_kwh = _bucket_end_constant_kwh(forecast)
+    deriv_kwh = _bucket_end_derivative_kwh(catalog)
+    const_kwh = _bucket_end_constant_kwh(catalog)
     if deriv_kwh is None or const_kwh is None:
         return None
     return deriv_kwh - const_kwh
@@ -171,31 +171,31 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # --- Weather-adjusted PV forecast (kWh, default unit) ---
     PvForecastSensorDescription(
         name="Weather Adjusted PV At 6",
-        value_fn=lambda pv: pv.forecast.adjusted_at_6.total_kwh
-        if pv.forecast.adjusted_at_6
+        value_fn=lambda pv: pv.catalog.get(PvStrategy.AT_6).total_kwh
+        if pv.catalog.get(PvStrategy.AT_6)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_at_6),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.catalog.get(PvStrategy.AT_6)),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live",
-        value_fn=lambda pv: pv.forecast.adjusted_live.total_kwh
-        if pv.forecast.adjusted_live
+        value_fn=lambda pv: pv.catalog.get(PvStrategy.LIVE).total_kwh
+        if pv.catalog.get(PvStrategy.LIVE)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_live),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.catalog.get(PvStrategy.LIVE)),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Tomorrow At 6",
-        value_fn=lambda pv: pv.forecast.adjusted_tomorrow.total_kwh
-        if pv.forecast.adjusted_tomorrow
+        value_fn=lambda pv: pv.catalog.get(PvStrategy.TOMORROW_AT_6).total_kwh
+        if pv.catalog.get(PvStrategy.TOMORROW_AT_6)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_tomorrow),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.catalog.get(PvStrategy.TOMORROW_AT_6)),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Tomorrow Live",
-        value_fn=lambda pv: pv.forecast.adjusted_tomorrow_live.total_kwh
-        if pv.forecast.adjusted_tomorrow_live
+        value_fn=lambda pv: pv.catalog.get(PvStrategy.TOMORROW_LIVE).total_kwh
+        if pv.catalog.get(PvStrategy.TOMORROW_LIVE)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecast.adjusted_tomorrow_live),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.catalog.get(PvStrategy.TOMORROW_LIVE)),
     ),
     # --- Extrapolated live variants (per-minute tick) ---
     # state = kWh remaining today (past excluded, current scaled)
@@ -203,30 +203,38 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # (chart-friendly — same shape as Adj PV Live so adjusted_pv() helper works)
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Pattern",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_pattern.remaining_kwh,
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_PATTERN
+        ).remaining_kwh,
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecast.extrapolated_live_pattern.adjusted
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_PATTERN).adjusted
         ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Proportional",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_proportional.remaining_kwh,
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_PROPORTIONAL
+        ).remaining_kwh,
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecast.extrapolated_live_proportional.adjusted
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_PROPORTIONAL).adjusted
         ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Band",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_band.remaining_kwh,
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_BAND
+        ).remaining_kwh,
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecast.extrapolated_live_band.adjusted
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_BAND).adjusted
         ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Band Recent",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_band_recent.remaining_kwh,
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_BAND_RECENT
+        ).remaining_kwh,
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecast.extrapolated_live_band_recent.adjusted
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_BAND_RECENT).adjusted
         ),
     ),
     # --- In-progress bucket projection observability (Phase C.1) ---
@@ -237,24 +245,24 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # patch to use ramp (Phase C.2).
     PvForecastSensorDescription(
         name="PV Bucket End Constant",
-        value_fn=lambda pv: _bucket_end_constant_kwh(pv.forecast),
+        value_fn=lambda pv: _bucket_end_constant_kwh(pv.catalog),
     ),
     PvForecastSensorDescription(
         name="PV Bucket End Derivative",
-        value_fn=lambda pv: _bucket_end_derivative_kwh(pv.forecast),
+        value_fn=lambda pv: _bucket_end_derivative_kwh(pv.catalog),
     ),
     PvForecastSensorDescription(
         name="PV Bucket End Derivative Delta",
-        value_fn=lambda pv: _bucket_end_derivative_delta_kwh(pv.forecast),
+        value_fn=lambda pv: _bucket_end_derivative_delta_kwh(pv.catalog),
     ),
     # --- Target SOC (%) ---
     PvForecastSensorDescription(
         name="Target Battery SOC At 6",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.target_soc.value
-        if pv.forecast.target_soc
+        value_fn=lambda pv: pv.forecast.target_soc_at_6.value
+        if pv.forecast.target_soc_at_6
         else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(pv.forecast.target_soc),
+        attr_fn=lambda pv: _target_soc_trace_attrs(pv.forecast.target_soc_at_6),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live",
@@ -267,10 +275,12 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     PvForecastSensorDescription(
         name="Target Battery SOC Tomorrow At 6",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.target_soc_tomorrow.value
-        if pv.forecast.target_soc_tomorrow
+        value_fn=lambda pv: pv.forecast.target_soc_tomorrow_at_6.value
+        if pv.forecast.target_soc_tomorrow_at_6
         else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(pv.forecast.target_soc_tomorrow),
+        attr_fn=lambda pv: _target_soc_trace_attrs(
+            pv.forecast.target_soc_tomorrow_at_6
+        ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Tomorrow Live",
@@ -286,41 +296,49 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Pattern",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_pattern.target_soc.value
-        if pv.forecast.extrapolated_live_pattern.target_soc
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_PATTERN
+        ).target_soc.value
+        if pv.catalog.get_extrapolated(PvStrategy.EXTRAP_PATTERN).target_soc
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.extrapolated_live_pattern.target_soc
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_PATTERN).target_soc
         ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Proportional",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_proportional.target_soc.value
-        if pv.forecast.extrapolated_live_proportional.target_soc
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_PROPORTIONAL
+        ).target_soc.value
+        if pv.catalog.get_extrapolated(PvStrategy.EXTRAP_PROPORTIONAL).target_soc
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.extrapolated_live_proportional.target_soc
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_PROPORTIONAL).target_soc
         ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Band",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_band.target_soc.value
-        if pv.forecast.extrapolated_live_band.target_soc
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_BAND
+        ).target_soc.value
+        if pv.catalog.get_extrapolated(PvStrategy.EXTRAP_BAND).target_soc
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.extrapolated_live_band.target_soc
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_BAND).target_soc
         ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Band Recent",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.forecast.extrapolated_live_band_recent.target_soc.value
-        if pv.forecast.extrapolated_live_band_recent.target_soc
+        value_fn=lambda pv: pv.catalog.get_extrapolated(
+            PvStrategy.EXTRAP_BAND_RECENT
+        ).target_soc.value
+        if pv.catalog.get_extrapolated(PvStrategy.EXTRAP_BAND_RECENT).target_soc
         else None,
         attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.forecast.extrapolated_live_band_recent.target_soc
+            pv.catalog.get_extrapolated(PvStrategy.EXTRAP_BAND_RECENT).target_soc
         ),
     ),
     # --- Prev-workday instrumentation (Etap A) — today ---

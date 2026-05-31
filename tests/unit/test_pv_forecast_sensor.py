@@ -6,7 +6,10 @@ from datetime import datetime
 from unittest.mock import patch
 
 from custom_components.smart_rce.domain.bucket import Bucket
-from custom_components.smart_rce.domain.pv_forecast import PvForecast
+from custom_components.smart_rce.domain.pv_forecast_catalog import (
+    LivePvSignals,
+    PvForecastCatalog,
+)
 from custom_components.smart_rce.sensor.pv_forecast_sensor import (
     _bucket_end_constant_kwh,
     _bucket_end_derivative_delta_kwh,
@@ -15,9 +18,33 @@ from custom_components.smart_rce.sensor.pv_forecast_sensor import (
 )
 
 
-def _forecast(**kwargs) -> PvForecast:
-    """Build a PvForecast with only the live-signal fields set (rest defaults)."""
-    return PvForecast(**kwargs)
+# Field rename: catalog.signals uses shorter names than the previous PvForecast
+# fields. Old → new mapping when migrating tests:
+#   live_pv_power_w               → pv_power_w
+#   pv_bucket_so_far_kwh          → bucket_so_far_kwh
+#   live_pv_derivative_w_per_min  → derivative_w_per_min
+#   pv_stability_stable           → stability_stable
+def _catalog(
+    *,
+    live_pv_power_w: float | None = None,
+    pv_bucket_so_far_kwh: float | None = None,
+    live_pv_derivative_w_per_min: float | None = None,
+    pv_stability_stable: bool | None = None,
+) -> PvForecastCatalog:
+    """Build a PvForecastCatalog with only live PV signals set (helpers' inputs)."""
+    catalog = PvForecastCatalog()
+    catalog.refresh_live_signals(
+        LivePvSignals(
+            pv_power_w=live_pv_power_w,
+            bucket_so_far_kwh=pv_bucket_so_far_kwh,
+            derivative_w_per_min=live_pv_derivative_w_per_min,
+            stability_stable=pv_stability_stable,
+        )
+    )
+    return catalog
+
+
+_forecast = _catalog  # backwards-compat alias so legacy test bodies keep working
 
 
 def test_effective_derivative_returns_value_when_stable_and_set() -> None:

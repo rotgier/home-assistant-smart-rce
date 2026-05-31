@@ -42,13 +42,8 @@ from homeassistant.util import dt as dt_util
 
 from ..application.pv_forecast_service import PvForecastService
 from ..domain import pv_forecast as pv_forecast_module
-from ..domain.pv_forecast import (
-    AdjustedPvForecast,
-    ConsumptionProfile,
-    ExtrapolatedLive,
-    PvForecast,
-    PvProfile,
-)
+from ..domain.pv_forecast import ConsumptionProfile, PvProfile
+from ..domain.pv_forecast_catalog import PvForecastCatalog, PvStrategy
 from ..domain.target_soc_matrix import ConsLabel, TargetSocMatrix, compute_matrix
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -115,24 +110,27 @@ class TargetSocMatrixService:
         is_today = target_date == today
         is_tomorrow = target_date == today + timedelta(days=1)
         forecast = self._pv_forecast_service.forecast
+        catalog = self._pv_forecast_service.catalog
 
         # Now-aware only for today's matrix. Toggle defaults to ON when
         # the input_boolean is missing or in an unknown state — explicit
         # "off" needed to revert to full-window simulation. Both live
         # signals must be available too (fail-hard contract on to_view /
         # to_profile when `now` is given).
+        live_cons_w_raw = forecast.inputs.live_consumption_w
+        live_pv_w_raw = catalog.signals.pv_power_w
         now_aware = (
             is_today
             and self._now_aware_enabled()
-            and forecast.live_consumption_w is not None
-            and forecast.live_pv_power_w is not None
+            and live_cons_w_raw is not None
+            and live_pv_w_raw is not None
         )
         matrix_now: datetime | None = now if now_aware else None
-        live_cons_w = forecast.live_consumption_w if now_aware else None
-        live_pv_w = forecast.live_pv_power_w if now_aware else None
+        live_cons_w = live_cons_w_raw if now_aware else None
+        live_pv_w = live_pv_w_raw if now_aware else None
 
         pv_profiles = self._pv_profiles(
-            forecast,
+            catalog,
             is_today=is_today,
             target_date=target_date,
             now=matrix_now,
@@ -173,9 +171,9 @@ class TargetSocMatrixService:
         )
         source_day_pv_sums = await self._source_day_pv_sums(cons_source_dates)
         sch = (
-            forecast.start_charge_hour_today
+            forecast.inputs.start_charge_hour_today
             if is_today
-            else forecast.start_charge_hour_tomorrow
+            else forecast.inputs.start_charge_hour_tomorrow
         )
 
         matrix = compute_matrix(
@@ -210,7 +208,7 @@ class TargetSocMatrixService:
 
     def _pv_profiles(
         self,
-        forecast: PvForecast,
+        catalog: PvForecastCatalog,
         *,
         is_today: bool,
         target_date: date,
@@ -230,8 +228,9 @@ class TargetSocMatrixService:
         """
         keys = _TODAY_PV_KEYS if is_today else _TOMORROW_PV_KEYS
         out: dict[str, PvProfile] = {}
+        resolver_map = _TODAY_PV_RESOLVERS if is_today else _TOMORROW_PV_RESOLVERS
         for key in keys:
-            adjusted = self._pv_source(forecast, key, is_today)
+            adjusted = catalog.get(resolver_map[key])
             if adjusted is None or not adjusted.forecast:
                 continue
             try:
@@ -242,15 +241,6 @@ class TargetSocMatrixService:
                 # Strategy has no periods for target_date (date-picker out of range).
                 continue
         return out
-
-    @staticmethod
-    def _pv_source(
-        forecast: PvForecast, key: str, is_today: bool
-    ) -> AdjustedPvForecast | None:
-        """Resolve a strategy key → AdjustedPvForecast on the aggregate."""
-        if is_today:
-            return _TODAY_PV_RESOLVERS[key](forecast)
-        return _TOMORROW_PV_RESOLVERS[key](forecast)
 
     # --- Cons inputs --- #
 
@@ -317,35 +307,21 @@ class TargetSocMatrixService:
         return out
 
 
-# --- PV-strategy resolver tables (closed-over forecast → AdjustedPvForecast) --- #
+# --- PV-strategy resolver tables (matrix key → catalog PvStrategy) --- #
 
 
-def _live_extrap_adjusted(
-    extrap_fn,
-) -> callable:
-    """Bind a getter from ExtrapolatedLive bundle to its `.adjusted` field."""
-
-    def _resolver(forecast: PvForecast) -> AdjustedPvForecast | None:
-        bundle: ExtrapolatedLive = extrap_fn(forecast)
-        return bundle.adjusted if bundle is not None else None
-
-    return _resolver
-
-
-_TODAY_PV_RESOLVERS: dict[str, callable] = {
-    "at_6": lambda f: f.adjusted_at_6,
-    "live": lambda f: f.adjusted_live,
-    "extrap_pattern": _live_extrap_adjusted(lambda f: f.extrapolated_live_pattern),
-    "extrap_propor": _live_extrap_adjusted(lambda f: f.extrapolated_live_proportional),
-    "extrap_band": _live_extrap_adjusted(lambda f: f.extrapolated_live_band),
-    "extrap_band_recent": _live_extrap_adjusted(
-        lambda f: f.extrapolated_live_band_recent
-    ),
+_TODAY_PV_RESOLVERS: dict[str, PvStrategy] = {
+    "at_6": PvStrategy.AT_6,
+    "live": PvStrategy.LIVE,
+    "extrap_pattern": PvStrategy.EXTRAP_PATTERN,
+    "extrap_propor": PvStrategy.EXTRAP_PROPORTIONAL,
+    "extrap_band": PvStrategy.EXTRAP_BAND,
+    "extrap_band_recent": PvStrategy.EXTRAP_BAND_RECENT,
 }
 
-_TOMORROW_PV_RESOLVERS: dict[str, callable] = {
-    "at_6": lambda f: f.adjusted_tomorrow,
-    "live": lambda f: f.adjusted_tomorrow_live,
+_TOMORROW_PV_RESOLVERS: dict[str, PvStrategy] = {
+    "at_6": PvStrategy.TOMORROW_AT_6,
+    "live": PvStrategy.TOMORROW_LIVE,
 }
 
 

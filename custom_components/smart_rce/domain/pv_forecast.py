@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from .bucket import Bucket, Buckets
 from .consumption_profiles import (
@@ -27,6 +27,7 @@ from .consumption_profiles import (
     ConsumptionProfiles,
     ConsumptionProfileSource,
 )
+from .pv_strategy import PvStrategy
 from .target_soc import (
     BATTERY_CAPACITY_KWH,
     BUFFER_PERCENT,
@@ -38,6 +39,9 @@ from .target_soc import (
     TargetSocResult,
     calculate_target_soc,
 )
+
+if TYPE_CHECKING:
+    from .pv_forecast_catalog import PvForecastCatalog
 
 __all__ = [
     "BATTERY_CAPACITY_KWH",
@@ -293,41 +297,58 @@ class ExtrapolatedLive:
         return cls(adjusted=None, remaining_kwh=None, target_soc=None)
 
 
-# --- Aggregate (rich domain model) --- #
+# --- TargetSoc inputs VO (passed atomically from service) --- #
+
+
+@dataclass(frozen=True)
+class TargetSocInputs:
+    """Cons-side live + pre-charge gates — passed atomically to PvForecast.
+
+    Replaces 3 separate field writes on the aggregate from application
+    service. Service builds via `LiveRateReader` once per tick, hands to
+    `forecast.refresh_inputs(inputs)`.
+
+    Pre-charge gates apply to `calculate_target_soc` so a sunny pre-charge
+    hour's surplus cannot mask a later deficit (battery doesn't charge
+    from PV when `battery_charge_max_current_toggle=False` — hourly
+    surplus is exported, not stored).
+    """
+
+    live_consumption_w: float | None = None
+    start_charge_hour_today: int | None = None
+    start_charge_hour_tomorrow: int | None = None
+
+
+# --- Aggregate (rich domain model, TargetSoc concern) --- #
 
 
 @dataclass
 class PvForecast:
-    """Aggregate holding current weather-adjusted PV estimates + target SoC.
+    """Aggregate owning TargetSoc derivation from forecast catalog + consumption baselines.
 
-    State + behavior together (rich domain model). Update methods take value
-    objects (already built by application service from driving adapters) —
-    domain knows nothing about data sources (HA states), only their semantics.
+    Reads PV forecast scenarios + PV-side live signals from
+    `PvForecastCatalog` (collaborator). Owns the consumption side:
+    cons-side live signal + start_charge_hour gates (via `TargetSocInputs`),
+    consumption baselines (rich `ConsumptionProfiles` entity), and the
+    derived `target_soc_*` cache.
 
-    8 forecast/SoC fields + prev-workday matrix (Etap A instrumentation):
-    - adjusted_*: weather-adjusted PV estimates (today/tomorrow × at_6/live)
-    - target_soc_*: implied battery SOC target (today/tomorrow × at_6/live)
-    - consumption_profiles: rich `ConsumptionProfiles` entity holding two
-      anchor sets (today + tomorrow), each PREV_DAYS_COUNT long. Knows
-      how to refresh itself + retry on partial fetch.
-    - target_soc_*_prev_days: per-prev-workday target SOC (parallel to
-      `consumption_profiles.today_profiles` /
-      `consumption_profiles.tomorrow_profiles` respectively)
-    - target_soc_max / target_soc_tomorrow_max: max(live + prev_days) — final
-      decision input for automations.
+    `target_soc_*` field naming: `at_6` / `live` suffix on every variant
+    (no implicit "default") — symmetric across today and tomorrow axes.
+
+    Forecast computation lives in `PvForecastCatalog` (DDD split). Catalog
+    backcompat properties below preserve sensor / matrix reads that still
+    walk `forecast.adjusted_live` / `forecast.live_pv_power_w` style paths;
+    future cleanup migrates those consumers to read catalog directly.
     """
 
-    adjusted_at_6: AdjustedPvForecast | None = None
-    adjusted_live: AdjustedPvForecast | None = None
-    adjusted_tomorrow: AdjustedPvForecast | None = None
-    adjusted_tomorrow_live: AdjustedPvForecast | None = None
-    target_soc: TargetSocResult | None = None
-    target_soc_live: TargetSocResult | None = None
-    target_soc_tomorrow: TargetSocResult | None = None
-    target_soc_tomorrow_live: TargetSocResult | None = None
+    _inputs: TargetSocInputs = field(default_factory=TargetSocInputs)
     consumption_profiles: ConsumptionProfiles = field(
         default_factory=lambda: ConsumptionProfiles.empty()
     )
+    target_soc_at_6: TargetSocResult | None = None
+    target_soc_live: TargetSocResult | None = None
+    target_soc_tomorrow_at_6: TargetSocResult | None = None
+    target_soc_tomorrow_live: TargetSocResult | None = None
     target_soc_prev_days: list[TargetSocResult | None] = field(
         default_factory=lambda: [None] * PREV_DAYS_COUNT
     )
@@ -336,187 +357,28 @@ class PvForecast:
     )
     target_soc_max: int | None = None
     target_soc_tomorrow_max: int | None = None
-    # Raw Solcast live periods (preserved alongside adjusted_live) — needed by
-    # the calibrated_pattern extrapolation variant which uses pv_estimate +
-    # pv_estimate10 (raw range, not weather-adjusted) as the projection axis.
-    solcast_live: list[SolcastPeriod] = field(default_factory=list)
-    # Extrapolated live variants — recomputed every minute. Four future-bucket
-    # projection strategies (see domain/pv_forecast_extrapolation.py):
-    #   - extrapolated_live_pattern : weighted realization factor → projected
-    #                                 onto future buckets via [p10, est, p90]
-    #   - extrapolated_live_proportional : proportional-to-median scoring
-    #                                 (S = (real-est)/est, no p10/p90 dependence)
-    #   - extrapolated_live_band         : 2-zone score [p10, p90] (no est)
-    #   - extrapolated_live_band_recent  : band scoring, narrow lookback
-    # Each bundles adjusted (chart), remaining_kwh (state), and
-    # target_soc (SOC% for 7-13 deficit). All variants share the
-    # uniform in-progress bucket treatment baked into to_profile() —
-    # live pv_power_w_5min over remaining seconds — so they differ
-    # ONLY in their future bucket projection. Consumption uses the
-    # flat baseline shifted by live consumption.
-    extrapolated_live_pattern: ExtrapolatedLive = field(
-        default_factory=ExtrapolatedLive.empty
-    )
-    extrapolated_live_proportional: ExtrapolatedLive = field(
-        default_factory=ExtrapolatedLive.empty
-    )
-    extrapolated_live_band: ExtrapolatedLive = field(
-        default_factory=ExtrapolatedLive.empty
-    )
-    extrapolated_live_band_recent: ExtrapolatedLive = field(
-        default_factory=ExtrapolatedLive.empty
-    )
-    # Hour (0..23) marking the boundary between pre-charge and post-charge in
-    # today's 7-13 window. Read from `input_datetime.rce_start_charge_hour_today_override`.
-    # Used by calculate_target_soc to clamp inter-hour surplus during
-    # pre-charge (battery doesn't charge from PV → surplus exported, not stored).
-    # None = no gate (legacy behavior; accumulate freely).
-    start_charge_hour_today: int | None = None
-    # Same gate for tomorrow — read from `sensor.rce_start_charge_hour_tomorrow_time`.
-    # No user-facing override sensor yet; can be swapped later. Applied to
-    # `target_soc_tomorrow*` so surplus from a sunny pre-charge hour doesn't
-    # mask a real deficit later in the window.
-    start_charge_hour_tomorrow: int | None = None
-    # Live house consumption rate (W) — sourced from
-    # `sensor.house_consumption_minus_water_avg_5_minutes` via
-    # `LiveRateReader.read_consumption_w()`. Integrated by
-    # `ConsumptionProfile.to_view` over the remaining seconds in the
-    # in-progress bucket to produce live kWh-remaining for today's
-    # target_soc variants.
-    live_consumption_w: float | None = None
-    # Live PV generation rate (W) — sourced from
-    # `sensor.pv_power_avg_5_minutes` via `LiveRateReader.read_pv_power_w()`.
-    # Symmetric counterpart of `live_consumption_w`: integrated by
-    # `AdjustedPvForecast.to_profile` for the in-progress bucket of
-    # today's PV-side variants.
-    live_pv_power_w: float | None = None
-    # Realized PV kWh in the current in-progress bucket (utility meter
-    # so-far). Combined with `live_pv_power_w` via `Bucket.full_bucket_kwh`
-    # to drive the chart in-progress patch + strategy score realized rate.
-    pv_bucket_so_far_kwh: float | None = None
-    # Live PV power first derivative (W/min) from
-    # `sensor.pv_power_derivative_avg_2min`. Phase C: feeds the optional
-    # ramp formula `P(t) = P0 + r·t` for in-progress bucket projection.
-    # Ignored when `pv_stability_stable` is not True.
-    live_pv_derivative_w_per_min: float | None = None
-    # Stability gate for the derivative signal (from
-    # `binary_sensor.pv_derivative_is_stable`). True → derivative is
-    # steady enough to use as a slope; False/None → fall back to
-    # constant-power projection.
-    pv_stability_stable: bool | None = None
 
-    def update_at_6(
-        self,
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> None:
-        """Update morning (AT6) snapshot — adjusted_at_6 + downstream target SOC."""
-        adjusted = self._adjust_pv_forecast_at6(solcast_periods, weather_conditions)
-        self.adjusted_at_6 = self._apply_chart_in_progress_patch(now, adjusted)
-        self._recalculate_target_soc(now)
+    # — Read accessor —
 
-    def update_live(
-        self,
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> None:
-        """Update live forecast — adjusted_live + raw solcast_live + downstream target SOC."""
-        self.solcast_live = solcast_periods
-        adjusted = self._adjust_pv_forecast_live(
-            solcast_periods, weather_conditions, now
-        )
-        self.adjusted_live = self._apply_chart_in_progress_patch(now, adjusted)
-        self._recalculate_target_soc(now)
+    @property
+    def inputs(self) -> TargetSocInputs:
+        """Read-only snapshot of cons-side live + pre-charge gates."""
+        return self._inputs
 
-    def apply_chart_in_progress_patch(self, now: datetime) -> None:
-        """Refresh in-progress period of every today adjusted variant in place.
+    # — Update methods (Tell-Don't-Ask) —
 
-        Service per-minute hook — single call rescales `adjusted_live` AND
-        `adjusted_at_6` to reflect newer `live_pv_power_w` /
-        `pv_bucket_so_far_kwh`. No-op for variants currently set to None
-        (early startup before the first solcast update).
+    def refresh_inputs(self, inputs: TargetSocInputs) -> None:
+        """Atomic snapshot of cons-side live + pre-charge gates."""
+        self._inputs = inputs
 
-        Per-forecast variant (used by `update_live` / `update_at_6` on
-        freshly built forecasts) lives in private
-        `_apply_chart_in_progress_patch(now, adjusted)`.
-        """
-        if self.adjusted_live is not None:
-            self.adjusted_live = self._apply_chart_in_progress_patch(
-                now, self.adjusted_live
-            )
-        if self.adjusted_at_6 is not None:
-            self.adjusted_at_6 = self._apply_chart_in_progress_patch(
-                now, self.adjusted_at_6
-            )
+    def recalculate_target_soc(self, catalog: PvForecastCatalog, now: datetime) -> None:
+        """Recompute target_soc_* cache from catalog forecasts + consumption profiles.
 
-    def _apply_chart_in_progress_patch(
-        self, now: datetime, adjusted: AdjustedPvForecast
-    ) -> AdjustedPvForecast:
-        """Return `adjusted` with its in-progress period rescaled, or unchanged.
-
-        Rescale = full-bucket estimate (realized so-far + remaining via
-        5-min power); unchanged when live signals aren't set.
-
-        Aggregate-level policy: which kWh value goes into the in-progress
-        period (uniform across `adjusted_at_6`, `adjusted_live`, and all
-        strategy variants in `pv_forecast_extrapolation`). Source of truth:
-        `Bucket.full_bucket_kwh × 2` (kWh/h rate) — same value the strategy
-        score consumes as `realized_rate` and `to_profile(now, pv_power_w_5min)`
-        extracts as `live_remaining_kwh` (remaining-only portion).
-
-        Callers pass the adjusted forecast they want patched; the method
-        keeps the policy (read live signals, decide no-op vs patch) on the
-        aggregate so each call site stays single-line.
-        """
-        if self.live_pv_power_w is None or self.pv_bucket_so_far_kwh is None:
-            return adjusted
-        return adjusted.with_now_aware_in_progress(
-            now=now,
-            pv_power_w_5min=self.live_pv_power_w,
-            pv_bucket_so_far_kwh=self.pv_bucket_so_far_kwh,
-        )
-
-    def update_tomorrow(
-        self,
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> None:
-        """Update tomorrow snapshots — adjusted_tomorrow (AT6 mods) + adjusted_tomorrow_live (LIVE mods).
-
-        Two variants with DIFFERENT adjustment semantics:
-        - adjusted_tomorrow      — AT6 modifiers (pessimistic, cloudy cap @ hour 7).
-                                   Evening planning: safety lower-bound.
-        - adjusted_tomorrow_live — LIVE modifiers (optimistic, no cap).
-                                   After midnight rollover: aligns with target_soc_live
-                                   for continuity (yesterday's target_soc_tomorrow_live
-                                   ~ today's target_soc_live).
-        """
-        self.adjusted_tomorrow = self._adjust_pv_forecast_at6(
-            solcast_periods, weather_conditions
-        )
-        # _adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
-        # For tomorrow's periods (date = tomorrow) no match → all periods use
-        # standard LIVE modifiers (no special first-hour treatment).
-        self.adjusted_tomorrow_live = self._adjust_pv_forecast_live(
-            solcast_periods, weather_conditions, now
-        )
-        self._recalculate_target_soc(now)
-
-    def recalculate_target_soc(self, now: datetime) -> None:
-        """Public hook used by `ConsumptionProfiles.refresh_*` callers.
-
-        The entity mutates `consumption_profiles.today_profiles` /
-        `tomorrow_profiles` in place; the aggregate then refreshes its
-        downstream `target_soc_*` cache via this public method (private
-        `_recalculate_target_soc` remains for internal use).
-        """
-        self._recalculate_target_soc(now)
-
-    def _recalculate_target_soc(self, now: datetime) -> None:
-        """Calculate target SOC from current adjusted_* + consumption_profiles.
+        Public hook used by `ConsumptionProfiles.refresh_*` callers and by
+        application service after every catalog update. The entity mutates
+        `consumption_profiles.today_profiles` / `tomorrow_profiles` in
+        place; the aggregate then refreshes its downstream `target_soc_*`
+        cache via this method.
 
         Today variants build now-aware profiles via
         `AdjustedPvForecast.to_profile(today, now, pv_power_w_5min=...)`
@@ -533,13 +395,18 @@ class PvForecast:
         deficit by propagating its positive cumulative balance across the
         hour boundary into the gated post-charge window.
         """
-        sch = self.start_charge_hour_today
-        sch_t = self.start_charge_hour_tomorrow
-        live_cons_w = self.live_consumption_w
-        live_pv_w = self.live_pv_power_w
+        sch = self._inputs.start_charge_hour_today
+        sch_t = self._inputs.start_charge_hour_tomorrow
+        live_cons_w = self._inputs.live_consumption_w
+        live_pv_w = catalog.signals.pv_power_w
         default_cons = ConsumptionProfile.flat()
         today = now.date()
         tomorrow = today + timedelta(days=1)
+
+        adjusted_at_6 = catalog.get(PvStrategy.AT_6)
+        adjusted_live = catalog.get(PvStrategy.LIVE)
+        adjusted_tomorrow_at_6 = catalog.get(PvStrategy.TOMORROW_AT_6)
+        adjusted_tomorrow_live = catalog.get(PvStrategy.TOMORROW_LIVE)
 
         # Today block — needs both live signals or sets to None
         today_ready = live_cons_w is not None and live_pv_w is not None
@@ -548,16 +415,16 @@ class PvForecast:
                 now=now, live_consumption_w=live_cons_w
             )
             at6_profile = (
-                self.adjusted_at_6.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
-                if self.adjusted_at_6
+                adjusted_at_6.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
+                if adjusted_at_6
                 else None
             )
             live_profile = (
-                self.adjusted_live.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
-                if self.adjusted_live
+                adjusted_live.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
+                if adjusted_live
                 else None
             )
-            self.target_soc = (
+            self.target_soc_at_6 = (
                 calculate_target_soc(
                     at6_profile, cons_view_today, start_charge_hour=sch
                 )
@@ -573,33 +440,34 @@ class PvForecast:
             )
         else:
             live_profile = None
-            self.target_soc = None
+            self.target_soc_at_6 = None
             self.target_soc_live = None
 
         # Tomorrow: full 7-13 window; no live override (current power doesn't
         # carry across days). Plain profile snapshots — `now=None` path.
         tomorrow_live_profile = (
-            self.adjusted_tomorrow_live.to_profile(tomorrow)
-            if self.adjusted_tomorrow_live
+            adjusted_tomorrow_live.to_profile(tomorrow)
+            if adjusted_tomorrow_live
             else None
         )
-        if self.adjusted_tomorrow:
-            self.target_soc_tomorrow = calculate_target_soc(
-                self.adjusted_tomorrow.to_profile(tomorrow),
+        if adjusted_tomorrow_at_6:
+            self.target_soc_tomorrow_at_6 = calculate_target_soc(
+                adjusted_tomorrow_at_6.to_profile(tomorrow),
                 default_cons,
                 start_charge_hour=sch_t,
             )
+        else:
+            self.target_soc_tomorrow_at_6 = None
         if tomorrow_live_profile is not None:
             self.target_soc_tomorrow_live = calculate_target_soc(
                 tomorrow_live_profile, default_cons, start_charge_hour=sch_t
             )
+        else:
+            self.target_soc_tomorrow_live = None
 
         # Prev-workday instrumentation. Two anchor sets:
         # - today_profiles: anchored at today → prev_1 = yesterday workday
         # - tomorrow_profiles: anchored at tomorrow → prev_1 = today workday
-        # Today-anchored sensors share `live_profile` (now-aware PV) and
-        # apply per-prev-profile to_view; tomorrow-anchored sensors use full
-        # snapshots (no live override).
         for i, profile in enumerate(self.consumption_profiles.today_profiles):
             if profile is None or live_profile is None or not today_ready:
                 self.target_soc_prev_days[i] = None
@@ -635,151 +503,6 @@ class PvForecast:
             if r is not None
         ]
         self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
-
-    @staticmethod
-    def _adjust_pv_forecast_at6(
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-    ) -> AdjustedPvForecast:
-        """Adjust morning Solcast forecast (snapshot from 6:05) using weather."""
-        forecast = []
-        total_kwh = 0.0
-
-        for period in solcast_periods:
-            dt = datetime.fromisoformat(period.period_start)
-            hour = dt.hour
-            target_date = dt.date()
-            condition = PvForecast._get_condition_for_hour(
-                hour, weather_conditions, target_date
-            )
-            adj_rate = PvForecast._adjust_at6_period(period, condition, hour)
-
-            forecast.append(
-                AdjustedPeriod(
-                    period_start=period.period_start,
-                    pv_estimate_adjusted=round(adj_rate, 4),
-                )
-            )
-            total_kwh += adj_rate / 2  # rate -> kWh per 30min
-
-        return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
-
-    @staticmethod
-    def _adjust_at6_period(period: SolcastPeriod, condition: str, hour: int) -> float:
-        """Apply AT6 weather adjustment. Returns adjusted hourly rate."""
-        cat = PvForecast._classify_condition(condition)
-
-        if cat == "sunny":
-            return period.pv_estimate * 1.0
-        if cat == "partly-variable":
-            return period.pv_estimate * 0.8
-        if cat == "partly":
-            return period.pv_estimate * 0.7
-
-        # cloudy/other
-        if hour <= 10:
-            modifier = AT6_CLOUDY_MODIFIER_EARLY
-        else:
-            modifier = AT6_CLOUDY_MODIFIER_LATE
-
-        adj = period.pv_estimate10 * modifier
-
-        if hour == 7:
-            adj = min(adj, CLOUDY_CAP_HOUR_7)
-
-        return adj
-
-    @staticmethod
-    def _adjust_pv_forecast_live(
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> AdjustedPvForecast:
-        """Adjust live Solcast forecast using weather. First hour treated differently."""
-        forecast = []
-        total_kwh = 0.0
-        current_hour = now.hour
-
-        for period in solcast_periods:
-            dt = datetime.fromisoformat(period.period_start)
-            hour = dt.hour
-            target_date = dt.date()
-            is_first_hour = hour == current_hour
-            condition = PvForecast._get_condition_for_hour(
-                hour, weather_conditions, target_date
-            )
-            adj_rate = PvForecast._adjust_live_period(period, condition, is_first_hour)
-
-            forecast.append(
-                AdjustedPeriod(
-                    period_start=period.period_start,
-                    pv_estimate_adjusted=round(adj_rate, 4),
-                )
-            )
-            total_kwh += adj_rate / 2
-
-        return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
-
-    @staticmethod
-    def _adjust_live_period(
-        period: SolcastPeriod, condition: str, is_first_hour: bool
-    ) -> float:
-        """Apply LIVE weather adjustment. Returns adjusted hourly rate."""
-        cat = PvForecast._classify_condition(condition)
-
-        if is_first_hour:
-            # Trust Solcast for the next hour, only swap est->est10 for cloudy
-            if cat == "cloudy":
-                return period.pv_estimate10 * 1.0
-            return period.pv_estimate * 1.0
-
-        # Remaining hours
-        if cat == "sunny":
-            return period.pv_estimate * 1.0
-        if cat == "partly-variable":
-            return period.pv_estimate * 0.8
-        if cat == "partly":
-            return period.pv_estimate * 0.7
-
-        # cloudy/other — est10 without additional modifier (Solcast live already corrected)
-        return period.pv_estimate10 * 1.0
-
-    # --- common helpers (multi-caller — Reguła 2a) --- #
-
-    @staticmethod
-    def _get_condition_for_hour(
-        hour: int,
-        weather_conditions: list[WeatherConditionAtHour],
-        target_date: date | None = None,
-    ) -> str:
-        """Find weather condition for given hour and date. Fallback to cloudy.
-
-        Multi-caller: _adjust_pv_forecast_at6, _adjust_pv_forecast_live.
-        """
-        # Exact match: date + hour
-        if target_date:
-            for w in weather_conditions:
-                if w.forecast_date == target_date and w.hour == hour:
-                    return w.condition_custom
-        # Fallback: hour only (for conditions without date)
-        for w in weather_conditions:
-            if w.hour == hour and w.forecast_date is None:
-                return w.condition_custom
-        return "cloudy"  # pessimistic fallback
-
-    @staticmethod
-    def _classify_condition(condition: str) -> str:
-        """Classify condition into: sunny, partly-variable, partly, cloudy.
-
-        Multi-caller: _adjust_at6_period, _adjust_live_period.
-        """
-        if condition in SUNNY_CONDITIONS:
-            return "sunny"
-        if condition in PARTLY_VARIABLE_CONDITIONS:
-            return "partly-variable"
-        if condition in PARTLY_CONDITIONS:
-            return "partly"
-        return "cloudy"
 
 
 # --- Standalone domain utilities (multi-class users) --- #

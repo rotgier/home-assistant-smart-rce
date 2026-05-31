@@ -38,6 +38,7 @@ from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.pv_forecast import PvForecast
+from .domain.pv_forecast_catalog import PvForecastCatalog
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -61,6 +62,7 @@ async def create_pv_forecast_service(
     rce_coordinator: SmartRceDataUpdateCoordinator,
 ) -> PvForecastService:
     """Composition root — wire domain + adapters + service + HA listenery."""
+    catalog = PvForecastCatalog()
     forecast = PvForecast()
     solcast = SolcastReader(hass)
     workday_reader = WorkdayCalendarReader(hass)
@@ -70,6 +72,7 @@ async def create_pv_forecast_service(
 
     service = PvForecastService(
         hass=hass,
+        catalog=catalog,
         forecast=forecast,
         solcast=solcast,
         weather_listener=weather_listener,
