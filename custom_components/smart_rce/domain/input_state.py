@@ -78,12 +78,6 @@ class InputState:
     # select.goodwe_ems_mode — aktualny tryb EMS Goodwe (auto, charge_battery,
     # battery_standby, sell_power, etc.). Diagnostic.
 
-    other_ems_automation_active_this_hour: bool | None = None
-    # binary_sensor.ems_other_automation_active_this_hour (HA template).
-    # True gdy któraś z innych automatyzacji EMS (battery_charge_*,
-    # battery_discharge_*) odpaliła się w bieżącej godzinie. Używane przez
-    # GridExportManager jako entry gate.
-
     grid_export_strategy_mode: str | None = None
     # input_select.smart_rce_grid_export_strategy_mode — runtime kontrola
     # GridExportManager. Opcje: "disabled" (intervention off, manager

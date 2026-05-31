@@ -774,10 +774,8 @@ class BatterySchedule:
     _currently_engaging: SlotKind | None = None
     _interventions_blocked_override: bool = False
     # When a slot or one-shot disengages, records the timestamp so consumers
-    # can ask `is_active_this_hour(now)` — semantics matching legacy HA-side
-    # template `binary_sensor.ems_other_automation_active_this_hour` that
-    # GridExportManager uses to step aside in the clock hour following any
-    # smart_rce intervention.
+    # can ask `is_active_this_hour(now)` — GridExportManager uses this to
+    # step aside in the clock hour following any smart_rce intervention.
     _last_disengaged_at: datetime | None = None
     # One-shot operation state: when set, beats every scheduled slot. Auto-
     # clears in compute_operation on target_reached / expired, or via
@@ -852,11 +850,10 @@ class BatterySchedule:
     def is_active_this_hour(self, now: datetime) -> bool:
         """Return True if a slot/one-shot is engaging OR disengaged within current clock hour.
 
-        Replaces HA-side `binary_sensor.ems_other_automation_active_this_hour`
-        signal (Etap C). Used by `GridExportManager.update` to step aside in
-        the post-intervention cleanup window (rest of the clock hour after a
-        smart_rce slot disengaged — avoids racing the inverter back to
-        intervention state immediately after we cleaned up).
+        Used by `GridExportManager.update` to step aside in the post-intervention
+        cleanup window (rest of the clock hour after a smart_rce slot disengaged
+        — avoids racing the inverter back to intervention state immediately
+        after we cleaned up).
         """
         if self._currently_engaging is not None or self._oneshot is not None:
             return True

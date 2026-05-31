@@ -198,7 +198,6 @@ SMART_RCE_DEFAULTS: dict[str, str] = {
     "sensor.pv_power": "0.0",
     "sensor.pv_power_avg_2_minutes": "0.0",
     "select.goodwe_ems_mode": "auto",
-    "binary_sensor.ems_other_automation_active_this_hour": "off",
     "input_select.smart_rce_grid_export_strategy_mode": "charge_adaptive",
 }
 

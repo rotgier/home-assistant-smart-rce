@@ -22,7 +22,6 @@ Architecture — two-layer separation of concerns:
    - hour_rollover (continue lifecycle)
    - end_of_hour_cleanup (continue lifecycle, exit ≥ XX:59:50)
    - too_late_in_hour (entry block, ≥ XX:59:40)
-   - other_ems_automation_active_this_hour (entry block)
    - balance range routing (POSITIVE: > BALANCE_GATE_KWH, NEGATIVE: < entry_threshold)
 2. **Intervention (PositiveIntervention / NegativeIntervention)** — intervention-
    specific preconditions (SoC thresholds, toggle, pre_charge_window, balance
@@ -180,8 +179,7 @@ class GridExportManager:
 
         Flow:
         1. Global guards (none_present_core, interventions_blocked,
-           schedule_active_this_hour, other_ems_automation_active_this_hour)
-           → set_neutral + return
+           schedule_active_this_hour) → set_neutral + return
         2. Active intervention: tick (hour_rollover, end_of_hour, delegate)
            Or: try_enter (too_late_in_hour, balance routing)
         3. Apply disabled_override if strategy_mode != charge_adaptive
@@ -213,22 +211,8 @@ class GridExportManager:
         # smart_rce BatterySchedule active this hour (engaged OR recently
         # disengaged within current clock hour) — step aside to avoid racing
         # the inverter back into intervention immediately after slot cleanup.
-        # Etap C: replaced legacy HA template binary_sensor.ems_other_automation_active_this_hour
-        # with derived signal from BatterySchedule (`is_active_this_hour`).
         if ems_schedule_active_this_hour:
             self._set_neutral("schedule_active_this_hour")
-            self._apply_disabled_override_if_needed(state)
-            self._log_after_update(
-                state, prev_active, prev_mode, prev_xset, battery_charge_allowed
-            )
-            return
-
-        # Legacy external EMS automation signal — kept in parallel with
-        # schedule_active_this_hour during migration period (Etap C deploy
-        # → Etap D drops this field). Both signals will indicate the same
-        # condition until legacy automations migrate to schedule slots.
-        if state.other_ems_automation_active_this_hour is True:
-            self._set_neutral("other_automation_active")
             self._apply_disabled_override_if_needed(state)
             self._log_after_update(
                 state, prev_active, prev_mode, prev_xset, battery_charge_allowed
@@ -309,12 +293,7 @@ class GridExportManager:
         battery_charge_allowed: bool,
         start_charge_hour_override: time | None,
     ) -> None:
-        """Entry path — global entry blocks first, then balance range routing.
-
-        Note: `other_ems_automation_active_this_hour` is handled by the global
-        guard in `update()` (cross-cutting, applies to both entry and continue
-        paths) — no need to re-check here.
-        """
+        """Entry path — global entry blocks first, then balance range routing."""
         # Late hour entry block (now ≥ XX:59:40).
         if self._is_too_late_for_entry(state):
             self.last_decision_reason = "too_late_in_hour"

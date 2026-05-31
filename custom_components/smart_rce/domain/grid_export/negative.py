@@ -53,7 +53,6 @@ Cross-cutting checks (manager handles, NOT in try_enter / continue_or_exit):
 - ems_interventions_blocked (global block)
 - balance range (manager routes by `entry_threshold(state)`)
 - too_late_in_hour entry block (manager: now ≥ XX:59:40)
-- other_ems_automation_active_this_hour (manager)
 - hour_rollover (manager: started_hour mismatch)
 - end_of_hour_cleanup exit (manager: now ≥ XX:59:50)
 """
@@ -168,7 +167,6 @@ class NegativeIntervention:
         - balance < entry_threshold(state) (range routing)
         - no ems_interventions_blocked
         - not too_late_in_hour
-        - not other_ems_automation_active_this_hour
 
         Checks intervention-specific gates (SoC, DoD, pv_available) plus
         entry feasibility (bucket discharge requires SoC > min_soc), then

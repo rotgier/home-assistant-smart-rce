@@ -53,7 +53,6 @@ Cross-cutting checks (manager handles, NOT in try_enter / continue_or_exit):
 - ems_interventions_blocked (global block)
 - balance range (manager routes by `BALANCE_GATE_KWH`)
 - too_late_in_hour entry block (manager: now ≥ XX:59:40)
-- other_ems_automation_active_this_hour (manager)
 - hour_rollover (manager: started_hour mismatch)
 - end_of_hour_cleanup exit (manager: now ≥ XX:59:50)
 """

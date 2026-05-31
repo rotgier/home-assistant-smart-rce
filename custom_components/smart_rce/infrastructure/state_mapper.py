@@ -140,12 +140,6 @@ def set_goodwe_ems_mode(entity: str, i: InputState, state: str) -> None:
     i.goodwe_ems_mode = state
 
 
-def set_other_ems_automation_active_this_hour(
-    entity: str, i: InputState, state: str
-) -> None:
-    i.other_ems_automation_active_this_hour = map_on_off(entity, state)
-
-
 def set_grid_export_strategy_mode(entity: str, i: InputState, state: str) -> None:
     if state in (None, "", "unavailable", "unknown"):
         i.grid_export_strategy_mode = None
@@ -200,7 +194,6 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "sensor.pv_power": set_pv_power,
     "sensor.pv_power_avg_2_minutes": set_pv_power_avg_2_minutes,
     "select.goodwe_ems_mode": set_goodwe_ems_mode,
-    "binary_sensor.ems_other_automation_active_this_hour": set_other_ems_automation_active_this_hour,
     "input_select.smart_rce_grid_export_strategy_mode": set_grid_export_strategy_mode,
     "input_number.heater_rce_threshold": set_heater_rce_threshold,
     "input_number.ems_dod_override": set_dod_override,

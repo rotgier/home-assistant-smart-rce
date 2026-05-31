@@ -39,7 +39,6 @@ def _state(
     consumption_minus_pv_2_minutes: float | None = -3000.0,  # surplus PV 3kW
     battery_charge_limit: float | None = 18.0,  # high BMS
     depth_of_discharge: float | None = 78.0,  # min_soc = 100-78 = 22% (NEGATIVE gate)
-    other_ems_automation_active_this_hour: bool | None = False,
     grid_export_strategy_mode: str | None = "charge_adaptive",
 ) -> InputState:
     # Note: `ems_interventions_blocked`, `battery_charge_toggle_on`, and
@@ -55,7 +54,6 @@ def _state(
         consumption_minus_pv_2_minutes=consumption_minus_pv_2_minutes,
         battery_charge_limit=battery_charge_limit,
         depth_of_discharge=depth_of_discharge,
-        other_ems_automation_active_this_hour=other_ems_automation_active_this_hour,
         grid_export_strategy_mode=grid_export_strategy_mode,
     )
 
@@ -224,35 +222,6 @@ class TestEntryGates:
             ),
         )
         assert mgr.intervention_active is True
-
-    def test_other_automation_active_blocks(self):
-        mgr = GridExportManager()
-        _update(
-            mgr,
-            _state(
-                exported_energy_hourly=0.10,
-                other_ems_automation_active_this_hour=True,
-            ),
-        )
-        assert mgr.intervention_active is False
-        assert "other_automation_active" in mgr.last_decision_reason
-
-    def test_other_automation_active_exits_during_intervention(self):
-        """Mid-intervention automation start → exit (cross-cutting global guard)."""
-        mgr = GridExportManager()
-        # Step 1: enter POSITIVE intervention (no automation yet)
-        _update(mgr, _state(exported_energy_hourly=0.10))
-        assert mgr.intervention_active is True
-        # Step 2: external automation activates mid-intervention → exit
-        _update(
-            mgr,
-            _state(
-                exported_energy_hourly=0.10,
-                other_ems_automation_active_this_hour=True,
-            ),
-        )
-        assert mgr.intervention_active is False
-        assert mgr.last_decision_reason == "other_automation_active"
 
 
 class TestExitGates:
@@ -857,17 +826,6 @@ class TestNegativeEntry:
         _update(
             mgr,
             _state(exported_energy_hourly=-0.10, consumption_minus_pv_2_minutes=None),
-        )
-        assert mgr.intervention_active is False
-
-    def test_no_entry_other_automation_active(self):
-        mgr = GridExportManager()
-        _update(
-            mgr,
-            _state(
-                exported_energy_hourly=-0.10,
-                other_ems_automation_active_this_hour=True,
-            ),
         )
         assert mgr.intervention_active is False
 

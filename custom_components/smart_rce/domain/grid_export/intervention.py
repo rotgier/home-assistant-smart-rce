@@ -48,8 +48,8 @@ class Intervention(Protocol):
 
     Manager contract: BEFORE calling try_enter / continue_or_exit it checks
     global guards (balance range, ems_override, hour rollover, end_of_hour,
-    too_late_in_hour, other_automation_active). Intervention only checks
-    intervention-specific preconditions.
+    too_late_in_hour). Intervention only checks intervention-specific
+    preconditions.
     """
 
     direction: ClassVar[InterventionDirection]
