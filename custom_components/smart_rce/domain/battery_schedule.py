@@ -191,21 +191,24 @@ CHARGE: Final = Direction(
 
 
 def seconds_for_range(
-    low_soc: float, high_soc: float, zones: tuple[RateZone, ...]
+    start_soc: float, end_soc: float, zones: tuple[RateZone, ...]
 ) -> float:
-    """Sum sec_per_pp across zones covering the [low_soc, high_soc] range.
+    """Sum sec_per_pp across zones covering the SoC traversal start→end.
 
-    Pure function — directional sense lives in caller (discharge passes
-    target as low, current as high; charge swaps). Returns 0 when range
-    inverted or empty. SoC outside zone coverage contributes 0 (caller's
-    responsibility — zones should fully cover the relevant SoC domain).
+    Direction-agnostic — internally normalizes to [low, high] so callers
+    can pass `(current_soc, target_soc)` regardless of charge/discharge.
+    Returns 0 when start == end. SoC outside zone coverage contributes 0
+    (caller's responsibility — zones should fully cover the relevant SoC
+    domain).
     """
-    if low_soc >= high_soc:
+    low = min(start_soc, end_soc)
+    high = max(start_soc, end_soc)
+    if low >= high:
         return 0.0
     total = 0.0
     for zone in zones:
-        overlap_low = max(low_soc, zone.soc_from)
-        overlap_high = min(high_soc, zone.soc_to)
+        overlap_low = max(low, zone.soc_from)
+        overlap_high = min(high, zone.soc_to)
         if overlap_high > overlap_low:
             total += (overlap_high - overlap_low) * zone.sec_per_pp
     return total
@@ -371,9 +374,9 @@ class BatteryScheduleEntry:
     def time_to_complete_at(self, current_soc: float) -> float:
         """Seconds needed to reach target_soc via zone-aware rate model.
 
-        Sums sec_per_pp across `direction.rate_zones` for the [low, high]
-        range. For DISCHARGE: range = [target_soc, current_soc]. For CHARGE:
-        range = [current_soc, target_soc]. Returns 0 if already at target.
+        Sums sec_per_pp across `direction.rate_zones` for the SoC traversal
+        between current and target — direction-agnostic since `seconds_for_range`
+        normalizes start/end internally. Returns 0 if already at target.
 
         Zone-aware vs constant 75 sec/pp matters for full-depth discharges
         (100→10%): empirical 104 min vs constant-model 112.5 min — DELAYED
@@ -381,10 +384,9 @@ class BatteryScheduleEntry:
         """
         if self.soc_target_reached(current_soc):
             return 0.0
-        direction = self.kind.direction
-        if direction.is_discharge:
-            return seconds_for_range(self.target_soc, current_soc, direction.rate_zones)
-        return seconds_for_range(current_soc, self.target_soc, direction.rate_zones)
+        return seconds_for_range(
+            current_soc, self.target_soc, self.kind.direction.rate_zones
+        )
 
     def should_apply_now(self, now: datetime, current_soc: float) -> bool:
         """Whether orchestrator should actively engage EMS mode at `now`.
