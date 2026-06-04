@@ -40,8 +40,7 @@ from custom_components.smart_rce.domain.input_state import InputState
 # wyeksportowane Wh na ekwiwalent dodatkowej mocy dostępnej do dożarcia.
 EXPORT_BONUS_CUTOFF_SEC: int = 60  # < tego nie aktywuj bonusa (ostatnia minuta)
 EXPORT_BONUS_MIN_T_LEFT_SEC: int = 60  # clamp dolny dla dzielenia
-EXPORT_BONUS_HYSTERESIS_W: int = 500
-BASELINE_HYSTERESIS_W: int = 500
+LADDER_HYSTERESIS_W: int = 500  # used for both baseline and upgrade ladder
 
 # Mode-specific bonus gate (only active when prefer_battery_first=True).
 # Gate opens at ≥1000W (real export to recover); held open down to 500W via
@@ -139,7 +138,6 @@ class WaterHeaterManager:
         callees ordered by call sequence below). Returns the target
         `HeaterState`; side-effects diagnostic fields via `_set_diagnostics`.
         """
-        pv_available = -state.consumption_minus_pv_2_minutes
         # When charge disabled (pre-charge window), treat as 0 regardless of
         # BMS hardware cap. BatteryChargeService.charge_allowed is single source.
         battery_charge_limit = (
@@ -160,8 +158,8 @@ class WaterHeaterManager:
             prefer_battery_first=prefer_battery_first,
             reserved_balanced_full=reserved_balanced_full,
         )
-        heater_budget = pv_available - reserved
-        baseline = self._ladder(heater_budget, current_state, BASELINE_HYSTERESIS_W)
+        heater_budget = state.pv_available - reserved
+        baseline = self._ladder(heater_budget, current_state, LADDER_HYSTERESIS_W)
 
         skip_upgrade = battery_charge_limit > 7 and not prefer_battery_first
         export_bonus = self._compute_export_bonus(
@@ -171,15 +169,15 @@ class WaterHeaterManager:
         )
         effective_budget = heater_budget + export_bonus
         upgrade_candidate = self._ladder(
-            effective_budget, current_state, EXPORT_BONUS_HYSTERESIS_W
+            effective_budget, current_state, LADDER_HYSTERESIS_W
         )
 
-        override_applies = prefer_battery_first and battery_charge_limit > 2
+        battery_first_active = prefer_battery_first and battery_charge_limit > 2
         bonus_gate_open = self._bonus_gate_open(export_bonus, current_state)
         target = self._resolve_target(
             baseline=baseline,
             upgrade_candidate=upgrade_candidate,
-            override_applies=override_applies,
+            battery_first_active=battery_first_active,
             bonus_gate_open=bonus_gate_open,
         )
 
@@ -188,7 +186,7 @@ class WaterHeaterManager:
             baseline=baseline,
             target=target,
             export_bonus=export_bonus,
-            heater_running_via_bonus=override_applies and bonus_gate_open,
+            heater_running_via_bonus=battery_first_active and bonus_gate_open,
         )
         return target
 
@@ -311,16 +309,16 @@ class WaterHeaterManager:
         *,
         baseline: HeaterState,
         upgrade_candidate: HeaterState,
-        override_applies: bool,
+        battery_first_active: bool,
         bonus_gate_open: bool,
     ) -> HeaterState:
         """Pick final target.
 
-        - prefer_battery_first + battery_charge_limit > 2 + gate closed → OFF
+        - battery_first active + gate closed → OFF
         - Otherwise: max(baseline, upgrade_candidate) — upgrade if strictly
           higher, else baseline.
         """
-        if override_applies and not bonus_gate_open:
+        if battery_first_active and not bonus_gate_open:
             return HeaterState.OFF
         if upgrade_candidate > baseline:
             return upgrade_candidate
