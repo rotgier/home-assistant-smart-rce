@@ -21,11 +21,16 @@ w hysteresis ≥500W) — czyli realnie odzyskujemy wyeksportowane Wh, nie firuj
 grzałek "z samej baseline PV". Plus reserved escaluje do max battery capability
 per tier (2000W przy >2, 600W przy ==2). Wyjątek: POSITIVE intervention nie
 escalates (bateria już dostaje surplus przez interwencję, grzałki też mogą).
+
+File layout (Java-style): WaterHeaterManager public class at TOP, then private
+HeaterState enum + module-level constants BELOW.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
+from functools import total_ordering
 
 from custom_components.smart_rce.domain.grid_export import InterventionDirection
 from custom_components.smart_rce.domain.input_state import InputState
@@ -36,6 +41,7 @@ from custom_components.smart_rce.domain.input_state import InputState
 EXPORT_BONUS_CUTOFF_SEC: int = 60  # < tego nie aktywuj bonusa (ostatnia minuta)
 EXPORT_BONUS_MIN_T_LEFT_SEC: int = 60  # clamp dolny dla dzielenia
 EXPORT_BONUS_HYSTERESIS_W: int = 500
+BASELINE_HYSTERESIS_W: int = 500
 
 # Mode-specific bonus gate (only active when prefer_battery_first=True).
 # Gate opens at ≥1000W (real export to recover); held open down to 500W via
@@ -49,44 +55,23 @@ def seconds_until_hour_end(now: datetime) -> int:
 
 
 class WaterHeaterManager:
-    BIG_POWER: int = 3000
-    SMALL_POWER: int = 1500
-    BOTH_POWER: int = 4500
-
-    BOTH_ARE_ON: str = "both_are_on"
-    BIG_IS_ON: str = "big_is_on"
-    SMALL_IS_ON: str = "small_is_on"
-    BOTH_ARE_OFF: str = "both_are_off"
-
-    _STATE_ORDER: dict[str, int] = {
-        "both_are_off": 0,
-        "small_is_on": 1,
-        "big_is_on": 2,
-        "both_are_on": 3,
-    }
-
-    _STATE_LABELS: dict[str, str] = {
-        "both_are_off": "off",
-        "small_is_on": "small",
-        "big_is_on": "big",
-        "both_are_on": "both",
-    }
+    """Public API. Orchestrates baseline + upgrade decision per tick."""
 
     def __init__(self) -> None:
         self.should_turn_on: bool = False
         self.should_turn_off: bool = False
         self.should_turn_on_small: bool = False
         self.should_turn_off_small: bool = False
-        # Diagnostics (heater_* prefix — was balanced_* before BALANCED-only refactor)
+        # Diagnostics — exposed as HA sensors. Stored as canonical strings
+        # (state.canonical) for direct HA state-machine compatibility.
         self.heater_budget: float | None = None
         self.heater_baseline: str | None = None
         self.heater_upgrade_target: str | None = None
         self.heater_upgrade_active: bool = False
         self.heater_export_bonus: float | None = None
-        # True when prefer_battery_first=True AND bonus gate is open
-        # (bonus≥1000W or held by hysteresis ≥500W). Signals "heater
-        # allowed to run despite battery-first preference because real
-        # export bonus needs recovering".
+        # True when prefer_battery_first=True AND bonus gate is open. Signals
+        # "heater allowed to run despite battery-first preference because
+        # real export bonus needs recovering".
         self.heater_running_via_bonus: bool = False
 
     def update(
@@ -98,13 +83,12 @@ class WaterHeaterManager:
         reserved_balanced_full: int = 5500,
         prefer_battery_first: bool = False,
     ) -> None:
-        """Update target state based on PV/battery/heater config.
+        """Compute target heater state + set should_turn_on/_off flags.
 
         `grid_export_intervention` (POSITIVE/NEGATIVE/None):
         - POSITIVE: bateria łapie surplus, reserved zwiększony do 3500W
           (`charge_limit > 7`) by chronić baterię intervention.
-        - NEGATIVE: deficit hourly — większy reserved (5500W dla `>7`,
-          2000W dla `>2`, 600W dla `==2`) by wymusić grzałki off.
+        - NEGATIVE: deficit hourly — większy reserved by wymusić grzałki off.
         - None: original logic.
 
         `battery_charge_allowed`: kwarg from BatteryChargeService — replaces
@@ -112,19 +96,14 @@ class WaterHeaterManager:
         charge_limit is treated as 0 (battery idle, PV fully available
         for heaters).
 
-        `prefer_battery_first`: user-controlled override from
-        `switch.ems_water_heater_prefer_battery_first`. When True:
+        `prefer_battery_first`: user-controlled override. When True:
         - Reserved escalates to max battery capability per tier (>7: 5500;
           >2: 2000; ==2: 600) — except under POSITIVE intervention.
         - At `battery_charge_limit > 2`: bonus gate applies. Heaters fire
-          ONLY when export_bonus ≥1000W (or ≥500W with hysteresis when
-          currently on). Otherwise target=OFF. When gate open:
-          target=max(baseline, upgrade).
-        - At `battery_charge_limit <= 2`: gate IGNORED (legacy semantic).
-          Battery near-full, reserved (300/600) covers modest demand, no
-          heater-vs-battery conflict. Baseline fires normally.
-        - At `battery_charge_limit == 1`/`== 0`: reserved escalation
-          skipped (stays at 300/0 — no battery draw to escalate to).
+          ONLY when export_bonus ≥1000W (or ≥500W via hysteresis when
+          currently on). Otherwise target=OFF.
+        - At `battery_charge_limit <= 2`: gate IGNORED (legacy semantic —
+          battery near-full, no heater-vs-battery conflict).
         """
         if self._none_present(state):
             return
@@ -139,12 +118,84 @@ class WaterHeaterManager:
             prefer_battery_first=prefer_battery_first,
         )
 
-        self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
-        self.should_turn_off = target in (self.SMALL_IS_ON, self.BOTH_ARE_OFF)
-        self.should_turn_on_small = target in (self.SMALL_IS_ON, self.BOTH_ARE_ON)
-        self.should_turn_off_small = target in (self.BIG_IS_ON, self.BOTH_ARE_OFF)
+        self.should_turn_on = target.big_on
+        self.should_turn_off = not target.big_on
+        self.should_turn_on_small = target.small_on
+        self.should_turn_off_small = not target.small_on
 
-    def _none_present(self, state: InputState) -> bool:
+    def target(
+        self,
+        state: InputState,
+        current_state: HeaterState,
+        *,
+        grid_export_intervention: InterventionDirection | None = None,
+        battery_charge_allowed: bool = True,
+        reserved_balanced_full: int = 5500,
+        prefer_battery_first: bool = False,
+    ) -> HeaterState:
+        """Pure decision — BALANCED two-tier logic with optional battery-first override.
+
+        Thin orchestrator delegating to extracted helpers (per Reguła 1 —
+        callees ordered by call sequence below). Returns the target
+        `HeaterState`; side-effects diagnostic fields via `_set_diagnostics`.
+        """
+        pv_available = -state.consumption_minus_pv_2_minutes
+        # When charge disabled (pre-charge window), treat as 0 regardless of
+        # BMS hardware cap. BatteryChargeService.charge_allowed is single source.
+        battery_charge_limit = (
+            0.0 if not battery_charge_allowed else state.battery_charge_limit
+        )
+        exported_energy_wh = state.exported_energy_hourly * 1000
+
+        # `==` instead of `is` — StrEnum value-based compare survives
+        # live_reload() of grid_export module (water_heater may hold an OLD
+        # InterventionDirection class reference; `is` fails despite same value).
+        is_positive = grid_export_intervention == InterventionDirection.POSITIVE
+        is_negative = grid_export_intervention == InterventionDirection.NEGATIVE
+
+        reserved = self._compute_reserved(
+            battery_charge_limit=battery_charge_limit,
+            is_positive=is_positive,
+            is_negative=is_negative,
+            prefer_battery_first=prefer_battery_first,
+            reserved_balanced_full=reserved_balanced_full,
+        )
+        heater_budget = pv_available - reserved
+        baseline = self._ladder(heater_budget, current_state, BASELINE_HYSTERESIS_W)
+
+        skip_upgrade = battery_charge_limit > 7 and not prefer_battery_first
+        export_bonus = self._compute_export_bonus(
+            exported_energy_wh=exported_energy_wh,
+            now=state.now,
+            skip_upgrade=skip_upgrade,
+        )
+        effective_budget = heater_budget + export_bonus
+        upgrade_candidate = self._ladder(
+            effective_budget, current_state, EXPORT_BONUS_HYSTERESIS_W
+        )
+
+        override_applies = prefer_battery_first and battery_charge_limit > 2
+        bonus_gate_open = self._bonus_gate_open(export_bonus, current_state)
+        target = self._resolve_target(
+            baseline=baseline,
+            upgrade_candidate=upgrade_candidate,
+            override_applies=override_applies,
+            bonus_gate_open=bonus_gate_open,
+        )
+
+        self._set_diagnostics(
+            heater_budget=heater_budget,
+            baseline=baseline,
+            target=target,
+            export_bonus=export_bonus,
+            heater_running_via_bonus=override_applies and bonus_gate_open,
+        )
+        return target
+
+    # ─── Pre-condition + state read (called by `update`) ───────────────────
+
+    @staticmethod
+    def _none_present(state: InputState) -> bool:
         return (
             state.water_heater_big_is_on is None
             or state.water_heater_small_is_on is None
@@ -156,199 +207,203 @@ class WaterHeaterManager:
             or state.now is None
         )
 
-    def _current_state(self, state: InputState) -> str:
+    @staticmethod
+    def _current_state(state: InputState) -> HeaterState:
         if state.water_heater_big_is_on and state.water_heater_small_is_on:
-            return self.BOTH_ARE_ON
+            return HeaterState.BOTH
         if state.water_heater_big_is_on:
-            return self.BIG_IS_ON
+            return HeaterState.BIG
         if state.water_heater_small_is_on:
-            return self.SMALL_IS_ON
-        return self.BOTH_ARE_OFF
+            return HeaterState.SMALL
+        return HeaterState.OFF
 
-    def target(
-        self,
-        state: InputState,
-        current_state: str,
+    # ─── target() helpers (Reguła 1a — in call order) ──────────────────────
+
+    @staticmethod
+    def _compute_reserved(
         *,
-        grid_export_intervention: InterventionDirection | None = None,
-        battery_charge_allowed: bool = True,
-        reserved_balanced_full: int = 5500,
-        prefer_battery_first: bool = False,
-    ) -> str:
-        """Pure decision — BALANCED two-tier logic with optional battery-first override.
+        battery_charge_limit: float,
+        is_positive: bool,
+        is_negative: bool,
+        prefer_battery_first: bool,
+        reserved_balanced_full: int,
+    ) -> int:
+        """Reserved power (W) per battery_charge_limit tier + intervention.
 
-        Two tiers:
-        1. Baseline — heater_budget = pv - reserved. Reserved scales with
-           battery_charge_limit + intervention + prefer_battery_first.
-        2. Upgrade — effective_budget = heater_budget + export_bonus_w.
-           Lifts target above baseline to consume already-exported Wh in
-           the rest of the current hour.
-
-        Default mode (`prefer_battery_first=False`): target = max(baseline,
-        upgrade_candidate). 500W hysteresis on the ladder prevents noise flap.
-
-        Battery-first mode (`prefer_battery_first=True`):
-        - Reserved escalates to max battery capability per tier (see
-          `high_reserve` helper below), except POSITIVE intervention which
-          stays at modest reserved (battery already gets surplus).
-        - Bonus gate filters small noise-bonus: heaters fire ONLY when
-          export_bonus ≥ 1000W (or ≥500W with hysteresis when currently on).
-          Otherwise target=OFF.
-        - When gate open: target = max(baseline, upgrade_candidate) — fixes
-          the edge case where baseline saturates at BOTH_ARE_ON and the
-          override would have suppressed heaters.
+        `high_reserve` = negative intervention always escalates (force heaters
+        off); prefer_battery_first also escalates EXCEPT under positive
+        intervention (battery already gets surplus via the intervention).
         """
-        pv_available = -state.consumption_minus_pv_2_minutes
-        # Effective charge limit captures "is battery actively absorbing PV right now?"
-        # When battery_charge_allowed=False (user disabled charging, e.g. pre-charge
-        # window before scheduled charge start), treat as 0 regardless of BMS hardware
-        # cap. Source of truth = BatteryChargeService.charge_allowed (also used by
-        # positive/negative.py for the same "is the inverter actually charging"
-        # semantic). BMS limit fallback when allowed.
-        battery_charge_limit = (
-            0.0 if not battery_charge_allowed else state.battery_charge_limit
-        )
-        exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
-
-        # ─── Reserved per battery_charge_limit + intervention + prefer_battery_first ───
-        # `==` zamiast `is` — StrEnum compare value-based, odporne na module reload.
-        # Po `live_reload()` water_heater może trzymać OLD InterventionDirection
-        # class reference (reloaded przed grid_export), `is` fail mimo same value.
-        is_positive = grid_export_intervention == InterventionDirection.POSITIVE
-        is_negative = grid_export_intervention == InterventionDirection.NEGATIVE
-
-        # high_reserve: escalate reserved to max battery capability per tier.
-        # Negative intervention always escalates (force heaters off). Battery-first
-        # also escalates EXCEPT under positive intervention (battery already
-        # getting surplus via the intervention; heaters can also consume).
         high_reserve = (is_negative or prefer_battery_first) and not is_positive
 
         if battery_charge_limit > 7:
             if is_positive:
-                reserved = 3500
-            elif high_reserve:
-                reserved = 5500  # battery max draw; grzałki MUSZĄ off
-            else:
-                reserved = reserved_balanced_full
-        elif battery_charge_limit > 2:
-            reserved = 2000 if high_reserve else 1000
-        elif battery_charge_limit == 2:
-            reserved = 600 if high_reserve else 300
-        elif battery_charge_limit == 1:
-            reserved = 300
-        else:  # battery_charge_limit == 0
-            reserved = 0
+                return 3500
+            if high_reserve:
+                return 5500  # battery max draw; grzałki MUSZĄ off
+            return reserved_balanced_full
+        if battery_charge_limit > 2:
+            return 2000 if high_reserve else 1000
+        if battery_charge_limit == 2:
+            return 600 if high_reserve else 300
+        if battery_charge_limit == 1:
+            return 300
+        return 0  # battery_charge_limit == 0
 
-        heater_budget = pv_available - reserved
-        hysteresis = 500
+    @staticmethod
+    def _ladder(
+        budget: float, current_state: HeaterState, hysteresis: int
+    ) -> HeaterState:
+        """Pick highest HeaterState whose power threshold fits in `budget`.
 
-        # ─── Piętro 1 — Baseline (histereza trzyma tylko obecny stan) ───
-        if heater_budget >= self.BOTH_POWER or (
-            heater_budget >= self.BOTH_POWER - hysteresis
-            and current_state == self.BOTH_ARE_ON
-        ):
-            baseline = self.BOTH_ARE_ON
-        elif heater_budget >= self.BIG_POWER or (
-            heater_budget >= self.BIG_POWER - hysteresis
-            and current_state == self.BIG_IS_ON
-        ):
-            baseline = self.BIG_IS_ON
-        elif heater_budget >= self.SMALL_POWER or (
-            heater_budget >= self.SMALL_POWER - hysteresis
-            and current_state == self.SMALL_IS_ON
-        ):
-            baseline = self.SMALL_IS_ON
-        else:
-            baseline = self.BOTH_ARE_OFF
+        Hysteresis: `current_state` is held if budget is within `hysteresis`
+        below its power threshold (prevents flap on noise around boundary).
+        Shared by baseline (budget = heater_budget) and upgrade
+        (budget = heater_budget + export_bonus).
+        """
+        for state in (HeaterState.BOTH, HeaterState.BIG, HeaterState.SMALL):
+            if budget >= state.power or (
+                budget >= state.power - hysteresis and current_state == state
+            ):
+                return state
+        return HeaterState.OFF
 
-        # ─── Piętro 2 — adaptive upgrade ───
-        # Skip gdy battery_charge_limit > 7 (bateria chce max mocy ~5.2 kW).
-        # Instalacja PV 9.1 kW, grzałki max 4.5 kW, bateria max 5.2 kW — suma
-        # 9.7 kW > PV. Gdy bateria chce max, każdy włączony watt grzałki jest
-        # zabrany baterii (Goodwe rebalansuje automatycznie).
-        #
-        # `prefer_battery_first=True` overrides skip — user akceptuje że grzałki
-        # kradną part of battery charge gdy export_bonus uzasadnia (gate open).
-        #
-        # Bonus: ile dodatkowej mocy "musi być zjedzone" w resztę godziny,
-        # żeby zniwelować dotąd wyeksportowane Wh. **Brak cap** — bonus może
-        # przekraczać BOTH_POWER (drabinka i tak limit na BOTH_ARE_ON). Cap
-        # poprzednio blokował aktywację gdy heater_budget ujemny + duży
-        # eksport w końcówce godziny (scenariusz: 5 min do końca, 4.5kWh
-        # wyexportowane, heater_budget=-2500 — bez cap effective=51500
-        # → BOTH_ARE_ON; z cap effective=2000 → tylko SMALL).
-        # W ostatnich EXPORT_BONUS_CUTOFF_SEC sekundach nie aktywujemy bonusa
-        # (i tak nie zdążymy zjeść; uniknięcie ostatniego szarpnięcia przed
-        # resetem utility_meter).
-        skip_upgrade = battery_charge_limit > 7 and not prefer_battery_first
-        seconds_left = seconds_until_hour_end(state.now)
-        if seconds_left >= EXPORT_BONUS_CUTOFF_SEC and not skip_upgrade:
-            t_left_h = max(seconds_left, EXPORT_BONUS_MIN_T_LEFT_SEC) / 3600
-            export_bonus = max(0.0, exported_energy / t_left_h)
-        else:
-            export_bonus = 0.0
+    @staticmethod
+    def _compute_export_bonus(
+        *,
+        exported_energy_wh: float,
+        now: datetime,
+        skip_upgrade: bool,
+    ) -> float:
+        """Equivalent W needed to consume exported_energy_wh in the remaining hour.
 
-        effective_budget = heater_budget + export_bonus
-        h = EXPORT_BONUS_HYSTERESIS_W
+        Returns 0 when `skip_upgrade` (battery wants max charge, no override)
+        or in the last EXPORT_BONUS_CUTOFF_SEC seconds (unrealistic to consume
+        meaningful kWh in the final minute; avoid last-second jolt before
+        utility_meter resets).
 
-        # Drabinka identyczna do baseline, ale na effective_budget — wybiera
-        # NAJWYŻSZY stan mieszczący się w budżecie (skok N→N+2 dozwolony).
-        if effective_budget >= self.BOTH_POWER or (
-            effective_budget >= self.BOTH_POWER - h
-            and current_state == self.BOTH_ARE_ON
-        ):
-            upgrade_candidate = self.BOTH_ARE_ON
-        elif effective_budget >= self.BIG_POWER or (
-            effective_budget >= self.BIG_POWER - h and current_state == self.BIG_IS_ON
-        ):
-            upgrade_candidate = self.BIG_IS_ON
-        elif effective_budget >= self.SMALL_POWER or (
-            effective_budget >= self.SMALL_POWER - h
-            and current_state == self.SMALL_IS_ON
-        ):
-            upgrade_candidate = self.SMALL_IS_ON
-        else:
-            upgrade_candidate = self.BOTH_ARE_OFF
+        Brak cap na BOTH_POWER — bonus może przekraczać max heater draw,
+        drabinka i tak nie wybierze stanu >BOTH_ARE_ON. Cap blokowałby
+        aktywację BOTH_ARE_ON gdy heater_budget ujemny + duży eksport
+        w końcówce godziny.
+        """
+        if skip_upgrade:
+            return 0.0
+        seconds_left = seconds_until_hour_end(now)
+        if seconds_left < EXPORT_BONUS_CUTOFF_SEC:
+            return 0.0
+        t_left_h = max(seconds_left, EXPORT_BONUS_MIN_T_LEFT_SEC) / 3600
+        return max(0.0, exported_energy_wh / t_left_h)
 
-        # ─── Resolve final target ───
-        # Default mode: target = max(baseline, upgrade_candidate). 500W upgrade
-        # hysteresis prevents noise-driven flap.
-        #
-        # Battery-first mode (only_when battery_charge_limit > 2): mode-specific
-        # bonus gate filters small bonuses. When gate is closed → heaters OFF.
-        # When open → max(baseline, upgrade). Hysteresis 1000W/500W: gate opens
-        # at ≥1000W, holds open down to ≥500W when heaters currently running.
-        #
-        # At battery_charge_limit <= 2 override IGNORED (legacy semantic) —
-        # battery near-full, reserved alone (300/600) covers modest demand,
-        # no battery-vs-heater conflict at low tiers.
-        override_applies = prefer_battery_first and battery_charge_limit > 2
-        bonus_gate_open = export_bonus >= BONUS_GATE_ON_W or (
-            current_state != self.BOTH_ARE_OFF and export_bonus >= BONUS_GATE_OFF_W
-        )
-        heater_running_via_bonus = override_applies and bonus_gate_open
-        upgrade_beats_baseline = (
-            self._STATE_ORDER[upgrade_candidate] > self._STATE_ORDER[baseline]
+    @staticmethod
+    def _bonus_gate_open(export_bonus: float, current_state: HeaterState) -> bool:
+        """Mode-specific gate: True when bonus ≥1000W (or ≥500W via hysteresis).
+
+        Used only when `prefer_battery_first=True` to filter out small
+        noise-bonus from briefly turning heaters on.
+        """
+        return export_bonus >= BONUS_GATE_ON_W or (
+            current_state != HeaterState.OFF and export_bonus >= BONUS_GATE_OFF_W
         )
 
+    @staticmethod
+    def _resolve_target(
+        *,
+        baseline: HeaterState,
+        upgrade_candidate: HeaterState,
+        override_applies: bool,
+        bonus_gate_open: bool,
+    ) -> HeaterState:
+        """Pick final target.
+
+        - prefer_battery_first + battery_charge_limit > 2 + gate closed → OFF
+        - Otherwise: max(baseline, upgrade_candidate) — upgrade if strictly
+          higher, else baseline.
+        """
         if override_applies and not bonus_gate_open:
-            target = self.BOTH_ARE_OFF
-        elif upgrade_beats_baseline:
-            target = upgrade_candidate
-        else:
-            target = baseline
+            return HeaterState.OFF
+        if upgrade_candidate > baseline:
+            return upgrade_candidate
+        return baseline
 
-        # ─── Diagnostics ───
+    def _set_diagnostics(
+        self,
+        *,
+        heater_budget: float,
+        baseline: HeaterState,
+        target: HeaterState,
+        export_bonus: float,
+        heater_running_via_bonus: bool,
+    ) -> None:
+        """Write diagnostic fields read by HA sensors.
+
+        Stores `.canonical` strings (not HeaterState objects) for direct HA
+        state-machine compatibility — sensor `native_value` returns the
+        string as-is, no implicit stringification needed.
+        """
+        # Sign-flipped for diagnostic display: positive value means "deficit"
+        # (pv_available below reserved); negative means "surplus available
+        # for heaters" (the higher tier of the ladder).
         self.heater_budget = -heater_budget
-        self.heater_baseline = baseline
+        self.heater_baseline = baseline.canonical
         self.heater_upgrade_active = target != baseline
         if target == baseline:
-            self.heater_upgrade_target = f"{self._STATE_LABELS[baseline]} (baseline)"
+            self.heater_upgrade_target = f"{baseline.label} (baseline)"
         else:
-            self.heater_upgrade_target = (
-                f"{self._STATE_LABELS[baseline]} -> {self._STATE_LABELS[target]}"
-            )
+            self.heater_upgrade_target = f"{baseline.label} -> {target.label}"
         self.heater_export_bonus = export_bonus
         self.heater_running_via_bonus = heater_running_via_bonus
 
-        return target
+
+# ─── Private value objects (file-local) ────────────────────────────────────
+
+
+@total_ordering
+class HeaterState(Enum):
+    """One of 4 heater states — Java-like enum with per-member attributes.
+
+    Pure Enum (NOT IntEnum) — type-safe, member is NOT an int. Value IS the
+    aggregate power draw (W); semantic and gives free comparison via
+    @total_ordering + __lt__. `.power` is an alias for `.value` for readable
+    domain code.
+
+    Pattern: see Coordinate example in https://docs.python.org/3/howto/enum.html
+    """
+
+    # value (= power_w), canonical id,        label,   big_on, small_on
+    OFF = (0, "both_are_off", "off", False, False)  # noqa: E221
+    SMALL = (1500, "small_is_on", "small", False, True)  # noqa: E221
+    BIG = (3000, "big_is_on", "big", True, False)  # noqa: E221
+    BOTH = (4500, "both_are_on", "both", True, True)  # noqa: E221
+
+    def __new__(cls, value, canonical, label, big_on, small_on):  # noqa: ARG001
+        obj = object.__new__(cls)
+        obj._value_ = value
+        return obj
+
+    def __init__(
+        self,
+        value: int,  # noqa: ARG002 — already consumed by __new__
+        canonical: str,
+        label: str,
+        big_on: bool,
+        small_on: bool,
+    ) -> None:
+        self.canonical = canonical
+        self.label = label
+        self.big_on = big_on
+        self.small_on = small_on
+
+    @property
+    def power(self) -> int:
+        """Aggregate power draw (W) — alias for `.value` for semantic clarity."""
+        return self.value
+
+    def __str__(self) -> str:
+        """HA sensor compat — str(state) returns canonical id."""
+        return self.canonical
+
+    def __lt__(self, other) -> bool:
+        if self.__class__ is other.__class__:
+            return self.value < other.value
+        return NotImplemented
