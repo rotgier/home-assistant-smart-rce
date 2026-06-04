@@ -72,6 +72,15 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         icon="mdi:arrow-up-bold",
     ),
     EmsBinarySensorDescription(
+        name="Heater Running Via Bonus",
+        # True only when prefer_battery_first=True AND bonus gate open.
+        # Signals "heater allowed despite battery-first preference because real
+        # export bonus needs recovering". False in default mode (legacy) — gate
+        # not applied there.
+        value_fn=lambda ems: ems.water_heater.heater_running_via_bonus,
+        icon="mdi:fire-circle",
+    ),
+    EmsBinarySensorDescription(
         name="Grid Export Intervention Active",
         value_fn=lambda ems: ems.grid_export.intervention_active,
         icon="mdi:transmission-tower-export",

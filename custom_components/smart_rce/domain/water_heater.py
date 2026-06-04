@@ -4,7 +4,7 @@ Sterowanie grzałkami CWU (BIG 3kW, SMALL 1.5kW) — BALANCED-only logic:
 - PV surplus (sensor minus_pv)
 - SOC baterii + battery_charge_limit (ile bateria przyjmie)
 - Aktualna interwencja GridExportManager (POSITIVE/NEGATIVE — większy reserved)
-- User override `only_upgrade` (heaters fire only when upgrade > baseline)
+- User override `prefer_battery_first` (heaters only run when bonus is meaningful)
 
 Two-tier decision:
 1. Baseline — co PV samo wystarcza po odjęciu `reserved` per battery_charge_limit
@@ -15,11 +15,12 @@ Two-tier decision:
 NEGATIVE intervention wymusza większy reserved (grzałki off priorytetowo) bo
 grzałka 3kW jest typowo główną przyczyną deficytu hourly.
 
-`only_upgrade` override: w pochmurny dzień chwilowe przebicia PV przez baseline
-powodowałyby krótkie heaty grzałek. Z `only_upgrade=True` baseline alone nie
-aktywuje grzałek — wymagany jest aktywny upgrade (czyli historic export bonus
-> 0). Ignored when `battery_charge_limit <= 2` (battery already near-full,
-reserved alone covers remaining charge demand).
+`prefer_battery_first` override: gdy True, user chce maxować ładowanie baterii.
+Grzałki mogą się włączyć TYLKO gdy export_bonus pokona próg (≥1000W; trzyma
+w hysteresis ≥500W) — czyli realnie odzyskujemy wyeksportowane Wh, nie firujemy
+grzałek "z samej baseline PV". Plus reserved escaluje do max battery capability
+per tier (2000W przy >2, 600W przy ==2). Wyjątek: POSITIVE intervention nie
+escalates (bateria już dostaje surplus przez interwencję, grzałki też mogą).
 """
 
 from __future__ import annotations
@@ -35,6 +36,12 @@ from custom_components.smart_rce.domain.input_state import InputState
 EXPORT_BONUS_CUTOFF_SEC: int = 60  # < tego nie aktywuj bonusa (ostatnia minuta)
 EXPORT_BONUS_MIN_T_LEFT_SEC: int = 60  # clamp dolny dla dzielenia
 EXPORT_BONUS_HYSTERESIS_W: int = 500
+
+# Mode-specific bonus gate (only active when prefer_battery_first=True).
+# Gate opens at ≥1000W (real export to recover); held open down to 500W via
+# hysteresis. Below threshold w trybie battery-first → heaters OFF.
+BONUS_GATE_ON_W: int = 1000
+BONUS_GATE_OFF_W: int = 500
 
 
 def seconds_until_hour_end(now: datetime) -> int:
@@ -76,6 +83,11 @@ class WaterHeaterManager:
         self.heater_upgrade_target: str | None = None
         self.heater_upgrade_active: bool = False
         self.heater_export_bonus: float | None = None
+        # True when prefer_battery_first=True AND bonus gate is open
+        # (bonus≥1000W or held by hysteresis ≥500W). Signals "heater
+        # allowed to run despite battery-first preference because real
+        # export bonus needs recovering".
+        self.heater_running_via_bonus: bool = False
 
     def update(
         self,
@@ -84,7 +96,7 @@ class WaterHeaterManager:
         *,
         battery_charge_allowed: bool,
         reserved_balanced_full: int = 5500,
-        only_upgrade: bool = False,
+        prefer_battery_first: bool = False,
     ) -> None:
         """Update target state based on PV/battery/heater config.
 
@@ -100,11 +112,19 @@ class WaterHeaterManager:
         charge_limit is treated as 0 (battery idle, PV fully available
         for heaters).
 
-        `only_upgrade`: user-controlled override from
-        `switch.ems_water_heater_only_upgrade`. When True, heaters fire only
-        when upgrade > baseline (cloudy-day suppression of short heater
-        bursts on intermittent PV peaks). Ignored when battery_charge_limit
-        <= 2 (battery near-full; reserved covers it).
+        `prefer_battery_first`: user-controlled override from
+        `switch.ems_water_heater_prefer_battery_first`. When True:
+        - Reserved escalates to max battery capability per tier (>7: 5500;
+          >2: 2000; ==2: 600) — except under POSITIVE intervention.
+        - At `battery_charge_limit > 2`: bonus gate applies. Heaters fire
+          ONLY when export_bonus ≥1000W (or ≥500W with hysteresis when
+          currently on). Otherwise target=OFF. When gate open:
+          target=max(baseline, upgrade).
+        - At `battery_charge_limit <= 2`: gate IGNORED (legacy semantic).
+          Battery near-full, reserved (300/600) covers modest demand, no
+          heater-vs-battery conflict. Baseline fires normally.
+        - At `battery_charge_limit == 1`/`== 0`: reserved escalation
+          skipped (stays at 300/0 — no battery draw to escalate to).
         """
         if self._none_present(state):
             return
@@ -116,7 +136,7 @@ class WaterHeaterManager:
             grid_export_intervention=grid_export_intervention,
             battery_charge_allowed=battery_charge_allowed,
             reserved_balanced_full=reserved_balanced_full,
-            only_upgrade=only_upgrade,
+            prefer_battery_first=prefer_battery_first,
         )
 
         self.should_turn_on = target in (self.BIG_IS_ON, self.BOTH_ARE_ON)
@@ -153,27 +173,30 @@ class WaterHeaterManager:
         grid_export_intervention: InterventionDirection | None = None,
         battery_charge_allowed: bool = True,
         reserved_balanced_full: int = 5500,
-        only_upgrade: bool = False,
+        prefer_battery_first: bool = False,
     ) -> str:
-        """Pure decision — BALANCED two-tier logic with optional only_upgrade.
+        """Pure decision — BALANCED two-tier logic with optional battery-first override.
 
         Two tiers:
         1. Baseline — heater_budget = pv - reserved. Reserved scales with
-           battery_charge_limit + intervention (POSITIVE/NEGATIVE).
+           battery_charge_limit + intervention + prefer_battery_first.
         2. Upgrade — effective_budget = heater_budget + export_bonus_w.
            Lifts target above baseline to consume already-exported Wh in
            the rest of the current hour.
 
-        target = max(baseline, upgrade_candidate).
+        Default mode (`prefer_battery_first=False`): target = max(baseline,
+        upgrade_candidate). 500W hysteresis on the ladder prevents noise flap.
 
-        `only_upgrade` override (user-controlled):
-        - When True AND `battery_charge_limit > 2`: heaters fire only if
-          upgrade_candidate STRICTLY > baseline. Baseline alone → off.
-        - When True, also overrides `skip_upgrade` (which normally suppresses
-          upgrade for `battery_charge_limit > 7`) — user accepts heaters
-          stealing battery charge to consume export bonus.
-        - When `battery_charge_limit <= 2`: override IGNORED. Battery is
-          near-full, reserved alone covers the small remaining demand.
+        Battery-first mode (`prefer_battery_first=True`):
+        - Reserved escalates to max battery capability per tier (see
+          `high_reserve` helper below), except POSITIVE intervention which
+          stays at modest reserved (battery already gets surplus).
+        - Bonus gate filters small noise-bonus: heaters fire ONLY when
+          export_bonus ≥ 1000W (or ≥500W with hysteresis when currently on).
+          Otherwise target=OFF.
+        - When gate open: target = max(baseline, upgrade_candidate) — fixes
+          the edge case where baseline saturates at BOTH_ARE_ON and the
+          override would have suppressed heaters.
         """
         pv_available = -state.consumption_minus_pv_2_minutes
         # Effective charge limit captures "is battery actively absorbing PV right now?"
@@ -187,24 +210,30 @@ class WaterHeaterManager:
         )
         exported_energy = state.exported_energy_hourly * 1000  # kWh → Wh
 
-        # ─── Reserved per battery_charge_limit + intervention ───
+        # ─── Reserved per battery_charge_limit + intervention + prefer_battery_first ───
         # `==` zamiast `is` — StrEnum compare value-based, odporne na module reload.
         # Po `live_reload()` water_heater może trzymać OLD InterventionDirection
         # class reference (reloaded przed grid_export), `is` fail mimo same value.
         is_positive = grid_export_intervention == InterventionDirection.POSITIVE
         is_negative = grid_export_intervention == InterventionDirection.NEGATIVE
 
+        # high_reserve: escalate reserved to max battery capability per tier.
+        # Negative intervention always escalates (force heaters off). Battery-first
+        # also escalates EXCEPT under positive intervention (battery already
+        # getting surplus via the intervention; heaters can also consume).
+        high_reserve = (is_negative or prefer_battery_first) and not is_positive
+
         if battery_charge_limit > 7:
             if is_positive:
                 reserved = 3500
-            elif is_negative:
-                reserved = 5500  # grzałki MUSZĄ off
+            elif high_reserve:
+                reserved = 5500  # battery max draw; grzałki MUSZĄ off
             else:
                 reserved = reserved_balanced_full
         elif battery_charge_limit > 2:
-            reserved = 2000 if is_negative else 1000
+            reserved = 2000 if high_reserve else 1000
         elif battery_charge_limit == 2:
-            reserved = 600 if is_negative else 300
+            reserved = 600 if high_reserve else 300
         elif battery_charge_limit == 1:
             reserved = 300
         else:  # battery_charge_limit == 0
@@ -238,23 +267,24 @@ class WaterHeaterManager:
         # 9.7 kW > PV. Gdy bateria chce max, każdy włączony watt grzałki jest
         # zabrany baterii (Goodwe rebalansuje automatycznie).
         #
-        # `only_upgrade=True` overrides skip — user akceptuje że grzałki kradną
-        # part of battery charge to consume export bonus (priorytet "zjeść
-        # wyeksportowane" przed "naładować maksymalnie").
+        # `prefer_battery_first=True` overrides skip — user akceptuje że grzałki
+        # kradną part of battery charge gdy export_bonus uzasadnia (gate open).
         #
         # Bonus: ile dodatkowej mocy "musi być zjedzone" w resztę godziny,
-        # żeby zniwelować dotąd wyeksportowane Wh. Cap na BOTH_POWER — nigdy
-        # nie udajemy że mamy więcej dyspozycyjnej mocy niż zjedzą obie grzałki.
+        # żeby zniwelować dotąd wyeksportowane Wh. **Brak cap** — bonus może
+        # przekraczać BOTH_POWER (drabinka i tak limit na BOTH_ARE_ON). Cap
+        # poprzednio blokował aktywację gdy heater_budget ujemny + duży
+        # eksport w końcówce godziny (scenariusz: 5 min do końca, 4.5kWh
+        # wyexportowane, heater_budget=-2500 — bez cap effective=51500
+        # → BOTH_ARE_ON; z cap effective=2000 → tylko SMALL).
         # W ostatnich EXPORT_BONUS_CUTOFF_SEC sekundach nie aktywujemy bonusa
         # (i tak nie zdążymy zjeść; uniknięcie ostatniego szarpnięcia przed
         # resetem utility_meter).
-        skip_upgrade = battery_charge_limit > 7 and not only_upgrade
+        skip_upgrade = battery_charge_limit > 7 and not prefer_battery_first
         seconds_left = seconds_until_hour_end(state.now)
         if seconds_left >= EXPORT_BONUS_CUTOFF_SEC and not skip_upgrade:
             t_left_h = max(seconds_left, EXPORT_BONUS_MIN_T_LEFT_SEC) / 3600
-            export_bonus = min(
-                float(self.BOTH_POWER), max(0.0, exported_energy / t_left_h)
-            )
+            export_bonus = max(0.0, exported_energy / t_left_h)
         else:
             export_bonus = 0.0
 
@@ -281,14 +311,27 @@ class WaterHeaterManager:
             upgrade_candidate = self.BOTH_ARE_OFF
 
         # ─── Resolve final target ───
-        # Default: max(baseline, upgrade_candidate) — upgrade never goes below
-        # baseline. With only_upgrade override (and battery still demanding
-        # charge), heaters only fire when upgrade STRICTLY exceeds baseline.
-        override_active = only_upgrade and battery_charge_limit > 2
+        # Default mode: target = max(baseline, upgrade_candidate). 500W upgrade
+        # hysteresis prevents noise-driven flap.
+        #
+        # Battery-first mode (only_when battery_charge_limit > 2): mode-specific
+        # bonus gate filters small bonuses. When gate is closed → heaters OFF.
+        # When open → max(baseline, upgrade). Hysteresis 1000W/500W: gate opens
+        # at ≥1000W, holds open down to ≥500W when heaters currently running.
+        #
+        # At battery_charge_limit <= 2 override IGNORED (legacy semantic) —
+        # battery near-full, reserved alone (300/600) covers modest demand,
+        # no battery-vs-heater conflict at low tiers.
+        override_applies = prefer_battery_first and battery_charge_limit > 2
+        bonus_gate_open = export_bonus >= BONUS_GATE_ON_W or (
+            current_state != self.BOTH_ARE_OFF and export_bonus >= BONUS_GATE_OFF_W
+        )
+        heater_running_via_bonus = override_applies and bonus_gate_open
         upgrade_beats_baseline = (
             self._STATE_ORDER[upgrade_candidate] > self._STATE_ORDER[baseline]
         )
-        if override_active and not upgrade_beats_baseline:
+
+        if override_applies and not bonus_gate_open:
             target = self.BOTH_ARE_OFF
         elif upgrade_beats_baseline:
             target = upgrade_candidate
@@ -306,5 +349,6 @@ class WaterHeaterManager:
                 f"{self._STATE_LABELS[baseline]} -> {self._STATE_LABELS[target]}"
             )
         self.heater_export_bonus = export_bonus
+        self.heater_running_via_bonus = heater_running_via_bonus
 
         return target

@@ -185,8 +185,8 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     # `BatterySchedule.ems_interventions_blocked` (Etap 0).
     # `input_select.ems_water_heater_mode` + `input_select.ems_water_heater_strategy`
     # REMOVED — BALANCED is now the only mode (ASAP/WASTED dropped). Replaced
-    # by `switch.ems_water_heater_only_upgrade` (smart_rce-owned, backed by
-    # `WaterHeaterReservedPolicy.only_upgrade`).
+    # by `switch.ems_water_heater_prefer_battery_first` (smart_rce-owned, backed
+    # by `WaterHeaterReservedPolicy.prefer_battery_first`).
     # `binary_sensor.rce_should_hold_for_peak` REMOVED — smart_rce computes
     # this internally from `discharge_slots.max_upcoming_peak` + threshold.
     # The HA template lives on for legacy automations + dashboards.

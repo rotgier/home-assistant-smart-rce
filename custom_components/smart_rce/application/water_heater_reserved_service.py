@@ -61,9 +61,9 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
         return self._repo.policy.mode
 
     @property
-    def only_upgrade(self) -> bool:
-        """When True, heaters fire only when upgrade > baseline (BALANCED logic)."""
-        return self._repo.policy.only_upgrade
+    def prefer_battery_first(self) -> bool:
+        """When True, escalate reserved + apply bonus gate (see WaterHeaterManager.target)."""
+        return self._repo.policy.prefer_battery_first
 
     # ─── User mutators ───
 
@@ -75,6 +75,8 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
         """UI-driven manual_value change. Persists + notifies listeners on delta."""
         await self._persist_and_notify(self._repo.policy.set_manual_value(value))
 
-    async def set_only_upgrade(self, value: bool) -> None:
-        """UI-driven only_upgrade toggle. Persists + notifies listeners on delta."""
-        await self._persist_and_notify(self._repo.policy.set_only_upgrade(value))
+    async def set_prefer_battery_first(self, value: bool) -> None:
+        """UI-driven prefer_battery_first toggle. Persists + notifies listeners on delta."""
+        await self._persist_and_notify(
+            self._repo.policy.set_prefer_battery_first(value)
+        )

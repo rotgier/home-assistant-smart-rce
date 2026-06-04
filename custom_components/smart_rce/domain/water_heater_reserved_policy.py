@@ -53,18 +53,19 @@ _DEFAULT_AUTO_STUB = 3000
 
 @dataclass
 class WaterHeaterReservedPolicy:
-    """Persisted state — mode + manual_value + only_upgrade.
+    """Persisted state — mode + manual_value + prefer_battery_first.
 
-    Auto cache lives in service. `only_upgrade` is a user-facing override:
-    when True, heaters fire only when the BALANCED upgrade level strictly
-    exceeds baseline (see WaterHeaterManager.target). Cloudy days where
-    intermittent PV peaks would otherwise trigger short heater bursts —
-    user prefers to let surplus go to grid for later battery charging.
+    Auto cache lives in service. `prefer_battery_first` is a user-facing
+    override: when True, reserved escalates to battery max per tier AND
+    heaters fire only when export_bonus passes the gate (≥1000W with
+    hysteresis ≥500W). For cloudy/uncertain days where user wants to
+    prioritize battery charging and only let surplus heaters when there's
+    real export to recover. See WaterHeaterManager.target.
     """
 
     mode: ReservedMode = ReservedMode.AUTO
     manual_value: int = _DEFAULT_MANUAL
-    only_upgrade: bool = False
+    prefer_battery_first: bool = False
 
     def compute_current_value(
         self,
@@ -96,18 +97,18 @@ class WaterHeaterReservedPolicy:
         self.manual_value = value
         return True
 
-    def set_only_upgrade(self, value: bool) -> bool:
+    def set_prefer_battery_first(self, value: bool) -> bool:
         """Idempotent — returns True if changed."""
-        if self.only_upgrade == value:
+        if self.prefer_battery_first == value:
             return False
-        self.only_upgrade = value
+        self.prefer_battery_first = value
         return True
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode.value,
             "manual_value": self.manual_value,
-            "only_upgrade": self.only_upgrade,
+            "prefer_battery_first": self.prefer_battery_first,
         }
 
     @classmethod
@@ -117,8 +118,13 @@ class WaterHeaterReservedPolicy:
             mode = ReservedMode(mode_raw)
         except ValueError:
             mode = ReservedMode.AUTO
+        # Backward compat: legacy payload key `only_upgrade` accepted as
+        # fallback so existing .storage files load without manual migration.
+        prefer_battery_first = bool(
+            data.get("prefer_battery_first", data.get("only_upgrade", False))
+        )
         return cls(
             mode=mode,
             manual_value=int(data.get("manual_value", _DEFAULT_MANUAL)),
-            only_upgrade=bool(data.get("only_upgrade", False)),
+            prefer_battery_first=prefer_battery_first,
         )

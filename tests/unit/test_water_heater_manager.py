@@ -46,7 +46,7 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
     # expectations from before the configurable reserved_balanced_full landed.
     reserved_service = MagicMock()
     reserved_service.compute_current_value = MagicMock(return_value=5500)
-    reserved_service.only_upgrade = False
+    reserved_service.prefer_battery_first = False
     return Ems(
         dod_policy=DodPolicy(),
         grid_export=GridExportManager(),
@@ -516,6 +516,9 @@ class TestBalancedExportBonus:
 
         0.5 kWh wyeksportowane, 5 min do końca, niski pv →
         adaptacyjny upgrade z OFF bezpośrednio do BOTH (skok N+3).
+
+        Cap na bonus DROPPED — bonus może przekraczać BOTH_POWER, drabinka
+        i tak limit na BOTH_ARE_ON.
         """
         mgr = _ems()
         mgr.update_state(
@@ -528,11 +531,11 @@ class TestBalancedExportBonus:
             )
         )
         # reserved=300, heater_budget=1200 < SMALL → baseline=OFF
-        # bonus = 500/(5/60) = 6000 W → cap do BOTH_POWER=4500
-        # effective = 1200 + 4500 = 5700 → BOTH (≥4500)
+        # bonus = 500/(5/60) = 6000 W (no cap)
+        # effective = 1200 + 6000 = 7200 → BOTH (≥4500)
         assert mgr.water_heater.heater_baseline == "both_are_off"
         assert mgr.water_heater.heater_upgrade_target == "off -> both"
-        assert mgr.water_heater.heater_export_bonus == 4500.0
+        assert mgr.water_heater.heater_export_bonus == 6000.0
         assert mgr.water_heater.should_turn_on is True
         assert mgr.water_heater.should_turn_on_small is True
 
@@ -645,8 +648,13 @@ class TestBalancedExportBonus:
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_on_small is False
 
-    def test_export_bonus_capped_at_both_power(self):
-        """Bonus jest cappowany do BOTH_POWER żeby nie udawać niemożliwego budżetu."""
+    def test_export_bonus_uncapped(self):
+        """Bonus NIE jest cappowany (cap dropped 2026-06-04).
+
+        Drabinka upgrade i tak nigdy nie wybierze stanu >BOTH_ARE_ON, więc
+        cap był redundantny i blokował aktywację BOTH_ARE_ON gdy heater_budget
+        ujemny + duży eksport w końcówce godziny.
+        """
         mgr = _ems()
         mgr.update_state(
             _state(
@@ -654,11 +662,11 @@ class TestBalancedExportBonus:
                 battery_charge_limit=2.0,
                 battery_soc=95.0,
                 exported_energy_hourly=2.0,  # 2 kWh — nierealistycznie dużo
-                now=NOON_55,  # bonus by skoczył do 24kW bez cap
+                now=NOON_55,  # 5 min do końca
             )
         )
-        # bonus = min(4500, 2000/0.0833) = min(4500, 24000) = 4500
-        assert mgr.water_heater.heater_export_bonus == 4500.0
+        # bonus = 2000/(5/60) = 24000 W (uncapped)
+        assert mgr.water_heater.heater_export_bonus == 24000.0
 
 
 class TestEffectiveChargeLimitFromKwarg:
@@ -724,8 +732,10 @@ class TestEffectiveChargeLimitFromKwarg:
         assert mgr.water_heater.should_turn_on_small is False
 
 
-def _ems_with_only_upgrade(only_upgrade: bool, *, charge_allowed: bool = True) -> Ems:
-    """Test fixture — Ems with only_upgrade override set on reserved_service mock."""
+def _ems_with_prefer_battery_first(
+    prefer_battery_first: bool, *, charge_allowed: bool = True
+) -> Ems:
+    """Test fixture — Ems with prefer_battery_first override on reserved_service mock."""
     from custom_components.smart_rce.application.battery_charge_service import (
         BatteryChargeUpdateResult,
     )
@@ -755,7 +765,7 @@ def _ems_with_only_upgrade(only_upgrade: bool, *, charge_allowed: bool = True) -
     charge_service.charge_allowed = charge_allowed
     reserved_service = MagicMock()
     reserved_service.compute_current_value = MagicMock(return_value=5500)
-    reserved_service.only_upgrade = only_upgrade
+    reserved_service.prefer_battery_first = prefer_battery_first
     return Ems(
         dod_policy=DodPolicy(),
         grid_export=GridExportManager(),
@@ -770,26 +780,26 @@ def _ems_with_only_upgrade(only_upgrade: bool, *, charge_allowed: bool = True) -
     )
 
 
-class TestOnlyUpgradeOverride:
-    """only_upgrade override: heaters fire only when upgrade > baseline.
+class TestPreferBatteryFirstOverride:
+    """prefer_battery_first override: escalated reserved + bonus gate.
 
-    Use case: cloudy day with intermittent PV peaks. Without override, baseline
-    briefly satisfies threshold → short heater bursts. With override, baseline
-    alone is suppressed — heaters only fire when historic export bonus lifts
-    upgrade strictly above baseline.
+    When ON: reserved escalates per tier (>7: 5500; >2: 2000; ==2: 600) except
+    POSITIVE intervention. At limit>2: heaters fire ONLY when export_bonus
+    passes the gate (≥1000W, hysteresis ≥500W). At limit<=2: gate IGNORED
+    (legacy — battery near-full, no heater-vs-battery conflict at low tiers).
 
-    Guard: ignored when battery_charge_limit <= 2 (battery near-full, reserved
-    alone covers remaining charge demand). Override also nullifies skip_upgrade
-    (charge_limit > 7) — user accepts heaters stealing battery charge to
-    consume export bonus.
+    Use case: prefer battery charging on uncertain days; intermittent PV peaks
+    don't trigger short heater bursts because gate filters noise-bonus.
     """
 
-    def test_suppresses_baseline_only_firing(self):
-        """only_upgrade=True + charge_limit=7 + PV satisfies baseline only → OFF."""
-        # charge_limit=7 → reserved=1000. pv=3000 → heater_budget=2000 ≥ SMALL.
-        # Without upgrade, baseline=SMALL. With only_upgrade=True and no
-        # export_bonus (exported_energy_hourly=0) → upgrade==baseline → target=OFF.
-        mgr = _ems_with_only_upgrade(only_upgrade=True)
+    def test_baseline_only_firing_blocked_by_bonus_gate(self):
+        """prefer_battery_first=True + limit=7 + no export → OFF (gate closed).
+
+        Reserved escalates to 2000 (battery-first at >2 tier).
+        pv=3000 → heater_budget=1000 < SMALL → baseline=OFF.
+        bonus=0 → gate closed → target=OFF regardless.
+        """
+        mgr = _ems_with_prefer_battery_first(prefer_battery_first=True)
         mgr.update_state(
             _state(
                 consumption_minus_pv=-3000.0,
@@ -800,16 +810,18 @@ class TestOnlyUpgradeOverride:
         )
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_on_small is False
-        assert mgr.water_heater.heater_baseline == "small_is_on"
-        # Diagnostic still shows baseline computation — only target suppressed.
+        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_running_via_bonus is False
 
-    def test_allows_upgrade_above_baseline(self):
-        """only_upgrade=True + upgrade STRICTLY > baseline → fires upgrade level."""
-        # charge_limit=7 → reserved=1000. pv=3000 → heater_budget=2000 → baseline=SMALL.
-        # exported_energy=2 kWh @ NOON_50 (10 min left, 600s) → bonus = 2000/(600/3600) = 12000
-        # capped to BOTH_POWER=4500 → effective_budget = 2000+4500 = 6500 ≥ BOTH (4500)
-        # → upgrade_candidate=BOTH. baseline=SMALL → target=BOTH.
-        mgr = _ems_with_only_upgrade(only_upgrade=True)
+    def test_allows_heaters_when_bonus_gate_open(self):
+        """prefer_battery_first=True + bonus passes gate → fires upgrade level."""
+        # charge_limit=7, prefer_battery_first=True → reserved=2000 (escalated).
+        # pv=3000 → heater_budget=1000 → baseline=OFF.
+        # exported_energy=2 kWh @ NOON_50 (10 min left = 600s)
+        # → bonus = 2000/(600/3600) = 12000W (no cap)
+        # → gate_open (12000 >= 1000) → effective = 1000+12000 = 13000 → BOTH
+        # → target=BOTH (upgrade beats baseline=OFF).
+        mgr = _ems_with_prefer_battery_first(prefer_battery_first=True)
         mgr.update_state(
             _state(
                 consumption_minus_pv=-3000.0,
@@ -822,15 +834,22 @@ class TestOnlyUpgradeOverride:
         assert mgr.water_heater.should_turn_on is True
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.heater_upgrade_active is True
+        assert mgr.water_heater.heater_running_via_bonus is True
 
-    def test_ignored_when_battery_charge_limit_low(self):
-        """only_upgrade=True but battery_charge_limit=2 → override IGNORED, baseline fires."""
-        # charge_limit=2 → reserved=300. pv=2000 → heater_budget=1700 ≥ SMALL.
-        # battery near-full (charge_limit<=2), override ignored → fires baseline=SMALL.
-        mgr = _ems_with_only_upgrade(only_upgrade=True)
+    def test_gate_ignored_at_low_charge_limit(self):
+        """prefer_battery_first=True at limit=2 → gate IGNORED, baseline fires.
+
+        At limit==2, reserved still escalates (600 instead of 300) but gate
+        does NOT apply (legacy semantic: battery near-full, no conflict).
+        Need higher PV to push baseline above escalated reserved.
+        """
+        # charge_limit=2, prefer_battery_first=True → reserved=600 (escalated).
+        # pv=2500 → heater_budget=1900 ≥ SMALL → baseline=SMALL.
+        # Gate doesn't apply at limit<=2 → target=baseline=SMALL.
+        mgr = _ems_with_prefer_battery_first(prefer_battery_first=True)
         mgr.update_state(
             _state(
-                consumption_minus_pv=-2000.0,
+                consumption_minus_pv=-2500.0,
                 battery_charge_limit=2.0,
                 battery_soc=98.0,
                 exported_energy_hourly=0.0,
@@ -838,19 +857,20 @@ class TestOnlyUpgradeOverride:
         )
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_running_via_bonus is False
 
     def test_overrides_skip_upgrade_for_charge_limit_high(self):
-        """only_upgrade=True + charge_limit=18 + export_bonus → upgrade fires.
+        """prefer_battery_first=True + charge_limit=18 + bonus passes gate.
 
-        Without only_upgrade, skip_upgrade=True (charge_limit > 7) blocks
-        export_bonus. With only_upgrade=True, skip_upgrade is nullified —
-        heaters can fire from upgrade even when battery wants max charge.
+        Without prefer_battery_first, skip_upgrade=True (charge_limit > 7) blocks
+        export_bonus. With prefer_battery_first=True, skip_upgrade is nullified —
+        heaters fire when gate opens.
         """
-        # charge_limit=18 → reserved=5500. pv=5500 → heater_budget=0 (baseline=OFF).
-        # exported_energy=2 kWh @ NOON (60min left) → bonus=2000 W → effective=2000
-        # → upgrade_candidate=SMALL (>= 1500). baseline=OFF, upgrade=SMALL > baseline
-        # → target=SMALL.
-        mgr = _ems_with_only_upgrade(only_upgrade=True)
+        # charge_limit=18, prefer=True → reserved=5500 (high_reserve at >7).
+        # pv=5500 → heater_budget=0 → baseline=OFF.
+        # exported=2 kWh @ NOON (60min left) → bonus=2000W (no cap).
+        # gate_open (2000 >= 1000) → effective=2000 → SMALL.
+        mgr = _ems_with_prefer_battery_first(prefer_battery_first=True)
         mgr.update_state(
             _state(
                 consumption_minus_pv=-5500.0,
@@ -863,11 +883,14 @@ class TestOnlyUpgradeOverride:
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.heater_baseline == "both_are_off"
         assert mgr.water_heater.heater_upgrade_active is True
+        assert mgr.water_heater.heater_running_via_bonus is True
 
     def test_disabled_preserves_baseline_firing(self):
-        """only_upgrade=False (default) → baseline fires normally."""
-        # Same conditions as test_suppresses_baseline_only_firing but with override OFF.
-        mgr = _ems_with_only_upgrade(only_upgrade=False)
+        """prefer_battery_first=False (default) → baseline fires normally (legacy)."""
+        # Same conditions as test_baseline_only_firing_blocked_by_bonus_gate
+        # but with override OFF: reserved=1000 (not escalated) → heater_budget=2000
+        # → baseline=SMALL → fires.
+        mgr = _ems_with_prefer_battery_first(prefer_battery_first=False)
         mgr.update_state(
             _state(
                 consumption_minus_pv=-3000.0,
@@ -878,3 +901,4 @@ class TestOnlyUpgradeOverride:
         )
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_running_via_bonus is False
