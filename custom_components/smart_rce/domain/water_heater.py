@@ -362,42 +362,32 @@ class WaterHeaterManager:
 class HeaterState(Enum):
     """One of 4 heater states — Java-like enum with per-member attributes.
 
-    Pure Enum (NOT IntEnum) — type-safe, member is NOT an int. Value IS the
-    aggregate power draw (W); semantic and gives free comparison via
-    @total_ordering + __lt__. `.power` is an alias for `.value` for readable
-    domain code.
+    Pure Enum (NOT IntEnum) — type-safe, member is NOT an int. Per-member
+    attributes (power, canonical, label, big_on, small_on) set via `__init__`
+    from the value tuple. Comparison via @total_ordering + __lt__ on `power`.
 
-    Pattern: see Coordinate example in https://docs.python.org/3/howto/enum.html
+    Pattern: Planet example in https://docs.python.org/3/howto/enum.html
     """
 
-    # value (= power_w), canonical id,        label,   big_on, small_on
+    # power_w, canonical id,    label,   big_on, small_on
     OFF = (0, "both_are_off", "off", False, False)  # noqa: E221
     SMALL = (1500, "small_is_on", "small", False, True)  # noqa: E221
     BIG = (3000, "big_is_on", "big", True, False)  # noqa: E221
     BOTH = (4500, "both_are_on", "both", True, True)  # noqa: E221
 
-    def __new__(cls, value, canonical, label, big_on, small_on):  # noqa: ARG001
-        obj = object.__new__(cls)
-        obj._value_ = value
-        return obj
-
     def __init__(
         self,
-        value: int,  # noqa: ARG002 — already consumed by __new__
+        power: int,
         canonical: str,
         label: str,
         big_on: bool,
         small_on: bool,
     ) -> None:
+        self.power = power
         self.canonical = canonical
         self.label = label
         self.big_on = big_on
         self.small_on = small_on
-
-    @property
-    def power(self) -> int:
-        """Aggregate power draw (W) — alias for `.value` for semantic clarity."""
-        return self.value
 
     def __str__(self) -> str:
         """HA sensor compat — str(state) returns canonical id."""
@@ -405,5 +395,5 @@ class HeaterState(Enum):
 
     def __lt__(self, other) -> bool:
         if self.__class__ is other.__class__:
-            return self.value < other.value
+            return self.power < other.power
         return NotImplemented
