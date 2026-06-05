@@ -145,16 +145,9 @@ class WaterHeaterManager:
         )
         exported_energy_wh = state.exported_energy_hourly * 1000
 
-        # `==` instead of `is` — StrEnum value-based compare survives
-        # live_reload() of grid_export module (water_heater may hold an OLD
-        # InterventionDirection class reference; `is` fails despite same value).
-        is_positive = grid_export_intervention == InterventionDirection.POSITIVE
-        is_negative = grid_export_intervention == InterventionDirection.NEGATIVE
-
         reserved = self._compute_reserved(
             battery_charge_limit=battery_charge_limit,
-            is_positive=is_positive,
-            is_negative=is_negative,
+            grid_export_intervention=grid_export_intervention,
             prefer_battery_first=prefer_battery_first,
             reserved_balanced_full=reserved_balanced_full,
         )
@@ -221,8 +214,7 @@ class WaterHeaterManager:
     def _compute_reserved(
         *,
         battery_charge_limit: float,
-        is_positive: bool,
-        is_negative: bool,
+        grid_export_intervention: InterventionDirection | None,
         prefer_battery_first: bool,
         reserved_balanced_full: int,
     ) -> int:
@@ -232,6 +224,11 @@ class WaterHeaterManager:
         off); prefer_battery_first also escalates EXCEPT under positive
         intervention (battery already gets surplus via the intervention).
         """
+        # `==` instead of `is` — StrEnum value-based compare survives
+        # live_reload() of grid_export module (water_heater may hold an OLD
+        # InterventionDirection class reference; `is` fails despite same value).
+        is_positive = grid_export_intervention == InterventionDirection.POSITIVE
+        is_negative = grid_export_intervention == InterventionDirection.NEGATIVE
         high_reserve = (is_negative or prefer_battery_first) and not is_positive
 
         if battery_charge_limit > 7:
