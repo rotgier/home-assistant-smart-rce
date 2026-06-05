@@ -1,26 +1,27 @@
-"""Water Heater Manager — CWU heater on/off decisions.
+"""Water Heater Manager — DHW (CWU) heater on/off decisions.
 
-Sterowanie grzałkami CWU (BIG 3kW, SMALL 1.5kW) — BALANCED-only logic:
+Controls DHW heaters (BIG 3kW, SMALL 1.5kW) — BALANCED-only logic:
 - PV surplus (sensor minus_pv)
-- SOC baterii + battery_charge_limit (ile bateria przyjmie)
-- Aktualna interwencja GridExportManager (POSITIVE/NEGATIVE — większy reserved)
+- Battery SOC + battery_charge_limit (how much battery accepts)
+- Active GridExportManager intervention (POSITIVE/NEGATIVE — bigger reserved)
 - User override `prefer_battery_first` (heaters only run when bonus is meaningful)
 
 Two-tier decision:
-1. Baseline — co PV samo wystarcza po odjęciu `reserved` per battery_charge_limit
-   + intervention
+1. Baseline — PV self-coverage after subtracting `reserved` per
+   battery_charge_limit + intervention
 2. Upgrade — adaptive lift to consume the hourly export bonus (so we don't
    waste already-exported Wh)
 
-NEGATIVE intervention wymusza większy reserved (grzałki off priorytetowo) bo
-grzałka 3kW jest typowo główną przyczyną deficytu hourly.
+NEGATIVE intervention forces higher reserved (heaters off priority) because a
+3kW heater is typically the main driver of hourly deficit.
 
-`prefer_battery_first` override: gdy True, user chce maxować ładowanie baterii.
-Grzałki mogą się włączyć TYLKO gdy export_bonus pokona próg (≥1000W; trzyma
-w hysteresis ≥500W) — czyli realnie odzyskujemy wyeksportowane Wh, nie firujemy
-grzałek "z samej baseline PV". Plus reserved escaluje do max battery capability
-per tier (2000W przy >2, 600W przy ==2). Wyjątek: POSITIVE intervention nie
-escalates (bateria już dostaje surplus przez interwencję, grzałki też mogą).
+`prefer_battery_first` override: when True, user prefers maxing battery charge.
+Heaters fire ONLY when export_bonus passes the threshold (≥1000W; held by
+hysteresis ≥500W) — i.e. only when recovering already-exported Wh, not firing
+heaters "from baseline PV alone". Plus reserved escalates to max battery
+capability per tier (2000W at >2, 600W at ==2). Exception: POSITIVE intervention
+does NOT escalate (battery already gets surplus via the intervention, heaters
+can run too).
 
 File layout (Java-style): WaterHeaterManager public class at TOP, then private
 HeaterState enum + module-level constants BELOW.
@@ -35,16 +36,16 @@ from functools import total_ordering
 from custom_components.smart_rce.domain.grid_export import InterventionDirection
 from custom_components.smart_rce.domain.input_state import InputState
 
-# Adaptacyjny upgrade pod budżet eksportu w resztę godziny.
-# Bonus = exported_energy_so_far / czas_do_końca_godziny — przelicza dotąd
-# wyeksportowane Wh na ekwiwalent dodatkowej mocy dostępnej do dożarcia.
-EXPORT_BONUS_CUTOFF_SEC: int = 60  # < tego nie aktywuj bonusa (ostatnia minuta)
-EXPORT_BONUS_MIN_T_LEFT_SEC: int = 60  # clamp dolny dla dzielenia
+# Adaptive upgrade consuming export budget over the rest of the hour.
+# Bonus = exported_energy_so_far / seconds_until_hour_end — converts the
+# already-exported Wh into equivalent extra power available for consumption.
+EXPORT_BONUS_CUTOFF_SEC: int = 60  # below this don't activate bonus (last minute)
+EXPORT_BONUS_MIN_T_LEFT_SEC: int = 60  # lower clamp for division
 LADDER_HYSTERESIS_W: int = 500  # used for both baseline and upgrade ladder
 
 # Mode-specific bonus gate (only active when prefer_battery_first=True).
 # Gate opens at ≥1000W (real export to recover); held open down to 500W via
-# hysteresis. Below threshold w trybie battery-first → heaters OFF.
+# hysteresis. Below threshold in battery-first mode → heaters OFF.
 BONUS_GATE_ON_W: int = 1000
 BONUS_GATE_OFF_W: int = 500
 
@@ -85,9 +86,9 @@ class WaterHeaterManager:
         """Compute target heater state + set should_turn_on/_off flags.
 
         `grid_export_intervention` (POSITIVE/NEGATIVE/None):
-        - POSITIVE: bateria łapie surplus, reserved zwiększony do 3500W
-          (`charge_limit > 7`) by chronić baterię intervention.
-        - NEGATIVE: deficit hourly — większy reserved by wymusić grzałki off.
+        - POSITIVE: battery catches surplus, reserved raised to 3500W
+          (`charge_limit > 7`) to protect battery intervention.
+        - NEGATIVE: hourly deficit — higher reserved to force heaters off.
         - None: original logic.
 
         `battery_charge_allowed`: kwarg from BatteryChargeService — replaces
@@ -134,7 +135,7 @@ class WaterHeaterManager:
     ) -> HeaterState:
         """Pure decision — BALANCED two-tier logic with optional battery-first override.
 
-        Thin orchestrator delegating to extracted helpers (per Reguła 1 —
+        Thin orchestrator delegating to extracted helpers (per Rule 1 —
         callees ordered by call sequence below). Returns the target
         `HeaterState`; side-effects diagnostic fields via `_set_diagnostics`.
         """
@@ -208,7 +209,7 @@ class WaterHeaterManager:
             return HeaterState.SMALL
         return HeaterState.OFF
 
-    # ─── target() helpers (Reguła 1a — in call order) ──────────────────────
+    # ─── target() helpers (Rule 1a — in call order) ───────────────────────
 
     @staticmethod
     def _compute_reserved(
@@ -235,7 +236,7 @@ class WaterHeaterManager:
             if is_positive:
                 return 3500
             if high_reserve:
-                return 5500  # battery max draw; grzałki MUSZĄ off
+                return 5500  # battery max draw; heaters MUST be off
             return reserved_balanced_full
         if battery_charge_limit > 2:
             return 2000 if high_reserve else 1000
@@ -277,10 +278,10 @@ class WaterHeaterManager:
         meaningful kWh in the final minute; avoid last-second jolt before
         utility_meter resets).
 
-        Brak cap na BOTH_POWER — bonus może przekraczać max heater draw,
-        drabinka i tak nie wybierze stanu >BOTH_ARE_ON. Cap blokowałby
-        aktywację BOTH_ARE_ON gdy heater_budget ujemny + duży eksport
-        w końcówce godziny.
+        No cap on BOTH_POWER — bonus may exceed max heater draw; the ladder
+        won't pick a state above BOTH_ARE_ON anyway. A cap would block
+        BOTH_ARE_ON activation when heater_budget is negative and a large
+        export accumulated near the end of the hour.
         """
         if skip_upgrade:
             return 0.0
