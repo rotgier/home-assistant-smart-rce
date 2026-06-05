@@ -47,6 +47,8 @@ def _ems(*, charge_allowed: bool = True) -> Ems:
     reserved_service = MagicMock()
     reserved_service.compute_current_value = MagicMock(return_value=5500)
     reserved_service.prefer_battery_first = False
+    reserved_service.bonus_gate_on_w = 1000
+    reserved_service.bonus_gate_off_w = 500
     return Ems(
         dod_policy=DodPolicy(),
         grid_export=GridExportManager(),
@@ -766,6 +768,8 @@ def _ems_with_prefer_battery_first(
     reserved_service = MagicMock()
     reserved_service.compute_current_value = MagicMock(return_value=5500)
     reserved_service.prefer_battery_first = prefer_battery_first
+    reserved_service.bonus_gate_on_w = 1000
+    reserved_service.bonus_gate_off_w = 500
     return Ems(
         dod_policy=DodPolicy(),
         grid_export=GridExportManager(),

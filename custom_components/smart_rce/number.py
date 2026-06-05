@@ -44,6 +44,8 @@ async def async_setup_entry(
     async_add_entities(
         [
             EmsWaterHeaterReservedNumber(entry),
+            EmsWaterHeaterBonusGateOnNumber(entry),
+            EmsWaterHeaterBonusGateOffNumber(entry),
             *[
                 BatteryScheduleSlotTargetSocNumber(entry, scope=scope, kind=kind)
                 for scope in ("today", "tomorrow")
@@ -91,6 +93,79 @@ class EmsWaterHeaterReservedNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self._service.set_manual_value(int(value))
+
+
+class EmsWaterHeaterBonusGateOnNumber(NumberEntity):
+    """Bonus threshold (W) to open the gate in `prefer_battery_first` mode.
+
+    Heaters fire only when `export_bonus ≥ this threshold`. See
+    `WaterHeaterManager._bonus_gate_open`.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Water Heater Bonus Gate ON"
+    _attr_should_poll = False
+    _attr_icon = "mdi:fire-circle"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_native_min_value = 200
+    _attr_native_max_value = 5000
+    _attr_native_step = 100
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.water_heater_reserved_service
+        self._attr_unique_id = f"{DOMAIN}_ems_water_heater_bonus_gate_on"
+        self.entity_id = "number.ems_water_heater_bonus_gate_on"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return float(self._service.bonus_gate_on_w)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._service.set_bonus_gate_on_w(int(value))
+
+
+class EmsWaterHeaterBonusGateOffNumber(NumberEntity):
+    """Bonus threshold (W) to hold the gate open via hysteresis.
+
+    Once heaters are running, they stay on while `export_bonus ≥ this
+    threshold` (which should be lower than the ON threshold). See
+    `WaterHeaterManager._bonus_gate_open`.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Water Heater Bonus Gate OFF"
+    _attr_should_poll = False
+    _attr_icon = "mdi:fire-circle"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_native_min_value = 0
+    _attr_native_max_value = 5000
+    _attr_native_step = 100
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._service = entry.runtime_data.ems.water_heater_reserved_service
+        self._attr_unique_id = f"{DOMAIN}_ems_water_heater_bonus_gate_off"
+        self.entity_id = "number.ems_water_heater_bonus_gate_off"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return float(self._service.bonus_gate_off_w)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._service.set_bonus_gate_off_w(int(value))
 
 
 class BatteryScheduleSlotTargetSocNumber(NumberEntity):

@@ -43,11 +43,10 @@ EXPORT_BONUS_CUTOFF_SEC: int = 60  # below this don't activate bonus (last minut
 EXPORT_BONUS_MIN_T_LEFT_SEC: int = 60  # lower clamp for division
 LADDER_HYSTERESIS_W: int = 500  # used for both baseline and upgrade ladder
 
-# Mode-specific bonus gate (only active when prefer_battery_first=True).
-# Gate opens at ≥1000W (real export to recover); held open down to 500W via
-# hysteresis. Below threshold in battery-first mode → heaters OFF.
-BONUS_GATE_ON_W: int = 1000
-BONUS_GATE_OFF_W: int = 500
+# Mode-specific bonus gate (only active when prefer_battery_first=True) —
+# thresholds are user-configurable via NumberEntity, passed per-tick from
+# Ems through update() → target() kwargs. Defaults live in
+# WaterHeaterReservedPolicy.
 
 
 def seconds_until_hour_end(now: datetime) -> int:
@@ -82,6 +81,8 @@ class WaterHeaterManager:
         battery_charge_allowed: bool,
         reserved_balanced_full: int = 5500,
         prefer_battery_first: bool = False,
+        bonus_gate_on_w: int = 1000,
+        bonus_gate_off_w: int = 500,
     ) -> None:
         """Compute target heater state + set should_turn_on/_off flags.
 
@@ -116,6 +117,8 @@ class WaterHeaterManager:
             battery_charge_allowed=battery_charge_allowed,
             reserved_balanced_full=reserved_balanced_full,
             prefer_battery_first=prefer_battery_first,
+            bonus_gate_on_w=bonus_gate_on_w,
+            bonus_gate_off_w=bonus_gate_off_w,
         )
 
         self.should_turn_on = target.big_on
@@ -132,6 +135,8 @@ class WaterHeaterManager:
         battery_charge_allowed: bool = True,
         reserved_balanced_full: int = 5500,
         prefer_battery_first: bool = False,
+        bonus_gate_on_w: int = 1000,
+        bonus_gate_off_w: int = 500,
     ) -> HeaterState:
         """Pure decision — BALANCED two-tier logic with optional battery-first override.
 
@@ -167,7 +172,9 @@ class WaterHeaterManager:
         )
 
         battery_first_active = prefer_battery_first and battery_charge_limit > 2
-        bonus_gate_open = self._bonus_gate_open(export_bonus, current_state)
+        bonus_gate_open = self._bonus_gate_open(
+            export_bonus, current_state, bonus_gate_on_w, bonus_gate_off_w
+        )
         target = self._resolve_target(
             baseline=baseline,
             upgrade_candidate=upgrade_candidate,
@@ -292,14 +299,20 @@ class WaterHeaterManager:
         return max(0.0, exported_energy_wh / t_left_h)
 
     @staticmethod
-    def _bonus_gate_open(export_bonus: float, current_state: HeaterState) -> bool:
-        """Mode-specific gate: True when bonus ≥1000W (or ≥500W via hysteresis).
+    def _bonus_gate_open(
+        export_bonus: float,
+        current_state: HeaterState,
+        on_threshold_w: int,
+        off_threshold_w: int,
+    ) -> bool:
+        """Mode-specific gate: True when bonus ≥ on_threshold (or ≥ off_threshold via hysteresis).
 
         Used only when `prefer_battery_first=True` to filter out small
-        noise-bonus from briefly turning heaters on.
+        noise-bonus from briefly turning heaters on. Thresholds are
+        user-configurable via NumberEntity.
         """
-        return export_bonus >= BONUS_GATE_ON_W or (
-            current_state != HeaterState.OFF and export_bonus >= BONUS_GATE_OFF_W
+        return export_bonus >= on_threshold_w or (
+            current_state != HeaterState.OFF and export_bonus >= off_threshold_w
         )
 
     @staticmethod

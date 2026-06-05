@@ -174,6 +174,8 @@ class Ems:
             battery_charge_allowed=charge_result.charge_allowed,
             reserved_balanced_full=reserved_balanced_full,
             prefer_battery_first=self.water_heater_reserved_service.prefer_battery_first,
+            bonus_gate_on_w=self.water_heater_reserved_service.bonus_gate_on_w,
+            bonus_gate_off_w=self.water_heater_reserved_service.bonus_gate_off_w,
         )
 
         # ─── 5. DodPolicy + persistence + logger + actuator ───

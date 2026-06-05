@@ -26,6 +26,8 @@ from typing import Any
 
 _DEFAULT_MANUAL = 3000
 _DEFAULT_AUTO_STUB = 3000
+_DEFAULT_BONUS_GATE_ON_W = 1000
+_DEFAULT_BONUS_GATE_OFF_W = 500
 
 
 @dataclass
@@ -47,6 +49,11 @@ class WaterHeaterReservedPolicy:
     mode: ReservedMode = field(default_factory=lambda: ReservedMode.AUTO)
     manual_value: int = _DEFAULT_MANUAL
     prefer_battery_first: bool = False
+    # Bonus gate thresholds (mode-specific gate, only applied when
+    # prefer_battery_first=True). Heaters fire when export_bonus ≥ on_w;
+    # held by hysteresis down to off_w. See WaterHeaterManager._bonus_gate_open.
+    bonus_gate_on_w: int = _DEFAULT_BONUS_GATE_ON_W
+    bonus_gate_off_w: int = _DEFAULT_BONUS_GATE_OFF_W
 
     def compute_current_value(
         self,
@@ -85,11 +92,27 @@ class WaterHeaterReservedPolicy:
         self.prefer_battery_first = value
         return True
 
+    def set_bonus_gate_on_w(self, value: int) -> bool:
+        """Idempotent — returns True if changed."""
+        if self.bonus_gate_on_w == value:
+            return False
+        self.bonus_gate_on_w = value
+        return True
+
+    def set_bonus_gate_off_w(self, value: int) -> bool:
+        """Idempotent — returns True if changed."""
+        if self.bonus_gate_off_w == value:
+            return False
+        self.bonus_gate_off_w = value
+        return True
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode.value,
             "manual_value": self.manual_value,
             "prefer_battery_first": self.prefer_battery_first,
+            "bonus_gate_on_w": self.bonus_gate_on_w,
+            "bonus_gate_off_w": self.bonus_gate_off_w,
         }
 
     @classmethod
@@ -108,6 +131,10 @@ class WaterHeaterReservedPolicy:
             mode=mode,
             manual_value=int(data.get("manual_value", _DEFAULT_MANUAL)),
             prefer_battery_first=prefer_battery_first,
+            bonus_gate_on_w=int(data.get("bonus_gate_on_w", _DEFAULT_BONUS_GATE_ON_W)),
+            bonus_gate_off_w=int(
+                data.get("bonus_gate_off_w", _DEFAULT_BONUS_GATE_OFF_W)
+            ),
         )
 
 

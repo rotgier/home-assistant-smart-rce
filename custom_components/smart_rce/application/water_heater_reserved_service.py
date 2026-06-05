@@ -65,6 +65,16 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
         """When True, escalate reserved + apply bonus gate (see WaterHeaterManager.target)."""
         return self._repo.policy.prefer_battery_first
 
+    @property
+    def bonus_gate_on_w(self) -> int:
+        """Bonus threshold (W) to open the gate (heaters allowed in battery-first)."""
+        return self._repo.policy.bonus_gate_on_w
+
+    @property
+    def bonus_gate_off_w(self) -> int:
+        """Bonus threshold (W) to hold the gate open via hysteresis."""
+        return self._repo.policy.bonus_gate_off_w
+
     # ─── User mutators ───
 
     async def set_mode(self, mode: ReservedMode) -> None:
@@ -80,3 +90,11 @@ class WaterHeaterReservedService(Service[WaterHeaterReservedRepository]):
         await self._persist_and_notify(
             self._repo.policy.set_prefer_battery_first(value)
         )
+
+    async def set_bonus_gate_on_w(self, value: int) -> None:
+        """UI-driven gate ON threshold change. Persists + notifies."""
+        await self._persist_and_notify(self._repo.policy.set_bonus_gate_on_w(value))
+
+    async def set_bonus_gate_off_w(self, value: int) -> None:
+        """UI-driven gate OFF threshold change. Persists + notifies."""
+        await self._persist_and_notify(self._repo.policy.set_bonus_gate_off_w(value))
