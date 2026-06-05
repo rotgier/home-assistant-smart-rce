@@ -108,7 +108,7 @@ class TestBalancedBaseline:
         )
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         # heater_budget = -heater_budget (sign flip dla wykresu spójnego
         # z battery_power — charging = negative)
         assert mgr.water_heater.heater_budget == -2000.0
@@ -126,7 +126,7 @@ class TestBalancedBaseline:
         )
         assert mgr.water_heater.should_turn_on is True
         assert mgr.water_heater.should_turn_on_small is False
-        assert mgr.water_heater.heater_baseline == "big_is_on"
+        assert mgr.water_heater.heater_baseline == "big"
 
     def test_18a_low_soc_both(self):
         """pv=10000, charge_limit=18A, soc=30% → reserved=5500, budget=4500 → BOTH."""
@@ -141,7 +141,7 @@ class TestBalancedBaseline:
         )
         assert mgr.water_heater.should_turn_on is True
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.heater_baseline == "both_are_on"
+        assert mgr.water_heater.heater_baseline == "both"
 
     def test_18a_high_soc_small(self):
         """pv=7500, charge_limit=18A, soc=70% → reserved=5500, budget=2000 → SMALL."""
@@ -156,7 +156,7 @@ class TestBalancedBaseline:
         )
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.should_turn_on is False
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
 
     def test_7a_small(self):
         """pv=3000, charge_limit=7A, soc=95% → reserved=1000, budget=2000 → SMALL."""
@@ -171,7 +171,7 @@ class TestBalancedBaseline:
         )
         assert mgr.water_heater.should_turn_on_small is True
         assert mgr.water_heater.should_turn_on is False
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         assert mgr.water_heater.heater_budget == -2000.0
 
     def test_2a_reserved_300(self):
@@ -215,7 +215,7 @@ class TestBalancedBaseline:
         )
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_on_small is False
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         # heater_budget=-4300 → heater_budget = -(-4300) = +4300
         assert mgr.water_heater.heater_budget == 4300.0
 
@@ -238,7 +238,7 @@ class TestBalancedUpgrade:
                 exported_energy_hourly=1.4,
             )
         )
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_active is True
         assert mgr.water_heater.should_turn_on_small is True
 
@@ -257,7 +257,7 @@ class TestBalancedUpgrade:
                 exported_energy_hourly=1.1,
             )
         )
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         assert mgr.water_heater.heater_upgrade_active is True
         assert mgr.water_heater.should_turn_on is True  # BIG
 
@@ -276,7 +276,7 @@ class TestBalancedUpgrade:
                 exported_energy_hourly=1.6,
             )
         )
-        assert mgr.water_heater.heater_baseline == "big_is_on"
+        assert mgr.water_heater.heater_baseline == "big"
         assert mgr.water_heater.heater_upgrade_active is True
         assert mgr.water_heater.should_turn_on is True
         assert mgr.water_heater.should_turn_on_small is True  # BOTH
@@ -292,7 +292,7 @@ class TestBalancedUpgrade:
                 exported_energy_hourly=0.12,
             )
         )
-        assert mgr.water_heater.heater_baseline == "both_are_on"
+        assert mgr.water_heater.heater_baseline == "both"
         assert mgr.water_heater.heater_upgrade_active is False
 
     def test_no_upgrade_below_threshold(self):
@@ -306,7 +306,7 @@ class TestBalancedUpgrade:
                 exported_energy_hourly=0.08,
             )
         )
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         assert mgr.water_heater.heater_upgrade_active is False
 
     def test_upgrade_hysteresis_holds(self):
@@ -325,7 +325,7 @@ class TestBalancedUpgrade:
                 exported_energy_hourly=1.1,
             )
         )
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         assert mgr.water_heater.heater_upgrade_active is True
         # Drop exp ale w hysteresis (bonus=600 → effective=2600 ≥ 2500=BIG-500)
         mgr.update_state(
@@ -337,7 +337,7 @@ class TestBalancedUpgrade:
                 exported_energy_hourly=0.6,
             )
         )
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         assert mgr.water_heater.heater_upgrade_active is True
 
     def test_upgrade_hysteresis_releases(self):
@@ -368,7 +368,7 @@ class TestBalancedUpgrade:
             )
         )
         assert mgr.water_heater.heater_upgrade_active is False
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
 
 
 class TestBalancedOverrideAndDiagnostics:
@@ -390,7 +390,7 @@ class TestBalancedOverrideAndDiagnostics:
                 exported_energy_hourly=1.4,
             )
         )
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_active is True
         # Override SOC≥90 NIE forsuje BIG dla BALANCED
         assert mgr.water_heater.should_turn_on is False  # nie BIG
@@ -412,7 +412,7 @@ class TestBalancedOverrideAndDiagnostics:
             exported_energy_hourly=0.0,
         )
         wh.update(state, grid_export_intervention=None, battery_charge_allowed=True)
-        assert wh.heater_baseline == "both_are_off"
+        assert wh.heater_baseline == "off"
         assert wh.heater_budget == 0.0  # -(5500-5500)
 
         # Z POSITIVE: reserved=3500 → budget=2000 → SMALL
@@ -421,7 +421,7 @@ class TestBalancedOverrideAndDiagnostics:
             grid_export_intervention=InterventionDirection.POSITIVE,
             battery_charge_allowed=True,
         )
-        assert wh.heater_baseline == "small_is_on"
+        assert wh.heater_baseline == "small"
         assert wh.heater_budget == -2000.0  # -(5500-3500)
 
     def test_positive_intervention_lowers_reserved_for_low_soc(self):
@@ -484,7 +484,7 @@ class TestBalancedOverrideAndDiagnostics:
         )
         wh.update(state, grid_export_intervention=None, battery_charge_allowed=True)
         # reserved=300, budget=1500 → SMALL (1500≥1500)
-        assert wh.heater_baseline == "small_is_on"
+        assert wh.heater_baseline == "small"
 
         # Z NEGATIVE: reserved=600, budget=1200 → OFF (1200<1500)
         wh.update(
@@ -492,7 +492,7 @@ class TestBalancedOverrideAndDiagnostics:
             grid_export_intervention=InterventionDirection.NEGATIVE,
             battery_charge_allowed=True,
         )
-        assert wh.heater_baseline == "both_are_off"
+        assert wh.heater_baseline == "off"
 
     def test_guard_works_with_balanced(self):
         """Guard DoD=0% działa z BALANCED."""
@@ -533,7 +533,7 @@ class TestBalancedExportBonus:
         # reserved=300, heater_budget=1200 < SMALL → baseline=OFF
         # bonus = 500/(5/60) = 6000 W (no cap)
         # effective = 1200 + 6000 = 7200 → BOTH (≥4500)
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_target == "off -> both"
         assert mgr.water_heater.heater_export_bonus == 6000.0
         assert mgr.water_heater.should_turn_on is True
@@ -554,7 +554,7 @@ class TestBalancedExportBonus:
         # reserved=300, heater_budget=1200, baseline=OFF
         # bonus = 300/(10/60) = 1800 W (no cap)
         # effective = 1200 + 1800 = 3000 → BIG (>=3000, <4500)
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_target == "off -> big"
         assert mgr.water_heater.heater_export_bonus == 1800.0
         assert mgr.water_heater.should_turn_on is True
@@ -578,7 +578,7 @@ class TestBalancedExportBonus:
         )
         # reserved=300, heater_budget=700, baseline=OFF
         # bonus = 50/1 = 50 W → effective = 750 → OFF
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_target == "off (baseline)"
         assert mgr.water_heater.heater_export_bonus == 50.0
 
@@ -596,7 +596,7 @@ class TestBalancedExportBonus:
         )
         # reserved=300, budget=1200, baseline=OFF
         # cutoff aktywny → bonus=0 → effective=1200 → OFF
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_target == "off (baseline)"
         assert mgr.water_heater.heater_export_bonus == 0.0
 
@@ -614,7 +614,7 @@ class TestBalancedExportBonus:
         )
         # reserved=3500 (charge>7, soc<50), budget=-1500, baseline=OFF
         # skip_upgrade=True → bonus=0 → effective=-1500 → OFF
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_target == "off (baseline)"
         assert mgr.water_heater.heater_export_bonus == 0.0
 
@@ -810,7 +810,7 @@ class TestPreferBatteryFirstOverride:
         )
         assert mgr.water_heater.should_turn_on is False
         assert mgr.water_heater.should_turn_on_small is False
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_running_via_bonus is False
 
     def test_allows_heaters_when_bonus_gate_open(self):
@@ -856,7 +856,7 @@ class TestPreferBatteryFirstOverride:
             )
         )
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         assert mgr.water_heater.heater_running_via_bonus is False
 
     def test_overrides_skip_upgrade_for_charge_limit_high(self):
@@ -881,7 +881,7 @@ class TestPreferBatteryFirstOverride:
             )
         )
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.heater_baseline == "both_are_off"
+        assert mgr.water_heater.heater_baseline == "off"
         assert mgr.water_heater.heater_upgrade_active is True
         assert mgr.water_heater.heater_running_via_bonus is True
 
@@ -900,5 +900,5 @@ class TestPreferBatteryFirstOverride:
             )
         )
         assert mgr.water_heater.should_turn_on_small is True
-        assert mgr.water_heater.heater_baseline == "small_is_on"
+        assert mgr.water_heater.heater_baseline == "small"
         assert mgr.water_heater.heater_running_via_bonus is False

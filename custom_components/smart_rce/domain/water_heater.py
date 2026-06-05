@@ -327,7 +327,7 @@ class WaterHeaterManager:
     ) -> None:
         """Write diagnostic fields read by HA sensors.
 
-        Stores `.canonical` strings (not HeaterState objects) for direct HA
+        Stores `.label` strings (not HeaterState objects) for direct HA
         state-machine compatibility — sensor `native_value` returns the
         string as-is, no implicit stringification needed.
         """
@@ -335,7 +335,7 @@ class WaterHeaterManager:
         # (pv_available below reserved); negative means "surplus available
         # for heaters" (the higher tier of the ladder).
         self.heater_budget = -heater_budget
-        self.heater_baseline = baseline.canonical
+        self.heater_baseline = baseline.label
         self.heater_upgrade_active = target != baseline
         if target == baseline:
             self.heater_upgrade_target = f"{baseline.label} (baseline)"
@@ -353,35 +353,33 @@ class HeaterState(Enum):
     """One of 4 heater states — Java-like enum with per-member attributes.
 
     Pure Enum (NOT IntEnum) — type-safe, member is NOT an int. Per-member
-    attributes (power, canonical, label, big_on, small_on) set via `__init__`
-    from the value tuple. Comparison via @total_ordering + __lt__ on `power`.
+    attributes (power, label, big_on, small_on) set via `__init__` from the
+    value tuple. Comparison via @total_ordering + __lt__ on `power`.
 
     Pattern: Planet example in https://docs.python.org/3/howto/enum.html
     """
 
-    # power_w, canonical id,    label,   big_on, small_on
-    OFF = (0, "both_are_off", "off", False, False)  # noqa: E221
-    SMALL = (1500, "small_is_on", "small", False, True)  # noqa: E221
-    BIG = (3000, "big_is_on", "big", True, False)  # noqa: E221
-    BOTH = (4500, "both_are_on", "both", True, True)  # noqa: E221
+    # power_w, label,   big_on, small_on
+    OFF = (0, "off", False, False)
+    SMALL = (1500, "small", False, True)
+    BIG = (3000, "big", True, False)
+    BOTH = (4500, "both", True, True)
 
     def __init__(
         self,
         power: int,
-        canonical: str,
         label: str,
         big_on: bool,
         small_on: bool,
     ) -> None:
         self.power = power
-        self.canonical = canonical
         self.label = label
         self.big_on = big_on
         self.small_on = small_on
 
     def __str__(self) -> str:
-        """HA sensor compat — str(state) returns canonical id."""
-        return self.canonical
+        """HA sensor compat — str(state) returns the short label."""
+        return self.label
 
     def __lt__(self, other) -> bool:
         if self.__class__ is other.__class__:
