@@ -309,12 +309,6 @@ class WaterHeaterManager:
         battery_first_active: bool,
         bonus_gate_open: bool,
     ) -> HeaterState:
-        """Pick final target.
-
-        - battery_first active + gate closed → OFF
-        - Otherwise: max(baseline, upgrade_candidate) — upgrade if strictly
-          higher, else baseline.
-        """
         if battery_first_active and not bonus_gate_open:
             return HeaterState.OFF
         if upgrade_candidate > baseline:
