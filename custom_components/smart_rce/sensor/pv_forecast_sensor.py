@@ -15,7 +15,7 @@ from ..application.pv_forecast_service import PvForecastService
 from ..const import DOMAIN
 from ..coordinator import SmartRceDataUpdateCoordinator
 from ..domain.bucket import Bucket
-from ..domain.pv_forecast_catalog import PvForecast, PvForecastUpdater
+from ..domain.pv_forecasts import PvForecast, PvForecasts
 from ._state_writer_mixin import StateWriterMixin
 
 UNIQUE_ID_PREFIX: Final = DOMAIN
@@ -121,7 +121,7 @@ def _target_soc_trace_attrs(result, profile=None) -> dict[str, Any]:
     return attrs
 
 
-def _effective_derivative(updater: PvForecastUpdater) -> float:
+def _effective_derivative(updater: PvForecasts) -> float:
     """Return the derivative to feed the ramp formula, gated on stability.
 
     Returns `signals.derivative_w_per_min` when the stability binary is
@@ -135,7 +135,7 @@ def _effective_derivative(updater: PvForecastUpdater) -> float:
     return 0.0
 
 
-def _bucket_end_constant_kwh(updater: PvForecastUpdater) -> float | None:
+def _bucket_end_constant_kwh(updater: PvForecasts) -> float | None:
     """Projected in-progress bucket kWh assuming constant `signals.pv_power_w`."""
     signals = updater.signals
     if signals.pv_power_w is None or signals.bucket_so_far_kwh is None:
@@ -145,7 +145,7 @@ def _bucket_end_constant_kwh(updater: PvForecastUpdater) -> float | None:
     )
 
 
-def _bucket_end_derivative_kwh(updater: PvForecastUpdater) -> float | None:
+def _bucket_end_derivative_kwh(updater: PvForecasts) -> float | None:
     """Projected in-progress bucket kWh using ramp when derivative is stable."""
     signals = updater.signals
     if signals.pv_power_w is None or signals.bucket_so_far_kwh is None:
@@ -158,7 +158,7 @@ def _bucket_end_derivative_kwh(updater: PvForecastUpdater) -> float | None:
     )
 
 
-def _bucket_end_derivative_delta_kwh(updater: PvForecastUpdater) -> float | None:
+def _bucket_end_derivative_delta_kwh(updater: PvForecasts) -> float | None:
     """Derivative-aware minus constant projection — zero when ramp inactive."""
     deriv_kwh = _bucket_end_derivative_kwh(updater)
     const_kwh = _bucket_end_constant_kwh(updater)

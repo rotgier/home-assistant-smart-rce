@@ -3,7 +3,7 @@
 Function lives in `domain/target_soc.py`. Inputs are strict 12-bucket
 value objects (`PvProfile` + `ConsumptionProfile`) covering 7:00..12:30.
 Callers either build profiles from forecasts via
-`AdjustedPvForecast.to_profile(target_date)` or pass synthetic baselines
+`PvForecastResult.to_profile(target_date)` or pass synthetic baselines
 via `PvProfile.flat()` / `ConsumptionProfile.flat()`.
 """
 
@@ -14,8 +14,8 @@ from datetime import date
 from custom_components.smart_rce.domain.bucket import Bucket, Buckets
 from custom_components.smart_rce.domain.pv_forecast import (
     AdjustedPeriod,
-    AdjustedPvForecast,
     ConsumptionProfile,
+    PvForecastResult,
 )
 from custom_components.smart_rce.domain.target_soc import (
     CONSUMPTION_PER_30MIN,
@@ -37,7 +37,7 @@ def _make_profile(rate_kwh_per_h: float) -> PvProfile:
 
 def _make_forecast(
     rate_kwh_per_h: float, target_date: str = "2026-04-18"
-) -> AdjustedPvForecast:
+) -> PvForecastResult:
     """Constant-rate forecast 7:00-13:00 (12 periods of 30min) on `target_date`."""
     y, m, d = (int(p) for p in target_date.split("-"))
     periods = [
@@ -49,7 +49,7 @@ def _make_forecast(
         for mm in (0, 30)
     ]
     total_kwh = (rate_kwh_per_h / 2) * len(periods)
-    return AdjustedPvForecast(forecast=periods, total_kwh=total_kwh)
+    return PvForecastResult(forecast=periods, total_kwh=total_kwh)
 
 
 def test_surplus_pv_returns_min_soc() -> None:
@@ -180,7 +180,7 @@ def test_to_profile_missing_buckets_filled_with_zero() -> None:
             period_start="2026-04-18T08:30:00+02:00", pv_estimate_adjusted=1.0
         ),
     ]
-    forecast = AdjustedPvForecast(forecast=periods, total_kwh=1.0)
+    forecast = PvForecastResult(forecast=periods, total_kwh=1.0)
     profile = forecast.to_profile()
     assert profile.get(7, 0) == 0.0
     assert profile.get(8, 0) == 0.5

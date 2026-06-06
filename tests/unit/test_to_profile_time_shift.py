@@ -1,4 +1,4 @@
-"""Tests for `AdjustedPvForecast.to_profile()` now-aware time-shift.
+"""Tests for `PvForecastResult.to_profile()` now-aware time-shift.
 
 Symmetric to `test_to_view_time_shift.py` but for PV side. Integrates
 `pv_power_w_5min` over remaining seconds in the in-progress bucket
@@ -12,7 +12,7 @@ import math
 
 from custom_components.smart_rce.domain.pv_forecast import (
     AdjustedPeriod,
-    AdjustedPvForecast,
+    PvForecastResult,
 )
 import pytest
 
@@ -21,7 +21,7 @@ _TZ = timezone.utc
 
 def _forecast(
     rate_kwh_per_h: float = 2.0, target_date: date = date(2026, 5, 14)
-) -> AdjustedPvForecast:
+) -> PvForecastResult:
     """Constant-rate forecast 7:00-13:00 on `target_date` (rate kWh/h per period)."""
     periods = [
         AdjustedPeriod(
@@ -32,7 +32,7 @@ def _forecast(
         for mm in (0, 30)
     ]
     total_kwh = (rate_kwh_per_h / 2) * len(periods)
-    return AdjustedPvForecast(forecast=periods, total_kwh=total_kwh)
+    return PvForecastResult(forecast=periods, total_kwh=total_kwh)
 
 
 def test_now_none_returns_forecast_snapshot() -> None:

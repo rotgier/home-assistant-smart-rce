@@ -1,4 +1,4 @@
-"""Light coverage for `PvForecastUpdater` read API + signals.
+"""Light coverage for `PvForecasts` read API + signals.
 
 Update method behavior (catalog.update_from_solcast_*, tick_minute) is
 exercised end-to-end via the existing target_soc + sensor tests + live
@@ -8,13 +8,13 @@ service, future ChargePlanner) can rely on it.
 
 from __future__ import annotations
 
-from custom_components.smart_rce.domain.pv_forecast_catalog import (
+from custom_components.smart_rce.domain.pv_forecasts import (
     EXTRAP_STRATEGIES,
     TODAY_STRATEGIES,
     TOMORROW_STRATEGIES,
     LivePvSignals,
     PvForecast,
-    PvForecastUpdater,
+    PvForecasts,
 )
 
 
@@ -30,7 +30,7 @@ def test_strategy_enum_coverage() -> None:
 
 def test_empty_catalog_read_api_returns_none() -> None:
     """Fresh catalog: every strategy returns None; signals VO has all-None fields."""
-    catalog = PvForecastUpdater()
+    catalog = PvForecasts()
     for strategy in PvForecast:
         assert catalog.get(strategy) is None
     for strategy in EXTRAP_STRATEGIES:
@@ -45,7 +45,7 @@ def test_empty_catalog_read_api_returns_none() -> None:
 
 def test_today_and_tomorrow_views_have_expected_keys() -> None:
     """today() / tomorrow() expose subset dicts keyed by their respective strategies."""
-    catalog = PvForecastUpdater()
+    catalog = PvForecasts()
     assert set(catalog.today().keys()) == set(TODAY_STRATEGIES)
     assert set(catalog.tomorrow().keys()) == set(TOMORROW_STRATEGIES)
     assert set(catalog.all().keys()) == set(PvForecast)
@@ -55,7 +55,7 @@ def test_live_pv_updated_replaces_signals_atomically() -> None:
     """live_pv_updated replaces all 4 signal fields in one call (Tell-Don't-Ask)."""
     from datetime import datetime
 
-    updater = PvForecastUpdater()
+    updater = PvForecasts()
     updater.live_pv_updated(
         LivePvSignals(
             pv_power_w=1500.0,

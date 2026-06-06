@@ -11,7 +11,7 @@ Reused by:
 - `domain/target_soc_matrix.compute_matrix` — full N×M matrix of strategy
   combinations.
 
-Inputs (`AdjustedPvForecast`, `ConsumptionProfile`) are duck-typed —
+Inputs (`PvForecastResult`, `ConsumptionProfile`) are duck-typed —
 their classes live in `pv_forecast.py` to avoid pulling the entire
 PV-forecast vocabulary here. `TYPE_CHECKING` import keeps mypy/IDE
 happy without runtime coupling.
@@ -45,8 +45,8 @@ class PvProfile:
 
     Symmetric to `ConsumptionProfile`: strict 12-bucket contract over
     7:00..12:30 (validated inside `Buckets`), `.get(h, m)` returns float
-    (no Optional). Build from an `AdjustedPvForecast` via
-    `AdjustedPvForecast.to_profile(target_date)`.
+    (no Optional). Build from an `PvForecastResult` via
+    `PvForecastResult.to_profile(target_date)`.
     """
 
     buckets: Buckets
@@ -96,7 +96,7 @@ def calculate_target_soc(
 
     Time-awareness lives on the input profiles, not here — callers wanting
     "from now onwards" semantics pass profiles built via
-    `AdjustedPvForecast.to_profile(target_date, now, pv_power_w_5min)` and
+    `PvForecastResult.to_profile(target_date, now, pv_power_w_5min)` and
     `ConsumptionProfile.to_view(now, live_consumption_w)`. Those methods
     bake the in-progress bucket prorate / live override into the bucket
     values directly. For full-window (tomorrow, prev-day) callers use the

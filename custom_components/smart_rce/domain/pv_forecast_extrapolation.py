@@ -1,7 +1,7 @@
 """Extrapolated PV forecast variants — strategies for future buckets.
 
 Each strategy produces an ExtrapolatedLive bundle:
-- adjusted: full per-period AdjustedPvForecast (chart attribute source)
+- adjusted: full per-period PvForecastResult (chart attribute source)
 - remaining_kwh: scalar sum from now to end-of-day (sensor state)
 - target_soc: SOC % needed for 7-13 deficit window (sensor value)
 
@@ -10,9 +10,9 @@ on `Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh)`
 which yields realized so-far plus 5-min power × remaining time. That same
 value drives:
 - chart display (in-progress period rescaled to `full_bucket_kwh × 2` rate
-  via `AdjustedPvForecast.with_now_aware_in_progress_and_future_overrides`)
+  via `PvForecastResult.with_now_aware_in_progress_and_future_overrides`)
 - strategy `score` input (`realized_rate = full_bucket_kwh × 2`)
-- `target_soc` input via `AdjustedPvForecast.to_profile(now, pv_w_5min)`
+- `target_soc` input via `PvForecastResult.to_profile(now, pv_w_5min)`
   (uses `live_remaining_kwh` part only — past contributes 0 to the
   forward-looking deficit)
 
@@ -36,9 +36,9 @@ from datetime import datetime
 
 from .bucket import Bucket
 from .pv_forecast import (
-    AdjustedPvForecast,
     ConsumptionProfile,
     ExtrapolatedLive,
+    PvForecastResult,
     SolcastPeriod,
 )
 from .target_soc import calculate_target_soc
@@ -60,7 +60,7 @@ PATTERN_MIN_FORECAST_KWH: float = 0.05
 
 
 def extrapolate_calibrated_pattern(
-    adjusted_live: AdjustedPvForecast,
+    adjusted_live: PvForecastResult,
     solcast_live: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
@@ -261,7 +261,7 @@ def _project_future_buckets_proportional(
 
 
 def extrapolate_proportional_median(
-    adjusted_live: AdjustedPvForecast,
+    adjusted_live: PvForecastResult,
     solcast_live: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
@@ -364,7 +364,7 @@ def _project_future_buckets_band(
 
 
 def extrapolate_band_clamped(
-    adjusted_live: AdjustedPvForecast,
+    adjusted_live: PvForecastResult,
     solcast_live: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
@@ -430,7 +430,7 @@ def _compute_weighted_band_score_recent(
 
 
 def extrapolate_band_clamped_recent(
-    adjusted_live: AdjustedPvForecast,
+    adjusted_live: PvForecastResult,
     solcast_live: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
@@ -570,7 +570,7 @@ def _weighted_score_over_buckets(
 
 
 def _assemble(
-    adjusted_live: AdjustedPvForecast,
+    adjusted_live: PvForecastResult,
     now: datetime,
     *,
     pv_bucket_so_far_kwh: float,
@@ -582,7 +582,7 @@ def _assemble(
     """Build the ExtrapolatedLive bundle from a strategy's per-bucket overrides.
 
     Single source of truth for the in-progress bucket rate is
-    `AdjustedPvForecast.with_now_aware_in_progress_and_future_overrides`,
+    `PvForecastResult.with_now_aware_in_progress_and_future_overrides`,
     which uses `Bucket.full_bucket_kwh × 2` (kWh/h). Future periods
     take `future_overrides[(h,m)]` when present, else keep their original
     forecast values. Past periods are untouched.
@@ -610,7 +610,7 @@ def _assemble(
     )
 
 
-def _sum_remaining_kwh(forecast: AdjustedPvForecast, now: datetime) -> float:
+def _sum_remaining_kwh(forecast: PvForecastResult, now: datetime) -> float:
     """Sum kWh from current bucket onwards (past excluded).
 
     Operates on an already-extrapolated forecast (current bucket already rescaled).

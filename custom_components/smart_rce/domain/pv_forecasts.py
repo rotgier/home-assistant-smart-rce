@@ -1,4 +1,4 @@
-"""PvForecastUpdater — orchestrator caching inputs + dispatching to strategies.
+"""PvForecasts — orchestrator caching inputs + dispatching to strategies.
 
 DDD split from `TargetSocCatalog`: this aggregate owns the "what PV looks
 like" concern (8 forecast scenarios + extrapolation + PV-side live
@@ -11,7 +11,7 @@ PV signals). The updater caches all inputs and rebuilds the full
 `ForecastContext` per dispatch.
 
 Iter 1b mid-state: AT_6 + LIVE bound to `ForecastStrategy` instances
-(results in `PvForecast.X.strategy.adjusted`). The remaining 6 variants
+(results in `PvForecast.X.strategy.result`). The remaining 6 variants
 (TOMORROW × 2 + EXTRAP × 4) still flow through the legacy `_forecasts`
 / `_extrapolated` dicts + module-level adjust helpers. Iter 3 binds the
 rest and Iter 4 drops the transitional dicts +
@@ -25,9 +25,9 @@ from datetime import datetime
 
 from . import pv_forecast_extrapolation
 from .pv_forecast import (
-    AdjustedPvForecast,
     ExtrapolatedLive,
     LivePvSignals,
+    PvForecastResult,
     SolcastPeriod,
     WeatherConditionAtHour,
 )
@@ -45,13 +45,13 @@ __all__ = [
     "EXTRAP_STRATEGIES",
     "LivePvSignals",
     "PvForecast",
-    "PvForecastUpdater",
+    "PvForecasts",
     "TODAY_STRATEGIES",
     "TOMORROW_STRATEGIES",
 ]
 
 
-def _empty_forecasts() -> dict[PvForecast, AdjustedPvForecast | None]:
+def _empty_forecasts() -> dict[PvForecast, PvForecastResult | None]:
     """Legacy result cache — populated for unbound variants (TOMORROW × 2 in Iter 1b)."""
     return {
         strategy: None for strategy in PvForecast if strategy not in EXTRAP_STRATEGIES
@@ -64,7 +64,7 @@ def _empty_extrapolated() -> dict[PvForecast, ExtrapolatedLive]:
 
 
 @dataclass
-class PvForecastUpdater:
+class PvForecasts:
     """Orchestrates PvForecast strategy updates + caches inputs.
 
     Callers push only what changed via trigger-named methods; the updater
@@ -84,7 +84,7 @@ class PvForecastUpdater:
     _consumption_w: float | None = None
     _start_charge_hour: int | None = None
     # — Legacy result caches (Iter 1b transitional — for unbound variants) —
-    _forecasts: dict[PvForecast, AdjustedPvForecast | None] = field(
+    _forecasts: dict[PvForecast, PvForecastResult | None] = field(
         default_factory=_empty_forecasts
     )
     _extrapolated: dict[PvForecast, ExtrapolatedLive] = field(
@@ -93,15 +93,15 @@ class PvForecastUpdater:
 
     # ─── Read API ──────────────────────────────────────────────────────────
 
-    def get(self, variant: PvForecast) -> AdjustedPvForecast | None:
+    def get(self, variant: PvForecast) -> PvForecastResult | None:
         """Return adjusted forecast for `variant`.
 
-        Bound variants (Iter 1b: AT_6, LIVE) read from `variant.strategy.adjusted`.
+        Bound variants (Iter 1b: AT_6, LIVE) read from `variant.strategy.result`.
         Unbound variants fall back to the legacy `_forecasts` /
         `_extrapolated[variant].adjusted` cache.
         """
         if variant.strategy is not None:
-            return variant.adjusted
+            return variant.result
         if variant in EXTRAP_STRATEGIES:
             return self._extrapolated[variant].adjusted
         return self._forecasts.get(variant)
@@ -116,15 +116,15 @@ class PvForecastUpdater:
             return None
         return self._extrapolated.get(variant)
 
-    def all(self) -> dict[PvForecast, AdjustedPvForecast | None]:
+    def all(self) -> dict[PvForecast, PvForecastResult | None]:
         """Snapshot dict of every variant → forecast (or None)."""
         return {variant: self.get(variant) for variant in PvForecast}
 
-    def today(self) -> dict[PvForecast, AdjustedPvForecast | None]:
+    def today(self) -> dict[PvForecast, PvForecastResult | None]:
         """Snapshot of today-axis variants (AT_6, LIVE, 4× EXTRAP)."""
         return {v: self.get(v) for v in TODAY_STRATEGIES}
 
-    def tomorrow(self) -> dict[PvForecast, AdjustedPvForecast | None]:
+    def tomorrow(self) -> dict[PvForecast, PvForecastResult | None]:
         """Snapshot of tomorrow-axis variants (TOMORROW_AT_6, TOMORROW_LIVE)."""
         return {v: self.get(v) for v in TOMORROW_STRATEGIES}
 

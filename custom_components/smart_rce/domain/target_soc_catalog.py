@@ -1,9 +1,9 @@
 """TargetSocCatalog — aggregate owning target_soc derivation.
 
-DDD split from `PvForecastUpdater`: catalog owns the "what battery target
+DDD split from `PvForecasts`: catalog owns the "what battery target
 SoC results from forecast + consumption" concern (target_soc_* cache +
 consumption profiles + cons-side live signal + pre-charge gates), while
-`PvForecastUpdater` owns the "what PV looks like" concern (forecast
+`PvForecasts` owns the "what PV looks like" concern (forecast
 scenarios + extrapolation + PV-side live signals).
 """
 
@@ -23,7 +23,7 @@ from .pv_forecast_strategy import PvForecast
 from .target_soc import TargetSocResult, calculate_target_soc
 
 if TYPE_CHECKING:
-    from .pv_forecast_catalog import PvForecastUpdater
+    from .pv_forecasts import PvForecasts
 
 
 @dataclass
@@ -31,7 +31,7 @@ class TargetSocCatalog:
     """Aggregate owning TargetSoc derivation from forecast updater + consumption baselines.
 
     Reads PV forecast scenarios + PV-side live signals from
-    `PvForecastUpdater` (collaborator). Owns the consumption side:
+    `PvForecasts` (collaborator). Owns the consumption side:
     cons-side live signal + start_charge_hour gates (via `TargetSocInputs`),
     consumption baselines (rich `ConsumptionProfiles` entity), and the
     derived `target_soc_*` cache.
@@ -70,7 +70,7 @@ class TargetSocCatalog:
         """Atomic snapshot of cons-side live + pre-charge gates."""
         self._inputs = inputs
 
-    def recalculate_target_soc(self, updater: PvForecastUpdater, now: datetime) -> None:
+    def recalculate_target_soc(self, updater: PvForecasts, now: datetime) -> None:
         """Recompute target_soc_* cache from updater forecasts + consumption profiles.
 
         Public hook used by `ConsumptionProfiles.refresh_*` callers and by
@@ -80,7 +80,7 @@ class TargetSocCatalog:
         cache via this method.
 
         Today variants build now-aware profiles via
-        `AdjustedPvForecast.to_profile(today, now, pv_power_w_5min=...)`
+        `PvForecastResult.to_profile(today, now, pv_power_w_5min=...)`
         and `ConsumptionProfile.to_view(now, live_consumption_w=...)`.
         When either live signal is missing, today variants stay `None`
         (fail-hard contract — no stale forecast-prorate fallback).

@@ -3,7 +3,7 @@
 DDD application layer. Reads driving adapters (Solcast, weather, live rates,
 charge slots) and pushes data as semantic VOs to two domain aggregates:
 
-- `PvForecastUpdater` — owns "what PV looks like": 8 forecast strategies +
+- `PvForecasts` — owns "what PV looks like": 8 forecast strategies +
   extrapolation + PV-side live signals (live_pv_power_w, bucket_so_far,
   derivative, stability).
 - `TargetSocCatalog` — owns "what battery target SoC results from forecast +
@@ -39,7 +39,7 @@ from homeassistant.util import dt as dt_util
 from ..domain import pv_forecast
 from ..domain.charge_slots import ChargeSlots
 from ..domain.pv_forecast import LivePvSignals, TargetSocInputs, WeatherConditionAtHour
-from ..domain.pv_forecast_catalog import PvForecastUpdater
+from ..domain.pv_forecasts import PvForecasts
 from ..domain.target_soc_catalog import TargetSocCatalog
 from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
@@ -64,7 +64,7 @@ class PvForecastService:
     def __init__(
         self,
         hass: HomeAssistant,
-        updater: PvForecastUpdater,
+        updater: PvForecasts,
         target_socs: TargetSocCatalog,
         solcast: SolcastReader,
         weather_listener: WeatherForecastListener,

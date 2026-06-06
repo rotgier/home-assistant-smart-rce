@@ -43,7 +43,7 @@ from homeassistant.util import dt as dt_util
 from ..application.pv_forecast_service import PvForecastService
 from ..domain import pv_forecast as pv_forecast_module
 from ..domain.pv_forecast import ConsumptionProfile, PvProfile
-from ..domain.pv_forecast_catalog import PvForecast, PvForecastUpdater
+from ..domain.pv_forecasts import PvForecast, PvForecasts
 from ..domain.target_soc_matrix import ConsLabel, TargetSocMatrix, compute_matrix
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -208,7 +208,7 @@ class TargetSocMatrixService:
 
     def _pv_profiles(
         self,
-        updater: PvForecastUpdater,
+        updater: PvForecasts,
         *,
         is_today: bool,
         target_date: date,
@@ -222,7 +222,7 @@ class TargetSocMatrixService:
         kWh (matrix cells then match the bridging sensors). For tomorrow
         or full-window today, plain forecast snapshots — `now=None`.
 
-        Strategies whose `AdjustedPvForecast` is missing or doesn't cover
+        Strategies whose `PvForecastResult` is missing or doesn't cover
         `target_date` are skipped — `to_profile()` raises `ValueError`
         and the strategy simply doesn't appear in the matrix.
         """

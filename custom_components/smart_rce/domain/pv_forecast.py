@@ -2,7 +2,7 @@
 
 Read top-down:
   1. Constants — domain rules (weather modifiers, condition sets)
-  2. Value objects — SolcastPeriod, AdjustedPeriod, AdjustedPvForecast,
+  2. Value objects — SolcastPeriod, AdjustedPeriod, PvForecastResult,
      WeatherConditionAtHour, ExtrapolatedLive, TargetSocInputs,
      LivePvSignals
   3. Standalone domain utilities — multi-class users (merge_weather_conditions,
@@ -102,7 +102,7 @@ class WeatherConditionAtHour:
 
 
 @dataclass
-class AdjustedPvForecast:
+class PvForecastResult:
     forecast: list[AdjustedPeriod]
     total_kwh: float  # sum of (adjusted rate / 2) = actual kWh
 
@@ -148,7 +148,7 @@ class AdjustedPvForecast:
         """
         if now is not None and pv_power_w_5min is None:
             raise ValueError(
-                "AdjustedPvForecast.to_profile: pv_power_w_5min is required "
+                "PvForecastResult.to_profile: pv_power_w_5min is required "
                 "when `now` is given"
             )
         inferred: date | None = None
@@ -169,7 +169,7 @@ class AdjustedPvForecast:
             )
         if not matched:
             raise ValueError(
-                f"AdjustedPvForecast.to_profile: no periods match {target_date!r}"
+                f"PvForecastResult.to_profile: no periods match {target_date!r}"
             )
         for h in range(7, 13):
             for m in (0, 30):
@@ -187,7 +187,7 @@ class AdjustedPvForecast:
         now: datetime,
         pv_power_w_5min: float,
         pv_bucket_so_far_kwh: float,
-    ) -> AdjustedPvForecast:
+    ) -> PvForecastResult:
         """Return a copy with in-progress period rescaled to full-bucket estimate.
 
         Rate = `(so_far + live_remaining_kwh) × 2` (kWh/h). Other periods
@@ -211,7 +211,7 @@ class AdjustedPvForecast:
         pv_power_w_5min: float,
         pv_bucket_so_far_kwh: float,
         future_pv_kwh_per_h_overrides: dict[tuple[int, int], float],
-    ) -> AdjustedPvForecast:
+    ) -> PvForecastResult:
         """As `with_now_aware_in_progress`, plus future-bucket overrides.
 
         Future periods (bucket_start > now) get `pv_estimate_adjusted` replaced
@@ -232,8 +232,8 @@ class AdjustedPvForecast:
         *,
         current_rate: float,
         future_overrides: dict[tuple[int, int], float] | None,
-    ) -> AdjustedPvForecast:
-        """Build a new AdjustedPvForecast with selective period replacement.
+    ) -> PvForecastResult:
+        """Build a new PvForecastResult with selective period replacement.
 
         - in-progress period (Bucket.enclosing(now)) → `current_rate`
         - future periods (bucket_start > now): take `future_overrides[(h,m)]`
@@ -273,7 +273,7 @@ class AdjustedPvForecast:
                 )
             )
             total_kwh += rate / 2.0
-        return AdjustedPvForecast(forecast=new_periods, total_kwh=round(total_kwh, 4))
+        return PvForecastResult(forecast=new_periods, total_kwh=round(total_kwh, 4))
 
 
 @dataclass(frozen=True)
@@ -282,7 +282,7 @@ class ExtrapolatedLive:
 
     Bundle of three correlated outputs computed from the same in-progress
     bucket assumption (see pv_forecast_extrapolation.py for strategies):
-    - adjusted: full per-period AdjustedPvForecast (chart attribute)
+    - adjusted: full per-period PvForecastResult (chart attribute)
     - remaining_kwh: scalar kWh remaining today, past excluded (sensor state)
     - target_soc: SOC % needed for 7-13 deficit window (sensor value)
 
@@ -290,7 +290,7 @@ class ExtrapolatedLive:
     represents "no data — sensor → unknown".
     """
 
-    adjusted: AdjustedPvForecast | None
+    adjusted: PvForecastResult | None
     remaining_kwh: float | None
     target_soc: TargetSocResult | None
 
@@ -357,7 +357,7 @@ def merge_weather_conditions(
     a specific day).
 
     Used by application service (PvForecastService._build_weather) to assemble
-    the full conditions window for `PvForecastUpdater._adjust_pv_forecast_*`.
+    the full conditions window for `PvForecasts._adjust_pv_forecast_*`.
     """
     combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
     for c in history:

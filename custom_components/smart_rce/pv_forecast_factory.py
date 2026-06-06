@@ -37,7 +37,7 @@ from homeassistant.util import dt as dt_util
 from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
-from .domain.pv_forecast_catalog import PvForecastUpdater
+from .domain.pv_forecasts import PvForecasts
 from .domain.target_soc_catalog import TargetSocCatalog
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.pv_forecast.consumption_profile_loader import (
@@ -62,7 +62,7 @@ async def create_pv_forecast_service(
     rce_coordinator: SmartRceDataUpdateCoordinator,
 ) -> PvForecastService:
     """Composition root — wire domain + adapters + service + HA listenery."""
-    updater = PvForecastUpdater()
+    updater = PvForecasts()
     target_socs = TargetSocCatalog()
     solcast = SolcastReader(hass)
     workday_reader = WorkdayCalendarReader(hass)

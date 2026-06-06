@@ -87,7 +87,7 @@ class Bucket:
 
         The "what we expect this bucket to deliver" estimate. Shared by
         chart display (rescaled to kWh/h rate via × 2 inside
-        `AdjustedPvForecast.with_now_aware_in_progress*`) and strategy
+        `PvForecastResult.with_now_aware_in_progress*`) and strategy
         score input in extrapolation variants.
 
         With `derivative_w_per_min != 0`, the remaining-time integral uses
@@ -121,7 +121,7 @@ class Bucket:
 
         Single source of truth for the in-progress bucket integration
         consumed by:
-        - `AdjustedPvForecast.to_profile` (PV side, in-progress = remaining
+        - `PvForecastResult.to_profile` (PV side, in-progress = remaining
           only; past contributes 0 to the forward-looking deficit).
         - `ConsumptionProfile.to_view` (consumption side, same shape).
         - `Bucket.full_bucket_kwh` (chart display, combined with so_far).
@@ -220,7 +220,7 @@ class Buckets:
         `live_remaining_kwh` is the kWh contribution from `now` to
         bucket_end for the in-progress bucket. Required — fail-hard
         contract: the caller (ConsumptionProfile.to_view /
-        AdjustedPvForecast.to_profile) computed it via
+        PvForecastResult.to_profile) computed it via
         `Bucket.live_remaining_kwh` before delegating here. When `now`
         falls outside the 7:00..12:30 window no in-progress bucket
         exists and `live_remaining_kwh` is unused.

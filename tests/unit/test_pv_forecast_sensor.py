@@ -6,10 +6,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from custom_components.smart_rce.domain.bucket import Bucket
-from custom_components.smart_rce.domain.pv_forecast_catalog import (
-    LivePvSignals,
-    PvForecastUpdater,
-)
+from custom_components.smart_rce.domain.pv_forecasts import LivePvSignals, PvForecasts
 from custom_components.smart_rce.sensor.pv_forecast_sensor import (
     _bucket_end_constant_kwh,
     _bucket_end_derivative_delta_kwh,
@@ -30,9 +27,9 @@ def _catalog(
     pv_bucket_so_far_kwh: float | None = None,
     live_pv_derivative_w_per_min: float | None = None,
     pv_stability_stable: bool | None = None,
-) -> PvForecastUpdater:
-    """Build a PvForecastUpdater with only live PV signals set (helpers' inputs)."""
-    updater = PvForecastUpdater()
+) -> PvForecasts:
+    """Build a PvForecasts with only live PV signals set (helpers' inputs)."""
+    updater = PvForecasts()
     updater.live_pv_updated(
         LivePvSignals(
             pv_power_w=live_pv_power_w,

@@ -64,7 +64,7 @@ def compute_matrix(
     clamp are identical to the per-sensor variants.
 
     Time-awareness lives on the input profiles — for today's matrix the
-    caller builds profiles via `AdjustedPvForecast.to_profile(target_date,
+    caller builds profiles via `PvForecastResult.to_profile(target_date,
     now, pv_power_w_5min)` + `ConsumptionProfile.to_view(now,
     live_consumption_w)`, baking the in-progress bucket override into the
     bucket values. Matrix cells then match the per-strategy bridging

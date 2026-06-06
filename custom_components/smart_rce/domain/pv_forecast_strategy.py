@@ -5,12 +5,12 @@ stateful `ForecastStrategy` instance (HeaterState-style). Template
 method `ForecastStrategy.update(ctx)`:
 1. Subclass `_compute(ctx)` builds fresh adjusted from ctx, or None when
    the relevant input is missing
-2. Cache non-None result on `self.adjusted`
+2. Cache non-None result on `self.result`
 3. If `supports_in_progress_patch=True`, re-patch with live signals
    (today-variants only — tomorrow has no in-progress bucket)
 
 Iter 1b: AT_6 + LIVE bound; the other 6 variants have `strategy=None`
-(legacy path via `PvForecastUpdater._forecasts` / `_extrapolated` dicts).
+(legacy path via `PvForecasts._forecasts` / `_extrapolated` dicts).
 Iter 3 will bind the remaining 6.
 
 PvForecast enum lives here (not in `pv_forecast.py`) because the enum
@@ -33,8 +33,8 @@ from .pv_forecast import (
     PARTLY_VARIABLE_CONDITIONS,
     SUNNY_CONDITIONS,
     AdjustedPeriod,
-    AdjustedPvForecast,
     LivePvSignals,
+    PvForecastResult,
     SolcastPeriod,
     WeatherConditionAtHour,
 )
@@ -46,7 +46,7 @@ from .pv_forecast import (
 class ForecastContext:
     """Inputs available to strategy updates per dispatch.
 
-    `PvForecastUpdater` caches all inputs and rebuilds the full context
+    `PvForecasts` caches all inputs and rebuilds the full context
     each time something changes. Strategies short-circuit in `_compute`
     when their relevant input is missing (e.g. AT_6 needs
     `solcast_at_6` + `weather`).
@@ -74,18 +74,18 @@ class ForecastStrategy:
     supports_in_progress_patch: bool = False
 
     def __init__(self) -> None:
-        self.adjusted: AdjustedPvForecast | None = None
+        self.result: PvForecastResult | None = None
 
     def update(self, ctx: ForecastContext) -> None:
-        new_adjusted = self._compute(ctx)
-        if new_adjusted is not None:
-            self.adjusted = new_adjusted
-        if self.supports_in_progress_patch and self.adjusted is not None:
-            self.adjusted = _apply_chart_in_progress_patch(
-                ctx.now, self.adjusted, ctx.signals
+        new_result = self._compute(ctx)
+        if new_result is not None:
+            self.result = new_result
+        if self.supports_in_progress_patch and self.result is not None:
+            self.result = _apply_chart_in_progress_patch(
+                ctx.now, self.result, ctx.signals
             )
 
-    def _compute(self, ctx: ForecastContext) -> AdjustedPvForecast | None:
+    def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
         """Subclass: build fresh adjusted from ctx, or None if input missing."""
         raise NotImplementedError
 
@@ -95,7 +95,7 @@ class At6Strategy(ForecastStrategy):
 
     supports_in_progress_patch = True
 
-    def _compute(self, ctx: ForecastContext) -> AdjustedPvForecast | None:
+    def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
         if not ctx.solcast_at_6 or not ctx.weather:
             return None
         return _adjust_pv_forecast_at6(ctx.solcast_at_6, ctx.weather)
@@ -106,7 +106,7 @@ class LiveStrategy(ForecastStrategy):
 
     supports_in_progress_patch = True
 
-    def _compute(self, ctx: ForecastContext) -> AdjustedPvForecast | None:
+    def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
         if not ctx.solcast_live or not ctx.weather:
             return None
         return _adjust_pv_forecast_live(ctx.solcast_live, ctx.weather, ctx.now)
@@ -119,7 +119,7 @@ class PvForecast(Enum):
     """All PV forecast variants — string key + bound strategy.
 
     Iter 1b: only AT_6 + LIVE bound. Other 6 have `strategy=None` —
-    `PvForecastUpdater` handles them via its legacy `_forecasts` /
+    `PvForecasts` handles them via its legacy `_forecasts` /
     `_extrapolated` dicts. Iter 3 binds the remaining 6.
 
     Naming convention: `<date_axis>_<source>` where source ∈ {at_6, live,
@@ -140,9 +140,9 @@ class PvForecast(Enum):
         self.strategy = strategy
 
     @property
-    def adjusted(self) -> AdjustedPvForecast | None:
-        """Current adjusted forecast — from bound strategy (None if unbound)."""
-        return self.strategy.adjusted if self.strategy is not None else None
+    def result(self) -> PvForecastResult | None:
+        """Current forecast result — from bound strategy (None if unbound)."""
+        return self.strategy.result if self.strategy is not None else None
 
 
 TODAY_STRATEGIES: Final[tuple[PvForecast, ...]] = (
@@ -167,17 +167,17 @@ EXTRAP_STRATEGIES: Final[tuple[PvForecast, ...]] = (
 )
 
 
-# --- Module-level adjust helpers (relocated from PvForecastUpdater) --- #
-# Also reused by `PvForecastUpdater.tomorrow_forecast_updated` (legacy
+# --- Module-level adjust helpers (relocated from PvForecasts) --- #
+# Also reused by `PvForecasts.tomorrow_forecast_updated` (legacy
 # path in Iter 1b) until Iter 3 binds TOMORROW strategies.
 
 
 def _apply_chart_in_progress_patch(
     now: datetime,
-    adjusted: AdjustedPvForecast,
+    result: PvForecastResult,
     signals: LivePvSignals,
-) -> AdjustedPvForecast:
-    """Return `adjusted` with in-progress period rescaled, or unchanged.
+) -> PvForecastResult:
+    """Return `result` with in-progress period rescaled, or unchanged.
 
     Rescale = full-bucket estimate (realized so-far + remaining via 5-min
     power); unchanged when live signals aren't set.
@@ -185,8 +185,8 @@ def _apply_chart_in_progress_patch(
     pv_w = signals.pv_power_w
     so_far = signals.bucket_so_far_kwh
     if pv_w is None or so_far is None:
-        return adjusted
-    return adjusted.with_now_aware_in_progress(
+        return result
+    return result.with_now_aware_in_progress(
         now=now, pv_power_w_5min=pv_w, pv_bucket_so_far_kwh=so_far
     )
 
@@ -194,7 +194,7 @@ def _apply_chart_in_progress_patch(
 def adjust_pv_forecast_at6(
     solcast_periods: list[SolcastPeriod],
     weather_conditions: list[WeatherConditionAtHour],
-) -> AdjustedPvForecast:
+) -> PvForecastResult:
     """Adjust morning Solcast forecast (snapshot from 6:05) using weather."""
     return _adjust_pv_forecast_at6(solcast_periods, weather_conditions)
 
@@ -203,7 +203,7 @@ def adjust_pv_forecast_live(
     solcast_periods: list[SolcastPeriod],
     weather_conditions: list[WeatherConditionAtHour],
     now: datetime,
-) -> AdjustedPvForecast:
+) -> PvForecastResult:
     """Adjust live Solcast forecast using weather. First hour treated differently."""
     return _adjust_pv_forecast_live(solcast_periods, weather_conditions, now)
 
@@ -211,7 +211,7 @@ def adjust_pv_forecast_live(
 def _adjust_pv_forecast_at6(
     solcast_periods: list[SolcastPeriod],
     weather_conditions: list[WeatherConditionAtHour],
-) -> AdjustedPvForecast:
+) -> PvForecastResult:
     forecast: list[AdjustedPeriod] = []
     total_kwh = 0.0
     for period in solcast_periods:
@@ -227,14 +227,14 @@ def _adjust_pv_forecast_at6(
             )
         )
         total_kwh += adj_rate / 2
-    return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
+    return PvForecastResult(forecast=forecast, total_kwh=round(total_kwh, 4))
 
 
 def _adjust_pv_forecast_live(
     solcast_periods: list[SolcastPeriod],
     weather_conditions: list[WeatherConditionAtHour],
     now: datetime,
-) -> AdjustedPvForecast:
+) -> PvForecastResult:
     forecast: list[AdjustedPeriod] = []
     total_kwh = 0.0
     current_hour = now.hour
@@ -252,7 +252,7 @@ def _adjust_pv_forecast_live(
             )
         )
         total_kwh += adj_rate / 2
-    return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
+    return PvForecastResult(forecast=forecast, total_kwh=round(total_kwh, 4))
 
 
 def _classify_condition(condition: str) -> str:
