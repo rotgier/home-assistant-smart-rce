@@ -16,6 +16,21 @@ from custom_components.smart_rce.domain.pv_forecasts import (
     PvForecast,
     PvForecasts,
 )
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_bound_strategies():
+    """Strategies are singletons bound to enum members — reset between tests."""
+    for variant in PvForecast:
+        if variant.strategy is not None:
+            variant.strategy.result = None
+            variant.strategy.remaining_kwh = None
+    yield
+    for variant in PvForecast:
+        if variant.strategy is not None:
+            variant.strategy.result = None
+            variant.strategy.remaining_kwh = None
 
 
 def test_strategy_enum_coverage() -> None:
@@ -33,12 +48,7 @@ def test_empty_catalog_read_api_returns_none() -> None:
     catalog = PvForecasts()
     for strategy in PvForecast:
         assert catalog.get(strategy) is None
-    for strategy in EXTRAP_STRATEGIES:
-        bundle = catalog.get_extrapolated(strategy)
-        assert bundle is not None  # initialized to ExtrapolatedLive.empty()
-        assert bundle.adjusted is None
-        assert bundle.remaining_kwh is None
-        assert bundle.target_soc is None
+        assert catalog.remaining_kwh(strategy) is None
     assert catalog.signals == LivePvSignals()
     assert catalog.solcast_live == []
 
@@ -63,7 +73,10 @@ def test_live_pv_updated_replaces_signals_atomically() -> None:
             derivative_w_per_min=60.0,
             stability_stable=True,
         ),
-        datetime(2026, 1, 1, 12, 0),
+        realized_pv_today={},
+        consumption_w=None,
+        start_charge_hour=None,
+        now=datetime(2026, 1, 1, 12, 0),
     )
     snap = updater.signals
     assert snap.pv_power_w == 1500.0
@@ -73,7 +86,11 @@ def test_live_pv_updated_replaces_signals_atomically() -> None:
 
     # Second tick fully replaces — no field-by-field merge.
     updater.live_pv_updated(
-        LivePvSignals(pv_power_w=2000.0), datetime(2026, 1, 1, 12, 1)
+        LivePvSignals(pv_power_w=2000.0),
+        realized_pv_today={},
+        consumption_w=None,
+        start_charge_hour=None,
+        now=datetime(2026, 1, 1, 12, 1),
     )
     snap = updater.signals
     assert snap.pv_power_w == 2000.0

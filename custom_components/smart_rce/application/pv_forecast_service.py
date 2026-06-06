@@ -168,7 +168,6 @@ class PvForecastService:
             return
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self._push_extrap_inputs()
         self.updater.today_at_6_forecast_updated(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
@@ -179,7 +178,6 @@ class PvForecastService:
         now = dt_util.now()
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self._push_extrap_inputs()
         self.updater.today_live_forecast_updated(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
@@ -193,11 +191,16 @@ class PvForecastService:
         self.updater.tomorrow_forecast_updated(solcast_periods, weather, now)
 
     def _tick_extrapolated(self) -> None:
-        """Per-minute tick — refresh PV signals + extrap inputs, dispatch."""
+        """Per-minute tick — refresh inputs + dispatch (EXTRAP recomputes too)."""
         now = dt_util.now()
         self._refresh_target_soc_inputs()
-        self._push_extrap_inputs()
-        self.updater.live_pv_updated(self._build_live_signals(), now)
+        self.updater.live_pv_updated(
+            signals=self._build_live_signals(),
+            realized_pv_today=self._realized_pv_today,
+            consumption_w=self.target_socs.inputs.live_consumption_w,
+            start_charge_hour=self.target_socs.inputs.start_charge_hour_today,
+            now=now,
+        )
 
     # ─── TargetSoc recalc (forecast aggregate) ─────────────────────────────
 
@@ -229,19 +232,6 @@ class PvForecastService:
                     int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
                 ),
             )
-        )
-
-    def _push_extrap_inputs(self) -> None:
-        """Forward cons knobs to updater for legacy EXTRAP recompute (Iter 1b).
-
-        EXTRAP variants are unbound in Iter 1b — they read consumption_w +
-        start_charge_hour from updater-cached state. Iter 3 binds them and
-        this forwarding disappears.
-        """
-        self.updater.refresh_extrap_inputs(
-            self._realized_pv_today,
-            self.target_socs.inputs.live_consumption_w,
-            self.target_socs.inputs.start_charge_hour_today,
         )
 
     # ─── Consumption profiles refresh (async I/O paths) ────────────────────

@@ -244,38 +244,28 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # (chart-friendly — same shape as Adj PV Live so adjusted_pv() helper works)
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Pattern",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
-            PvForecast.EXTRAP_PATTERN
-        ).remaining_kwh,
+        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_PATTERN),
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_PATTERN).adjusted
+            pv.updater.get(PvForecast.EXTRAP_PATTERN)
         ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Proportional",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
-            PvForecast.EXTRAP_PROPORTIONAL
-        ).remaining_kwh,
+        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_PROPORTIONAL),
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_PROPORTIONAL).adjusted
+            pv.updater.get(PvForecast.EXTRAP_PROPORTIONAL)
         ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Band",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
-            PvForecast.EXTRAP_BAND
-        ).remaining_kwh,
-        attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_BAND).adjusted
-        ),
+        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_BAND),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.updater.get(PvForecast.EXTRAP_BAND)),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Band Recent",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
-            PvForecast.EXTRAP_BAND_RECENT
-        ).remaining_kwh,
+        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_BAND_RECENT),
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_BAND_RECENT).adjusted
+            pv.updater.get(PvForecast.EXTRAP_BAND_RECENT)
         ),
     ),
     # --- In-progress bucket projection observability (Phase C.1) ---
@@ -348,53 +338,61 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
             pv.target_socs.consumption_profiles.tomorrow_profiles,
         ),
     ),
-    # --- Target SOC live extrapolated (per-minute tick, in-progress bucket scaled) ---
+    # --- Target SOC EXTRAP variants — per-variant TargetSoc entity ---
+    # Source switched in Iter 3b: was ExtrapolatedLive.target_soc (inline
+    # computation in _assemble); now TargetSocCatalog.target_socs[V].flat
+    # (uniform path with other 4 target_soc sensors). Attributes mirror
+    # the main TargetSoc sensors — prev_day_1..8 + max + flat trace.
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Pattern",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
+        value_fn=lambda pv: pv.target_socs.target_socs[
             PvForecast.EXTRAP_PATTERN
-        ).target_soc.value
-        if pv.updater.get_extrapolated(PvForecast.EXTRAP_PATTERN).target_soc
+        ].flat.value
+        if pv.target_socs.target_socs[PvForecast.EXTRAP_PATTERN].flat
         else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_PATTERN).target_soc
+        attr_fn=lambda pv: _target_soc_attrs(
+            pv.target_socs.target_socs[PvForecast.EXTRAP_PATTERN],
+            pv.target_socs.consumption_profiles.today_profiles,
         ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Proportional",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
+        value_fn=lambda pv: pv.target_socs.target_socs[
             PvForecast.EXTRAP_PROPORTIONAL
-        ).target_soc.value
-        if pv.updater.get_extrapolated(PvForecast.EXTRAP_PROPORTIONAL).target_soc
+        ].flat.value
+        if pv.target_socs.target_socs[PvForecast.EXTRAP_PROPORTIONAL].flat
         else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_PROPORTIONAL).target_soc
+        attr_fn=lambda pv: _target_soc_attrs(
+            pv.target_socs.target_socs[PvForecast.EXTRAP_PROPORTIONAL],
+            pv.target_socs.consumption_profiles.today_profiles,
         ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Band",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
+        value_fn=lambda pv: pv.target_socs.target_socs[
             PvForecast.EXTRAP_BAND
-        ).target_soc.value
-        if pv.updater.get_extrapolated(PvForecast.EXTRAP_BAND).target_soc
+        ].flat.value
+        if pv.target_socs.target_socs[PvForecast.EXTRAP_BAND].flat
         else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_BAND).target_soc
+        attr_fn=lambda pv: _target_soc_attrs(
+            pv.target_socs.target_socs[PvForecast.EXTRAP_BAND],
+            pv.target_socs.consumption_profiles.today_profiles,
         ),
     ),
     PvForecastSensorDescription(
         name="Target Battery SOC Live Extrapolated Band Recent",
         native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.updater.get_extrapolated(
+        value_fn=lambda pv: pv.target_socs.target_socs[
             PvForecast.EXTRAP_BAND_RECENT
-        ).target_soc.value
-        if pv.updater.get_extrapolated(PvForecast.EXTRAP_BAND_RECENT).target_soc
+        ].flat.value
+        if pv.target_socs.target_socs[PvForecast.EXTRAP_BAND_RECENT].flat
         else None,
-        attr_fn=lambda pv: _target_soc_trace_attrs(
-            pv.updater.get_extrapolated(PvForecast.EXTRAP_BAND_RECENT).target_soc
+        attr_fn=lambda pv: _target_soc_attrs(
+            pv.target_socs.target_socs[PvForecast.EXTRAP_BAND_RECENT],
+            pv.target_socs.consumption_profiles.today_profiles,
         ),
     ),
     # NOTE: Prev-workday + max sensors retired in Iter 2b. Consumers should

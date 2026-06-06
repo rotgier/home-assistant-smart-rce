@@ -1,20 +1,22 @@
 """Extrapolated PV forecast variants — strategies for future buckets.
 
-Each strategy produces an ExtrapolatedLive bundle:
-- adjusted: full per-period PvForecastResult (chart attribute source)
-- remaining_kwh: scalar sum from now to end-of-day (sensor state)
-- target_soc: SOC % needed for 7-13 deficit window (sensor value)
+Each `extrapolate_*` function returns a `PvForecastResult` with the
+in-progress bucket rescaled + future buckets patched per strategy. The
+EXTRAP `ForecastStrategy` subclasses (in `pv_forecast_strategy.py`)
+call these and store the result; `TargetSocCatalog` derives target_soc
+externally; `PvForecastResult.remaining_kwh_from(now)` derives remaining
+kWh externally.
 
-In-progress bucket handling is uniform across all today variants — built
+In-progress bucket handling is uniform across all variants — built
 on `Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh)`
 which yields realized so-far plus 5-min power × remaining time. That same
 value drives:
 - chart display (in-progress period rescaled to `full_bucket_kwh × 2` rate
   via `PvForecastResult.with_now_aware_in_progress_and_future_overrides`)
 - strategy `score` input (`realized_rate = full_bucket_kwh × 2`)
-- `target_soc` input via `PvForecastResult.to_profile(now, pv_w_5min)`
+- target_soc input via `PvForecastResult.to_profile(now, pv_w_5min)`
   (uses `live_remaining_kwh` part only — past contributes 0 to the
-  forward-looking deficit)
+  forward-looking deficit). Computed by `TargetSocCatalog`, not here.
 
 The variants differ only in how they project FUTURE buckets:
 
@@ -35,19 +37,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .bucket import Bucket
-from .pv_forecast import (
-    ConsumptionProfile,
-    ExtrapolatedLive,
-    PvForecastResult,
-    SolcastPeriod,
-)
-from .target_soc import calculate_target_soc
-
-# Constant-baseline flat profile reused by every variant — matches the
-# target_soc_live baseline. ConsumptionProfile.to_view applies the live
-# in-progress integration on top per recalc.
-_DEFAULT_CONS_PROFILE = ConsumptionProfile.flat()
-
+from .pv_forecast import PvForecastResult, SolcastPeriod
 
 # Exponential decay factor for the calibrated pattern variant — current bucket
 # weight 1.0; each step back multiplies by this. 0.7 → after 3 buckets ≈ 0.34.
@@ -66,9 +56,7 @@ def extrapolate_calibrated_pattern(
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
     pv_power_w_5min: float | None,
-    consumption_w: float | None,
-    start_charge_hour: int | None = None,
-) -> ExtrapolatedLive:
+) -> PvForecastResult | None:
     """Variant — projects realization score from past buckets onto future.
 
     Each past + current bucket gets a normalized score on a 4-zone scale
@@ -89,8 +77,8 @@ def extrapolate_calibrated_pattern(
     is mapped back through the inverse of the same 4-zone scale to project
     each future bucket's PV rate.
     """
-    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
-        return ExtrapolatedLive.empty()
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
+        return None
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
     score = _compute_weighted_score(
@@ -101,7 +89,7 @@ def extrapolate_calibrated_pattern(
         pv_power_w_5min=pv_power_w_5min,
     )
     if score is None:
-        return ExtrapolatedLive.empty()
+        return None
 
     future_overrides = _project_future_buckets(
         solcast_by_bucket=solcast_by_bucket, now=now, score=score
@@ -111,9 +99,7 @@ def extrapolate_calibrated_pattern(
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
-        consumption_w=consumption_w,
         future_overrides=future_overrides,
-        start_charge_hour=start_charge_hour,
     )
 
 
@@ -267,17 +253,15 @@ def extrapolate_proportional_median(
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
     pv_power_w_5min: float | None,
-    consumption_w: float | None,
-    start_charge_hour: int | None = None,
-) -> ExtrapolatedLive:
+) -> PvForecastResult | None:
     """Variant — proportional-to-median realization scaling.
 
     Same shape as `extrapolate_calibrated_pattern` but uses
     `S = (realized - est) / est` (band-width independent). Future rate =
     `est × (1 + cumS)`, floored at cumS=-0.95.
     """
-    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
-        return ExtrapolatedLive.empty()
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
+        return None
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
     cum_s = _compute_weighted_proportional_score(
@@ -288,7 +272,7 @@ def extrapolate_proportional_median(
         pv_power_w_5min=pv_power_w_5min,
     )
     if cum_s is None:
-        return ExtrapolatedLive.empty()
+        return None
 
     future_overrides = _project_future_buckets_proportional(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
@@ -298,9 +282,7 @@ def extrapolate_proportional_median(
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
-        consumption_w=consumption_w,
         future_overrides=future_overrides,
-        start_charge_hour=start_charge_hour,
     )
 
 
@@ -370,12 +352,10 @@ def extrapolate_band_clamped(
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
     pv_power_w_5min: float | None,
-    consumption_w: float | None,
-    start_charge_hour: int | None = None,
-) -> ExtrapolatedLive:
+) -> PvForecastResult | None:
     """Variant — 2-zone band-clamped realization scaling."""
-    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
-        return ExtrapolatedLive.empty()
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
+        return None
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
     cum_s = _compute_weighted_band_score(
@@ -386,7 +366,7 @@ def extrapolate_band_clamped(
         pv_power_w_5min=pv_power_w_5min,
     )
     if cum_s is None:
-        return ExtrapolatedLive.empty()
+        return None
 
     future_overrides = _project_future_buckets_band(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
@@ -396,9 +376,7 @@ def extrapolate_band_clamped(
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
-        consumption_w=consumption_w,
         future_overrides=future_overrides,
-        start_charge_hour=start_charge_hour,
     )
 
 
@@ -436,9 +414,7 @@ def extrapolate_band_clamped_recent(
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
     pv_power_w_5min: float | None,
-    consumption_w: float | None,
-    start_charge_hour: int | None = None,
-) -> ExtrapolatedLive:
+) -> PvForecastResult | None:
     """Variant — band-clamped scoring, narrow lookback (current + 1 back).
 
     Same band-clamped score as `extrapolate_band_clamped` but limited to
@@ -446,8 +422,8 @@ def extrapolate_band_clamped_recent(
     prior bucket contribute to cumS. Captures current weather trend
     without carrying morning bias into afternoon projections.
     """
-    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None or consumption_w is None:
-        return ExtrapolatedLive.empty()
+    if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
+        return None
 
     solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
     cum_s = _compute_weighted_band_score_recent(
@@ -458,7 +434,7 @@ def extrapolate_band_clamped_recent(
         pv_power_w_5min=pv_power_w_5min,
     )
     if cum_s is None:
-        return ExtrapolatedLive.empty()
+        return None
 
     future_overrides = _project_future_buckets_band(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
@@ -468,9 +444,7 @@ def extrapolate_band_clamped_recent(
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
-        consumption_w=consumption_w,
         future_overrides=future_overrides,
-        start_charge_hour=start_charge_hour,
     )
 
 
@@ -575,11 +549,9 @@ def _assemble(
     *,
     pv_bucket_so_far_kwh: float,
     pv_power_w_5min: float,
-    consumption_w: float,
     future_overrides: dict[tuple[int, int], float],
-    start_charge_hour: int | None,
-) -> ExtrapolatedLive:
-    """Build the ExtrapolatedLive bundle from a strategy's per-bucket overrides.
+) -> PvForecastResult:
+    """Build the EXTRAP result from a strategy's per-bucket overrides.
 
     Single source of truth for the in-progress bucket rate is
     `PvForecastResult.with_now_aware_in_progress_and_future_overrides`,
@@ -587,40 +559,13 @@ def _assemble(
     take `future_overrides[(h,m)]` when present, else keep their original
     forecast values. Past periods are untouched.
 
-    For target_soc the in-progress bucket is independently overridden by
-    `to_profile(now, pv_power_w_5min)` → `live_remaining_kwh` (remaining
-    only, no so_far — past contributes 0 to forward-looking deficit).
-    Consumption uses the constant flat baseline shifted by `consumption_w`
-    via `to_view`.
+    target_soc + remaining_kwh derivation is external (TargetSocCatalog
+    + `PvForecastResult.remaining_kwh_from(now)`); this function returns
+    only the patched forecast.
     """
-    adjusted = adjusted_live.with_now_aware_in_progress_and_future_overrides(
+    return adjusted_live.with_now_aware_in_progress_and_future_overrides(
         now=now,
         pv_power_w_5min=pv_power_w_5min,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         future_pv_kwh_per_h_overrides=future_overrides,
     )
-    remaining_kwh = _sum_remaining_kwh(adjusted, now)
-    target_soc = calculate_target_soc(
-        adjusted.to_profile(now.date(), now=now, pv_power_w_5min=pv_power_w_5min),
-        _DEFAULT_CONS_PROFILE.to_view(now=now, live_consumption_w=consumption_w),
-        start_charge_hour=start_charge_hour,
-    )
-    return ExtrapolatedLive(
-        adjusted=adjusted, remaining_kwh=remaining_kwh, target_soc=target_soc
-    )
-
-
-def _sum_remaining_kwh(forecast: PvForecastResult, now: datetime) -> float:
-    """Sum kWh from current bucket onwards (past excluded).
-
-    Operates on an already-extrapolated forecast (current bucket already rescaled).
-    """
-    start_hour = now.hour
-    start_minute = 0 if now.minute < 30 else 30
-    total = 0.0
-    for period in forecast.forecast:
-        dt = datetime.fromisoformat(period.period_start)
-        if dt.hour < start_hour or (dt.hour == start_hour and dt.minute < start_minute):
-            continue
-        total += period.pv_estimate_adjusted / 2
-    return round(total, 4)

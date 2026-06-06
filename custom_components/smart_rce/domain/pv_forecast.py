@@ -3,8 +3,7 @@
 Read top-down:
   1. Constants — domain rules (weather modifiers, condition sets)
   2. Value objects — SolcastPeriod, AdjustedPeriod, PvForecastResult,
-     WeatherConditionAtHour, ExtrapolatedLive, TargetSocInputs,
-     LivePvSignals
+     WeatherConditionAtHour, TargetSocInputs, LivePvSignals
   3. Standalone domain utilities — multi-class users (merge_weather_conditions,
      walk_back_workdays) used by application service / infrastructure loader
 
@@ -275,28 +274,32 @@ class PvForecastResult:
             total_kwh += rate / 2.0
         return PvForecastResult(forecast=new_periods, total_kwh=round(total_kwh, 4))
 
+    def remaining_kwh_from(self, now: datetime) -> float:
+        """Sum kWh from `now`'s bucket onwards (past excluded).
 
-@dataclass(frozen=True)
-class ExtrapolatedLive:
-    """One extrapolation strategy applied to today's live forecast.
-
-    Bundle of three correlated outputs computed from the same in-progress
-    bucket assumption (see pv_forecast_extrapolation.py for strategies):
-    - adjusted: full per-period PvForecastResult (chart attribute)
-    - remaining_kwh: scalar kWh remaining today, past excluded (sensor state)
-    - target_soc: SOC % needed for 7-13 deficit window (sensor value)
-
-    Any field can be None when source data is unavailable; ExtrapolatedLive.empty()
-    represents "no data — sensor → unknown".
-    """
-
-    adjusted: PvForecastResult | None
-    remaining_kwh: float | None
-    target_soc: TargetSocResult | None
-
-    @classmethod
-    def empty(cls) -> ExtrapolatedLive:
-        return cls(adjusted=None, remaining_kwh=None, target_soc=None)
+        Returns the full per-bucket value for the bucket containing
+        `now` (no proration of in-progress) — matches the semantics of
+        `_assemble` in `pv_forecast_extrapolation` which rescales
+        in-progress before summing. Tomorrow-axis callers pass `now`
+        from today; the comparison naturally includes all of tomorrow's
+        periods.
+        """
+        start_hour = now.hour
+        start_minute = 0 if now.minute < 30 else 30
+        total = 0.0
+        for period in self.forecast:
+            dt = datetime.fromisoformat(period.period_start)
+            # Filter by date as well so tomorrow's periods don't get filtered
+            # out by today's start_hour (they're on a later date).
+            if dt.date() < now.date():
+                continue
+            if dt.date() == now.date() and (
+                dt.hour < start_hour
+                or (dt.hour == start_hour and dt.minute < start_minute)
+            ):
+                continue
+            total += period.pv_estimate_adjusted / 2
+        return round(total, 4)
 
 
 # --- TargetSoc inputs VO (passed atomically from service) --- #

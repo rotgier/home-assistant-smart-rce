@@ -37,7 +37,10 @@ def _catalog(
             derivative_w_per_min=live_pv_derivative_w_per_min,
             stability_stable=pv_stability_stable,
         ),
-        datetime(2026, 1, 1, 12, 0),
+        realized_pv_today={},
+        consumption_w=None,
+        start_charge_hour=None,
+        now=datetime(2026, 1, 1, 12, 0),
     )
     return updater
 

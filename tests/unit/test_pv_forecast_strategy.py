@@ -189,18 +189,14 @@ def test_pv_forecast_at_6_property_reads_strategy_result() -> None:
     assert PvForecast.AT_6.result is not None
 
 
-def test_unbound_variants_have_no_strategy() -> None:
-    """Iter 3a: AT_6 + LIVE + TOMORROW × 2 bound; EXTRAP × 4 still unbound."""
-    assert PvForecast.AT_6.strategy is not None
-    assert PvForecast.LIVE.strategy is not None
-    assert PvForecast.TOMORROW_AT_6.strategy is not None
-    assert PvForecast.TOMORROW_LIVE.strategy is not None
-    assert PvForecast.EXTRAP_PATTERN.strategy is None
-    assert PvForecast.EXTRAP_PROPORTIONAL.strategy is None
-    assert PvForecast.EXTRAP_BAND.strategy is None
-    assert PvForecast.EXTRAP_BAND_RECENT.strategy is None
-    # Unbound `result` property gracefully returns None.
-    assert PvForecast.EXTRAP_PATTERN.result is None
+def test_all_variants_have_bound_strategy() -> None:
+    """Iter 3b: every PvForecast variant has a bound ForecastStrategy."""
+    for variant in PvForecast:
+        assert variant.strategy is not None, f"{variant} should be bound"
+    # Empty result before any update — all return None gracefully.
+    for variant in PvForecast:
+        # Reset strategy.result to None (fixture should already do this)
+        assert variant.result is None
 
 
 def test_forecast_strategy_base_raises_not_implemented() -> None:
