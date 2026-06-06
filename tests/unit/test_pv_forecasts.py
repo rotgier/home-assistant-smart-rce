@@ -50,7 +50,7 @@ def test_empty_catalog_read_api_returns_none() -> None:
         assert catalog.get(strategy) is None
         assert catalog.remaining_kwh(strategy) is None
     assert catalog.signals == LivePvSignals()
-    assert catalog.solcast_live == []
+    assert catalog.solcast_today == []
 
 
 def test_today_and_tomorrow_views_have_expected_keys() -> None:

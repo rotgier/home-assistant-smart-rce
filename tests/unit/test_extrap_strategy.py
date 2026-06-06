@@ -3,7 +3,7 @@
 Locks the contract for each of the 4 EXTRAP variants:
 - `_compute` returns None when `PvForecast.LIVE.result` is None (chain
   dependency).
-- `_compute` returns None when `ctx.solcast_live` is empty.
+- `_compute` returns None when `ctx.solcast_today` is empty.
 - After update with full inputs, `strategy.result` is populated +
   `remaining_kwh` is non-None.
 """
@@ -42,7 +42,7 @@ def _reset_bound_strategies():
             variant.strategy.remaining_kwh = None
 
 
-def _solcast_live(target_date: str = "2026-01-15") -> list[SolcastPeriod]:
+def _solcast_today(target_date: str = "2026-01-15") -> list[SolcastPeriod]:
     """Full PV day Solcast periods (7:00-12:30)."""
     return [
         SolcastPeriod(
@@ -69,7 +69,7 @@ def _populate_live() -> None:
             now=datetime(2026, 1, 15, 9, 0),
             signals=LivePvSignals(pv_power_w=1500.0, bucket_so_far_kwh=0.5),
             weather=_weather(),
-            solcast_live=_solcast_live(),
+            solcast_today=_solcast_today(),
         )
     )
 
@@ -79,7 +79,7 @@ def _ctx_with_live(now: datetime | None = None) -> ForecastContext:
         now=now or datetime(2026, 1, 15, 9, 0),
         signals=LivePvSignals(pv_power_w=1500.0, bucket_so_far_kwh=0.5),
         weather=_weather(),
-        solcast_live=_solcast_live(),
+        solcast_today=_solcast_today(),
         realized_pv_today={(7, 0): 0.5, (7, 30): 0.8, (8, 0): 1.0, (8, 30): 1.2},
         consumption_w=400.0,
         start_charge_hour=None,
@@ -113,15 +113,15 @@ def test_extrap_returns_none_when_live_result_missing(strategy_cls) -> None:
         ExtrapBandRecentStrategy,
     ],
 )
-def test_extrap_returns_none_when_solcast_live_empty(strategy_cls) -> None:
-    """No solcast_live periods → EXTRAP returns None."""
+def test_extrap_returns_none_when_solcast_today_empty(strategy_cls) -> None:
+    """No solcast_today periods → EXTRAP returns None."""
     _populate_live()
     strategy = strategy_cls()
     ctx = ForecastContext(
         now=datetime(2026, 1, 15, 9, 0),
         signals=LivePvSignals(pv_power_w=1500.0, bucket_so_far_kwh=0.5),
         weather=_weather(),
-        solcast_live=[],  # empty
+        solcast_today=[],  # empty
         realized_pv_today={(7, 0): 0.5},
         consumption_w=400.0,
     )

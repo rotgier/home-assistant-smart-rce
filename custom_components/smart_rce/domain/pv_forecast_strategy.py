@@ -66,7 +66,7 @@ class ForecastContext:
     signals: LivePvSignals
     weather: list[WeatherConditionAtHour] = field(default_factory=list)
     solcast_at_6: list[SolcastPeriod] = field(default_factory=list)
-    solcast_live: list[SolcastPeriod] = field(default_factory=list)
+    solcast_today: list[SolcastPeriod] = field(default_factory=list)
     solcast_tomorrow: list[SolcastPeriod] = field(default_factory=list)
     realized_pv_today: dict[tuple[int, int], float] = field(default_factory=dict)
     consumption_w: float | None = None
@@ -155,7 +155,7 @@ class At6Strategy(ForecastStrategy):
 class LiveStrategy(ForecastStrategy):
     """Continuous Solcast updates — optimistic LIVE modifiers + first-hour trust.
 
-    `today=True` reads `ctx.solcast_live`. `today=False` reads
+    `today=True` reads `ctx.solcast_today`. `today=False` reads
     `ctx.solcast_tomorrow`. The `is_first_hour` check inside
     `_adjust_pv_forecast_live` compares period.hour to `ctx.now.hour`;
     tomorrow's periods (different date) never match → all use standard
@@ -168,7 +168,7 @@ class LiveStrategy(ForecastStrategy):
         self.supports_in_progress_patch = today
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
-        periods = ctx.solcast_live if self._today else ctx.solcast_tomorrow
+        periods = ctx.solcast_today if self._today else ctx.solcast_tomorrow
         if not periods or not ctx.weather:
             return None
         return _adjust_pv_forecast_live(periods, ctx.weather, ctx.now)
@@ -178,7 +178,7 @@ class LiveStrategy(ForecastStrategy):
 #
 # Four today-axis variants that extrapolate LIVE based on realized PV
 # history per bucket. All share input plumbing (read LIVE result + raw
-# `solcast_live` + signals + realized_pv from ctx); they differ only in
+# `solcast_today` + signals + realized_pv from ctx); they differ only in
 # the projection algorithm. `_assemble` in `pv_forecast_extrapolation`
 # already handles in-progress patch + future overrides, so
 # `supports_in_progress_patch=False` here.
@@ -195,13 +195,13 @@ class _ExtrapStrategyBase(ForecastStrategy):
     supports_in_progress_patch = False
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
-        live_result = PvForecast.LIVE.result
-        if live_result is None or not ctx.solcast_live:
+        pv_forecast_live = PvForecast.LIVE.result
+        if pv_forecast_live is None or not ctx.solcast_today:
             return None
-        return self._run_extrapolation(ctx, live_result)
+        return self._run_extrapolation(ctx, pv_forecast_live)
 
     def _run_extrapolation(
-        self, ctx: ForecastContext, live_result: PvForecastResult
+        self, ctx: ForecastContext, pv_forecast_live: PvForecastResult
     ) -> PvForecastResult | None:
         """Subclass: call its own `extrapolate_*` function."""
         raise NotImplementedError
@@ -210,10 +210,10 @@ class _ExtrapStrategyBase(ForecastStrategy):
 class ExtrapPatternStrategy(_ExtrapStrategyBase):
     """4-zone weighted realization-score pattern (calibrated)."""
 
-    def _run_extrapolation(self, ctx, live_result):
+    def _run_extrapolation(self, ctx, pv_forecast_live):
         return extrapolate_calibrated_pattern(
-            live_result,
-            ctx.solcast_live,
+            pv_forecast_live,
+            ctx.solcast_today,
             ctx.now,
             ctx.signals.bucket_so_far_kwh,
             ctx.realized_pv_today,
@@ -224,10 +224,10 @@ class ExtrapPatternStrategy(_ExtrapStrategyBase):
 class ExtrapProportionalStrategy(_ExtrapStrategyBase):
     """Proportional median — band-width independent `(real-est)/est` score."""
 
-    def _run_extrapolation(self, ctx, live_result):
+    def _run_extrapolation(self, ctx, pv_forecast_live):
         return extrapolate_proportional_median(
-            live_result,
-            ctx.solcast_live,
+            pv_forecast_live,
+            ctx.solcast_today,
             ctx.now,
             ctx.signals.bucket_so_far_kwh,
             ctx.realized_pv_today,
@@ -238,10 +238,10 @@ class ExtrapProportionalStrategy(_ExtrapStrategyBase):
 class ExtrapBandStrategy(_ExtrapStrategyBase):
     """2-zone band-clamped score anchored at [p10, p90]."""
 
-    def _run_extrapolation(self, ctx, live_result):
+    def _run_extrapolation(self, ctx, pv_forecast_live):
         return extrapolate_band_clamped(
-            live_result,
-            ctx.solcast_live,
+            pv_forecast_live,
+            ctx.solcast_today,
             ctx.now,
             ctx.signals.bucket_so_far_kwh,
             ctx.realized_pv_today,
@@ -252,10 +252,10 @@ class ExtrapBandStrategy(_ExtrapStrategyBase):
 class ExtrapBandRecentStrategy(_ExtrapStrategyBase):
     """Band-clamped with narrowed recent-only lookback."""
 
-    def _run_extrapolation(self, ctx, live_result):
+    def _run_extrapolation(self, ctx, pv_forecast_live):
         return extrapolate_band_clamped_recent(
-            live_result,
-            ctx.solcast_live,
+            pv_forecast_live,
+            ctx.solcast_today,
             ctx.now,
             ctx.signals.bucket_so_far_kwh,
             ctx.realized_pv_today,
@@ -333,7 +333,7 @@ EXTRAP_STRATEGIES: Final[tuple[PvForecast, ...]] = (
 
 
 # --- Module-level adjust helpers (relocated from PvForecasts) --- #
-# Also reused by `PvForecasts.tomorrow_forecast_updated` (legacy
+# Also reused by `PvForecasts.solcast_tomorrow_updated` (legacy
 # path in Iter 1b) until Iter 3 binds TOMORROW strategies.
 
 

@@ -18,7 +18,7 @@ Update sequence per tick:
 1. `_refresh_target_soc_inputs()` — read cons signal + 2 start_charge
    gates from `LiveRateReader` / `ChargeSlots`; push to catalog/forecast as VOs.
 2. `catalog.update_from_X(...)` or `catalog.tick_minute(...)` — catalog
-   refreshes affected forecast strategies + raw solcast_live.
+   refreshes affected forecast strategies + raw solcast_today.
 3. `forecast.recalculate_target_soc(catalog, now)` — derive target_soc_*
    from catalog state + consumption profiles.
 4. `_notify_listeners()` — fan out to sensors.
@@ -118,7 +118,7 @@ class PvForecastService:
         self._notify_listeners()
 
     @callback
-    def on_solcast_live_change(self, event: Event) -> None:
+    def on_solcast_today_change(self, event: Event) -> None:
         """Solcast live changed — refresh LIVE + extrap variants + target_soc."""
         self._recalculate_live()
         self._tick_extrapolated()
@@ -154,41 +154,41 @@ class PvForecastService:
     # ─── Updater dispatch paths (trigger-named, delta-only) ────────────────
 
     def _recalculate_at6(self) -> None:
-        """Refresh AT_6 via updater.today_at_6_forecast_updated.
+        """Refresh AT_6 via updater.solcast_at_6_updated.
 
         Before 6:01 — use live Solcast (has forecast fetched at 22:00).
         After 6:01 — use at_6 snapshot (fresh for today).
         """
         now = dt_util.now()
         if now.hour < 6 or (now.hour == 6 and now.minute < 2):
-            solcast_periods = self._solcast.read_live()
+            solcast_periods = self._solcast.read_today()
         else:
             solcast_periods = self._solcast.read_at_6()
         if not solcast_periods:
             return
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self.updater.today_at_6_forecast_updated(solcast_periods, weather, now)
+        self.updater.solcast_at_6_updated(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
-        """Refresh LIVE via updater.today_live_forecast_updated."""
-        solcast_periods = self._solcast.read_live()
+        """Refresh LIVE via updater.solcast_today_updated."""
+        solcast_periods = self._solcast.read_today()
         if not solcast_periods:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self.updater.today_live_forecast_updated(solcast_periods, weather, now)
+        self.updater.solcast_today_updated(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
-        """Refresh TOMORROW_* via updater.tomorrow_forecast_updated."""
+        """Refresh TOMORROW_* via updater.solcast_tomorrow_updated."""
         solcast_periods = self._solcast.read_tomorrow()
         if not solcast_periods:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self.updater.tomorrow_forecast_updated(solcast_periods, weather, now)
+        self.updater.solcast_tomorrow_updated(solcast_periods, weather, now)
 
     def _tick_extrapolated(self) -> None:
         """Per-minute tick — refresh inputs + dispatch (EXTRAP recomputes too)."""

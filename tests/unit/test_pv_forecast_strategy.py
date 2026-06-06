@@ -131,13 +131,13 @@ def test_at6_strategy_tomorrow_reads_solcast_tomorrow() -> None:
 
 
 def test_live_strategy_tomorrow_reads_solcast_tomorrow() -> None:
-    """LiveStrategy(today=False) reads ctx.solcast_tomorrow, not ctx.solcast_live."""
+    """LiveStrategy(today=False) reads ctx.solcast_tomorrow, not ctx.solcast_today."""
     strategy = LiveStrategy(today=False)
     ctx = ForecastContext(
         now=datetime(2026, 1, 15, 7, 0),
         signals=LivePvSignals(),
         weather=_weather(),
-        solcast_live=_solcast_periods(),  # today live — should be IGNORED
+        solcast_today=_solcast_periods(),  # today live — should be IGNORED
     )
     strategy.update(ctx)
     assert strategy.result is None
@@ -166,7 +166,7 @@ def test_live_strategy_caches_compute_result() -> None:
         now=datetime(2026, 1, 15, 7, 0),
         signals=LivePvSignals(),
         weather=_weather(),
-        solcast_live=_solcast_periods(),
+        solcast_today=_solcast_periods(),
     )
     strategy.update(ctx)
     assert strategy.result is not None

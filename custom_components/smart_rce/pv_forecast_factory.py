@@ -112,7 +112,7 @@ async def create_pv_forecast_service(
         async_track_state_change_event(hass, [at6_id], service.on_solcast_at6_change)
     )
     entry.async_on_unload(
-        async_track_state_change_event(hass, [live_id], service.on_solcast_live_change)
+        async_track_state_change_event(hass, [live_id], service.on_solcast_today_change)
     )
     entry.async_on_unload(
         async_track_state_change_event(

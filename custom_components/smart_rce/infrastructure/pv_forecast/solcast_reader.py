@@ -41,7 +41,7 @@ class SolcastReader:
         """Read morning snapshot (Solcast forecast fetched przy ~06:00)."""
         return self._read(_SOLCAST_AT_6_ENTITY, "forecast")
 
-    def read_live(self) -> list[SolcastPeriod] | None:
+    def read_today(self) -> list[SolcastPeriod] | None:
         """Read live forecast (continuously updated by Solcast integration)."""
         return self._read(_SOLCAST_LIVE_ENTITY, "detailedForecast")
 

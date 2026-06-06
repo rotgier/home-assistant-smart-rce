@@ -7,7 +7,7 @@ call these and store the result; `TargetSocCatalog` derives target_soc
 externally; `PvForecastResult.remaining_kwh_from(now)` derives remaining
 kWh externally.
 
-In-progress bucket handling is uniform across all variants — built
+In-progress bucket handling is uniform across all today variants — built
 on `Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh)`
 which yields realized so-far plus 5-min power × remaining time. That same
 value drives:
@@ -50,8 +50,8 @@ PATTERN_MIN_FORECAST_KWH: float = 0.05
 
 
 def extrapolate_calibrated_pattern(
-    adjusted_live: PvForecastResult,
-    solcast_live: list[SolcastPeriod],
+    pv_forecast_live: PvForecastResult,
+    solcast_today: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
@@ -80,7 +80,7 @@ def extrapolate_calibrated_pattern(
     if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
         return None
 
-    solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
+    solcast_by_bucket = _index_solcast_by_bucket(solcast_today, now)
     score = _compute_weighted_score(
         solcast_by_bucket=solcast_by_bucket,
         now=now,
@@ -95,7 +95,7 @@ def extrapolate_calibrated_pattern(
         solcast_by_bucket=solcast_by_bucket, now=now, score=score
     )
     return _assemble(
-        adjusted_live=adjusted_live,
+        pv_forecast_live=pv_forecast_live,
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
@@ -247,8 +247,8 @@ def _project_future_buckets_proportional(
 
 
 def extrapolate_proportional_median(
-    adjusted_live: PvForecastResult,
-    solcast_live: list[SolcastPeriod],
+    pv_forecast_live: PvForecastResult,
+    solcast_today: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
@@ -263,7 +263,7 @@ def extrapolate_proportional_median(
     if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
         return None
 
-    solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
+    solcast_by_bucket = _index_solcast_by_bucket(solcast_today, now)
     cum_s = _compute_weighted_proportional_score(
         solcast_by_bucket=solcast_by_bucket,
         now=now,
@@ -278,7 +278,7 @@ def extrapolate_proportional_median(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
     )
     return _assemble(
-        adjusted_live=adjusted_live,
+        pv_forecast_live=pv_forecast_live,
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
@@ -346,8 +346,8 @@ def _project_future_buckets_band(
 
 
 def extrapolate_band_clamped(
-    adjusted_live: PvForecastResult,
-    solcast_live: list[SolcastPeriod],
+    pv_forecast_live: PvForecastResult,
+    solcast_today: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
@@ -357,7 +357,7 @@ def extrapolate_band_clamped(
     if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
         return None
 
-    solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
+    solcast_by_bucket = _index_solcast_by_bucket(solcast_today, now)
     cum_s = _compute_weighted_band_score(
         solcast_by_bucket=solcast_by_bucket,
         now=now,
@@ -372,7 +372,7 @@ def extrapolate_band_clamped(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
     )
     return _assemble(
-        adjusted_live=adjusted_live,
+        pv_forecast_live=pv_forecast_live,
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
@@ -408,8 +408,8 @@ def _compute_weighted_band_score_recent(
 
 
 def extrapolate_band_clamped_recent(
-    adjusted_live: PvForecastResult,
-    solcast_live: list[SolcastPeriod],
+    pv_forecast_live: PvForecastResult,
+    solcast_today: list[SolcastPeriod],
     now: datetime,
     pv_bucket_so_far_kwh: float | None,
     realized_pv_today: dict[tuple[int, int], float],
@@ -425,7 +425,7 @@ def extrapolate_band_clamped_recent(
     if pv_bucket_so_far_kwh is None or pv_power_w_5min is None:
         return None
 
-    solcast_by_bucket = _index_solcast_by_bucket(solcast_live, now)
+    solcast_by_bucket = _index_solcast_by_bucket(solcast_today, now)
     cum_s = _compute_weighted_band_score_recent(
         solcast_by_bucket=solcast_by_bucket,
         now=now,
@@ -440,7 +440,7 @@ def extrapolate_band_clamped_recent(
         solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
     )
     return _assemble(
-        adjusted_live=adjusted_live,
+        pv_forecast_live=pv_forecast_live,
         now=now,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
         pv_power_w_5min=pv_power_w_5min,
@@ -471,11 +471,11 @@ def _project_future_buckets(
 
 
 def _index_solcast_by_bucket(
-    solcast_live: list[SolcastPeriod], now: datetime
+    solcast_today: list[SolcastPeriod], now: datetime
 ) -> dict[tuple[int, int], SolcastPeriod]:
     """Filter solcast to today's periods, index by (hour, minute) for O(1) lookup."""
     out: dict[tuple[int, int], SolcastPeriod] = {}
-    for sp in solcast_live:
+    for sp in solcast_today:
         dt = datetime.fromisoformat(sp.period_start)
         if dt.date() != now.date():
             continue
@@ -544,7 +544,7 @@ def _weighted_score_over_buckets(
 
 
 def _assemble(
-    adjusted_live: PvForecastResult,
+    pv_forecast_live: PvForecastResult,
     now: datetime,
     *,
     pv_bucket_so_far_kwh: float,
@@ -563,7 +563,7 @@ def _assemble(
     + `PvForecastResult.remaining_kwh_from(now)`); this function returns
     only the patched forecast.
     """
-    return adjusted_live.with_now_aware_in_progress_and_future_overrides(
+    return pv_forecast_live.with_now_aware_in_progress_and_future_overrides(
         now=now,
         pv_power_w_5min=pv_power_w_5min,
         pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,

@@ -59,7 +59,7 @@ class PvForecasts:
     _signals: LivePvSignals = field(default_factory=LivePvSignals)
     _weather: list[WeatherConditionAtHour] = field(default_factory=list)
     _solcast_at_6: list[SolcastPeriod] = field(default_factory=list)
-    _solcast_live: list[SolcastPeriod] = field(default_factory=list)
+    _solcast_today: list[SolcastPeriod] = field(default_factory=list)
     _solcast_tomorrow: list[SolcastPeriod] = field(default_factory=list)
     # EXTRAP strategy inputs (carried in ctx). Realized PV history from
     # recorder; cons knobs forwarded from TargetSocCatalog.inputs.
@@ -97,13 +97,13 @@ class PvForecasts:
         return self._signals
 
     @property
-    def solcast_live(self) -> list[SolcastPeriod]:
+    def solcast_today(self) -> list[SolcastPeriod]:
         """Raw Solcast live periods — exposed for downstream consumers."""
-        return self._solcast_live
+        return self._solcast_today
 
     # ─── Trigger-named public API: each takes only the delta ────────────────
 
-    def today_at_6_forecast_updated(
+    def solcast_at_6_updated(
         self,
         periods: list[SolcastPeriod],
         weather: list[WeatherConditionAtHour],
@@ -114,7 +114,7 @@ class PvForecasts:
         self._weather = weather
         self._dispatch(now)
 
-    def today_live_forecast_updated(
+    def solcast_today_updated(
         self,
         periods: list[SolcastPeriod],
         weather: list[WeatherConditionAtHour],
@@ -125,11 +125,11 @@ class PvForecasts:
         LIVE strategy picks up via dispatch; EXTRAP strategies also
         dispatch on the same tick (they depend on LIVE.result).
         """
-        self._solcast_live = periods
+        self._solcast_today = periods
         self._weather = weather
         self._dispatch(now)
 
-    def tomorrow_forecast_updated(
+    def solcast_tomorrow_updated(
         self,
         periods: list[SolcastPeriod],
         weather: list[WeatherConditionAtHour],
@@ -178,7 +178,7 @@ class PvForecasts:
             signals=self._signals,
             weather=self._weather,
             solcast_at_6=self._solcast_at_6,
-            solcast_live=self._solcast_live,
+            solcast_today=self._solcast_today,
             solcast_tomorrow=self._solcast_tomorrow,
             realized_pv_today=self._realized_pv_today,
             consumption_w=self._consumption_w,
