@@ -5,7 +5,7 @@ target battery SOC% plus per-bucket trace for observability. Single
 source of truth for the formula + start_charge_hour clamp.
 
 Reused by:
-- `PvForecast._recalculate_target_soc` — single (PV strategy, Cons baseline)
+- `TargetSocCatalog._recalculate_target_soc` — single (PV strategy, Cons baseline)
   pairs (existing target_soc_* sensors).
 - `pv_forecast_extrapolation` — extrapolated live variants.
 - `domain/target_soc_matrix.compute_matrix` — full N×M matrix of strategy

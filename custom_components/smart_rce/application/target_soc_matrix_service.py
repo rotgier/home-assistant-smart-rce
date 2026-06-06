@@ -1,6 +1,6 @@
 """TargetSocMatrixService — application service for the target-SOC matrix.
 
-DDD application layer: pulls PV strategy buckets from the PvForecast
+DDD application layer: pulls PV strategy buckets from the TargetSocCatalog
 aggregate (today: 6 strategies, tomorrow: 2 — fewer because extrapolated
 variants are dziś-only), Cons baselines from consumption_profiles + a
 synthetic live baseline, and source-day realized PV sums via
@@ -43,7 +43,7 @@ from homeassistant.util import dt as dt_util
 from ..application.pv_forecast_service import PvForecastService
 from ..domain import pv_forecast as pv_forecast_module
 from ..domain.pv_forecast import ConsumptionProfile, PvProfile
-from ..domain.pv_forecast_catalog import PvForecastCatalog, PvStrategy
+from ..domain.pv_forecast_catalog import PvForecast, PvForecastUpdater
 from ..domain.target_soc_matrix import ConsLabel, TargetSocMatrix, compute_matrix
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -109,16 +109,16 @@ class TargetSocMatrixService:
             }
         is_today = target_date == today
         is_tomorrow = target_date == today + timedelta(days=1)
-        forecast = self._pv_forecast_service.forecast
-        catalog = self._pv_forecast_service.catalog
+        target_socs = self._pv_forecast_service.target_socs
+        updater = self._pv_forecast_service.updater
 
         # Now-aware only for today's matrix. Toggle defaults to ON when
         # the input_boolean is missing or in an unknown state — explicit
         # "off" needed to revert to full-window simulation. Both live
         # signals must be available too (fail-hard contract on to_view /
         # to_profile when `now` is given).
-        live_cons_w_raw = forecast.inputs.live_consumption_w
-        live_pv_w_raw = catalog.signals.pv_power_w
+        live_cons_w_raw = target_socs.inputs.live_consumption_w
+        live_pv_w_raw = updater.signals.pv_power_w
         now_aware = (
             is_today
             and self._now_aware_enabled()
@@ -130,22 +130,22 @@ class TargetSocMatrixService:
         live_pv_w = live_pv_w_raw if now_aware else None
 
         pv_profiles = self._pv_profiles(
-            catalog,
+            updater,
             is_today=is_today,
             target_date=target_date,
             now=matrix_now,
             live_pv_power_w=live_pv_w,
         )
-        # Reuse the PvForecast aggregate's cached profiles for today /
+        # Reuse the TargetSocCatalog aggregate's cached profiles for today /
         # tomorrow (refreshed by `PvForecastService.refresh_profiles_*`
         # — every minute / bucket-boundary refetches were a waste, the
         # data only changes daily plus today-prev_1-of-tomorrow grows
         # within the PV window). For target_date == D+2 or further, fall
         # back to an on-demand fetch — rare path, no cache.
         if is_today:
-            loaded_profiles = forecast.consumption_profiles.today_profiles
+            loaded_profiles = target_socs.consumption_profiles.today_profiles
         elif is_tomorrow:
-            loaded_profiles = forecast.consumption_profiles.tomorrow_profiles
+            loaded_profiles = target_socs.consumption_profiles.tomorrow_profiles
         else:
             loaded_profiles = await self._consumption_loader.fetch_for_anchor(
                 target_date, pv_forecast_module.PREV_DAYS_COUNT
@@ -171,9 +171,9 @@ class TargetSocMatrixService:
         )
         source_day_pv_sums = await self._source_day_pv_sums(cons_source_dates)
         sch = (
-            forecast.inputs.start_charge_hour_today
+            target_socs.inputs.start_charge_hour_today
             if is_today
-            else forecast.inputs.start_charge_hour_tomorrow
+            else target_socs.inputs.start_charge_hour_tomorrow
         )
 
         matrix = compute_matrix(
@@ -208,7 +208,7 @@ class TargetSocMatrixService:
 
     def _pv_profiles(
         self,
-        catalog: PvForecastCatalog,
+        updater: PvForecastUpdater,
         *,
         is_today: bool,
         target_date: date,
@@ -230,7 +230,7 @@ class TargetSocMatrixService:
         out: dict[str, PvProfile] = {}
         resolver_map = _TODAY_PV_RESOLVERS if is_today else _TOMORROW_PV_RESOLVERS
         for key in keys:
-            adjusted = catalog.get(resolver_map[key])
+            adjusted = updater.get(resolver_map[key])
             if adjusted is None or not adjusted.forecast:
                 continue
             try:
@@ -307,21 +307,21 @@ class TargetSocMatrixService:
         return out
 
 
-# --- PV-strategy resolver tables (matrix key → catalog PvStrategy) --- #
+# --- PV-strategy resolver tables (matrix key → catalog PvForecast) --- #
 
 
-_TODAY_PV_RESOLVERS: dict[str, PvStrategy] = {
-    "at_6": PvStrategy.AT_6,
-    "live": PvStrategy.LIVE,
-    "extrap_pattern": PvStrategy.EXTRAP_PATTERN,
-    "extrap_propor": PvStrategy.EXTRAP_PROPORTIONAL,
-    "extrap_band": PvStrategy.EXTRAP_BAND,
-    "extrap_band_recent": PvStrategy.EXTRAP_BAND_RECENT,
+_TODAY_PV_RESOLVERS: dict[str, PvForecast] = {
+    "at_6": PvForecast.AT_6,
+    "live": PvForecast.LIVE,
+    "extrap_pattern": PvForecast.EXTRAP_PATTERN,
+    "extrap_propor": PvForecast.EXTRAP_PROPORTIONAL,
+    "extrap_band": PvForecast.EXTRAP_BAND,
+    "extrap_band_recent": PvForecast.EXTRAP_BAND_RECENT,
 }
 
-_TOMORROW_PV_RESOLVERS: dict[str, PvStrategy] = {
-    "at_6": PvStrategy.TOMORROW_AT_6,
-    "live": PvStrategy.TOMORROW_LIVE,
+_TOMORROW_PV_RESOLVERS: dict[str, PvForecast] = {
+    "at_6": PvForecast.TOMORROW_AT_6,
+    "live": PvForecast.TOMORROW_LIVE,
 }
 
 

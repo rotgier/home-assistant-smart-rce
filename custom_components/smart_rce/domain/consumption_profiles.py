@@ -2,13 +2,13 @@
 
 Moved out of `pv_forecast.py` so the `ConsumptionProfiles` rich entity
 can reference `ConsumptionProfile` (its element VO) without creating a
-circular import with `PvForecast` (which now holds a `ConsumptionProfiles`
+circular import with `TargetSocCatalog` (which now holds a `ConsumptionProfiles`
 field). `pv_forecast.py` re-exports `ConsumptionProfile` /
 `PREV_DAYS_COUNT` for back-compat with existing callers.
 
 Single concept per file:
 - `ConsumptionProfile` — immutable per-day profile (12 buckets 7:00..12:30)
-- `ConsumptionProfiles` — dual-anchor snapshot held by the PvForecast
+- `ConsumptionProfiles` — dual-anchor snapshot held by the TargetSocCatalog
   aggregate; carries refresh + retry behavior (rich domain model)
 - `ConsumptionProfileSource` — port for the recorder-backed fetcher;
   infrastructure provides the impl

@@ -9,7 +9,7 @@ Trigger sources (mirror the weather-table sensor pattern):
 1. `WeatherForecastListener.async_add_listener(...)` — every wetteronline
    forecast change. Weather drives PV adjustment → matrix cells move.
 2. `PvForecastService.async_add_listener(...)` — every recalc of the
-   PvForecast aggregate (Solcast updates, charge_slots shift, minute
+   TargetSocCatalog aggregate (Solcast updates, charge_slots shift, minute
    tick refreshing extrapolated variants).
 3. `async_track_state_change_event` on `input_datetime.energy_chart_date`
    — the dashboard's date picker (today / tomorrow / past).

@@ -6,7 +6,7 @@ the same `calculate_target_soc` formula as the per-sensor variants
 
 Inputs are strict-contract `PvProfile` + `ConsumptionProfile` value
 objects (12 buckets each, 7:00..12:30). Application code builds them
-from `PvForecast.adjusted_*` via `to_profile(target_date)`, from
+from `TargetSocCatalog.adjusted_*` via `to_profile(target_date)`, from
 `ConsumptionProfileLoader` results, or from synthetic baselines via
 `ConsumptionProfile.flat()`.
 

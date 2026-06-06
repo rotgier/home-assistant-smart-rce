@@ -5,8 +5,8 @@ orchestrator) with infrastructure (driven + driving adapters) for HA. Called
 from `__init__.py::async_setup_entry`.
 
 Layer responsibility (DDD):
-- domain/pv_forecast.py — PvForecast aggregate (state + behavior), per-class
-  pure algorithms (PvForecast._adjust_pv_forecast_*), value objects, plus
+- domain/pv_forecast.py — TargetSocCatalog aggregate (state + behavior), per-class
+  pure algorithms (TargetSocCatalog._adjust_pv_forecast_*), value objects, plus
   standalone domain utilities (merge_weather_conditions, walk_back_workdays)
   shared across application + infrastructure
 - application/pv_forecast_service.py — PvForecastService orchestrator
@@ -37,8 +37,8 @@ from homeassistant.util import dt as dt_util
 from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
-from .domain.pv_forecast import PvForecast
-from .domain.pv_forecast_catalog import PvForecastCatalog
+from .domain.pv_forecast_catalog import PvForecastUpdater
+from .domain.target_soc_catalog import TargetSocCatalog
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -62,8 +62,8 @@ async def create_pv_forecast_service(
     rce_coordinator: SmartRceDataUpdateCoordinator,
 ) -> PvForecastService:
     """Composition root — wire domain + adapters + service + HA listenery."""
-    catalog = PvForecastCatalog()
-    forecast = PvForecast()
+    updater = PvForecastUpdater()
+    target_socs = TargetSocCatalog()
     solcast = SolcastReader(hass)
     workday_reader = WorkdayCalendarReader(hass)
     consumption_loader = ConsumptionProfileLoader(hass, workday_reader)
@@ -72,8 +72,8 @@ async def create_pv_forecast_service(
 
     service = PvForecastService(
         hass=hass,
-        catalog=catalog,
-        forecast=forecast,
+        updater=updater,
+        target_socs=target_socs,
         solcast=solcast,
         weather_listener=weather_listener,
         weather_history=weather_forecast_history,
@@ -163,7 +163,7 @@ async def create_pv_forecast_service(
         async_track_time_change(hass, _on_bucket_boundary, minute=[0, 30], second=30)
     )
 
-    # Initial sync recalc — uses the in-memory PvForecast state restored from
+    # Initial sync recalc — uses the in-memory TargetSocCatalog state restored from
     # last shutdown (or the empty default on cold start). Safe to run before
     # async fetches return.
     service.recalculate_all()

@@ -3,7 +3,7 @@
 Computes a 0..1 PV-output multiplier from rainfall forecast inputs. Mirrors
 the formula previously inlined as Jinja in the dashboard weather table card
 (`dashboards/views/rce.py::weather_table_card`). Centralizing it here lets
-the smart_rce PV adjustment (`PvForecast._adjust_*_period`) reuse the same
+the smart_rce PV adjustment (`TargetSocCatalog._adjust_*_period`) reuse the same
 math against live weather data without dragging Jinja-style approximations
 into the production path.
 

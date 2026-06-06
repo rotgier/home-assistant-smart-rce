@@ -8,7 +8,7 @@ from unittest.mock import patch
 from custom_components.smart_rce.domain.bucket import Bucket
 from custom_components.smart_rce.domain.pv_forecast_catalog import (
     LivePvSignals,
-    PvForecastCatalog,
+    PvForecastUpdater,
 )
 from custom_components.smart_rce.sensor.pv_forecast_sensor import (
     _bucket_end_constant_kwh,
@@ -18,7 +18,7 @@ from custom_components.smart_rce.sensor.pv_forecast_sensor import (
 )
 
 
-# Field rename: catalog.signals uses shorter names than the previous PvForecast
+# Field rename: catalog.signals uses shorter names than the previous TargetSocCatalog
 # fields. Old → new mapping when migrating tests:
 #   live_pv_power_w               → pv_power_w
 #   pv_bucket_so_far_kwh          → bucket_so_far_kwh
@@ -30,9 +30,9 @@ def _catalog(
     pv_bucket_so_far_kwh: float | None = None,
     live_pv_derivative_w_per_min: float | None = None,
     pv_stability_stable: bool | None = None,
-) -> PvForecastCatalog:
-    """Build a PvForecastCatalog with only live PV signals set (helpers' inputs)."""
-    catalog = PvForecastCatalog()
+) -> PvForecastUpdater:
+    """Build a PvForecastUpdater with only live PV signals set (helpers' inputs)."""
+    catalog = PvForecastUpdater()
     catalog.refresh_live_signals(
         LivePvSignals(
             pv_power_w=live_pv_power_w,

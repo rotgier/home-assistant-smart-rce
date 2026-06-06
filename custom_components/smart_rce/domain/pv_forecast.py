@@ -1,24 +1,29 @@
-"""Weather-adjusted PV forecast logic.
+"""PV forecast vocabulary + algorithms shared across the forecast pipeline.
 
 Read top-down:
-  1. Constants — domain rules (battery capacity, MIN_SOC, modifiers, conditions)
+  1. Constants — domain rules (weather modifiers, condition sets)
   2. Value objects — vocabulary (SolcastPeriod, AdjustedPeriod, AdjustedPvForecast,
-     WeatherConditionAtHour, ConsumptionProfile, TargetSocBucket, TargetSocResult)
-  3. PvForecast aggregate — public API head (state + behavior + per-class helpers
-     as @staticmethod, see Reguła 2b — pure helpers in stateful class)
+     WeatherConditionAtHour, ExtrapolatedLive, TargetSocInputs)
+  3. `PvForecast` enum + strategy groupings + `LivePvSignals` VO (used by
+     `PvForecastUpdater` and downstream consumers — kept here to avoid a
+     leaf module just for enum + signals snapshot)
   4. Standalone domain utilities — multi-class users (merge_weather_conditions,
      walk_back_workdays) used by application service / infrastructure loader
 
 Target SOC formula + its constants + result dataclasses live in
 `domain/target_soc.py` — re-exported here for back-compat (existing
 callers in pv_forecast_extrapolation.py and tests).
+
+TargetSocCatalog aggregate (target_soc derivation) lives in
+`domain/target_soc_catalog.py`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from dataclasses import dataclass
+from datetime import date, datetime
+from enum import StrEnum
+from typing import Final
 
 from .bucket import Bucket, Buckets
 from .consumption_profiles import (
@@ -27,7 +32,6 @@ from .consumption_profiles import (
     ConsumptionProfiles,
     ConsumptionProfileSource,
 )
-from .pv_strategy import PvStrategy
 from .target_soc import (
     BATTERY_CAPACITY_KWH,
     BUFFER_PERCENT,
@@ -39,9 +43,6 @@ from .target_soc import (
     TargetSocResult,
     calculate_target_soc,
 )
-
-if TYPE_CHECKING:
-    from .pv_forecast_catalog import PvForecastCatalog
 
 __all__ = [
     "BATTERY_CAPACITY_KWH",
@@ -302,11 +303,11 @@ class ExtrapolatedLive:
 
 @dataclass(frozen=True)
 class TargetSocInputs:
-    """Cons-side live + pre-charge gates — passed atomically to PvForecast.
+    """Cons-side live + pre-charge gates — passed atomically to TargetSocCatalog.
 
     Replaces 3 separate field writes on the aggregate from application
     service. Service builds via `LiveRateReader` once per tick, hands to
-    `forecast.refresh_inputs(inputs)`.
+    `target_socs.refresh_inputs(inputs)`.
 
     Pre-charge gates apply to `calculate_target_soc` so a sunny pre-charge
     hour's surplus cannot mask a later deficit (battery doesn't charge
@@ -319,190 +320,61 @@ class TargetSocInputs:
     start_charge_hour_tomorrow: int | None = None
 
 
-# --- Aggregate (rich domain model, TargetSoc concern) --- #
+# --- PvForecast enum + strategy groupings + LivePvSignals --- #
 
 
-@dataclass
-class PvForecast:
-    """Aggregate owning TargetSoc derivation from forecast catalog + consumption baselines.
+class PvForecast(StrEnum):
+    """All PV forecast scenarios served by `PvForecastUpdater`.
 
-    Reads PV forecast scenarios + PV-side live signals from
-    `PvForecastCatalog` (collaborator). Owns the consumption side:
-    cons-side live signal + start_charge_hour gates (via `TargetSocInputs`),
-    consumption baselines (rich `ConsumptionProfiles` entity), and the
-    derived `target_soc_*` cache.
-
-    `target_soc_*` field naming: `at_6` / `live` suffix on every variant
-    (no implicit "default") — symmetric across today and tomorrow axes.
-
-    Forecast computation lives in `PvForecastCatalog` (DDD split). Catalog
-    backcompat properties below preserve sensor / matrix reads that still
-    walk `forecast.adjusted_live` / `forecast.live_pv_power_w` style paths;
-    future cleanup migrates those consumers to read catalog directly.
+    Naming convention: `<date_axis>_<source>` where source ∈ {at_6, live,
+    extrap_*}. Today's variants drop the date prefix (implicit).
     """
 
-    _inputs: TargetSocInputs = field(default_factory=TargetSocInputs)
-    consumption_profiles: ConsumptionProfiles = field(
-        default_factory=lambda: ConsumptionProfiles.empty()
-    )
-    target_soc_at_6: TargetSocResult | None = None
-    target_soc_live: TargetSocResult | None = None
-    target_soc_tomorrow_at_6: TargetSocResult | None = None
-    target_soc_tomorrow_live: TargetSocResult | None = None
-    target_soc_prev_days: list[TargetSocResult | None] = field(
-        default_factory=lambda: [None] * PREV_DAYS_COUNT
-    )
-    target_soc_tomorrow_prev_days: list[TargetSocResult | None] = field(
-        default_factory=lambda: [None] * PREV_DAYS_COUNT
-    )
-    target_soc_max: int | None = None
-    target_soc_tomorrow_max: int | None = None
+    AT_6 = "at_6"
+    LIVE = "live"
+    TOMORROW_AT_6 = "tomorrow_at_6"
+    TOMORROW_LIVE = "tomorrow_live"
+    EXTRAP_PATTERN = "extrapolated_live_pattern"
+    EXTRAP_PROPORTIONAL = "extrapolated_live_proportional"
+    EXTRAP_BAND = "extrapolated_live_band"
+    EXTRAP_BAND_RECENT = "extrapolated_live_band_recent"
 
-    # — Read accessor —
 
-    @property
-    def inputs(self) -> TargetSocInputs:
-        """Read-only snapshot of cons-side live + pre-charge gates."""
-        return self._inputs
+TODAY_STRATEGIES: Final[tuple[PvForecast, ...]] = (
+    PvForecast.AT_6,
+    PvForecast.LIVE,
+    PvForecast.EXTRAP_PATTERN,
+    PvForecast.EXTRAP_PROPORTIONAL,
+    PvForecast.EXTRAP_BAND,
+    PvForecast.EXTRAP_BAND_RECENT,
+)
 
-    # — Update methods (Tell-Don't-Ask) —
+TOMORROW_STRATEGIES: Final[tuple[PvForecast, ...]] = (
+    PvForecast.TOMORROW_AT_6,
+    PvForecast.TOMORROW_LIVE,
+)
 
-    def refresh_inputs(self, inputs: TargetSocInputs) -> None:
-        """Atomic snapshot of cons-side live + pre-charge gates."""
-        self._inputs = inputs
+EXTRAP_STRATEGIES: Final[tuple[PvForecast, ...]] = (
+    PvForecast.EXTRAP_PATTERN,
+    PvForecast.EXTRAP_PROPORTIONAL,
+    PvForecast.EXTRAP_BAND,
+    PvForecast.EXTRAP_BAND_RECENT,
+)
 
-    def recalculate_target_soc(self, catalog: PvForecastCatalog, now: datetime) -> None:
-        """Recompute target_soc_* cache from catalog forecasts + consumption profiles.
 
-        Public hook used by `ConsumptionProfiles.refresh_*` callers and by
-        application service after every catalog update. The entity mutates
-        `consumption_profiles.today_profiles` / `tomorrow_profiles` in
-        place; the aggregate then refreshes its downstream `target_soc_*`
-        cache via this method.
+@dataclass(frozen=True)
+class LivePvSignals:
+    """PV-side live readings snapshot — single VO passed to updater per tick.
 
-        Today variants build now-aware profiles via
-        `AdjustedPvForecast.to_profile(today, now, pv_power_w_5min=...)`
-        and `ConsumptionProfile.to_view(now, live_consumption_w=...)`.
-        When either live signal is missing, today variants stay `None`
-        (fail-hard contract — no stale forecast-prorate fallback).
+    Replaces 4 separate field writes on the aggregate from application
+    service. Service builds via `LiveRateReader` once per tick, hands to
+    `updater.refresh_live_signals(signals)`.
+    """
 
-        Tomorrow variants pass `now=None` (full-window deficit, no live
-        in-progress concept since current power doesn't carry across
-        days), so live signals are not needed.
-
-        Pre-charge inter-hour clamp via `start_charge_hour_{today,tomorrow}`
-        applies symmetrically: a sunny pre-charge hour cannot mask a later
-        deficit by propagating its positive cumulative balance across the
-        hour boundary into the gated post-charge window.
-        """
-        sch = self._inputs.start_charge_hour_today
-        sch_t = self._inputs.start_charge_hour_tomorrow
-        live_cons_w = self._inputs.live_consumption_w
-        live_pv_w = catalog.signals.pv_power_w
-        default_cons = ConsumptionProfile.flat()
-        today = now.date()
-        tomorrow = today + timedelta(days=1)
-
-        adjusted_at_6 = catalog.get(PvStrategy.AT_6)
-        adjusted_live = catalog.get(PvStrategy.LIVE)
-        adjusted_tomorrow_at_6 = catalog.get(PvStrategy.TOMORROW_AT_6)
-        adjusted_tomorrow_live = catalog.get(PvStrategy.TOMORROW_LIVE)
-
-        # Today block — needs both live signals or sets to None
-        today_ready = live_cons_w is not None and live_pv_w is not None
-        if today_ready:
-            cons_view_today = default_cons.to_view(
-                now=now, live_consumption_w=live_cons_w
-            )
-            at6_profile = (
-                adjusted_at_6.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
-                if adjusted_at_6
-                else None
-            )
-            live_profile = (
-                adjusted_live.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
-                if adjusted_live
-                else None
-            )
-            self.target_soc_at_6 = (
-                calculate_target_soc(
-                    at6_profile, cons_view_today, start_charge_hour=sch
-                )
-                if at6_profile is not None
-                else None
-            )
-            self.target_soc_live = (
-                calculate_target_soc(
-                    live_profile, cons_view_today, start_charge_hour=sch
-                )
-                if live_profile is not None
-                else None
-            )
-        else:
-            live_profile = None
-            self.target_soc_at_6 = None
-            self.target_soc_live = None
-
-        # Tomorrow: full 7-13 window; no live override (current power doesn't
-        # carry across days). Plain profile snapshots — `now=None` path.
-        tomorrow_live_profile = (
-            adjusted_tomorrow_live.to_profile(tomorrow)
-            if adjusted_tomorrow_live
-            else None
-        )
-        if adjusted_tomorrow_at_6:
-            self.target_soc_tomorrow_at_6 = calculate_target_soc(
-                adjusted_tomorrow_at_6.to_profile(tomorrow),
-                default_cons,
-                start_charge_hour=sch_t,
-            )
-        else:
-            self.target_soc_tomorrow_at_6 = None
-        if tomorrow_live_profile is not None:
-            self.target_soc_tomorrow_live = calculate_target_soc(
-                tomorrow_live_profile, default_cons, start_charge_hour=sch_t
-            )
-        else:
-            self.target_soc_tomorrow_live = None
-
-        # Prev-workday instrumentation. Two anchor sets:
-        # - today_profiles: anchored at today → prev_1 = yesterday workday
-        # - tomorrow_profiles: anchored at tomorrow → prev_1 = today workday
-        for i, profile in enumerate(self.consumption_profiles.today_profiles):
-            if profile is None or live_profile is None or not today_ready:
-                self.target_soc_prev_days[i] = None
-                continue
-            assert live_cons_w is not None  # narrowed by today_ready
-            self.target_soc_prev_days[i] = calculate_target_soc(
-                live_profile,
-                profile.to_view(now=now, live_consumption_w=live_cons_w),
-                start_charge_hour=sch,
-            )
-        for i, profile in enumerate(self.consumption_profiles.tomorrow_profiles):
-            if tomorrow_live_profile is not None and profile is not None:
-                self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
-                    tomorrow_live_profile,
-                    profile,
-                    start_charge_hour=sch_t,
-                )
-            else:
-                self.target_soc_tomorrow_prev_days[i] = None
-
-        today_vals = [
-            r.value
-            for r in [self.target_soc_live, *self.target_soc_prev_days]
-            if r is not None
-        ]
-        self.target_soc_max = max(today_vals) if today_vals else None
-        tmrw_vals = [
-            r.value
-            for r in [
-                self.target_soc_tomorrow_live,
-                *self.target_soc_tomorrow_prev_days,
-            ]
-            if r is not None
-        ]
-        self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
+    pv_power_w: float | None = None
+    bucket_so_far_kwh: float | None = None
+    derivative_w_per_min: float | None = None
+    stability_stable: bool | None = None
 
 
 # --- Standalone domain utilities (multi-class users) --- #
@@ -519,7 +391,7 @@ def merge_weather_conditions(
     a specific day).
 
     Used by application service (PvForecastService._build_weather) to assemble
-    the full conditions window for `PvForecast._adjust_pv_forecast_*`.
+    the full conditions window for `PvForecastUpdater._adjust_pv_forecast_*`.
     """
     combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
     for c in history:

@@ -3,10 +3,10 @@
 DDD application layer. Reads driving adapters (Solcast, weather, live rates,
 charge slots) and pushes data as semantic VOs to two domain aggregates:
 
-- `PvForecastCatalog` — owns "what PV looks like": 8 forecast strategies +
+- `PvForecastUpdater` — owns "what PV looks like": 8 forecast strategies +
   extrapolation + PV-side live signals (live_pv_power_w, bucket_so_far,
   derivative, stability).
-- `PvForecast` — owns "what battery target SoC results from forecast +
+- `TargetSocCatalog` — owns "what battery target SoC results from forecast +
   consumption": target_soc_* cache + consumption profiles + cons-side live
   signal + pre-charge gates.
 
@@ -38,8 +38,9 @@ from homeassistant.util import dt as dt_util
 
 from ..domain import pv_forecast
 from ..domain.charge_slots import ChargeSlots
-from ..domain.pv_forecast import PvForecast, TargetSocInputs, WeatherConditionAtHour
-from ..domain.pv_forecast_catalog import LivePvSignals, PvForecastCatalog
+from ..domain.pv_forecast import LivePvSignals, TargetSocInputs, WeatherConditionAtHour
+from ..domain.pv_forecast_catalog import PvForecastUpdater
+from ..domain.target_soc_catalog import TargetSocCatalog
 from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -63,8 +64,8 @@ class PvForecastService:
     def __init__(
         self,
         hass: HomeAssistant,
-        catalog: PvForecastCatalog,
-        forecast: PvForecast,
+        updater: PvForecastUpdater,
+        target_socs: TargetSocCatalog,
         solcast: SolcastReader,
         weather_listener: WeatherForecastListener,
         weather_history: WeatherForecastHistory,
@@ -74,8 +75,8 @@ class PvForecastService:
         charge_slots: ChargeSlots,
     ) -> None:
         self._hass = hass
-        self.catalog = catalog
-        self.forecast = forecast
+        self.updater = updater
+        self.target_socs = target_socs
         self._solcast = solcast
         self._weather_listener = weather_listener
         self._weather_history = weather_history
@@ -167,7 +168,7 @@ class PvForecastService:
             return
         weather = self._build_weather(now.date())
         self._refresh_inputs(now)
-        self.catalog.update_from_solcast_at_6(solcast_periods, weather, now)
+        self.updater.update_from_solcast_at_6(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
         """Refresh LIVE forecast strategy + raw solcast_live for extrap."""
@@ -177,7 +178,7 @@ class PvForecastService:
         now = dt_util.now()
         weather = self._build_weather(now.date())
         self._refresh_inputs(now)
-        self.catalog.update_from_solcast_live(solcast_periods, weather, now)
+        self.updater.update_from_solcast_live(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
         """Refresh TOMORROW_AT_6 + TOMORROW_LIVE — both variants from same source."""
@@ -187,24 +188,24 @@ class PvForecastService:
         now = dt_util.now()
         weather = self._build_weather(now.date())
         self._refresh_inputs(now)
-        self.catalog.update_from_solcast_tomorrow(solcast_periods, weather, now)
+        self.updater.update_from_solcast_tomorrow(solcast_periods, weather, now)
 
     def _tick_extrapolated(self) -> None:
         """Per-minute extrap recompute + chart in-progress patch (catalog-internal)."""
         now = dt_util.now()
         self._refresh_inputs(now)
-        self.catalog.tick_minute(
+        self.updater.tick_minute(
             now=now,
             realized_pv_today=self._realized_pv_today,
-            consumption_w=self.forecast.inputs.live_consumption_w,
-            start_charge_hour=self.forecast.inputs.start_charge_hour_today,
+            consumption_w=self.target_socs.inputs.live_consumption_w,
+            start_charge_hour=self.target_socs.inputs.start_charge_hour_today,
         )
 
     # ─── TargetSoc recalc (forecast aggregate) ─────────────────────────────
 
     def _recalculate_target_soc_now(self) -> None:
         """Pull current catalog state + recompute target_soc_*. Cheap (pure)."""
-        self.forecast.recalculate_target_soc(self.catalog, dt_util.now())
+        self.target_socs.recalculate_target_soc(self.updater, dt_util.now())
 
     # ─── Input VO builders — read boundary, push to aggregates ─────────────
 
@@ -215,7 +216,7 @@ class PvForecastService:
         knows the boundary readers (LiveRateReader, ChargeSlots), aggregates
         receive atomic snapshots via their semantic update methods.
         """
-        self.catalog.refresh_live_signals(
+        self.updater.refresh_live_signals(
             LivePvSignals(
                 pv_power_w=self._live_rates.read_pv_power_w(),
                 bucket_so_far_kwh=self._live_rates.read_pv_bucket_so_far_kwh(),
@@ -224,7 +225,7 @@ class PvForecastService:
             )
         )
         tomorrow_slot = self._charge_slots.tomorrow
-        self.forecast.refresh_inputs(
+        self.target_socs.refresh_inputs(
             TargetSocInputs(
                 live_consumption_w=self._live_rates.read_consumption_w(),
                 start_charge_hour_today=(
@@ -258,13 +259,13 @@ class PvForecastService:
         """
         now = dt_util.now()
         try:
-            await self.forecast.consumption_profiles.refresh_full(
+            await self.target_socs.consumption_profiles.refresh_full(
                 self._consumption_loader, now
             )
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
             _LOGGER.exception("Failed to refresh consumption profiles (full)")
             return
-        self.forecast.recalculate_target_soc(self.catalog, now)
+        self.target_socs.recalculate_target_soc(self.updater, now)
         self._notify_listeners()
         self._maybe_schedule_profile_retry()
 
@@ -279,13 +280,13 @@ class PvForecastService:
         """
         now = dt_util.now()
         try:
-            await self.forecast.consumption_profiles.refresh_tomorrow_only(
+            await self.target_socs.consumption_profiles.refresh_tomorrow_only(
                 self._consumption_loader, now
             )
         except Exception:  # noqa: BLE001 — defensive
             _LOGGER.exception("Failed to refresh consumption profiles (tomorrow)")
             return
-        self.forecast.recalculate_target_soc(self.catalog, now)
+        self.target_socs.recalculate_target_soc(self.updater, now)
         self._notify_listeners()
 
     def _maybe_schedule_profile_retry(self) -> None:
@@ -295,16 +296,16 @@ class PvForecastService:
         retry budget. Existing pending retry is cancelled so a fresh
         scheduled trigger (daily 05:55) doesn't stack with it.
         """
-        if not self.forecast.consumption_profiles.should_retry():
+        if not self.target_socs.consumption_profiles.should_retry():
             self._cancel_profile_retry()
             return
         self._cancel_profile_retry()
-        attempt = self.forecast.consumption_profiles.failed_attempts
+        attempt = self.target_socs.consumption_profiles.failed_attempts
         _LOGGER.warning(
             "Consumption profile refresh partial (attempt %d/%d) — "
             "retrying in %.0fs",
             attempt,
-            self.forecast.consumption_profiles.MAX_RETRIES,
+            self.target_socs.consumption_profiles.MAX_RETRIES,
             _PROFILE_RETRY_INTERVAL_SEC,
         )
 

@@ -1,13 +1,13 @@
-"""PvForecastCatalog — aggregate owning all PV forecast scenarios.
+"""PvForecastUpdater — aggregate owning all PV forecast scenarios.
 
-DDD split from `PvForecast`: catalog owns the "what PV looks like"
+DDD split from `TargetSocCatalog`: catalog owns the "what PV looks like"
 concern (8 forecast strategies + extrapolation + PV-side live signals),
-while `PvForecast` shrinks to the "what battery target SoC results from
+while `TargetSocCatalog` shrinks to the "what battery target SoC results from
 forecast + consumption" concern.
 
 Read API is strategy-enum-keyed so consumers (TargetSoc derivation,
 future ChargePlanner, dashboard matrix) don't need to know about the
-internal 8 fields — they ask `catalog.get(PvStrategy.LIVE)` /
+internal 8 fields — they ask `catalog.get(PvForecast.LIVE)` /
 `catalog.today()` / `catalog.tomorrow()`.
 
 Update API is trigger-source-named, not strategy-named: service
@@ -27,55 +27,53 @@ from .pv_forecast import (
     AT6_CLOUDY_MODIFIER_EARLY,
     AT6_CLOUDY_MODIFIER_LATE,
     CLOUDY_CAP_HOUR_7,
+    EXTRAP_STRATEGIES,
     PARTLY_CONDITIONS,
     PARTLY_VARIABLE_CONDITIONS,
     SUNNY_CONDITIONS,
+    TODAY_STRATEGIES,
+    TOMORROW_STRATEGIES,
     AdjustedPeriod,
     AdjustedPvForecast,
     ExtrapolatedLive,
+    LivePvSignals,
+    PvForecast,
     SolcastPeriod,
     WeatherConditionAtHour,
-)
-from .pv_strategy import (
-    EXTRAP_STRATEGIES,
-    TODAY_STRATEGIES,
-    TOMORROW_STRATEGIES,
-    LivePvSignals,
-    PvStrategy,
 )
 
 __all__ = [
     "EXTRAP_STRATEGIES",
     "LivePvSignals",
-    "PvForecastCatalog",
-    "PvStrategy",
+    "PvForecastUpdater",
+    "PvForecast",
     "TODAY_STRATEGIES",
     "TOMORROW_STRATEGIES",
 ]
 
 
-def _empty_forecasts() -> dict[PvStrategy, AdjustedPvForecast | None]:
+def _empty_forecasts() -> dict[PvForecast, AdjustedPvForecast | None]:
     """All non-extrap strategies → None (initial state before any update)."""
     return {
-        strategy: None for strategy in PvStrategy if strategy not in EXTRAP_STRATEGIES
+        strategy: None for strategy in PvForecast if strategy not in EXTRAP_STRATEGIES
     }
 
 
-def _empty_extrapolated() -> dict[PvStrategy, ExtrapolatedLive]:
-    """All extrap strategies → ExtrapolatedLive.empty (matches PvForecast default)."""
+def _empty_extrapolated() -> dict[PvForecast, ExtrapolatedLive]:
+    """All extrap strategies → ExtrapolatedLive.empty (matches TargetSocCatalog default)."""
     return {strategy: ExtrapolatedLive.empty() for strategy in EXTRAP_STRATEGIES}
 
 
 @dataclass
-class PvForecastCatalog:
+class PvForecastUpdater:
     """Aggregate owning all PV forecast scenarios + their compute pipeline."""
 
     # — Private state (single underscore = Python "private" convention) —
     _signals: LivePvSignals = field(default_factory=LivePvSignals)
-    _forecasts: dict[PvStrategy, AdjustedPvForecast | None] = field(
+    _forecasts: dict[PvForecast, AdjustedPvForecast | None] = field(
         default_factory=_empty_forecasts
     )
-    _extrapolated: dict[PvStrategy, ExtrapolatedLive] = field(
+    _extrapolated: dict[PvForecast, ExtrapolatedLive] = field(
         default_factory=_empty_extrapolated
     )
     # Raw Solcast live periods — needed by extrapolation (uses pv_estimate +
@@ -84,7 +82,7 @@ class PvForecastCatalog:
 
     # ─── Read API ──────────────────────────────────────────────────────────
 
-    def get(self, strategy: PvStrategy) -> AdjustedPvForecast | None:
+    def get(self, strategy: PvForecast) -> AdjustedPvForecast | None:
         """Return adjusted forecast for `strategy`, or None if not yet computed.
 
         For EXTRAP_* strategies returns the bundled `.adjusted` field
@@ -94,7 +92,7 @@ class PvForecastCatalog:
             return self._extrapolated[strategy].adjusted
         return self._forecasts.get(strategy)
 
-    def get_extrapolated(self, strategy: PvStrategy) -> ExtrapolatedLive | None:
+    def get_extrapolated(self, strategy: PvForecast) -> ExtrapolatedLive | None:
         """Return full ExtrapolatedLive bundle for an EXTRAP_* strategy.
 
         Bundles `adjusted` + `remaining_kwh` + `target_soc`. Used by sensors
@@ -104,18 +102,18 @@ class PvForecastCatalog:
             return None
         return self._extrapolated.get(strategy)
 
-    def all(self) -> dict[PvStrategy, AdjustedPvForecast | None]:
+    def all(self) -> dict[PvForecast, AdjustedPvForecast | None]:
         """Snapshot dict of every strategy → forecast (or None)."""
-        result: dict[PvStrategy, AdjustedPvForecast | None] = dict(self._forecasts)
+        result: dict[PvForecast, AdjustedPvForecast | None] = dict(self._forecasts)
         for strategy in EXTRAP_STRATEGIES:
             result[strategy] = self._extrapolated[strategy].adjusted
         return result
 
-    def today(self) -> dict[PvStrategy, AdjustedPvForecast | None]:
+    def today(self) -> dict[PvForecast, AdjustedPvForecast | None]:
         """Snapshot of today-axis strategies (AT_6, LIVE, 4× EXTRAP)."""
         return {s: self.get(s) for s in TODAY_STRATEGIES}
 
-    def tomorrow(self) -> dict[PvStrategy, AdjustedPvForecast | None]:
+    def tomorrow(self) -> dict[PvForecast, AdjustedPvForecast | None]:
         """Snapshot of tomorrow-axis strategies (TOMORROW_AT_6, TOMORROW_LIVE)."""
         return {s: self.get(s) for s in TOMORROW_STRATEGIES}
 
@@ -149,7 +147,7 @@ class PvForecastCatalog:
         entity for that side — see service callback wiring).
         """
         adjusted = self._adjust_pv_forecast_at6(solcast_periods, weather_conditions)
-        self._forecasts[PvStrategy.AT_6] = self._apply_chart_in_progress_patch(
+        self._forecasts[PvForecast.AT_6] = self._apply_chart_in_progress_patch(
             now, adjusted
         )
 
@@ -167,7 +165,7 @@ class PvForecastCatalog:
         adjusted = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
-        self._forecasts[PvStrategy.LIVE] = self._apply_chart_in_progress_patch(
+        self._forecasts[PvForecast.LIVE] = self._apply_chart_in_progress_patch(
             now, adjusted
         )
 
@@ -184,13 +182,13 @@ class PvForecastCatalog:
         modifiers serve evening planning safety lower-bound; LIVE modifiers
         align with target_soc_live after midnight rollover.
         """
-        self._forecasts[PvStrategy.TOMORROW_AT_6] = self._adjust_pv_forecast_at6(
+        self._forecasts[PvForecast.TOMORROW_AT_6] = self._adjust_pv_forecast_at6(
             solcast_periods, weather_conditions
         )
         # _adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
         # For tomorrow's periods (date = tomorrow) no match → all periods use
         # standard LIVE modifiers (no special first-hour treatment).
-        self._forecasts[PvStrategy.TOMORROW_LIVE] = self._adjust_pv_forecast_live(
+        self._forecasts[PvForecast.TOMORROW_LIVE] = self._adjust_pv_forecast_live(
             solcast_periods, weather_conditions, now
         )
 
@@ -201,14 +199,14 @@ class PvForecastCatalog:
         newer pv_power_w / bucket_so_far_kwh. No-op for variants currently set
         to None (early startup before the first solcast update).
         """
-        live = self._forecasts.get(PvStrategy.LIVE)
+        live = self._forecasts.get(PvForecast.LIVE)
         if live is not None:
-            self._forecasts[PvStrategy.LIVE] = self._apply_chart_in_progress_patch(
+            self._forecasts[PvForecast.LIVE] = self._apply_chart_in_progress_patch(
                 now, live
             )
-        at_6 = self._forecasts.get(PvStrategy.AT_6)
+        at_6 = self._forecasts.get(PvForecast.AT_6)
         if at_6 is not None:
-            self._forecasts[PvStrategy.AT_6] = self._apply_chart_in_progress_patch(
+            self._forecasts[PvForecast.AT_6] = self._apply_chart_in_progress_patch(
                 now, at_6
             )
 
@@ -228,12 +226,12 @@ class PvForecastCatalog:
 
         No-op when LIVE forecast not yet computed (early startup race).
         """
-        adjusted_live = self._forecasts.get(PvStrategy.LIVE)
+        adjusted_live = self._forecasts.get(PvForecast.LIVE)
         if adjusted_live is None:
             return
         pv_w = self._signals.pv_power_w
         so_far = self._signals.bucket_so_far_kwh
-        self._extrapolated[PvStrategy.EXTRAP_PATTERN] = (
+        self._extrapolated[PvForecast.EXTRAP_PATTERN] = (
             pv_forecast_extrapolation.extrapolate_calibrated_pattern(
                 adjusted_live,
                 self._solcast_live,
@@ -245,7 +243,7 @@ class PvForecastCatalog:
                 start_charge_hour=start_charge_hour,
             )
         )
-        self._extrapolated[PvStrategy.EXTRAP_PROPORTIONAL] = (
+        self._extrapolated[PvForecast.EXTRAP_PROPORTIONAL] = (
             pv_forecast_extrapolation.extrapolate_proportional_median(
                 adjusted_live,
                 self._solcast_live,
@@ -257,7 +255,7 @@ class PvForecastCatalog:
                 start_charge_hour=start_charge_hour,
             )
         )
-        self._extrapolated[PvStrategy.EXTRAP_BAND] = (
+        self._extrapolated[PvForecast.EXTRAP_BAND] = (
             pv_forecast_extrapolation.extrapolate_band_clamped(
                 adjusted_live,
                 self._solcast_live,
@@ -269,7 +267,7 @@ class PvForecastCatalog:
                 start_charge_hour=start_charge_hour,
             )
         )
-        self._extrapolated[PvStrategy.EXTRAP_BAND_RECENT] = (
+        self._extrapolated[PvForecast.EXTRAP_BAND_RECENT] = (
             pv_forecast_extrapolation.extrapolate_band_clamped_recent(
                 adjusted_live,
                 self._solcast_live,
@@ -285,7 +283,7 @@ class PvForecastCatalog:
         # follows extrap recompute — same per-tick cadence.
         self.apply_chart_in_progress_patch(now)
 
-    # ─── Internal helpers (moved from PvForecast) ──────────────────────────
+    # ─── Internal helpers (moved from TargetSocCatalog) ──────────────────────────
 
     def _apply_chart_in_progress_patch(
         self, now: datetime, adjusted: AdjustedPvForecast
