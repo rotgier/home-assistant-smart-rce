@@ -51,26 +51,31 @@ def test_today_and_tomorrow_views_have_expected_keys() -> None:
     assert set(catalog.all().keys()) == set(PvForecast)
 
 
-def test_refresh_live_signals_replaces_atomically() -> None:
-    """refresh_live_signals replaces all 4 fields in one call (Tell-Don't-Ask)."""
-    catalog = PvForecastUpdater()
-    catalog.refresh_live_signals(
+def test_live_pv_updated_replaces_signals_atomically() -> None:
+    """live_pv_updated replaces all 4 signal fields in one call (Tell-Don't-Ask)."""
+    from datetime import datetime
+
+    updater = PvForecastUpdater()
+    updater.live_pv_updated(
         LivePvSignals(
             pv_power_w=1500.0,
             bucket_so_far_kwh=0.3,
             derivative_w_per_min=60.0,
             stability_stable=True,
-        )
+        ),
+        datetime(2026, 1, 1, 12, 0),
     )
-    snap = catalog.signals
+    snap = updater.signals
     assert snap.pv_power_w == 1500.0
     assert snap.bucket_so_far_kwh == 0.3
     assert snap.derivative_w_per_min == 60.0
     assert snap.stability_stable is True
 
-    # Second refresh fully replaces — no field-by-field merge.
-    catalog.refresh_live_signals(LivePvSignals(pv_power_w=2000.0))
-    snap = catalog.signals
+    # Second tick fully replaces — no field-by-field merge.
+    updater.live_pv_updated(
+        LivePvSignals(pv_power_w=2000.0), datetime(2026, 1, 1, 12, 1)
+    )
+    snap = updater.signals
     assert snap.pv_power_w == 2000.0
     assert snap.bucket_so_far_kwh is None
     assert snap.derivative_w_per_min is None

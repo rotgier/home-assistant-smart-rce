@@ -1,121 +1,132 @@
-"""PvForecastUpdater — aggregate owning all PV forecast scenarios.
+"""PvForecastUpdater — orchestrator caching inputs + dispatching to strategies.
 
-DDD split from `TargetSocCatalog`: catalog owns the "what PV looks like"
-concern (8 forecast strategies + extrapolation + PV-side live signals),
-while `TargetSocCatalog` shrinks to the "what battery target SoC results from
-forecast + consumption" concern.
+DDD split from `TargetSocCatalog`: this aggregate owns the "what PV looks
+like" concern (8 forecast scenarios + extrapolation + PV-side live
+signals), while `TargetSocCatalog` shrinks to the "what battery target
+SoC results from forecast + consumption" concern.
 
-Read API is strategy-enum-keyed so consumers (TargetSoc derivation,
-future ChargePlanner, dashboard matrix) don't need to know about the
-internal 8 fields — they ask `catalog.get(PvForecast.LIVE)` /
-`catalog.today()` / `catalog.tomorrow()`.
+Public API is **trigger-source-named**: each method takes only the delta
+that changed (Solcast at_6 periods, Solcast live periods, weather, live
+PV signals). The updater caches all inputs and rebuilds the full
+`ForecastContext` per dispatch.
 
-Update API is trigger-source-named, not strategy-named: service
-callbacks (Solcast at_6 change, Solcast live change, weather refresh,
-per-minute tick) match HA events, and catalog owns the
-trigger→strategy mapping internally. Adding a new EXTRAP variant is a
-catalog-internal change; service callbacks never need to know.
+Iter 1b mid-state: AT_6 + LIVE bound to `ForecastStrategy` instances
+(results in `PvForecast.X.strategy.adjusted`). The remaining 6 variants
+(TOMORROW × 2 + EXTRAP × 4) still flow through the legacy `_forecasts`
+/ `_extrapolated` dicts + module-level adjust helpers. Iter 3 binds the
+rest and Iter 4 drops the transitional dicts +
+`refresh_extrap_inputs`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 
 from . import pv_forecast_extrapolation
 from .pv_forecast import (
-    AT6_CLOUDY_MODIFIER_EARLY,
-    AT6_CLOUDY_MODIFIER_LATE,
-    CLOUDY_CAP_HOUR_7,
-    EXTRAP_STRATEGIES,
-    PARTLY_CONDITIONS,
-    PARTLY_VARIABLE_CONDITIONS,
-    SUNNY_CONDITIONS,
-    TODAY_STRATEGIES,
-    TOMORROW_STRATEGIES,
-    AdjustedPeriod,
     AdjustedPvForecast,
     ExtrapolatedLive,
     LivePvSignals,
-    PvForecast,
     SolcastPeriod,
     WeatherConditionAtHour,
+)
+from .pv_forecast_strategy import (
+    EXTRAP_STRATEGIES,
+    TODAY_STRATEGIES,
+    TOMORROW_STRATEGIES,
+    ForecastContext,
+    PvForecast,
+    adjust_pv_forecast_at6,
+    adjust_pv_forecast_live,
 )
 
 __all__ = [
     "EXTRAP_STRATEGIES",
     "LivePvSignals",
-    "PvForecastUpdater",
     "PvForecast",
+    "PvForecastUpdater",
     "TODAY_STRATEGIES",
     "TOMORROW_STRATEGIES",
 ]
 
 
 def _empty_forecasts() -> dict[PvForecast, AdjustedPvForecast | None]:
-    """All non-extrap strategies → None (initial state before any update)."""
+    """Legacy result cache — populated for unbound variants (TOMORROW × 2 in Iter 1b)."""
     return {
         strategy: None for strategy in PvForecast if strategy not in EXTRAP_STRATEGIES
     }
 
 
 def _empty_extrapolated() -> dict[PvForecast, ExtrapolatedLive]:
-    """All extrap strategies → ExtrapolatedLive.empty (matches TargetSocCatalog default)."""
+    """Legacy EXTRAP result cache — recomputed each tick by _recompute_legacy_extrap."""
     return {strategy: ExtrapolatedLive.empty() for strategy in EXTRAP_STRATEGIES}
 
 
 @dataclass
 class PvForecastUpdater:
-    """Aggregate owning all PV forecast scenarios + their compute pipeline."""
+    """Orchestrates PvForecast strategy updates + caches inputs.
 
-    # — Private state (single underscore = Python "private" convention) —
+    Callers push only what changed via trigger-named methods; the updater
+    builds the full `ForecastContext` from cached inputs and dispatches to
+    all bound strategies (Iter 1b: AT_6 + LIVE). Unbound variants flow
+    through the legacy `_forecasts` / `_extrapolated` dicts until Iter 3.
+    """
+
+    # — Cached inputs (rebuilt into ForecastContext per dispatch) —
     _signals: LivePvSignals = field(default_factory=LivePvSignals)
+    _weather: list[WeatherConditionAtHour] = field(default_factory=list)
+    _solcast_at_6: list[SolcastPeriod] = field(default_factory=list)
+    _solcast_live: list[SolcastPeriod] = field(default_factory=list)
+    _solcast_tomorrow: list[SolcastPeriod] = field(default_factory=list)
+    # — Legacy EXTRAP inputs (Iter 1b transitional — service-pushed) —
+    _realized_pv_today: dict[tuple[int, int], float] = field(default_factory=dict)
+    _consumption_w: float | None = None
+    _start_charge_hour: int | None = None
+    # — Legacy result caches (Iter 1b transitional — for unbound variants) —
     _forecasts: dict[PvForecast, AdjustedPvForecast | None] = field(
         default_factory=_empty_forecasts
     )
     _extrapolated: dict[PvForecast, ExtrapolatedLive] = field(
         default_factory=_empty_extrapolated
     )
-    # Raw Solcast live periods — needed by extrapolation (uses pv_estimate +
-    # pv_estimate10 raw quantiles, not the weather-adjusted output).
-    _solcast_live: list[SolcastPeriod] = field(default_factory=list)
 
     # ─── Read API ──────────────────────────────────────────────────────────
 
-    def get(self, strategy: PvForecast) -> AdjustedPvForecast | None:
-        """Return adjusted forecast for `strategy`, or None if not yet computed.
+    def get(self, variant: PvForecast) -> AdjustedPvForecast | None:
+        """Return adjusted forecast for `variant`.
 
-        For EXTRAP_* strategies returns the bundled `.adjusted` field
-        (chart-facing variant) — same shape as AT_6 / LIVE.
+        Bound variants (Iter 1b: AT_6, LIVE) read from `variant.strategy.adjusted`.
+        Unbound variants fall back to the legacy `_forecasts` /
+        `_extrapolated[variant].adjusted` cache.
         """
-        if strategy in EXTRAP_STRATEGIES:
-            return self._extrapolated[strategy].adjusted
-        return self._forecasts.get(strategy)
+        if variant.strategy is not None:
+            return variant.adjusted
+        if variant in EXTRAP_STRATEGIES:
+            return self._extrapolated[variant].adjusted
+        return self._forecasts.get(variant)
 
-    def get_extrapolated(self, strategy: PvForecast) -> ExtrapolatedLive | None:
-        """Return full ExtrapolatedLive bundle for an EXTRAP_* strategy.
+    def get_extrapolated(self, variant: PvForecast) -> ExtrapolatedLive | None:
+        """Return full ExtrapolatedLive bundle for an EXTRAP_* variant.
 
         Bundles `adjusted` + `remaining_kwh` + `target_soc`. Used by sensors
         that need state/SOC alongside the chart-facing forecast.
         """
-        if strategy not in EXTRAP_STRATEGIES:
+        if variant not in EXTRAP_STRATEGIES:
             return None
-        return self._extrapolated.get(strategy)
+        return self._extrapolated.get(variant)
 
     def all(self) -> dict[PvForecast, AdjustedPvForecast | None]:
-        """Snapshot dict of every strategy → forecast (or None)."""
-        result: dict[PvForecast, AdjustedPvForecast | None] = dict(self._forecasts)
-        for strategy in EXTRAP_STRATEGIES:
-            result[strategy] = self._extrapolated[strategy].adjusted
-        return result
+        """Snapshot dict of every variant → forecast (or None)."""
+        return {variant: self.get(variant) for variant in PvForecast}
 
     def today(self) -> dict[PvForecast, AdjustedPvForecast | None]:
-        """Snapshot of today-axis strategies (AT_6, LIVE, 4× EXTRAP)."""
-        return {s: self.get(s) for s in TODAY_STRATEGIES}
+        """Snapshot of today-axis variants (AT_6, LIVE, 4× EXTRAP)."""
+        return {v: self.get(v) for v in TODAY_STRATEGIES}
 
     def tomorrow(self) -> dict[PvForecast, AdjustedPvForecast | None]:
-        """Snapshot of tomorrow-axis strategies (TOMORROW_AT_6, TOMORROW_LIVE)."""
-        return {s: self.get(s) for s in TOMORROW_STRATEGIES}
+        """Snapshot of tomorrow-axis variants (TOMORROW_AT_6, TOMORROW_LIVE)."""
+        return {v: self.get(v) for v in TOMORROW_STRATEGIES}
 
     @property
     def signals(self) -> LivePvSignals:
@@ -127,106 +138,140 @@ class PvForecastUpdater:
         """Raw Solcast live periods — exposed for downstream consumers."""
         return self._solcast_live
 
-    # ─── Update methods — named by TRIGGER SOURCE ──────────────────────────
+    # ─── Trigger-named public API: each takes only the delta ────────────────
 
-    def refresh_live_signals(self, signals: LivePvSignals) -> None:
-        """Atomic snapshot of 4 PV-side live readings (single VO write)."""
+    def today_at_6_forecast_updated(
+        self,
+        periods: list[SolcastPeriod],
+        weather: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> None:
+        """Solcast at_6 entity changed (~once daily 06:00).
+
+        Iter 1b: AT_6 strategy picks up the new periods + weather and
+        rebuilds its `adjusted` via `_dispatch`.
+        """
+        self._solcast_at_6 = periods
+        self._weather = weather
+        self._dispatch(now)
+
+    def today_live_forecast_updated(
+        self,
+        periods: list[SolcastPeriod],
+        weather: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> None:
+        """Solcast live entity changed (continuous updates).
+
+        Iter 1b: LIVE strategy picks up via dispatch; then legacy EXTRAP
+        recompute fires (it feeds off LIVE + raw solcast_live).
+        """
+        self._solcast_live = periods
+        self._weather = weather
+        self._dispatch(now)
+        self._recompute_legacy_extrap(now)
+
+    def tomorrow_forecast_updated(
+        self,
+        periods: list[SolcastPeriod],
+        weather: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> None:
+        """Solcast tomorrow entity changed.
+
+        Iter 1b: TOMORROW_* strategies are unbound, so this method runs the
+        legacy adjust helpers and stashes results into `_forecasts`. Iter
+        3 will bind them; this body collapses to `_dispatch` only.
+        """
+        self._solcast_tomorrow = periods
+        self._weather = weather
+        # AT6 modifiers serve evening planning safety lower-bound.
+        self._forecasts[PvForecast.TOMORROW_AT_6] = adjust_pv_forecast_at6(
+            periods, weather
+        )
+        # LIVE modifiers align with target_soc_live after midnight rollover.
+        # adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour);
+        # tomorrow periods (date = tomorrow) never match → all use standard
+        # LIVE modifiers (no special first-hour treatment).
+        self._forecasts[PvForecast.TOMORROW_LIVE] = adjust_pv_forecast_live(
+            periods, weather, now
+        )
+        self._dispatch(now)
+
+    def weather_updated(
+        self,
+        weather: list[WeatherConditionAtHour],
+        now: datetime,
+    ) -> None:
+        """Weather forecast changed — re-adjust every variant that depends on it."""
+        self._weather = weather
+        # Tomorrow variants are unbound in Iter 1b — re-run legacy adjust if
+        # we have cached tomorrow Solcast periods.
+        if self._solcast_tomorrow:
+            self._forecasts[PvForecast.TOMORROW_AT_6] = adjust_pv_forecast_at6(
+                self._solcast_tomorrow, weather
+            )
+            self._forecasts[PvForecast.TOMORROW_LIVE] = adjust_pv_forecast_live(
+                self._solcast_tomorrow, weather, now
+            )
+        self._dispatch(now)
+        self._recompute_legacy_extrap(now)
+
+    def live_pv_updated(
+        self,
+        signals: LivePvSignals,
+        now: datetime,
+    ) -> None:
+        """Per-minute tick — PV-side live signals refreshed.
+
+        Bound strategies re-patch in-progress bucket; legacy EXTRAP
+        recomputes (uses signals + cached cons knobs).
+        """
         self._signals = signals
+        self._dispatch(now)
+        self._recompute_legacy_extrap(now)
 
-    def update_from_solcast_at_6(
+    def refresh_extrap_inputs(
         self,
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> None:
-        """Triggered when Solcast at_6 entity changes (~once daily 06:00).
-
-        Internally touches AT_6 (today-axis morning prediction). Tomorrow
-        AT_6 is fed via `update_from_solcast_tomorrow` because the at_6 entity
-        carries today-only periods (Solcast publishes a separate "tomorrow"
-        entity for that side — see service callback wiring).
-        """
-        adjusted = self._adjust_pv_forecast_at6(solcast_periods, weather_conditions)
-        self._forecasts[PvForecast.AT_6] = self._apply_chart_in_progress_patch(
-            now, adjusted
-        )
-
-    def update_from_solcast_live(
-        self,
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> None:
-        """Triggered when Solcast live entity changes (continuous updates).
-
-        Internally touches LIVE + raw _solcast_live (preserved for extrap input).
-        """
-        self._solcast_live = solcast_periods
-        adjusted = self._adjust_pv_forecast_live(
-            solcast_periods, weather_conditions, now
-        )
-        self._forecasts[PvForecast.LIVE] = self._apply_chart_in_progress_patch(
-            now, adjusted
-        )
-
-    def update_from_solcast_tomorrow(
-        self,
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> None:
-        """Triggered when Solcast tomorrow entity changes.
-
-        Touches TOMORROW_AT_6 (AT6 modifiers, pessimistic) + TOMORROW_LIVE
-        (LIVE modifiers, optimistic). Two variants from one source: AT6
-        modifiers serve evening planning safety lower-bound; LIVE modifiers
-        align with target_soc_live after midnight rollover.
-        """
-        self._forecasts[PvForecast.TOMORROW_AT_6] = self._adjust_pv_forecast_at6(
-            solcast_periods, weather_conditions
-        )
-        # _adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour).
-        # For tomorrow's periods (date = tomorrow) no match → all periods use
-        # standard LIVE modifiers (no special first-hour treatment).
-        self._forecasts[PvForecast.TOMORROW_LIVE] = self._adjust_pv_forecast_live(
-            solcast_periods, weather_conditions, now
-        )
-
-    def apply_chart_in_progress_patch(self, now: datetime) -> None:
-        """Refresh in-progress period of every today adjusted variant in place.
-
-        Service per-minute hook — single call rescales LIVE AND AT_6 to reflect
-        newer pv_power_w / bucket_so_far_kwh. No-op for variants currently set
-        to None (early startup before the first solcast update).
-        """
-        live = self._forecasts.get(PvForecast.LIVE)
-        if live is not None:
-            self._forecasts[PvForecast.LIVE] = self._apply_chart_in_progress_patch(
-                now, live
-            )
-        at_6 = self._forecasts.get(PvForecast.AT_6)
-        if at_6 is not None:
-            self._forecasts[PvForecast.AT_6] = self._apply_chart_in_progress_patch(
-                now, at_6
-            )
-
-    def tick_minute(
-        self,
-        now: datetime,
         realized_pv_today: dict[tuple[int, int], float],
         consumption_w: float | None,
         start_charge_hour: int | None,
     ) -> None:
-        """Per-minute orchestration: recompute 4 EXTRAP variants + chart patch.
+        """Push cons-side knobs needed by legacy EXTRAP recompute (Iter 1b).
 
-        Uses INTERNAL adjusted LIVE + raw solcast_live + signals — service does
-        NOT pull fields to feed pure functions externally. Cross-cutting args
-        (realized_pv_today, consumption_w, start_charge_hour) live outside
-        this aggregate's bounded context and arrive as call-args.
+        EXTRAP variants are unbound in Iter 1b and their pure-function
+        recompute needs cons-side inputs that flow through
+        `TargetSocCatalog`. Service forwards them here so the updater is
+        self-contained per dispatch. Iter 3 removes this — EXTRAP
+        strategies will read from `ForecastContext`.
+        """
+        self._realized_pv_today = realized_pv_today
+        self._consumption_w = consumption_w
+        self._start_charge_hour = start_charge_hour
 
+    # ─── Internal ──────────────────────────────────────────────────────────
+
+    def _dispatch(self, now: datetime) -> None:
+        """Build ctx from cached inputs + dispatch to bound strategies."""
+        ctx = ForecastContext(
+            now=now,
+            signals=self._signals,
+            weather=self._weather,
+            solcast_at_6=self._solcast_at_6,
+            solcast_live=self._solcast_live,
+            solcast_tomorrow=self._solcast_tomorrow,
+        )
+        for variant in PvForecast:
+            if variant.strategy is not None:
+                variant.strategy.update(ctx)
+
+    def _recompute_legacy_extrap(self, now: datetime) -> None:
+        """Recompute 4 EXTRAP variants (Iter 1b legacy path).
+
+        Uses cached LIVE adjusted + raw solcast_live + signals + cons knobs.
         No-op when LIVE forecast not yet computed (early startup race).
         """
-        adjusted_live = self._forecasts.get(PvForecast.LIVE)
+        adjusted_live = self.get(PvForecast.LIVE)
         if adjusted_live is None:
             return
         pv_w = self._signals.pv_power_w
@@ -237,10 +282,10 @@ class PvForecastUpdater:
                 self._solcast_live,
                 now,
                 so_far,
-                realized_pv_today,
+                self._realized_pv_today,
                 pv_power_w_5min=pv_w,
-                consumption_w=consumption_w,
-                start_charge_hour=start_charge_hour,
+                consumption_w=self._consumption_w,
+                start_charge_hour=self._start_charge_hour,
             )
         )
         self._extrapolated[PvForecast.EXTRAP_PROPORTIONAL] = (
@@ -249,10 +294,10 @@ class PvForecastUpdater:
                 self._solcast_live,
                 now,
                 so_far,
-                realized_pv_today,
+                self._realized_pv_today,
                 pv_power_w_5min=pv_w,
-                consumption_w=consumption_w,
-                start_charge_hour=start_charge_hour,
+                consumption_w=self._consumption_w,
+                start_charge_hour=self._start_charge_hour,
             )
         )
         self._extrapolated[PvForecast.EXTRAP_BAND] = (
@@ -261,10 +306,10 @@ class PvForecastUpdater:
                 self._solcast_live,
                 now,
                 so_far,
-                realized_pv_today,
+                self._realized_pv_today,
                 pv_power_w_5min=pv_w,
-                consumption_w=consumption_w,
-                start_charge_hour=start_charge_hour,
+                consumption_w=self._consumption_w,
+                start_charge_hour=self._start_charge_hour,
             )
         )
         self._extrapolated[PvForecast.EXTRAP_BAND_RECENT] = (
@@ -273,168 +318,9 @@ class PvForecastUpdater:
                 self._solcast_live,
                 now,
                 so_far,
-                realized_pv_today,
+                self._realized_pv_today,
                 pv_power_w_5min=pv_w,
-                consumption_w=consumption_w,
-                start_charge_hour=start_charge_hour,
+                consumption_w=self._consumption_w,
+                start_charge_hour=self._start_charge_hour,
             )
         )
-        # Chart in-progress patch for today's non-extrap variants (LIVE, AT_6)
-        # follows extrap recompute — same per-tick cadence.
-        self.apply_chart_in_progress_patch(now)
-
-    # ─── Internal helpers (moved from TargetSocCatalog) ──────────────────────────
-
-    def _apply_chart_in_progress_patch(
-        self, now: datetime, adjusted: AdjustedPvForecast
-    ) -> AdjustedPvForecast:
-        """Return `adjusted` with in-progress period rescaled, or unchanged.
-
-        Rescale = full-bucket estimate (realized so-far + remaining via
-        5-min power); unchanged when live signals aren't set.
-        """
-        pv_w = self._signals.pv_power_w
-        so_far = self._signals.bucket_so_far_kwh
-        if pv_w is None or so_far is None:
-            return adjusted
-        return adjusted.with_now_aware_in_progress(
-            now=now,
-            pv_power_w_5min=pv_w,
-            pv_bucket_so_far_kwh=so_far,
-        )
-
-    @staticmethod
-    def _adjust_pv_forecast_at6(
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-    ) -> AdjustedPvForecast:
-        """Adjust morning Solcast forecast (snapshot from 6:05) using weather."""
-        forecast = []
-        total_kwh = 0.0
-
-        for period in solcast_periods:
-            dt = datetime.fromisoformat(period.period_start)
-            hour = dt.hour
-            target_date = dt.date()
-            condition = _get_condition_for_hour(hour, weather_conditions, target_date)
-            adj_rate = _adjust_at6_period(period, condition, hour)
-
-            forecast.append(
-                AdjustedPeriod(
-                    period_start=period.period_start,
-                    pv_estimate_adjusted=round(adj_rate, 4),
-                )
-            )
-            total_kwh += adj_rate / 2  # rate -> kWh per 30min
-
-        return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
-
-    @staticmethod
-    def _adjust_pv_forecast_live(
-        solcast_periods: list[SolcastPeriod],
-        weather_conditions: list[WeatherConditionAtHour],
-        now: datetime,
-    ) -> AdjustedPvForecast:
-        """Adjust live Solcast forecast using weather. First hour treated differently."""
-        forecast = []
-        total_kwh = 0.0
-        current_hour = now.hour
-
-        for period in solcast_periods:
-            dt = datetime.fromisoformat(period.period_start)
-            hour = dt.hour
-            target_date = dt.date()
-            is_first_hour = hour == current_hour
-            condition = _get_condition_for_hour(hour, weather_conditions, target_date)
-            adj_rate = _adjust_live_period(period, condition, is_first_hour)
-
-            forecast.append(
-                AdjustedPeriod(
-                    period_start=period.period_start,
-                    pv_estimate_adjusted=round(adj_rate, 4),
-                )
-            )
-            total_kwh += adj_rate / 2
-
-        return AdjustedPvForecast(forecast=forecast, total_kwh=round(total_kwh, 4))
-
-
-# --- Module-level helpers (multi-class users, no state) --- #
-
-
-def _classify_condition(condition: str) -> str:
-    """Classify condition into: sunny, partly-variable, partly, cloudy."""
-    if condition in SUNNY_CONDITIONS:
-        return "sunny"
-    if condition in PARTLY_VARIABLE_CONDITIONS:
-        return "partly-variable"
-    if condition in PARTLY_CONDITIONS:
-        return "partly"
-    return "cloudy"
-
-
-def _get_condition_for_hour(
-    hour: int,
-    weather_conditions: list[WeatherConditionAtHour],
-    target_date: date | None = None,
-) -> str:
-    """Find weather condition for given hour and date. Fallback to cloudy."""
-    # Exact match: date + hour
-    if target_date:
-        for w in weather_conditions:
-            if w.forecast_date == target_date and w.hour == hour:
-                return w.condition_custom
-    # Fallback: hour only (for conditions without date)
-    for w in weather_conditions:
-        if w.hour == hour and w.forecast_date is None:
-            return w.condition_custom
-    return "cloudy"
-
-
-def _adjust_at6_period(period: SolcastPeriod, condition: str, hour: int) -> float:
-    """Apply AT6 weather adjustment. Returns adjusted hourly rate."""
-    cat = _classify_condition(condition)
-
-    if cat == "sunny":
-        return period.pv_estimate * 1.0
-    if cat == "partly-variable":
-        return period.pv_estimate * 0.8
-    if cat == "partly":
-        return period.pv_estimate * 0.7
-
-    # cloudy/other
-    if hour <= 10:
-        modifier = AT6_CLOUDY_MODIFIER_EARLY
-    else:
-        modifier = AT6_CLOUDY_MODIFIER_LATE
-
-    adj = period.pv_estimate10 * modifier
-
-    if hour == 7:
-        adj = min(adj, CLOUDY_CAP_HOUR_7)
-
-    return adj
-
-
-def _adjust_live_period(
-    period: SolcastPeriod, condition: str, is_first_hour: bool
-) -> float:
-    """Apply LIVE weather adjustment. Returns adjusted hourly rate."""
-    cat = _classify_condition(condition)
-
-    if is_first_hour:
-        # Trust Solcast for the next hour, only swap est->est10 for cloudy
-        if cat == "cloudy":
-            return period.pv_estimate10 * 1.0
-        return period.pv_estimate * 1.0
-
-    # Remaining hours
-    if cat == "sunny":
-        return period.pv_estimate * 1.0
-    if cat == "partly-variable":
-        return period.pv_estimate * 0.8
-    if cat == "partly":
-        return period.pv_estimate * 0.7
-
-    # cloudy/other — est10 without additional modifier
-    return period.pv_estimate10 * 1.0

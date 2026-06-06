@@ -151,10 +151,10 @@ class PvForecastService:
         self._recalculate_target_soc_now()
         self._notify_listeners()
 
-    # ─── Catalog update paths (semantic, no field writes) ──────────────────
+    # ─── Updater dispatch paths (trigger-named, delta-only) ────────────────
 
     def _recalculate_at6(self) -> None:
-        """Refresh AT_6 forecast strategy.
+        """Refresh AT_6 via updater.today_at_6_forecast_updated.
 
         Before 6:01 — use live Solcast (has forecast fetched at 22:00).
         After 6:01 — use at_6 snapshot (fresh for today).
@@ -167,63 +167,57 @@ class PvForecastService:
         if not solcast_periods:
             return
         weather = self._build_weather(now.date())
-        self._refresh_inputs(now)
-        self.updater.update_from_solcast_at_6(solcast_periods, weather, now)
+        self._refresh_target_soc_inputs()
+        self._push_extrap_inputs()
+        self.updater.today_at_6_forecast_updated(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
-        """Refresh LIVE forecast strategy + raw solcast_live for extrap."""
+        """Refresh LIVE via updater.today_live_forecast_updated."""
         solcast_periods = self._solcast.read_live()
         if not solcast_periods:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
-        self._refresh_inputs(now)
-        self.updater.update_from_solcast_live(solcast_periods, weather, now)
+        self._refresh_target_soc_inputs()
+        self._push_extrap_inputs()
+        self.updater.today_live_forecast_updated(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
-        """Refresh TOMORROW_AT_6 + TOMORROW_LIVE — both variants from same source."""
+        """Refresh TOMORROW_* via updater.tomorrow_forecast_updated."""
         solcast_periods = self._solcast.read_tomorrow()
         if not solcast_periods:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
-        self._refresh_inputs(now)
-        self.updater.update_from_solcast_tomorrow(solcast_periods, weather, now)
+        self._refresh_target_soc_inputs()
+        self.updater.tomorrow_forecast_updated(solcast_periods, weather, now)
 
     def _tick_extrapolated(self) -> None:
-        """Per-minute extrap recompute + chart in-progress patch (catalog-internal)."""
+        """Per-minute tick — refresh PV signals + extrap inputs, dispatch."""
         now = dt_util.now()
-        self._refresh_inputs(now)
-        self.updater.tick_minute(
-            now=now,
-            realized_pv_today=self._realized_pv_today,
-            consumption_w=self.target_socs.inputs.live_consumption_w,
-            start_charge_hour=self.target_socs.inputs.start_charge_hour_today,
-        )
+        self._refresh_target_soc_inputs()
+        self._push_extrap_inputs()
+        self.updater.live_pv_updated(self._build_live_signals(), now)
 
     # ─── TargetSoc recalc (forecast aggregate) ─────────────────────────────
 
     def _recalculate_target_soc_now(self) -> None:
-        """Pull current catalog state + recompute target_soc_*. Cheap (pure)."""
+        """Pull current updater state + recompute target_soc_*. Cheap (pure)."""
         self.target_socs.recalculate_target_soc(self.updater, dt_util.now())
 
     # ─── Input VO builders — read boundary, push to aggregates ─────────────
 
-    def _refresh_inputs(self, now) -> None:  # noqa: ARG002 — kept for parity / future use
-        """Read live signals + pre-charge gates; push to catalog/forecast as VOs.
-
-        Single helper replacing the previous 10-field write pattern. Service
-        knows the boundary readers (LiveRateReader, ChargeSlots), aggregates
-        receive atomic snapshots via their semantic update methods.
-        """
-        self.updater.refresh_live_signals(
-            LivePvSignals(
-                pv_power_w=self._live_rates.read_pv_power_w(),
-                bucket_so_far_kwh=self._live_rates.read_pv_bucket_so_far_kwh(),
-                derivative_w_per_min=self._live_rates.read_pv_derivative_w_per_min(),
-                stability_stable=self._live_rates.read_pv_stability_stable(),
-            )
+    def _build_live_signals(self) -> LivePvSignals:
+        """Read PV-side live rates + return as immutable VO."""
+        return LivePvSignals(
+            pv_power_w=self._live_rates.read_pv_power_w(),
+            bucket_so_far_kwh=self._live_rates.read_pv_bucket_so_far_kwh(),
+            derivative_w_per_min=self._live_rates.read_pv_derivative_w_per_min(),
+            stability_stable=self._live_rates.read_pv_stability_stable(),
         )
+
+    def _refresh_target_soc_inputs(self) -> None:
+        """Read cons-side live + pre-charge gates; push to target_socs as VO."""
         tomorrow_slot = self._charge_slots.tomorrow
         self.target_socs.refresh_inputs(
             TargetSocInputs(
@@ -235,6 +229,19 @@ class PvForecastService:
                     int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
                 ),
             )
+        )
+
+    def _push_extrap_inputs(self) -> None:
+        """Forward cons knobs to updater for legacy EXTRAP recompute (Iter 1b).
+
+        EXTRAP variants are unbound in Iter 1b — they read consumption_w +
+        start_charge_hour from updater-cached state. Iter 3 binds them and
+        this forwarding disappears.
+        """
+        self.updater.refresh_extrap_inputs(
+            self._realized_pv_today,
+            self.target_socs.inputs.live_consumption_w,
+            self.target_socs.inputs.start_charge_hour_today,
         )
 
     # ─── Consumption profiles refresh (async I/O paths) ────────────────────

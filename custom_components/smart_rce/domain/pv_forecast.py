@@ -1,20 +1,22 @@
-"""PV forecast vocabulary + algorithms shared across the forecast pipeline.
+"""PV forecast vocabulary — value objects + constants + utilities.
 
 Read top-down:
   1. Constants — domain rules (weather modifiers, condition sets)
-  2. Value objects — vocabulary (SolcastPeriod, AdjustedPeriod, AdjustedPvForecast,
-     WeatherConditionAtHour, ExtrapolatedLive, TargetSocInputs)
-  3. `PvForecast` enum + strategy groupings + `LivePvSignals` VO (used by
-     `PvForecastUpdater` and downstream consumers — kept here to avoid a
-     leaf module just for enum + signals snapshot)
-  4. Standalone domain utilities — multi-class users (merge_weather_conditions,
+  2. Value objects — SolcastPeriod, AdjustedPeriod, AdjustedPvForecast,
+     WeatherConditionAtHour, ExtrapolatedLive, TargetSocInputs,
+     LivePvSignals
+  3. Standalone domain utilities — multi-class users (merge_weather_conditions,
      walk_back_workdays) used by application service / infrastructure loader
 
 Target SOC formula + its constants + result dataclasses live in
 `domain/target_soc.py` — re-exported here for back-compat (existing
 callers in pv_forecast_extrapolation.py and tests).
 
-TargetSocCatalog aggregate (target_soc derivation) lives in
+`PvForecast` enum + strategy groupings (TODAY/TOMORROW/EXTRAP_STRATEGIES)
++ `ForecastStrategy` hierarchy live in `domain/pv_forecast_strategy.py`
+(enum members bind strategy instances).
+
+`TargetSocCatalog` aggregate (target_soc derivation) lives in
 `domain/target_soc_catalog.py`.
 """
 
@@ -22,7 +24,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from enum import StrEnum
 from typing import Final
 
 from .bucket import Bucket, Buckets
@@ -320,46 +321,11 @@ class TargetSocInputs:
     start_charge_hour_tomorrow: int | None = None
 
 
-# --- PvForecast enum + strategy groupings + LivePvSignals --- #
-
-
-class PvForecast(StrEnum):
-    """All PV forecast scenarios served by `PvForecastUpdater`.
-
-    Naming convention: `<date_axis>_<source>` where source ∈ {at_6, live,
-    extrap_*}. Today's variants drop the date prefix (implicit).
-    """
-
-    AT_6 = "at_6"
-    LIVE = "live"
-    TOMORROW_AT_6 = "tomorrow_at_6"
-    TOMORROW_LIVE = "tomorrow_live"
-    EXTRAP_PATTERN = "extrapolated_live_pattern"
-    EXTRAP_PROPORTIONAL = "extrapolated_live_proportional"
-    EXTRAP_BAND = "extrapolated_live_band"
-    EXTRAP_BAND_RECENT = "extrapolated_live_band_recent"
-
-
-TODAY_STRATEGIES: Final[tuple[PvForecast, ...]] = (
-    PvForecast.AT_6,
-    PvForecast.LIVE,
-    PvForecast.EXTRAP_PATTERN,
-    PvForecast.EXTRAP_PROPORTIONAL,
-    PvForecast.EXTRAP_BAND,
-    PvForecast.EXTRAP_BAND_RECENT,
-)
-
-TOMORROW_STRATEGIES: Final[tuple[PvForecast, ...]] = (
-    PvForecast.TOMORROW_AT_6,
-    PvForecast.TOMORROW_LIVE,
-)
-
-EXTRAP_STRATEGIES: Final[tuple[PvForecast, ...]] = (
-    PvForecast.EXTRAP_PATTERN,
-    PvForecast.EXTRAP_PROPORTIONAL,
-    PvForecast.EXTRAP_BAND,
-    PvForecast.EXTRAP_BAND_RECENT,
-)
+# --- LivePvSignals VO --- #
+#
+# PvForecast enum + strategy groupings (TODAY/TOMORROW/EXTRAP_STRATEGIES)
+# live in `pv_forecast_strategy.py` — enum members bind ForecastStrategy
+# instances, so co-locating with strategy classes avoids circular imports.
 
 
 @dataclass(frozen=True)

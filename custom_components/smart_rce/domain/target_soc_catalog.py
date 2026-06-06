@@ -18,7 +18,8 @@ from .consumption_profiles import (
     ConsumptionProfile,
     ConsumptionProfiles,
 )
-from .pv_forecast import PvForecast, TargetSocInputs
+from .pv_forecast import TargetSocInputs
+from .pv_forecast_strategy import PvForecast
 from .target_soc import TargetSocResult, calculate_target_soc
 
 if TYPE_CHECKING:

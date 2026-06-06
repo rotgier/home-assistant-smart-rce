@@ -32,16 +32,17 @@ def _catalog(
     pv_stability_stable: bool | None = None,
 ) -> PvForecastUpdater:
     """Build a PvForecastUpdater with only live PV signals set (helpers' inputs)."""
-    catalog = PvForecastUpdater()
-    catalog.refresh_live_signals(
+    updater = PvForecastUpdater()
+    updater.live_pv_updated(
         LivePvSignals(
             pv_power_w=live_pv_power_w,
             bucket_so_far_kwh=pv_bucket_so_far_kwh,
             derivative_w_per_min=live_pv_derivative_w_per_min,
             stability_stable=pv_stability_stable,
-        )
+        ),
+        datetime(2026, 1, 1, 12, 0),
     )
-    return catalog
+    return updater
 
 
 _forecast = _catalog  # backwards-compat alias so legacy test bodies keep working
