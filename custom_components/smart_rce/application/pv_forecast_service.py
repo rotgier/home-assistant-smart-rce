@@ -38,8 +38,9 @@ from homeassistant.util import dt as dt_util
 
 from ..domain import pv_forecast
 from ..domain.charge_slots import ChargeSlots
-from ..domain.pv_forecast import LivePvSignals, TargetSocInputs, WeatherConditionAtHour
+from ..domain.pv_forecast import LivePvSignals, WeatherConditionAtHour
 from ..domain.pv_forecasts import PvForecasts
+from ..domain.target_soc import TargetSocInputs
 from ..domain.target_soc_catalog import TargetSocCatalog
 from ..domain.weather_forecast_history import WeatherForecastHistory
 from ..infrastructure.pv_forecast.consumption_profile_loader import (

@@ -1,23 +1,4 @@
-"""PV forecast vocabulary — value objects + constants + utilities.
-
-Read top-down:
-  1. Constants — domain rules (weather modifiers, condition sets)
-  2. Value objects — SolcastPeriod, AdjustedPeriod, PvForecastResult,
-     WeatherConditionAtHour, TargetSocInputs, LivePvSignals
-  3. Standalone domain utilities — multi-class users (merge_weather_conditions,
-     walk_back_workdays) used by application service / infrastructure loader
-
-Target SOC formula + its constants + result dataclasses live in
-`domain/target_soc.py` — re-exported here for back-compat (existing
-callers in pv_forecast_extrapolation.py and tests).
-
-`PvForecast` enum + strategy groupings (TODAY/TOMORROW/EXTRAP_STRATEGIES)
-+ `ForecastStrategy` hierarchy live in `domain/pv_forecast_strategy.py`
-(enum members bind strategy instances).
-
-`TargetSocCatalog` aggregate (target_soc derivation) lives in
-`domain/target_soc_catalog.py`.
-"""
+"""PV forecast vocabulary — value objects + constants + utilities."""
 
 from __future__ import annotations
 
@@ -302,33 +283,7 @@ class PvForecastResult:
         return round(total, 4)
 
 
-# --- TargetSoc inputs VO (passed atomically from service) --- #
-
-
-@dataclass(frozen=True)
-class TargetSocInputs:
-    """Cons-side live + pre-charge gates — passed atomically to TargetSocCatalog.
-
-    Replaces 3 separate field writes on the aggregate from application
-    service. Service builds via `LiveRateReader` once per tick, hands to
-    `target_socs.refresh_inputs(inputs)`.
-
-    Pre-charge gates apply to `calculate_target_soc` so a sunny pre-charge
-    hour's surplus cannot mask a later deficit (battery doesn't charge
-    from PV when `battery_charge_max_current_toggle=False` — hourly
-    surplus is exported, not stored).
-    """
-
-    live_consumption_w: float | None = None
-    start_charge_hour_today: int | None = None
-    start_charge_hour_tomorrow: int | None = None
-
-
 # --- LivePvSignals VO --- #
-#
-# PvForecast enum + strategy groupings (TODAY/TOMORROW/EXTRAP_STRATEGIES)
-# live in `pv_forecast_strategy.py` — enum members bind ForecastStrategy
-# instances, so co-locating with strategy classes avoids circular imports.
 
 
 @dataclass(frozen=True)

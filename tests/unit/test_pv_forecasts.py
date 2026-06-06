@@ -9,9 +9,6 @@ service, future ChargePlanner) can rely on it.
 from __future__ import annotations
 
 from custom_components.smart_rce.domain.pv_forecasts import (
-    EXTRAP_STRATEGIES,
-    TODAY_STRATEGIES,
-    TOMORROW_STRATEGIES,
     LivePvSignals,
     PvForecast,
     PvForecasts,
@@ -36,10 +33,10 @@ def _reset_bound_strategies():
 def test_strategy_enum_coverage() -> None:
     """All 8 strategies partition cleanly into today (6) and tomorrow (2)."""
     assert len(list(PvForecast)) == 8
-    assert len(TODAY_STRATEGIES) == 6
-    assert len(TOMORROW_STRATEGIES) == 2
-    assert len(EXTRAP_STRATEGIES) == 4
-    all_listed = set(TODAY_STRATEGIES) | set(TOMORROW_STRATEGIES)
+    assert len(PvForecast.today()) == 6
+    assert len(PvForecast.tomorrow()) == 2
+    assert len(PvForecast.extrap()) == 4
+    all_listed = set(PvForecast.today()) | set(PvForecast.tomorrow())
     assert all_listed == set(PvForecast)
 
 
@@ -56,8 +53,8 @@ def test_empty_catalog_read_api_returns_none() -> None:
 def test_today_and_tomorrow_views_have_expected_keys() -> None:
     """today() / tomorrow() expose subset dicts keyed by their respective strategies."""
     catalog = PvForecasts()
-    assert set(catalog.today().keys()) == set(TODAY_STRATEGIES)
-    assert set(catalog.tomorrow().keys()) == set(TOMORROW_STRATEGIES)
+    assert set(catalog.today().keys()) == set(PvForecast.today())
+    assert set(catalog.tomorrow().keys()) == set(PvForecast.tomorrow())
     assert set(catalog.all().keys()) == set(PvForecast)
 
 

@@ -28,21 +28,12 @@ from .pv_forecast import (
     SolcastPeriod,
     WeatherConditionAtHour,
 )
-from .pv_forecast_strategy import (
-    EXTRAP_STRATEGIES,
-    TODAY_STRATEGIES,
-    TOMORROW_STRATEGIES,
-    ForecastContext,
-    PvForecast,
-)
+from .pv_forecast_strategy import ForecastContext, PvForecast
 
 __all__ = [
-    "EXTRAP_STRATEGIES",
     "LivePvSignals",
     "PvForecast",
     "PvForecasts",
-    "TODAY_STRATEGIES",
-    "TOMORROW_STRATEGIES",
 ]
 
 
@@ -85,11 +76,11 @@ class PvForecasts:
 
     def today(self) -> dict[PvForecast, PvForecastResult | None]:
         """Snapshot of today-axis variants (AT_6, LIVE, 4× EXTRAP)."""
-        return {v: v.result for v in TODAY_STRATEGIES}
+        return {v: v.result for v in PvForecast.today()}
 
     def tomorrow(self) -> dict[PvForecast, PvForecastResult | None]:
         """Snapshot of tomorrow-axis variants (TOMORROW_AT_6, TOMORROW_LIVE)."""
-        return {v: v.result for v in TOMORROW_STRATEGIES}
+        return {v: v.result for v in PvForecast.tomorrow()}
 
     @property
     def signals(self) -> LivePvSignals:
