@@ -15,7 +15,7 @@ field. Catalog update methods are trigger-source-named (match HA events);
 service does NOT know which strategies a trigger touches.
 
 Update sequence per tick:
-1. `_refresh_inputs()` — read 4 PV signals + 1 cons signal + 2 start_charge
+1. `_refresh_target_soc_inputs()` — read cons signal + 2 start_charge
    gates from `LiveRateReader` / `ChargeSlots`; push to catalog/forecast as VOs.
 2. `catalog.update_from_X(...)` or `catalog.tick_minute(...)` — catalog
    refreshes affected forecast strategies + raw solcast_live.
@@ -140,7 +140,7 @@ class PvForecastService:
         `recalculate_all`) and runtime shift after RCE-tomorrow prices
         arrive ~14:00 and optimal pre-charge window moves.
         """
-        self._refresh_inputs(dt_util.now())
+        self._refresh_target_soc_inputs()
         self._recalculate_target_soc_now()
         self._notify_listeners()
 
