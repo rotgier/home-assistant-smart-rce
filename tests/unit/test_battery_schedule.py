@@ -9,7 +9,6 @@ from custom_components.smart_rce.domain.battery_schedule import (
     DayRolled,
     Direction,
     DisengageReason,
-    EmsMode,
     NotificationLevel,
     OneShotDisengageReason,
     OneShotEnded,
@@ -23,6 +22,7 @@ from custom_components.smart_rce.domain.battery_schedule import (
     SlotEngaged,
     SlotKind,
 )
+from custom_components.smart_rce.domain.ems_operation import EmsMode
 import pytest
 
 TZ = timezone.utc
