@@ -22,8 +22,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .domain.battery_schedule import (
-    CHARGE,
-    DISCHARGE,
     Direction,
     Scope,
     SetOneShotEndTimeCommand,
@@ -63,8 +61,8 @@ async def async_setup_entry(
                 for kind in SlotKind
                 for field, command_cls in time_fields
             ],
-            OneShotEndTime(entry, direction=DISCHARGE),
-            OneShotEndTime(entry, direction=CHARGE),
+            OneShotEndTime(entry, direction=Direction.DISCHARGE),
+            OneShotEndTime(entry, direction=Direction.CHARGE),
         ]
     )
 

@@ -114,47 +114,72 @@ class RateZone:
     soc_to: float
     sec_per_pp: float
 
+    def overlap_seconds(self, low: float, high: float) -> float:
+        """Seconds contributed by this zone for SoC traversal `[low, high)`.
 
-# DISCHARGE rate zones — empirical from 2026-05-04 morning discharge session
-# (DISCHARGE_BATTERY @ 6kW, BMS ~5kW effective). FAST ZONE covers 25-100
-# (covers normal evening discharge 100→30); below 25 we hit BMS quirks.
-DISCHARGE_RATE_ZONES: Final[tuple[RateZone, ...]] = (
-    # FAST ZONE — typical discharge, ~75 sec/pp consistent
-    RateZone(soc_from=25.0, soc_to=100.01, sec_per_pp=75.0),
-    # BMS-COMP — middle range compresses pp (BMS lookup table), fast
-    RateZone(soc_from=16.0, soc_to=25.0, sec_per_pp=36.0),
-    # ANOMALY — calibration pause window
-    RateZone(soc_from=14.0, soc_to=16.0, sec_per_pp=97.0),
-    # FAST END — after calibration, fast again
-    RateZone(soc_from=0.0, soc_to=14.0, sec_per_pp=34.0),
-)
-
-# CHARGE rate zones — no empirical data yet, uniform 75 sec/pp stub.
-# TODO: collect empirical data + replace with zones analogous to discharge.
-CHARGE_RATE_ZONES: Final[tuple[RateZone, ...]] = (
-    RateZone(soc_from=0.0, soc_to=100.01, sec_per_pp=75.0),
-)
+        Returns 0 when the zone doesn't overlap the requested range.
+        """
+        ol = max(low, self.soc_from)
+        oh = min(high, self.soc_to)
+        return (oh - ol) * self.sec_per_pp if oh > ol else 0.0
 
 
-@dataclass(frozen=True)
-class Direction:
+class Direction(Enum):
     """Battery flow direction (DISCHARGE / CHARGE) + per-direction settings.
 
-    Two module-level singleton instances: `DISCHARGE` and `CHARGE`. Every
-    `SlotKind` references one. Carries everything that's the same across
-    all slots of that direction (EMS mode, power limit, charge toggle
-    requirement, rate zones). Per-slot variation lives in `SlotProfile`.
+    Enum with bound metadata: EMS mode, power limit, charge-toggle requirement,
+    SoC-zone rate model. Every `SlotKind` references one via `SlotProfile`.
 
-    Comparison: NEVER use `is` (breaks after `live_reload()`). Use
-    `direction.is_discharge` / `direction.is_charge` properties or
-    `direction.name == "DISCHARGE"` string compare.
+    DISCHARGE rate zones — empirical from 2026-05-04 morning discharge session
+    (DISCHARGE_BATTERY @ 6kW, BMS ~5kW effective). FAST ZONE 25-100 covers
+    normal evening discharge 100→30; below 25 we hit BMS quirks (compressed
+    mid-range, calibration pause 14-16, fast end below 14).
+
+    CHARGE rate zones — no empirical data yet, uniform 75 sec/pp stub.
+    TODO: collect empirical data + replace with zones analogous to discharge.
+
+    Comparison: NEVER use `is` across `live_reload()` boundary (re-imported
+    enum class gives new member identity). Use `direction.is_discharge` /
+    `direction.is_charge` (name-based) for live_reload safety. Within a
+    single import lifetime, `direction is Direction.DISCHARGE` is fine.
     """
 
-    name: Literal["DISCHARGE", "CHARGE"]
-    ems_mode: EmsMode
-    power_limit_w: int
-    needs_charge_toggle: bool
-    rate_zones: tuple[RateZone, ...]
+    DISCHARGE = (
+        EmsMode.DISCHARGE_PV,
+        # PV+battery hybrid. Morning: PV covers load, battery supplies overflow.
+        # Evening: PV is zero, mode degrades to battery-only — same effect as
+        # DISCHARGE_BATTERY without needing a second EMS mode in the matrix.
+        6000,
+        False,
+        (
+            RateZone(soc_from=25.0, soc_to=100.01, sec_per_pp=75.0),
+            RateZone(soc_from=16.0, soc_to=25.0, sec_per_pp=36.0),
+            RateZone(soc_from=14.0, soc_to=16.0, sec_per_pp=97.0),
+            RateZone(soc_from=0.0, soc_to=14.0, sec_per_pp=34.0),
+        ),
+    )
+    CHARGE = (
+        EmsMode.CHARGE_BATTERY,
+        6000,
+        # `input_boolean.battery_charge_max_current_toggle` must be ON during
+        # charge — BMS guard. Today set via service call; will be migrated to a
+        # smart_rce-owned switch with continuous DodPolicy-like control in a
+        # separate plan (Etap 3).
+        True,
+        (RateZone(soc_from=0.0, soc_to=100.01, sec_per_pp=75.0),),
+    )
+
+    def __init__(
+        self,
+        ems_mode: EmsMode,
+        power_limit_w: int,
+        needs_charge_toggle: bool,
+        rate_zones: tuple[RateZone, ...],
+    ) -> None:
+        self.ems_mode = ems_mode
+        self.power_limit_w = power_limit_w
+        self.needs_charge_toggle = needs_charge_toggle
+        self.rate_zones = rate_zones
 
     @property
     def is_discharge(self) -> bool:
@@ -164,54 +189,17 @@ class Direction:
     def is_charge(self) -> bool:
         return self.name == "CHARGE"
 
+    def seconds_for_soc_traversal(self, start_soc: float, end_soc: float) -> float:
+        """Sum sec_per_pp across rate zones covering the SoC traversal start→end.
 
-DISCHARGE: Final = Direction(
-    name="DISCHARGE",
-    ems_mode=EmsMode.DISCHARGE_PV,
-    # PV+battery hybrid. Morning: PV covers load, battery supplies overflow.
-    # Evening: PV is zero, mode degrades to battery-only — same effect as
-    # DISCHARGE_BATTERY without needing a second EMS mode in the matrix.
-    power_limit_w=6000,
-    needs_charge_toggle=False,
-    rate_zones=DISCHARGE_RATE_ZONES,
-)
-
-
-CHARGE: Final = Direction(
-    name="CHARGE",
-    ems_mode=EmsMode.CHARGE_BATTERY,
-    power_limit_w=6000,
-    needs_charge_toggle=True,
-    # `input_boolean.battery_charge_max_current_toggle` must be ON during
-    # charge — BMS guard. Today set via service call; will be migrated to a
-    # smart_rce-owned switch with continuous DodPolicy-like control in a
-    # separate plan (Etap 3).
-    rate_zones=CHARGE_RATE_ZONES,
-)
-
-
-def seconds_for_range(
-    start_soc: float, end_soc: float, zones: tuple[RateZone, ...]
-) -> float:
-    """Sum sec_per_pp across zones covering the SoC traversal start→end.
-
-    Direction-agnostic — internally normalizes to [low, high] so callers
-    can pass `(current_soc, target_soc)` regardless of charge/discharge.
-    Returns 0 when start == end. SoC outside zone coverage contributes 0
-    (caller's responsibility — zones should fully cover the relevant SoC
-    domain).
-    """
-    low = min(start_soc, end_soc)
-    high = max(start_soc, end_soc)
-    if low >= high:
-        return 0.0
-    total = 0.0
-    for zone in zones:
-        overlap_low = max(low, zone.soc_from)
-        overlap_high = min(high, zone.soc_to)
-        if overlap_high > overlap_low:
-            total += (overlap_high - overlap_low) * zone.sec_per_pp
-    return total
+        Direction-agnostic — internally normalizes to [low, high] so callers
+        can pass `(current_soc, target_soc)` regardless of charge/discharge.
+        Returns 0 when start == end. SoC outside zone coverage contributes 0.
+        """
+        low, high = min(start_soc, end_soc), max(start_soc, end_soc)
+        if low >= high:
+            return 0.0
+        return sum(z.overlap_seconds(low, high) for z in self.rate_zones)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,14 +226,14 @@ class SlotKind(Enum):
     """Battery schedule slot kinds. Each value is its `SlotProfile`."""
 
     CHARGE_MORNING = SlotProfile(
-        direction=CHARGE,
+        direction=Direction.CHARGE,
         notification_level=NotificationLevel.NORMAL,
         default_window=(time(2, 0), time(6, 0)),
         default_target_soc=100.0,
     )
 
     DISCHARGE_MORNING = SlotProfile(
-        direction=DISCHARGE,
+        direction=Direction.DISCHARGE,
         notification_level=NotificationLevel.NORMAL,
         # NO voice call — would wake user up.
         default_window=(time(6, 0), time(9, 0)),
@@ -253,7 +241,7 @@ class SlotKind(Enum):
     )
 
     CHARGE_AFTERNOON = SlotProfile(
-        direction=CHARGE,
+        direction=Direction.CHARGE,
         notification_level=NotificationLevel.NORMAL,
         default_window=(time(13, 0), time(19, 0)),
         # April-September. Other months user shortens to (13, 16).
@@ -262,7 +250,7 @@ class SlotKind(Enum):
     )
 
     DISCHARGE_EVENING = SlotProfile(
-        direction=DISCHARGE,
+        direction=Direction.DISCHARGE,
         notification_level=NotificationLevel.EMERGENCY,
         # Voice call OK — user is awake during evening peak.
         default_window=(time(20, 0), time(22, 0)),
@@ -374,9 +362,8 @@ class BatteryScheduleEntry:
     def time_to_complete_at(self, current_soc: float) -> float:
         """Seconds needed to reach target_soc via zone-aware rate model.
 
-        Sums sec_per_pp across `direction.rate_zones` for the SoC traversal
-        between current and target — direction-agnostic since `seconds_for_range`
-        normalizes start/end internally. Returns 0 if already at target.
+        Delegates to `direction.seconds_for_soc_traversal` — direction-agnostic
+        since it normalizes start/end internally. Returns 0 if already at target.
 
         Zone-aware vs constant 75 sec/pp matters for full-depth discharges
         (100→10%): empirical 104 min vs constant-model 112.5 min — DELAYED
@@ -384,8 +371,8 @@ class BatteryScheduleEntry:
         """
         if self.soc_target_reached(current_soc):
             return 0.0
-        return seconds_for_range(
-            current_soc, self.target_soc, self.kind.direction.rate_zones
+        return self.kind.direction.seconds_for_soc_traversal(
+            current_soc, self.target_soc
         )
 
     def should_apply_now(self, now: datetime, current_soc: float) -> bool:
@@ -522,9 +509,8 @@ class OneShotOperation:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OneShotOperation | None:
         try:
-            direction = DISCHARGE if data["direction"] == "DISCHARGE" else CHARGE
             return cls(
-                direction=direction,
+                direction=Direction[data["direction"]],
                 target_soc=float(data["target_soc"]),
                 end_at=datetime.fromisoformat(data["end_at"]),
                 started_at=datetime.fromisoformat(data["started_at"]),
@@ -713,8 +699,8 @@ def _default_tomorrow() -> dict[SlotKind, BatteryScheduleEntry]:
 
 def _default_oneshot_params() -> dict[Direction, OneShotParams]:
     return {
-        DISCHARGE: OneShotParams(target_soc=10.0, end_time=time(22, 0)),
-        CHARGE: OneShotParams(target_soc=100.0, end_time=time(6, 0)),
+        Direction.DISCHARGE: OneShotParams(target_soc=10.0, end_time=time(22, 0)),
+        Direction.CHARGE: OneShotParams(target_soc=100.0, end_time=time(6, 0)),
     }
 
 
@@ -731,20 +717,22 @@ def _restore_oneshot_params(
     nested = data.get("oneshot_params")
     if nested:
         return {
-            DISCHARGE: OneShotParams.from_dict(
-                nested.get("DISCHARGE", {}), default=defaults[DISCHARGE]
+            Direction.DISCHARGE: OneShotParams.from_dict(
+                nested.get("DISCHARGE", {}), default=defaults[Direction.DISCHARGE]
             ),
-            CHARGE: OneShotParams.from_dict(
-                nested.get("CHARGE", {}), default=defaults[CHARGE]
+            Direction.CHARGE: OneShotParams.from_dict(
+                nested.get("CHARGE", {}), default=defaults[Direction.CHARGE]
             ),
         }
     # Legacy flat keys — restore from pre-refactor format if present.
     return {
-        DISCHARGE: OneShotParams.from_dict(
-            data.get("discharge_oneshot_params", {}), default=defaults[DISCHARGE]
+        Direction.DISCHARGE: OneShotParams.from_dict(
+            data.get("discharge_oneshot_params", {}),
+            default=defaults[Direction.DISCHARGE],
         ),
-        CHARGE: OneShotParams.from_dict(
-            data.get("charge_oneshot_params", {}), default=defaults[CHARGE]
+        Direction.CHARGE: OneShotParams.from_dict(
+            data.get("charge_oneshot_params", {}),
+            default=defaults[Direction.CHARGE],
         ),
     }
 

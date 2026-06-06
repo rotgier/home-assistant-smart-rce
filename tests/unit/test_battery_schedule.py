@@ -3,12 +3,11 @@
 from datetime import date, datetime, time, timezone
 
 from custom_components.smart_rce.domain.battery_schedule import (
-    CHARGE,
-    DISCHARGE,
     BatteryOperation,
     BatterySchedule,
     BatteryScheduleEntry,
     DayRolled,
+    Direction,
     EmsMode,
     NotificationLevel,
     OneShotEnded,
@@ -38,29 +37,26 @@ def _at(h: int, m: int = 0, day: int = 22) -> datetime:
 
 class TestDirection:
     def test_discharge_is_discharge(self):
-        assert DISCHARGE.is_discharge is True
-        assert DISCHARGE.is_charge is False
+        assert Direction.DISCHARGE.is_discharge is True
+        assert Direction.DISCHARGE.is_charge is False
 
     def test_charge_is_charge(self):
-        assert CHARGE.is_discharge is False
-        assert CHARGE.is_charge is True
+        assert Direction.CHARGE.is_discharge is False
+        assert Direction.CHARGE.is_charge is True
 
-    def test_string_compare_safe_after_reload(self):
-        """Direction comparison via property uses string — survives live_reload."""
-        # Simulate two separate Direction instances with same name (post-reload).
-        from custom_components.smart_rce.domain.battery_schedule import Direction
+    def test_lookup_by_name(self):
+        """`Direction[name]` lookup — used by `OneShotOperation.from_dict`."""
+        assert Direction["DISCHARGE"] is Direction.DISCHARGE
+        assert Direction["CHARGE"] is Direction.CHARGE
 
-        other_discharge = Direction(
-            name="DISCHARGE",
-            ems_mode=DISCHARGE.ems_mode,
-            power_limit_w=DISCHARGE.power_limit_w,
-            needs_charge_toggle=DISCHARGE.needs_charge_toggle,
-            rate_zones=DISCHARGE.rate_zones,
-        )
-        assert other_discharge.is_discharge is True
-        # `is` would fail here in real reload scenario; equality works because
-        # frozen dataclass value-compares all fields.
-        assert other_discharge == DISCHARGE
+    def test_bound_metadata(self):
+        """Enum members carry ems_mode + power_limit_w + needs_charge_toggle + rate_zones."""
+        assert Direction.DISCHARGE.ems_mode == EmsMode.DISCHARGE_PV
+        assert Direction.DISCHARGE.power_limit_w == 6000
+        assert Direction.DISCHARGE.needs_charge_toggle is False
+        assert len(Direction.DISCHARGE.rate_zones) == 4
+        assert Direction.CHARGE.ems_mode == EmsMode.CHARGE_BATTERY
+        assert Direction.CHARGE.needs_charge_toggle is True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,7 +67,7 @@ class TestDirection:
 class TestSlotProfile:
     def test_charge_morning_defaults(self):
         p = SlotKind.CHARGE_MORNING.profile
-        assert p.direction == CHARGE
+        assert p.direction is Direction.CHARGE
         assert p.default_window == (time(2, 0), time(6, 0))
         assert p.default_target_soc == 100.0
         assert p.notification_level == NotificationLevel.NORMAL
@@ -564,7 +560,7 @@ class TestOneShotOperationVO:
     def test_invalid_target_soc_raises(self):
         with pytest.raises(ValueError, match="outside"):
             OneShotOperation(
-                direction=DISCHARGE,
+                direction=Direction.DISCHARGE,
                 target_soc=150.0,
                 end_at=_at(22, 0),
                 started_at=_at(20, 0),
@@ -573,7 +569,7 @@ class TestOneShotOperationVO:
     def test_end_before_start_raises(self):
         with pytest.raises(ValueError, match="must be after"):
             OneShotOperation(
-                direction=DISCHARGE,
+                direction=Direction.DISCHARGE,
                 target_soc=10.0,
                 end_at=_at(20, 0),
                 started_at=_at(22, 0),
@@ -581,7 +577,7 @@ class TestOneShotOperationVO:
 
     def test_is_expired(self):
         op = OneShotOperation(
-            direction=DISCHARGE,
+            direction=Direction.DISCHARGE,
             target_soc=10.0,
             end_at=_at(22, 0),
             started_at=_at(20, 0),
@@ -592,7 +588,7 @@ class TestOneShotOperationVO:
 
     def test_target_reached_discharge(self):
         op = OneShotOperation(
-            direction=DISCHARGE,
+            direction=Direction.DISCHARGE,
             target_soc=10.0,
             end_at=_at(22, 0),
             started_at=_at(20, 0),
@@ -603,7 +599,7 @@ class TestOneShotOperationVO:
 
     def test_target_reached_charge(self):
         op = OneShotOperation(
-            direction=CHARGE,
+            direction=Direction.CHARGE,
             target_soc=80.0,
             end_at=_at(22, 0),
             started_at=_at(20, 0),
@@ -621,35 +617,35 @@ class TestOneShotOperationVO:
 class TestOneShotLifecycle:
     def test_start_when_idle_emits_started(self):
         sch = BatterySchedule()
-        events = sch.start_oneshot(DISCHARGE, _at(14, 0))
+        events = sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         assert len(events) == 1
         assert isinstance(events[0], OneShotStarted)
-        assert events[0].operation.direction == DISCHARGE
+        assert events[0].operation.direction == Direction.DISCHARGE
         assert sch.oneshot is not None
-        assert sch.oneshot.direction == DISCHARGE
+        assert sch.oneshot.direction == Direction.DISCHARGE
 
     def test_start_when_already_active_is_noop(self):
         sch = BatterySchedule()
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
-        events = sch.start_oneshot(CHARGE, _at(14, 1))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
+        events = sch.start_oneshot(Direction.CHARGE, _at(14, 1))
         assert events == []
-        assert sch.oneshot.direction == DISCHARGE  # unchanged
+        assert sch.oneshot.direction == Direction.DISCHARGE  # unchanged
 
     def test_end_at_combines_today_when_future(self):
         sch = BatterySchedule()
         # Default discharge end_time = 22:00. At 14:00 → end_at today 22:00.
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         assert sch.oneshot.end_at == _at(22, 0)
 
     def test_end_at_rolls_next_day_when_past(self):
         sch = BatterySchedule()
         # Default charge end_time = 06:00. At 22:00 → end_at tomorrow 06:00.
-        sch.start_oneshot(CHARGE, _at(22, 0))
+        sch.start_oneshot(Direction.CHARGE, _at(22, 0))
         assert sch.oneshot.end_at == _at(6, 0, day=23)
 
     def test_cancel_when_active_emits_cancelled(self):
         sch = BatterySchedule()
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         events = sch.cancel_oneshot(_at(14, 30))
         assert len(events) == 1
         assert isinstance(events[0], OneShotEnded)
@@ -673,8 +669,8 @@ class TestOneShotComputeOperation:
                 )
             }
         )
-        # Start one-shot CHARGE — should win over scheduled DISCHARGE
-        sch.start_oneshot(CHARGE, _at(20, 30))
+        # Start one-shot Direction.CHARGE — should win over scheduled Direction.DISCHARGE
+        sch.start_oneshot(Direction.CHARGE, _at(20, 30))
         op, _ = sch.compute_operation(_at(20, 30), 80.0)
         assert op.ems_op.reason == "oneshot=CHARGE"
         assert op.is_idle is False
@@ -683,7 +679,7 @@ class TestOneShotComputeOperation:
 
     def test_auto_clear_on_target_reached(self):
         sch = BatterySchedule()
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         # SoC drops below default discharge target (10.0)
         op, events = sch.compute_operation(_at(14, 30), 5.0)
         ended = [e for e in events if isinstance(e, OneShotEnded)]
@@ -695,7 +691,7 @@ class TestOneShotComputeOperation:
 
     def test_auto_clear_on_expired(self):
         sch = BatterySchedule()
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         # Default discharge end_time = 22:00. Tick at 22:01.
         op, events = sch.compute_operation(_at(22, 1), 80.0)
         ended = [e for e in events if isinstance(e, OneShotEnded)]
@@ -712,7 +708,7 @@ class TestOneShotComputeOperation:
                 )
             }
         )
-        sch.start_oneshot(CHARGE, _at(20, 30))
+        sch.start_oneshot(Direction.CHARGE, _at(20, 30))
         # SoC=80 reaches charge target (default 100)? No, 80 < 100 → no auto-clear
         # Force expiration instead: tick past one-shot end (default charge 06:00)
         op, events = sch.compute_operation(_at(6, 1, day=23), 80.0)
@@ -727,43 +723,45 @@ class TestOneShotComputeOperation:
     def test_ems_interventions_blocked_when_oneshot_active(self):
         sch = BatterySchedule()
         assert sch.ems_interventions_blocked is False
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         assert sch.ems_interventions_blocked is True
 
     def test_is_active_this_hour_when_oneshot_active(self):
         sch = BatterySchedule()
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         assert sch.is_active_this_hour(_at(14, 30)) is True
 
 
 class TestOneShotParamsCommands:
     def test_set_target_soc_for_discharge(self):
         sch = BatterySchedule()
-        cmd = SetOneShotTargetSocCommand(direction=DISCHARGE, value=25.0)
+        cmd = SetOneShotTargetSocCommand(direction=Direction.DISCHARGE, value=25.0)
         assert sch.apply_oneshot_command(cmd) is True
-        assert sch.oneshot_params(DISCHARGE).target_soc == 25.0
+        assert sch.oneshot_params(Direction.DISCHARGE).target_soc == 25.0
         # Charge params untouched
-        assert sch.oneshot_params(CHARGE).target_soc == 100.0
+        assert sch.oneshot_params(Direction.CHARGE).target_soc == 100.0
 
     def test_set_end_time_for_charge(self):
         sch = BatterySchedule()
-        cmd = SetOneShotEndTimeCommand(direction=CHARGE, value=time(7, 30))
+        cmd = SetOneShotEndTimeCommand(direction=Direction.CHARGE, value=time(7, 30))
         assert sch.apply_oneshot_command(cmd) is True
-        assert sch.oneshot_params(CHARGE).end_time == time(7, 30)
+        assert sch.oneshot_params(Direction.CHARGE).end_time == time(7, 30)
 
     def test_idempotent(self):
         sch = BatterySchedule()
-        cmd = SetOneShotTargetSocCommand(direction=DISCHARGE, value=10.0)  # default
+        cmd = SetOneShotTargetSocCommand(
+            direction=Direction.DISCHARGE, value=10.0
+        )  # default
         assert sch.apply_oneshot_command(cmd) is False  # no change
 
 
 class TestOneShotPersistence:
     def test_active_oneshot_roundtrip(self):
         sch = BatterySchedule()
-        sch.start_oneshot(DISCHARGE, _at(14, 0))
+        sch.start_oneshot(Direction.DISCHARGE, _at(14, 0))
         restored = BatterySchedule.from_dict(sch.to_dict())
         assert restored.oneshot is not None
-        assert restored.oneshot.direction == DISCHARGE
+        assert restored.oneshot.direction == Direction.DISCHARGE
         assert restored.oneshot.target_soc == 10.0
         assert restored.oneshot.end_at == _at(22, 0)
 
@@ -775,11 +773,11 @@ class TestOneShotPersistence:
     def test_params_roundtrip(self):
         sch = BatterySchedule()
         sch.apply_oneshot_command(
-            SetOneShotTargetSocCommand(direction=DISCHARGE, value=15.0)
+            SetOneShotTargetSocCommand(direction=Direction.DISCHARGE, value=15.0)
         )
         sch.apply_oneshot_command(
-            SetOneShotEndTimeCommand(direction=CHARGE, value=time(8, 0))
+            SetOneShotEndTimeCommand(direction=Direction.CHARGE, value=time(8, 0))
         )
         restored = BatterySchedule.from_dict(sch.to_dict())
-        assert restored.oneshot_params(DISCHARGE).target_soc == 15.0
-        assert restored.oneshot_params(CHARGE).end_time == time(8, 0)
+        assert restored.oneshot_params(Direction.DISCHARGE).target_soc == 15.0
+        assert restored.oneshot_params(Direction.CHARGE).end_time == time(8, 0)

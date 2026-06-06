@@ -18,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
-from .domain.battery_schedule import CHARGE, DISCHARGE, Direction
+from .domain.battery_schedule import Direction
 from .ems_device import ems_device_info
 
 PARALLEL_UPDATES = 1
@@ -34,10 +34,10 @@ async def async_setup_entry(
     """Add smart_rce button entities."""
     async_add_entities(
         [
-            OneShotExecuteButton(entry, direction=DISCHARGE),
-            OneShotCancelButton(entry, direction=DISCHARGE),
-            OneShotExecuteButton(entry, direction=CHARGE),
-            OneShotCancelButton(entry, direction=CHARGE),
+            OneShotExecuteButton(entry, direction=Direction.DISCHARGE),
+            OneShotCancelButton(entry, direction=Direction.DISCHARGE),
+            OneShotExecuteButton(entry, direction=Direction.CHARGE),
+            OneShotCancelButton(entry, direction=Direction.CHARGE),
         ]
     )
 
