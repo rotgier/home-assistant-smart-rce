@@ -12,9 +12,9 @@ from __future__ import annotations
 from datetime import date
 
 from custom_components.smart_rce.domain.bucket import Bucket, Buckets
+from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.pv_forecast import (
     AdjustedPeriod,
-    ConsumptionProfile,
     PvForecastResult,
 )
 from custom_components.smart_rce.domain.target_soc import (

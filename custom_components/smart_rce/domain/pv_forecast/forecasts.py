@@ -22,13 +22,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .pv_forecast import (
+from .forecast_enum import PvForecast
+from .strategy_base import (
+    ForecastContext,
     LivePvSignals,
     PvForecastResult,
     SolcastPeriod,
-    WeatherConditionAtHour,
+    WeatherConditions,
 )
-from .pv_forecast_strategy import ForecastContext, PvForecast
 
 __all__ = [
     "LivePvSignals",
@@ -48,7 +49,7 @@ class PvForecasts:
 
     # — Cached inputs (rebuilt into ForecastContext per dispatch) —
     _signals: LivePvSignals = field(default_factory=LivePvSignals)
-    _weather: list[WeatherConditionAtHour] = field(default_factory=list)
+    _weather: WeatherConditions = field(default_factory=WeatherConditions.empty)
     _solcast_at_6: list[SolcastPeriod] = field(default_factory=list)
     _solcast_today: list[SolcastPeriod] = field(default_factory=list)
     _solcast_tomorrow: list[SolcastPeriod] = field(default_factory=list)
@@ -97,7 +98,7 @@ class PvForecasts:
     def solcast_at_6_updated(
         self,
         periods: list[SolcastPeriod],
-        weather: list[WeatherConditionAtHour],
+        weather: WeatherConditions,
         now: datetime,
     ) -> None:
         """Solcast at_6 entity changed (~once daily 06:00)."""
@@ -108,7 +109,7 @@ class PvForecasts:
     def solcast_today_updated(
         self,
         periods: list[SolcastPeriod],
-        weather: list[WeatherConditionAtHour],
+        weather: WeatherConditions,
         now: datetime,
     ) -> None:
         """Solcast live entity changed (continuous updates).
@@ -123,7 +124,7 @@ class PvForecasts:
     def solcast_tomorrow_updated(
         self,
         periods: list[SolcastPeriod],
-        weather: list[WeatherConditionAtHour],
+        weather: WeatherConditions,
         now: datetime,
     ) -> None:
         """Solcast tomorrow entity changed."""
@@ -133,7 +134,7 @@ class PvForecasts:
 
     def weather_updated(
         self,
-        weather: list[WeatherConditionAtHour],
+        weather: WeatherConditions,
         now: datetime,
     ) -> None:
         """Weather forecast changed — re-dispatch every variant."""

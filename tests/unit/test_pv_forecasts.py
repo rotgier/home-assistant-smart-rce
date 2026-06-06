@@ -8,7 +8,7 @@ service, future ChargePlanner) can rely on it.
 
 from __future__ import annotations
 
-from custom_components.smart_rce.domain.pv_forecasts import (
+from custom_components.smart_rce.domain.pv_forecast import (
     LivePvSignals,
     PvForecast,
     PvForecasts,

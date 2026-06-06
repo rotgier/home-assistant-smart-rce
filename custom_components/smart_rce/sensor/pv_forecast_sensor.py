@@ -15,7 +15,7 @@ from ..application.pv_forecast_service import PvForecastService
 from ..const import DOMAIN
 from ..coordinator import SmartRceDataUpdateCoordinator
 from ..domain.bucket import Bucket
-from ..domain.pv_forecasts import PvForecast, PvForecasts
+from ..domain.pv_forecast import PvForecast, PvForecasts
 from ._state_writer_mixin import StateWriterMixin
 
 UNIQUE_ID_PREFIX: Final = DOMAIN

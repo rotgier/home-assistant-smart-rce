@@ -215,3 +215,29 @@ class ConsumptionProfiles:
     def should_retry(self) -> bool:
         """Schedule another refresh attempt within the retry budget."""
         return self.is_partial() and self.failed_attempts < self.MAX_RETRIES
+
+
+# --- Workday calendar helper --- #
+
+
+def walk_back_workdays(
+    today: date,
+    days_back: int,
+    workday_dates: set[date],
+) -> date | None:
+    """Return the N-th most recent workday strictly before `today`.
+
+    `workday_dates` is the authoritative set of workdays in a sufficiently
+    wide lookback window (typically 30 days back) — sourced from the HA
+    workday calendar by `WorkdayCalendarReader`. No "skip weekends"
+    fallback: if the set is empty (calendar unavailable) or shallower
+    than `days_back`, returns None. Callers log a clear warning so the
+    missing calendar is visible rather than silently masked by a
+    heuristic that ignores holidays.
+    """
+    if not workday_dates:
+        return None
+    sorted_back = sorted((d for d in workday_dates if d < today), reverse=True)
+    if days_back <= 0 or days_back > len(sorted_back):
+        return None
+    return sorted_back[days_back - 1]

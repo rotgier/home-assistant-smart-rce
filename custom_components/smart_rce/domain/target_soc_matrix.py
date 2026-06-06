@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .pv_forecast import ConsumptionProfile, PvProfile
-from .target_soc import TargetSocResult, calculate_target_soc
+from .consumption_profiles import ConsumptionProfile
+from .target_soc import PvProfile, TargetSocResult, calculate_target_soc
 
 
 @dataclass(frozen=True)

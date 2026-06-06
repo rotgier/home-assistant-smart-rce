@@ -15,13 +15,12 @@ from datetime import date, datetime
 
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.pv_forecast import (
+    ForecastContext,
     LivePvSignals,
+    PvForecast,
     SolcastPeriod,
     WeatherConditionAtHour,
-)
-from custom_components.smart_rce.domain.pv_forecast_strategy import (
-    ForecastContext,
-    PvForecast,
+    WeatherConditions,
 )
 from custom_components.smart_rce.domain.target_soc import TargetSoc, TargetSocContext
 import pytest
@@ -78,9 +77,12 @@ def _populate_at_6_strategy() -> None:
         for h in range(7, 13)
         for m in (0, 30)
     ]
-    weather = [
-        WeatherConditionAtHour(hour=h, condition_custom="sunny") for h in range(7, 13)
-    ]
+    weather = WeatherConditions(
+        conditions=[
+            WeatherConditionAtHour(hour=h, condition_custom="sunny")
+            for h in range(7, 13)
+        ]
+    )
     ctx = ForecastContext(
         now=datetime(2026, 1, 15, 7, 0),
         signals=LivePvSignals(),

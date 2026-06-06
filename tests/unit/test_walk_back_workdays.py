@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from custom_components.smart_rce.domain.pv_forecast import walk_back_workdays
+from custom_components.smart_rce.domain.consumption_profiles import walk_back_workdays
 
 
 def test_returns_nth_most_recent_workday() -> None:

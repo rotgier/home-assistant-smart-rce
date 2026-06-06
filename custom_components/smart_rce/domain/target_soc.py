@@ -10,8 +10,7 @@ from .bucket import Buckets
 
 if TYPE_CHECKING:
     from .consumption_profiles import ConsumptionProfile
-    from .pv_forecast import LivePvSignals
-    from .pv_forecast_strategy import PvForecast
+    from .pv_forecast import LivePvSignals, PvForecast
 
 
 # --- Constants --- #

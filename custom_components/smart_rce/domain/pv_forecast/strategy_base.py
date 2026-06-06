@@ -1,84 +1,108 @@
-"""PV forecast vocabulary — value objects + constants + utilities."""
+"""Forecast strategy framework + shared value objects.
+
+Top-down narrative: the public framework class `ForecastStrategy`
+(template method) comes first; supporting types — `ForecastContext`
+(input), `PvForecastResult` (output), `WeatherConditions` (merged
+history+forecast weather), and the small VO building blocks — follow
+below. Concrete strategies live in sibling modules
+(`strategies_weather.py`, `strategies_extrapolation.py`).
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Final
 
-from .bucket import Bucket, Buckets
-from .consumption_profiles import (
-    PREV_DAYS_COUNT,
-    ConsumptionProfile,
-    ConsumptionProfiles,
-    ConsumptionProfileSource,
-)
-from .target_soc import (
-    BATTERY_CAPACITY_KWH,
-    BUFFER_PERCENT,
-    CONSUMPTION_PER_30MIN,
-    LOSS_FACTOR,
-    MIN_SOC_PERCENT,
-    PvProfile,
-    TargetSocBucket,
-    TargetSocResult,
-    calculate_target_soc,
-)
+from ..bucket import Bucket, Buckets
+from ..target_soc import PvProfile
 
-__all__ = [
-    "BATTERY_CAPACITY_KWH",
-    "BUFFER_PERCENT",
-    "CONSUMPTION_PER_30MIN",
-    "ConsumptionProfile",
-    "ConsumptionProfiles",
-    "ConsumptionProfileSource",
-    "LOSS_FACTOR",
-    "MIN_SOC_PERCENT",
-    "PREV_DAYS_COUNT",
-    "PvProfile",
-    "TargetSocBucket",
-    "TargetSocResult",
-    "calculate_target_soc",
-    # plus everything else exported by this module (implicit)
-]
-
-# --- Constants --- #
-
-CLOUDY_CAP_HOUR_7: Final[float] = 0.20  # max hourly rate at hour 7 for cloudy
-
-# AT6 cloudy modifiers per hour (hourly rate multiplier on est10)
-AT6_CLOUDY_MODIFIER_EARLY: Final[float] = 0.5  # hours 7-10
-AT6_CLOUDY_MODIFIER_LATE: Final[float] = 0.7  # hours 11+
-
-# Conditions that count as "cloudy" (everything not explicitly mapped)
-SUNNY_CONDITIONS = frozenset({"sunny", "clear-night"})
-PARTLY_VARIABLE_CONDITIONS = frozenset({"partlycloudy-variable"})
-PARTLY_CONDITIONS = frozenset({"partlycloudy"})
-# Everything else = cloudy/other
+# --- Framework: ForecastStrategy (template method) --- #
 
 
-# --- Value objects --- #
+class ForecastStrategy:
+    """Template-method base. Subclasses override `_compute(ctx)`.
+
+    `update()` caches the result, optionally re-patches in-progress
+    bucket with live signals (today-variants only), and derives
+    `remaining_kwh`. Every strategy exposes the unifying contract
+    `(result, total_kwh, remaining_kwh)`.
+    """
+
+    supports_in_progress_patch: bool = False
+
+    def __init__(self) -> None:
+        self.result: PvForecastResult | None = None
+        self.remaining_kwh: float | None = None
+
+    @property
+    def total_kwh(self) -> float | None:
+        return self.result.total_kwh if self.result is not None else None
+
+    def update(self, ctx: ForecastContext) -> None:
+        new_result = self._compute(ctx)
+        if new_result is not None:
+            self.result = new_result
+        if self.supports_in_progress_patch and self.result is not None:
+            self.result = self._apply_chart_in_progress_patch(
+                ctx.now, self.result, ctx.signals
+            )
+        self.remaining_kwh = self._derive_remaining_kwh(ctx)
+
+    def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
+        """Subclass: build fresh result from ctx, or None if input missing."""
+        raise NotImplementedError
+
+    def _derive_remaining_kwh(self, ctx: ForecastContext) -> float | None:
+        """Sum kWh from `ctx.now` onwards on the result's date axis.
+
+        Default impl reuses `PvForecastResult.remaining_kwh_from(now)`.
+        Tomorrow-axis results naturally sum the whole window (all
+        periods are on a later date than `now`). EXTRAP strategies
+        inherit this default — their post-`_assemble` result already
+        has in-progress rescaled, so the sum matches the legacy
+        `ExtrapolatedLive.remaining_kwh` value exactly.
+        """
+        if self.result is None:
+            return None
+        return self.result.remaining_kwh_from(ctx.now)
+
+    @staticmethod
+    def _apply_chart_in_progress_patch(
+        now: datetime,
+        result: PvForecastResult,
+        signals: LivePvSignals,
+    ) -> PvForecastResult:
+        """Rescale in-progress period to full-bucket estimate (no-op when signals missing)."""
+        pv_w = signals.pv_power_w
+        so_far = signals.bucket_so_far_kwh
+        if pv_w is None or so_far is None:
+            return result
+        return result.with_now_aware_in_progress(
+            now=now, pv_power_w_5min=pv_w, pv_bucket_so_far_kwh=so_far
+        )
 
 
-@dataclass
-class SolcastPeriod:
-    period_start: str  # ISO 8601
-    pv_estimate: float  # hourly rate kWh/h
-    pv_estimate10: float
-    pv_estimate90: float
+# --- ForecastContext: input VO for ForecastStrategy.update --- #
 
 
-@dataclass
-class AdjustedPeriod:
-    period_start: str  # ISO 8601
-    pv_estimate_adjusted: float  # hourly rate kWh/h
+@dataclass(frozen=True)
+class ForecastContext:
+    """Inputs available to strategy updates per dispatch."""
+
+    now: datetime
+    signals: LivePvSignals
+    weather: WeatherConditions = field(
+        default_factory=lambda: WeatherConditions.empty()
+    )
+    solcast_at_6: list[SolcastPeriod] = field(default_factory=list)
+    solcast_today: list[SolcastPeriod] = field(default_factory=list)
+    solcast_tomorrow: list[SolcastPeriod] = field(default_factory=list)
+    realized_pv_today: dict[tuple[int, int], float] = field(default_factory=dict)
+    consumption_w: float | None = None
+    start_charge_hour: int | None = None
 
 
-@dataclass
-class WeatherConditionAtHour:
-    hour: int  # 0-23 local time
-    condition_custom: str
-    forecast_date: date | None = None  # None = match only by hour
+# --- PvForecastResult: return type from ForecastStrategy._compute --- #
 
 
 @dataclass
@@ -198,7 +222,7 @@ class PvForecastResult:
         by their corresponding entry in `future_pv_kwh_per_h_overrides`
         (kWh/h rate keyed by `(hour, minute)`). Periods without an override
         entry keep their original forecast value. Used by strategy variants
-        in `pv_forecast_extrapolation` whose projection produces per-bucket
+        in `strategies_extrapolation` whose projection produces per-bucket
         future rates.
         """
         rate = Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
@@ -260,7 +284,7 @@ class PvForecastResult:
 
         Returns the full per-bucket value for the bucket containing
         `now` (no proration of in-progress) — matches the semantics of
-        `_assemble` in `pv_forecast_extrapolation` which rescales
+        `_assemble` in `extrapolation_utils` which rescales
         in-progress before summing. Tomorrow-axis callers pass `now`
         from today; the comparison naturally includes all of tomorrow's
         periods.
@@ -283,7 +307,82 @@ class PvForecastResult:
         return round(total, 4)
 
 
-# --- LivePvSignals VO --- #
+# --- WeatherConditions: merged history + forecast weather VO --- #
+
+
+@dataclass(frozen=True)
+class WeatherConditions:
+    """Merged weather snapshot (history + forecast).
+
+    Conditions with no `forecast_date` are ignored — they can't be matched
+    to a specific day. `for_hour(...)` accepts a target date for precise
+    matching; falls back to undated entries (legacy / single-day callers)
+    before defaulting to `"cloudy"`.
+    """
+
+    conditions: list[WeatherConditionAtHour]
+
+    @classmethod
+    def empty(cls) -> WeatherConditions:
+        return cls(conditions=[])
+
+    @classmethod
+    def from_history_and_forecast(
+        cls,
+        history: list[WeatherConditionAtHour],
+        forecast: list[WeatherConditionAtHour],
+    ) -> WeatherConditions:
+        """Merge — forecast wins over history per (date, hour).
+
+        Used by application service (`PvForecastService._build_weather`)
+        to assemble the full conditions window for AT6 + LIVE strategies.
+        """
+        combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
+        for c in history:
+            if c.forecast_date:
+                combined[(c.forecast_date, c.hour)] = c
+        for c in forecast:
+            if c.forecast_date:
+                combined[(c.forecast_date, c.hour)] = c
+        return cls(conditions=list(combined.values()))
+
+    def for_hour(self, hour: int, target_date: date | None = None) -> str:
+        """Find weather condition for given hour/date. Fallback to 'cloudy'."""
+        if target_date:
+            for w in self.conditions:
+                if w.forecast_date == target_date and w.hour == hour:
+                    return w.condition_custom
+        for w in self.conditions:
+            if w.hour == hour and w.forecast_date is None:
+                return w.condition_custom
+        return "cloudy"
+
+    def __bool__(self) -> bool:
+        return bool(self.conditions)
+
+
+# --- Building-block VOs --- #
+
+
+@dataclass
+class SolcastPeriod:
+    period_start: str  # ISO 8601
+    pv_estimate: float  # hourly rate kWh/h
+    pv_estimate10: float
+    pv_estimate90: float
+
+
+@dataclass
+class AdjustedPeriod:
+    period_start: str  # ISO 8601
+    pv_estimate_adjusted: float  # hourly rate kWh/h
+
+
+@dataclass
+class WeatherConditionAtHour:
+    hour: int  # 0-23 local time
+    condition_custom: str
+    forecast_date: date | None = None  # None = match only by hour
 
 
 @dataclass(frozen=True)
@@ -292,59 +391,10 @@ class LivePvSignals:
 
     Replaces 4 separate field writes on the aggregate from application
     service. Service builds via `LiveRateReader` once per tick, hands to
-    `updater.refresh_live_signals(signals)`.
+    `updater.live_pv_updated(signals, ...)`.
     """
 
     pv_power_w: float | None = None
     bucket_so_far_kwh: float | None = None
     derivative_w_per_min: float | None = None
     stability_stable: bool | None = None
-
-
-# --- Standalone domain utilities (multi-class users) --- #
-
-
-def merge_weather_conditions(
-    history: list[WeatherConditionAtHour],
-    forecast: list[WeatherConditionAtHour],
-) -> list[WeatherConditionAtHour]:
-    """Merge history (past hours, frozen) with forecast (future hours, fresh).
-
-    Forecast wins over history per (date, hour) — more current data for future
-    slots. Conditions without forecast_date are ignored (cannot be matched to
-    a specific day).
-
-    Used by application service (PvForecastService._build_weather) to assemble
-    the full conditions window for `PvForecasts._adjust_pv_forecast_*`.
-    """
-    combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
-    for c in history:
-        if c.forecast_date:
-            combined[(c.forecast_date, c.hour)] = c
-    for c in forecast:
-        if c.forecast_date:
-            combined[(c.forecast_date, c.hour)] = c
-    return list(combined.values())
-
-
-def walk_back_workdays(
-    today: date,
-    days_back: int,
-    workday_dates: set[date],
-) -> date | None:
-    """Return the N-th most recent workday strictly before `today`.
-
-    `workday_dates` is the authoritative set of workdays in a sufficiently
-    wide lookback window (typically 30 days back) — sourced from the HA
-    workday calendar by `WorkdayCalendarReader`. No "skip weekends"
-    fallback: if the set is empty (calendar unavailable) or shallower
-    than `days_back`, returns None. Callers log a clear warning so the
-    missing calendar is visible rather than silently masked by a
-    heuristic that ignores holidays.
-    """
-    if not workday_dates:
-        return None
-    sorted_back = sorted((d for d in workday_dates if d < today), reverse=True)
-    if days_back <= 0 or days_back > len(sorted_back):
-        return None
-    return sorted_back[days_back - 1]

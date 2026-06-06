@@ -37,7 +37,7 @@ from homeassistant.util import dt as dt_util
 from .application.ems import Ems
 from .application.pv_forecast_service import PvForecastService
 from .coordinator import SmartRceDataUpdateCoordinator
-from .domain.pv_forecasts import PvForecasts
+from .domain.pv_forecast import PvForecasts
 from .domain.target_soc_catalog import TargetSocCatalog
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.pv_forecast.consumption_profile_loader import (

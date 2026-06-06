@@ -13,17 +13,16 @@ from __future__ import annotations
 from datetime import datetime
 
 from custom_components.smart_rce.domain.pv_forecast import (
-    LivePvSignals,
-    SolcastPeriod,
-    WeatherConditionAtHour,
-)
-from custom_components.smart_rce.domain.pv_forecast_strategy import (
     ExtrapBandRecentStrategy,
     ExtrapBandStrategy,
     ExtrapPatternStrategy,
     ExtrapProportionalStrategy,
     ForecastContext,
+    LivePvSignals,
     PvForecast,
+    SolcastPeriod,
+    WeatherConditionAtHour,
+    WeatherConditions,
 )
 import pytest
 
@@ -56,10 +55,13 @@ def _solcast_today(target_date: str = "2026-01-15") -> list[SolcastPeriod]:
     ]
 
 
-def _weather() -> list[WeatherConditionAtHour]:
-    return [
-        WeatherConditionAtHour(hour=h, condition_custom="sunny") for h in range(7, 13)
-    ]
+def _weather() -> WeatherConditions:
+    return WeatherConditions(
+        conditions=[
+            WeatherConditionAtHour(hour=h, condition_custom="sunny")
+            for h in range(7, 13)
+        ]
+    )
 
 
 def _populate_live() -> None:

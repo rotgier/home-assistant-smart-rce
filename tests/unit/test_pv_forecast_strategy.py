@@ -15,16 +15,15 @@ from __future__ import annotations
 from datetime import datetime
 
 from custom_components.smart_rce.domain.pv_forecast import (
-    LivePvSignals,
-    SolcastPeriod,
-    WeatherConditionAtHour,
-)
-from custom_components.smart_rce.domain.pv_forecast_strategy import (
     At6Strategy,
     ForecastContext,
     ForecastStrategy,
+    LivePvSignals,
     LiveStrategy,
     PvForecast,
+    SolcastPeriod,
+    WeatherConditionAtHour,
+    WeatherConditions,
 )
 import pytest
 
@@ -59,11 +58,11 @@ def _solcast_periods(target_date: str = "2026-01-15") -> list[SolcastPeriod]:
     ]
 
 
-def _weather() -> list[WeatherConditionAtHour]:
+def _weather() -> WeatherConditions:
     """Sunny at hour 7 (matches the test periods)."""
-    return [
-        WeatherConditionAtHour(hour=7, condition_custom="sunny"),
-    ]
+    return WeatherConditions(
+        conditions=[WeatherConditionAtHour(hour=7, condition_custom="sunny")]
+    )
 
 
 def test_at6_strategy_returns_none_when_inputs_missing() -> None:

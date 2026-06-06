@@ -36,10 +36,8 @@ from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
-from ..domain import pv_forecast
 from ..domain.charge_slots import ChargeSlots
-from ..domain.pv_forecast import LivePvSignals, WeatherConditionAtHour
-from ..domain.pv_forecasts import PvForecasts
+from ..domain.pv_forecast import LivePvSignals, PvForecasts, WeatherConditions
 from ..domain.target_soc import TargetSocInputs
 from ..domain.target_soc_catalog import TargetSocCatalog
 from ..domain.weather_forecast_history import WeatherForecastHistory
@@ -323,15 +321,15 @@ class PvForecastService:
 
     # ─── Helpers + listener fan-out ────────────────────────────────────────
 
-    def _build_weather(self, day: date) -> list[WeatherConditionAtHour]:
+    def _build_weather(self, day: date) -> WeatherConditions:
         """Combine weather history (past hours) + live forecast (future hours).
 
-        Pure orchestration: read 2 sources + delegate merge to domain
-        `merge_weather_conditions`.
+        Pure orchestration: read 2 sources + delegate merge to the
+        `WeatherConditions` VO constructor.
         """
         history = self._weather_history.get_conditions_for_date(day)
         forecast = self._weather_listener.forecast_conditions
-        return pv_forecast.merge_weather_conditions(history, forecast)
+        return WeatherConditions.from_history_and_forecast(history, forecast)
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         """Register listener for forecast/SoC change events. Returns unsubscribe fn."""

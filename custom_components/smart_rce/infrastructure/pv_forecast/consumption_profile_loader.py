@@ -22,9 +22,12 @@ from homeassistant.components.recorder.statistics import statistics_during_perio
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from ...domain import pv_forecast
 from ...domain.bucket import Bucket, Buckets
-from ...domain.pv_forecast import ConsumptionProfile
+from ...domain.consumption_profiles import (
+    PREV_DAYS_COUNT,
+    ConsumptionProfile,
+    walk_back_workdays,
+)
 from ...domain.target_soc import CONSUMPTION_PER_30MIN
 from ..workday_calendar_reader import WorkdayCalendarReader
 
@@ -58,7 +61,7 @@ class ConsumptionProfileLoader:
         the domain-configured count. Used by the per-sensor target_soc
         recomputation path.
         """
-        return await self.fetch_for_anchor(today, pv_forecast.PREV_DAYS_COUNT)
+        return await self.fetch_for_anchor(today, PREV_DAYS_COUNT)
 
     async def fetch_for_anchor(
         self, anchor: date, count: int
@@ -83,8 +86,7 @@ class ConsumptionProfileLoader:
             return [None] * count
 
         dates: list[date | None] = [
-            pv_forecast.walk_back_workdays(anchor, i + 1, workday_dates)
-            for i in range(count)
+            walk_back_workdays(anchor, i + 1, workday_dates) for i in range(count)
         ]
         valid_dates = [d for d in dates if d is not None]
         if not valid_dates:

@@ -7,9 +7,10 @@ Verifies that the matrix delegates each cell to `calculate_target_soc`
 from __future__ import annotations
 
 from custom_components.smart_rce.domain.bucket import Bucket, Buckets
-from custom_components.smart_rce.domain.pv_forecast import ConsumptionProfile, PvProfile
+from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.target_soc import (
     MIN_SOC_PERCENT,
+    PvProfile,
     calculate_target_soc,
 )
 from custom_components.smart_rce.domain.target_soc_matrix import (

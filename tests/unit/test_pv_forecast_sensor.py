@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from custom_components.smart_rce.domain.bucket import Bucket
-from custom_components.smart_rce.domain.pv_forecasts import LivePvSignals, PvForecasts
+from custom_components.smart_rce.domain.pv_forecast import LivePvSignals, PvForecasts
 from custom_components.smart_rce.sensor.pv_forecast_sensor import (
     _bucket_end_constant_kwh,
     _bucket_end_derivative_delta_kwh,

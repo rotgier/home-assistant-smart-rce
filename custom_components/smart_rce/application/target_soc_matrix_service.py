@@ -41,9 +41,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from ..application.pv_forecast_service import PvForecastService
-from ..domain import pv_forecast as pv_forecast_module
-from ..domain.pv_forecast import ConsumptionProfile, PvProfile
-from ..domain.pv_forecasts import PvForecast, PvForecasts
+from ..domain.consumption_profiles import PREV_DAYS_COUNT, ConsumptionProfile
+from ..domain.pv_forecast import PvForecast, PvForecasts
+from ..domain.target_soc import PvProfile
 from ..domain.target_soc_matrix import ConsLabel, TargetSocMatrix, compute_matrix
 from ..infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -148,7 +148,7 @@ class TargetSocMatrixService:
             loaded_profiles = target_socs.consumption_profiles.tomorrow_profiles
         else:
             loaded_profiles = await self._consumption_loader.fetch_for_anchor(
-                target_date, pv_forecast_module.PREV_DAYS_COUNT
+                target_date, PREV_DAYS_COUNT
             )
         # Surface a loud error when ALL slots are None — likely the
         # workday calendar / recorder hasn't loaded yet (startup race)

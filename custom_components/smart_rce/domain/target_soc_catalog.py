@@ -21,11 +21,11 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from .consumption_profiles import ConsumptionProfile, ConsumptionProfiles
-from .pv_forecast_strategy import PvForecast
+from .pv_forecast import PvForecast
 from .target_soc import TargetSoc, TargetSocContext, TargetSocInputs
 
 if TYPE_CHECKING:
-    from .pv_forecasts import PvForecasts
+    from .pv_forecast import PvForecasts
 
 
 @dataclass
