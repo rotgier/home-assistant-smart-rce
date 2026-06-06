@@ -37,8 +37,6 @@ from .pv_forecast_strategy import (
     TOMORROW_STRATEGIES,
     ForecastContext,
     PvForecast,
-    adjust_pv_forecast_at6,
-    adjust_pv_forecast_live,
 )
 
 __all__ = [
@@ -51,15 +49,11 @@ __all__ = [
 ]
 
 
-def _empty_forecasts() -> dict[PvForecast, PvForecastResult | None]:
-    """Legacy result cache — populated for unbound variants (TOMORROW × 2 in Iter 1b)."""
-    return {
-        strategy: None for strategy in PvForecast if strategy not in EXTRAP_STRATEGIES
-    }
-
-
 def _empty_extrapolated() -> dict[PvForecast, ExtrapolatedLive]:
-    """Legacy EXTRAP result cache — recomputed each tick by _recompute_legacy_extrap."""
+    """Legacy EXTRAP result cache — recomputed each tick by _recompute_legacy_extrap.
+
+    Dropped in Iter 3b when EXTRAP variants get bound strategies.
+    """
     return {strategy: ExtrapolatedLive.empty() for strategy in EXTRAP_STRATEGIES}
 
 
@@ -69,8 +63,8 @@ class PvForecasts:
 
     Callers push only what changed via trigger-named methods; the updater
     builds the full `ForecastContext` from cached inputs and dispatches to
-    all bound strategies (Iter 1b: AT_6 + LIVE). Unbound variants flow
-    through the legacy `_forecasts` / `_extrapolated` dicts until Iter 3.
+    all bound strategies (Iter 3a: AT_6 + LIVE + TOMORROW × 2). EXTRAP × 4
+    still flow through the legacy `_extrapolated` dict until Iter 3b.
     """
 
     # — Cached inputs (rebuilt into ForecastContext per dispatch) —
@@ -79,14 +73,11 @@ class PvForecasts:
     _solcast_at_6: list[SolcastPeriod] = field(default_factory=list)
     _solcast_live: list[SolcastPeriod] = field(default_factory=list)
     _solcast_tomorrow: list[SolcastPeriod] = field(default_factory=list)
-    # — Legacy EXTRAP inputs (Iter 1b transitional — service-pushed) —
+    # — Legacy EXTRAP inputs (transitional — service-pushed, Iter 3b removes) —
     _realized_pv_today: dict[tuple[int, int], float] = field(default_factory=dict)
     _consumption_w: float | None = None
     _start_charge_hour: int | None = None
-    # — Legacy result caches (Iter 1b transitional — for unbound variants) —
-    _forecasts: dict[PvForecast, PvForecastResult | None] = field(
-        default_factory=_empty_forecasts
-    )
+    # — Legacy EXTRAP result cache (Iter 3b removes when EXTRAP gets strategies) —
     _extrapolated: dict[PvForecast, ExtrapolatedLive] = field(
         default_factory=_empty_extrapolated
     )
@@ -94,17 +85,17 @@ class PvForecasts:
     # ─── Read API ──────────────────────────────────────────────────────────
 
     def get(self, variant: PvForecast) -> PvForecastResult | None:
-        """Return adjusted forecast for `variant`.
+        """Return forecast result for `variant`.
 
-        Bound variants (Iter 1b: AT_6, LIVE) read from `variant.strategy.result`.
-        Unbound variants fall back to the legacy `_forecasts` /
-        `_extrapolated[variant].adjusted` cache.
+        Bound variants (Iter 3a: AT_6, LIVE, TOMORROW_*) read from
+        `variant.result`. Unbound EXTRAP × 4 fall back to legacy
+        `_extrapolated[variant].adjusted` cache (Iter 3b binds them).
         """
         if variant.strategy is not None:
             return variant.result
         if variant in EXTRAP_STRATEGIES:
             return self._extrapolated[variant].adjusted
-        return self._forecasts.get(variant)
+        return None
 
     def get_extrapolated(self, variant: PvForecast) -> ExtrapolatedLive | None:
         """Return full ExtrapolatedLive bundle for an EXTRAP_* variant.
@@ -179,23 +170,14 @@ class PvForecasts:
     ) -> None:
         """Solcast tomorrow entity changed.
 
-        Iter 1b: TOMORROW_* strategies are unbound, so this method runs the
-        legacy adjust helpers and stashes results into `_forecasts`. Iter
-        3 will bind them; this body collapses to `_dispatch` only.
+        TOMORROW_AT_6 + TOMORROW_LIVE strategies (bound since Iter 3a)
+        pick up the new periods + weather and rebuild their results via
+        `_dispatch`. AT6 modifiers serve evening planning safety
+        lower-bound; LIVE modifiers align with target_soc_live after
+        midnight rollover.
         """
         self._solcast_tomorrow = periods
         self._weather = weather
-        # AT6 modifiers serve evening planning safety lower-bound.
-        self._forecasts[PvForecast.TOMORROW_AT_6] = adjust_pv_forecast_at6(
-            periods, weather
-        )
-        # LIVE modifiers align with target_soc_live after midnight rollover.
-        # adjust_pv_forecast_live checks is_first_hour = (period.hour == now.hour);
-        # tomorrow periods (date = tomorrow) never match → all use standard
-        # LIVE modifiers (no special first-hour treatment).
-        self._forecasts[PvForecast.TOMORROW_LIVE] = adjust_pv_forecast_live(
-            periods, weather, now
-        )
         self._dispatch(now)
 
     def weather_updated(
@@ -203,17 +185,8 @@ class PvForecasts:
         weather: list[WeatherConditionAtHour],
         now: datetime,
     ) -> None:
-        """Weather forecast changed — re-adjust every variant that depends on it."""
+        """Weather forecast changed — re-dispatch + re-run legacy EXTRAP."""
         self._weather = weather
-        # Tomorrow variants are unbound in Iter 1b — re-run legacy adjust if
-        # we have cached tomorrow Solcast periods.
-        if self._solcast_tomorrow:
-            self._forecasts[PvForecast.TOMORROW_AT_6] = adjust_pv_forecast_at6(
-                self._solcast_tomorrow, weather
-            )
-            self._forecasts[PvForecast.TOMORROW_LIVE] = adjust_pv_forecast_live(
-                self._solcast_tomorrow, weather, now
-            )
         self._dispatch(now)
         self._recompute_legacy_extrap(now)
 

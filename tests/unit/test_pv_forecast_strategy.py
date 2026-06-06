@@ -105,6 +105,61 @@ def test_at6_strategy_preserves_cached_when_compute_returns_none() -> None:
     assert strategy.result is cached  # preserved, not recomputed
 
 
+def test_at6_strategy_tomorrow_reads_solcast_tomorrow() -> None:
+    """At6Strategy(today=False) reads ctx.solcast_tomorrow, not ctx.solcast_at_6."""
+    strategy = At6Strategy(today=False)
+    ctx = ForecastContext(
+        now=datetime(2026, 1, 15, 7, 0),
+        signals=LivePvSignals(),
+        weather=_weather(),
+        solcast_at_6=_solcast_periods(),  # today snapshot — should be IGNORED
+        solcast_tomorrow=[],  # tomorrow empty → result None
+    )
+    strategy.update(ctx)
+    assert strategy.result is None
+
+    # Now provide tomorrow periods — strategy picks them up.
+    ctx_tomorrow = ForecastContext(
+        now=datetime(2026, 1, 15, 7, 0),
+        signals=LivePvSignals(),
+        weather=_weather(),
+        solcast_tomorrow=_solcast_periods(),
+    )
+    strategy.update(ctx_tomorrow)
+    assert strategy.result is not None
+    assert len(strategy.result.forecast) == 2
+
+
+def test_live_strategy_tomorrow_reads_solcast_tomorrow() -> None:
+    """LiveStrategy(today=False) reads ctx.solcast_tomorrow, not ctx.solcast_live."""
+    strategy = LiveStrategy(today=False)
+    ctx = ForecastContext(
+        now=datetime(2026, 1, 15, 7, 0),
+        signals=LivePvSignals(),
+        weather=_weather(),
+        solcast_live=_solcast_periods(),  # today live — should be IGNORED
+    )
+    strategy.update(ctx)
+    assert strategy.result is None
+
+    ctx_tomorrow = ForecastContext(
+        now=datetime(2026, 1, 15, 7, 0),
+        signals=LivePvSignals(),
+        weather=_weather(),
+        solcast_tomorrow=_solcast_periods(),
+    )
+    strategy.update(ctx_tomorrow)
+    assert strategy.result is not None
+
+
+def test_tomorrow_strategies_skip_in_progress_patch() -> None:
+    """today=False strategies skip the in-progress chart patch (no matching bucket)."""
+    today_strategy = At6Strategy(today=True)
+    tomorrow_strategy = At6Strategy(today=False)
+    assert today_strategy.supports_in_progress_patch is True
+    assert tomorrow_strategy.supports_in_progress_patch is False
+
+
 def test_live_strategy_caches_compute_result() -> None:
     strategy = LiveStrategy()
     ctx = ForecastContext(
@@ -135,17 +190,16 @@ def test_pv_forecast_at_6_property_reads_strategy_result() -> None:
 
 
 def test_unbound_variants_have_no_strategy() -> None:
-    """Iter 1b: TOMORROW_* and EXTRAP_* are unbound (strategy=None)."""
+    """Iter 3a: AT_6 + LIVE + TOMORROW × 2 bound; EXTRAP × 4 still unbound."""
     assert PvForecast.AT_6.strategy is not None
     assert PvForecast.LIVE.strategy is not None
-    assert PvForecast.TOMORROW_AT_6.strategy is None
-    assert PvForecast.TOMORROW_LIVE.strategy is None
+    assert PvForecast.TOMORROW_AT_6.strategy is not None
+    assert PvForecast.TOMORROW_LIVE.strategy is not None
     assert PvForecast.EXTRAP_PATTERN.strategy is None
     assert PvForecast.EXTRAP_PROPORTIONAL.strategy is None
     assert PvForecast.EXTRAP_BAND.strategy is None
     assert PvForecast.EXTRAP_BAND_RECENT.strategy is None
-    # Their `result` property gracefully returns None.
-    assert PvForecast.TOMORROW_AT_6.result is None
+    # Unbound `result` property gracefully returns None.
     assert PvForecast.EXTRAP_PATTERN.result is None
 
 

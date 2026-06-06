@@ -91,25 +91,46 @@ class ForecastStrategy:
 
 
 class At6Strategy(ForecastStrategy):
-    """Morning Solcast snapshot (~06:05) — pessimistic AT6 weather modifiers."""
+    """Morning Solcast snapshot — pessimistic AT6 weather modifiers.
 
-    supports_in_progress_patch = True
+    `today=True` reads `ctx.solcast_at_6` (today's morning snapshot) and
+    supports in-progress patch. `today=False` reads `ctx.solcast_tomorrow`
+    (Solcast publishes tomorrow as a separate entity) and skips
+    in-progress patch — no matching bucket on today's clock.
+    """
+
+    def __init__(self, today: bool = True) -> None:
+        super().__init__()
+        self._today = today
+        self.supports_in_progress_patch = today
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
-        if not ctx.solcast_at_6 or not ctx.weather:
+        periods = ctx.solcast_at_6 if self._today else ctx.solcast_tomorrow
+        if not periods or not ctx.weather:
             return None
-        return _adjust_pv_forecast_at6(ctx.solcast_at_6, ctx.weather)
+        return _adjust_pv_forecast_at6(periods, ctx.weather)
 
 
 class LiveStrategy(ForecastStrategy):
-    """Continuous Solcast updates — optimistic LIVE modifiers + first-hour trust."""
+    """Continuous Solcast updates — optimistic LIVE modifiers + first-hour trust.
 
-    supports_in_progress_patch = True
+    `today=True` reads `ctx.solcast_live`. `today=False` reads
+    `ctx.solcast_tomorrow`. The `is_first_hour` check inside
+    `_adjust_pv_forecast_live` compares period.hour to `ctx.now.hour`;
+    tomorrow's periods (different date) never match → all use standard
+    LIVE modifiers (no special first-hour treatment).
+    """
+
+    def __init__(self, today: bool = True) -> None:
+        super().__init__()
+        self._today = today
+        self.supports_in_progress_patch = today
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
-        if not ctx.solcast_live or not ctx.weather:
+        periods = ctx.solcast_live if self._today else ctx.solcast_tomorrow
+        if not periods or not ctx.weather:
             return None
-        return _adjust_pv_forecast_live(ctx.solcast_live, ctx.weather, ctx.now)
+        return _adjust_pv_forecast_live(periods, ctx.weather, ctx.now)
 
 
 # --- PvForecast enum (variants + bound strategies) --- #
@@ -118,9 +139,9 @@ class LiveStrategy(ForecastStrategy):
 class PvForecast(Enum):
     """All PV forecast variants — string key + bound strategy + date axis.
 
-    Iter 1b: only AT_6 + LIVE bound. Other 6 have `strategy=None` —
-    `PvForecasts` handles them via its legacy `_forecasts` /
-    `_extrapolated` dicts. Iter 3 binds the remaining 6.
+    Iter 3a: AT_6 + LIVE + TOMORROW_AT_6 + TOMORROW_LIVE bound (At6/Live
+    strategies parameterized via `today` flag — DRY). EXTRAP × 4 still
+    have `strategy=None` (Iter 3b binds them).
 
     Naming convention: `<date_axis>_<source>` where source ∈ {at_6, live,
     extrap_*}. Today's variants drop the date prefix (implicit). The
@@ -129,10 +150,10 @@ class PvForecast(Enum):
     `TODAY_STRATEGIES` / `TOMORROW_STRATEGIES` tuples below.
     """
 
-    AT_6 = ("at_6", At6Strategy(), True)
-    LIVE = ("live", LiveStrategy(), True)
-    TOMORROW_AT_6 = ("tomorrow_at_6", None, False)
-    TOMORROW_LIVE = ("tomorrow_live", None, False)
+    AT_6 = ("at_6", At6Strategy(today=True), True)
+    LIVE = ("live", LiveStrategy(today=True), True)
+    TOMORROW_AT_6 = ("tomorrow_at_6", At6Strategy(today=False), False)
+    TOMORROW_LIVE = ("tomorrow_live", LiveStrategy(today=False), False)
     EXTRAP_PATTERN = ("extrapolated_live_pattern", None, True)
     EXTRAP_PROPORTIONAL = ("extrapolated_live_proportional", None, True)
     EXTRAP_BAND = ("extrapolated_live_band", None, True)
