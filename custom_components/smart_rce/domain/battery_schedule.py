@@ -231,7 +231,13 @@ class BatterySchedule:
         cancelled = self._oneshot
         self._oneshot = None
         self._last_disengaged_at = now
-        return [OneShotEnded(operation=cancelled, reason="cancelled", at=now)]
+        return [
+            OneShotEnded(
+                operation=cancelled,
+                reason=OneShotDisengageReason.CANCELLED,
+                at=now,
+            )
+        ]
 
     def apply_oneshot_command(self, cmd: OneShotParamsCommand) -> bool:
         """Update stored one-shot params via Command. True if changed.
@@ -335,9 +341,9 @@ class BatterySchedule:
         if self._oneshot is None:
             return None
         if self._oneshot.is_expired(now):
-            return "expired"
+            return OneShotDisengageReason.EXPIRED
         if self._oneshot.target_reached(current_soc):
-            return "target_reached"
+            return OneShotDisengageReason.TARGET_REACHED
         return None
 
     def roll_day(self) -> None:
@@ -472,10 +478,10 @@ class Direction(Enum):
     """
 
     DISCHARGE = (
-        EmsMode.DISCHARGE_PV,
         # PV+battery hybrid. Morning: PV covers load, battery supplies overflow.
         # Evening: PV is zero, mode degrades to battery-only — same effect as
         # DISCHARGE_BATTERY without needing a second EMS mode in the matrix.
+        EmsMode.DISCHARGE_PV,
         6000,
         False,
         (
@@ -488,10 +494,6 @@ class Direction(Enum):
     CHARGE = (
         EmsMode.CHARGE_BATTERY,
         6000,
-        # `input_boolean.battery_charge_max_current_toggle` must be ON during
-        # charge — BMS guard. Today set via service call; will be migrated to a
-        # smart_rce-owned switch with continuous DodPolicy-like control in a
-        # separate plan (Etap 3).
         True,
         (RateZone(soc_from=0.0, soc_to=100.01, sec_per_pp=75.0),),
     )
@@ -695,11 +697,11 @@ class BatteryScheduleEntry:
         SlotDisengaged event with the same reason).
         """
         if not self.enabled:
-            return "disabled"
+            return DisengageReason.DISABLED
         if not self.is_in_window(now):
-            return "window_ended"
+            return DisengageReason.WINDOW_ENDED
         if self.soc_target_reached(soc):
-            return "target_reached"
+            return DisengageReason.TARGET_REACHED
         return None
 
     # ─── Output + serialization ───
@@ -833,7 +835,17 @@ class SlotKind(Enum):
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-OneShotDisengageReason = Literal["target_reached", "expired", "cancelled"]
+class OneShotDisengageReason(StrEnum):
+    """Why a one-shot operation stopped — used by OneShotEnded event."""
+
+    TARGET_REACHED = "target_reached"
+    """SoC reached target (normal completion)."""
+
+    EXPIRED = "expired"
+    """`now >= end_at` reached — window timeout."""
+
+    CANCELLED = "cancelled"
+    """User pressed Cancel button."""
 
 
 @dataclass(frozen=True)
@@ -1191,8 +1203,20 @@ class BatteryOperation:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-# Reason for disengaging a currently-engaging slot. None = keep engaging.
-DisengageReason = Literal["target_reached", "window_ended", "disabled"]
+class DisengageReason(StrEnum):
+    """Why a scheduled slot stopped engaging — used by SlotDisengaged event.
+
+    None (from `Entry.disengage_reason`) = keep engaging.
+    """
+
+    TARGET_REACHED = "target_reached"
+    """SoC reached target (normal completion)."""
+
+    WINDOW_ENDED = "window_ended"
+    """`now` moved past `end` (window timeout)."""
+
+    DISABLED = "disabled"
+    """`slot.enabled` flipped to False mid-engagement."""
 
 
 @dataclass(frozen=True)

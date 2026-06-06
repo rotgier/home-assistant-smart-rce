@@ -8,8 +8,10 @@ from custom_components.smart_rce.domain.battery_schedule import (
     BatteryScheduleEntry,
     DayRolled,
     Direction,
+    DisengageReason,
     EmsMode,
     NotificationLevel,
+    OneShotDisengageReason,
     OneShotEnded,
     OneShotOperation,
     OneShotParams,
@@ -239,15 +241,15 @@ class TestEntryDisengageReason:
     def test_disabled_returns_disabled(self):
         entry = self._evening_enabled()
         entry = entry.with_enabled(False)
-        assert entry.disengage_reason(_at(21, 0), 50.0) == "disabled"
+        assert entry.disengage_reason(_at(21, 0), 50.0) is DisengageReason.DISABLED
 
     def test_after_window_returns_window_ended(self):
         entry = self._evening_enabled()
-        assert entry.disengage_reason(_at(22, 30), 50.0) == "window_ended"
+        assert entry.disengage_reason(_at(22, 30), 50.0) is DisengageReason.WINDOW_ENDED
 
     def test_target_reached_returns_target_reached(self):
         entry = self._evening_enabled()
-        assert entry.disengage_reason(_at(21, 0), 5.0) == "target_reached"
+        assert entry.disengage_reason(_at(21, 0), 5.0) is DisengageReason.TARGET_REACHED
 
 
 class TestEntryDefaultsFactory:
@@ -474,7 +476,7 @@ class TestComputeOperationEngagement:
         assert op.is_idle is True
         assert len(evts) == 1
         assert isinstance(evts[0], SlotDisengaged)
-        assert evts[0].reason == "target_reached"
+        assert evts[0].reason is DisengageReason.TARGET_REACHED
 
     def test_disengage_on_window_ended(self):
         sch = _schedule(today={SlotKind.DISCHARGE_EVENING: _enabled_evening()})
@@ -482,7 +484,7 @@ class TestComputeOperationEngagement:
         op, evts = sch.compute_operation(_at(22, 0), 50.0)  # at end (exclusive)
         assert op.is_idle is True
         assert len(evts) == 1
-        assert evts[0].reason == "window_ended"
+        assert evts[0].reason is DisengageReason.WINDOW_ENDED
 
     def test_hysteresis_overrides_delayed_to_end_flicker(self):
         """Once engaged, stay engaged even if DELAYED_TO_END criterion flickers.
@@ -751,7 +753,7 @@ class TestOneShotLifecycle:
         events = sch.cancel_oneshot(_at(14, 30))
         assert len(events) == 1
         assert isinstance(events[0], OneShotEnded)
-        assert events[0].reason == "cancelled"
+        assert events[0].reason is OneShotDisengageReason.CANCELLED
         assert sch.oneshot is None
         assert sch._last_disengaged_at == _at(14, 30)  # noqa: SLF001
 
@@ -786,7 +788,7 @@ class TestOneShotComputeOperation:
         op, events = sch.compute_operation(_at(14, 30), 5.0)
         ended = [e for e in events if isinstance(e, OneShotEnded)]
         assert len(ended) == 1
-        assert ended[0].reason == "target_reached"
+        assert ended[0].reason is OneShotDisengageReason.TARGET_REACHED
         assert sch.oneshot is None
         # Op should be idle (no scheduled slot active)
         assert op.is_idle is True
@@ -798,7 +800,7 @@ class TestOneShotComputeOperation:
         op, events = sch.compute_operation(_at(22, 1), 80.0)
         ended = [e for e in events if isinstance(e, OneShotEnded)]
         assert len(ended) == 1
-        assert ended[0].reason == "expired"
+        assert ended[0].reason is OneShotDisengageReason.EXPIRED
         assert sch.oneshot is None
 
     def test_falls_through_to_scheduled_after_clear(self):
