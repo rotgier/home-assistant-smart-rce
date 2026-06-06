@@ -116,28 +116,38 @@ class LiveStrategy(ForecastStrategy):
 
 
 class PvForecast(Enum):
-    """All PV forecast variants — string key + bound strategy.
+    """All PV forecast variants — string key + bound strategy + date axis.
 
     Iter 1b: only AT_6 + LIVE bound. Other 6 have `strategy=None` —
     `PvForecasts` handles them via its legacy `_forecasts` /
     `_extrapolated` dicts. Iter 3 binds the remaining 6.
 
     Naming convention: `<date_axis>_<source>` where source ∈ {at_6, live,
-    extrap_*}. Today's variants drop the date prefix (implicit).
+    extrap_*}. Today's variants drop the date prefix (implicit). The
+    `is_today` flag is declared at the source — consumers iterate via
+    `[v for v in PvForecast if v.is_today]` or use the derived
+    `TODAY_STRATEGIES` / `TOMORROW_STRATEGIES` tuples below.
     """
 
-    AT_6 = ("at_6", At6Strategy())
-    LIVE = ("live", LiveStrategy())
-    TOMORROW_AT_6 = ("tomorrow_at_6", None)
-    TOMORROW_LIVE = ("tomorrow_live", None)
-    EXTRAP_PATTERN = ("extrapolated_live_pattern", None)
-    EXTRAP_PROPORTIONAL = ("extrapolated_live_proportional", None)
-    EXTRAP_BAND = ("extrapolated_live_band", None)
-    EXTRAP_BAND_RECENT = ("extrapolated_live_band_recent", None)
+    AT_6 = ("at_6", At6Strategy(), True)
+    LIVE = ("live", LiveStrategy(), True)
+    TOMORROW_AT_6 = ("tomorrow_at_6", None, False)
+    TOMORROW_LIVE = ("tomorrow_live", None, False)
+    EXTRAP_PATTERN = ("extrapolated_live_pattern", None, True)
+    EXTRAP_PROPORTIONAL = ("extrapolated_live_proportional", None, True)
+    EXTRAP_BAND = ("extrapolated_live_band", None, True)
+    EXTRAP_BAND_RECENT = ("extrapolated_live_band_recent", None, True)
 
-    def __init__(self, key: str, strategy: ForecastStrategy | None) -> None:
+    def __init__(
+        self, key: str, strategy: ForecastStrategy | None, is_today: bool
+    ) -> None:
         self.key = key
         self.strategy = strategy
+        self.is_today = is_today
+
+    @property
+    def is_tomorrow(self) -> bool:
+        return not self.is_today
 
     @property
     def result(self) -> PvForecastResult | None:
@@ -145,20 +155,16 @@ class PvForecast(Enum):
         return self.strategy.result if self.strategy is not None else None
 
 
-TODAY_STRATEGIES: Final[tuple[PvForecast, ...]] = (
-    PvForecast.AT_6,
-    PvForecast.LIVE,
-    PvForecast.EXTRAP_PATTERN,
-    PvForecast.EXTRAP_PROPORTIONAL,
-    PvForecast.EXTRAP_BAND,
-    PvForecast.EXTRAP_BAND_RECENT,
+TODAY_STRATEGIES: Final[tuple[PvForecast, ...]] = tuple(
+    v for v in PvForecast if v.is_today
+)
+TOMORROW_STRATEGIES: Final[tuple[PvForecast, ...]] = tuple(
+    v for v in PvForecast if v.is_tomorrow
 )
 
-TOMORROW_STRATEGIES: Final[tuple[PvForecast, ...]] = (
-    PvForecast.TOMORROW_AT_6,
-    PvForecast.TOMORROW_LIVE,
-)
-
+# EXTRAP — separate axis (source/computation kind, not date axis).
+# Hardcoded list — Iter 3 will introduce ForecastStrategy-bound EXTRAP and
+# this tuple may also become derivable via an `is_extrap` flag.
 EXTRAP_STRATEGIES: Final[tuple[PvForecast, ...]] = (
     PvForecast.EXTRAP_PATTERN,
     PvForecast.EXTRAP_PROPORTIONAL,

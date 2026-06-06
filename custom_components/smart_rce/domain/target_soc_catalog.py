@@ -1,10 +1,17 @@
-"""TargetSocCatalog — aggregate owning target_soc derivation.
+"""TargetSocCatalog — aggregate orchestrating per-variant TargetSoc entities.
 
-DDD split from `PvForecasts`: catalog owns the "what battery target
-SoC results from forecast + consumption" concern (target_soc_* cache +
-consumption profiles + cons-side live signal + pre-charge gates), while
-`PvForecasts` owns the "what PV looks like" concern (forecast
-scenarios + extrapolation + PV-side live signals).
+DDD split from `PvForecasts`: this aggregate owns the "what battery
+target SOC results from forecast + consumption" concern (per-variant
+`TargetSoc` entities + consumption profiles + cons-side live signal +
+pre-charge gates), while `PvForecasts` owns the "what PV looks like"
+concern (forecast scenarios + extrapolation + PV-side live signals).
+
+`recalculate_target_soc(updater, now)` iterates **all 8 PvForecast
+variants** uniformly. Unbound variants (Iter 2: EXTRAP × 4) naturally
+produce `None` from their `TargetSoc._one()` because `variant.result`
+is `None`. EXTRAP sensors keep reading from `ExtrapolatedLive.target_soc`
+until Iter 3 binds EXTRAP strategies — at which point the catalog
+iteration is unchanged and sensors just switch source.
 """
 
 from __future__ import annotations
@@ -13,14 +20,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from .consumption_profiles import (
-    PREV_DAYS_COUNT,
-    ConsumptionProfile,
-    ConsumptionProfiles,
-)
+from .consumption_profiles import ConsumptionProfile, ConsumptionProfiles
 from .pv_forecast import TargetSocInputs
 from .pv_forecast_strategy import PvForecast
-from .target_soc import TargetSocResult, calculate_target_soc
+from .target_soc import TargetSoc, TargetSocContext
 
 if TYPE_CHECKING:
     from .pv_forecasts import PvForecasts
@@ -28,34 +31,22 @@ if TYPE_CHECKING:
 
 @dataclass
 class TargetSocCatalog:
-    """Aggregate owning TargetSoc derivation from forecast updater + consumption baselines.
+    """Per-variant target_soc orchestrator.
 
-    Reads PV forecast scenarios + PV-side live signals from
-    `PvForecasts` (collaborator). Owns the consumption side:
-    cons-side live signal + start_charge_hour gates (via `TargetSocInputs`),
-    consumption baselines (rich `ConsumptionProfiles` entity), and the
-    derived `target_soc_*` cache.
-
-    `target_soc_*` field naming: `at_6` / `live` suffix on every variant
-    (no implicit "default") — symmetric across today and tomorrow axes.
+    Holds 8 `TargetSoc` entities (one per `PvForecast` variant) plus
+    consumption profiles (rich entity with refresh lifecycle) and
+    cons-side inputs (live consumption + pre-charge gates). On each
+    `recalculate_target_soc` call iterates entities uniformly, feeding
+    each its date-axis ctx + consumption profile list.
     """
 
     _inputs: TargetSocInputs = field(default_factory=TargetSocInputs)
     consumption_profiles: ConsumptionProfiles = field(
         default_factory=lambda: ConsumptionProfiles.empty()
     )
-    target_soc_at_6: TargetSocResult | None = None
-    target_soc_live: TargetSocResult | None = None
-    target_soc_tomorrow_at_6: TargetSocResult | None = None
-    target_soc_tomorrow_live: TargetSocResult | None = None
-    target_soc_prev_days: list[TargetSocResult | None] = field(
-        default_factory=lambda: [None] * PREV_DAYS_COUNT
+    target_socs: dict[PvForecast, TargetSoc] = field(
+        default_factory=lambda: {v: TargetSoc(variant=v) for v in PvForecast}
     )
-    target_soc_tomorrow_prev_days: list[TargetSocResult | None] = field(
-        default_factory=lambda: [None] * PREV_DAYS_COUNT
-    )
-    target_soc_max: int | None = None
-    target_soc_tomorrow_max: int | None = None
 
     # — Read accessor —
 
@@ -71,13 +62,7 @@ class TargetSocCatalog:
         self._inputs = inputs
 
     def recalculate_target_soc(self, updater: PvForecasts, now: datetime) -> None:
-        """Recompute target_soc_* cache from updater forecasts + consumption profiles.
-
-        Public hook used by `ConsumptionProfiles.refresh_*` callers and by
-        application service after every updater update. The entity mutates
-        `consumption_profiles.today_profiles` / `tomorrow_profiles` in
-        place; the aggregate then refreshes its downstream `target_soc_*`
-        cache via this method.
+        """Recompute every `TargetSoc` entity from current forecasts + profiles.
 
         Today variants build now-aware profiles via
         `PvForecastResult.to_profile(today, now, pv_power_w_5min=...)`
@@ -94,111 +79,26 @@ class TargetSocCatalog:
         deficit by propagating its positive cumulative balance across the
         hour boundary into the gated post-charge window.
         """
-        sch = self._inputs.start_charge_hour_today
-        sch_t = self._inputs.start_charge_hour_tomorrow
-        live_cons_w = self._inputs.live_consumption_w
-        live_pv_w = updater.signals.pv_power_w
-        default_cons = ConsumptionProfile.flat()
-        today = now.date()
-        tomorrow = today + timedelta(days=1)
-
-        adjusted_at_6 = updater.get(PvForecast.AT_6)
-        adjusted_live = updater.get(PvForecast.LIVE)
-        adjusted_tomorrow_at_6 = updater.get(PvForecast.TOMORROW_AT_6)
-        adjusted_tomorrow_live = updater.get(PvForecast.TOMORROW_LIVE)
-
-        # Today block — needs both live signals or sets to None
-        today_ready = live_cons_w is not None and live_pv_w is not None
-        if today_ready:
-            cons_view_today = default_cons.to_view(
-                now=now, live_consumption_w=live_cons_w
-            )
-            at6_profile = (
-                adjusted_at_6.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
-                if adjusted_at_6
-                else None
-            )
-            live_profile = (
-                adjusted_live.to_profile(today, now=now, pv_power_w_5min=live_pv_w)
-                if adjusted_live
-                else None
-            )
-            self.target_soc_at_6 = (
-                calculate_target_soc(
-                    at6_profile, cons_view_today, start_charge_hour=sch
-                )
-                if at6_profile is not None
-                else None
-            )
-            self.target_soc_live = (
-                calculate_target_soc(
-                    live_profile, cons_view_today, start_charge_hour=sch
-                )
-                if live_profile is not None
-                else None
-            )
-        else:
-            live_profile = None
-            self.target_soc_at_6 = None
-            self.target_soc_live = None
-
-        # Tomorrow: full 7-13 window; no live override (current power doesn't
-        # carry across days). Plain profile snapshots — `now=None` path.
-        tomorrow_live_profile = (
-            adjusted_tomorrow_live.to_profile(tomorrow)
-            if adjusted_tomorrow_live
-            else None
+        today_ctx = TargetSocContext(
+            target_date=now.date(),
+            signals=updater.signals,
+            live_consumption_w=self._inputs.live_consumption_w,
+            start_charge_hour=self._inputs.start_charge_hour_today,
+            now=now,
         )
-        if adjusted_tomorrow_at_6:
-            self.target_soc_tomorrow_at_6 = calculate_target_soc(
-                adjusted_tomorrow_at_6.to_profile(tomorrow),
-                default_cons,
-                start_charge_hour=sch_t,
+        tomorrow_ctx = TargetSocContext(
+            target_date=now.date() + timedelta(days=1),
+            signals=updater.signals,
+            live_consumption_w=None,  # not used in is_today=False branch
+            start_charge_hour=self._inputs.start_charge_hour_tomorrow,
+            now=now,
+        )
+        flat_cons = ConsumptionProfile.flat()
+        for entity in self.target_socs.values():
+            ctx = today_ctx if entity.is_today else tomorrow_ctx
+            prev_cons = (
+                self.consumption_profiles.today_profiles
+                if entity.is_today
+                else self.consumption_profiles.tomorrow_profiles
             )
-        else:
-            self.target_soc_tomorrow_at_6 = None
-        if tomorrow_live_profile is not None:
-            self.target_soc_tomorrow_live = calculate_target_soc(
-                tomorrow_live_profile, default_cons, start_charge_hour=sch_t
-            )
-        else:
-            self.target_soc_tomorrow_live = None
-
-        # Prev-workday instrumentation. Two anchor sets:
-        # - today_profiles: anchored at today → prev_1 = yesterday workday
-        # - tomorrow_profiles: anchored at tomorrow → prev_1 = today workday
-        for i, profile in enumerate(self.consumption_profiles.today_profiles):
-            if profile is None or live_profile is None or not today_ready:
-                self.target_soc_prev_days[i] = None
-                continue
-            assert live_cons_w is not None  # narrowed by today_ready
-            self.target_soc_prev_days[i] = calculate_target_soc(
-                live_profile,
-                profile.to_view(now=now, live_consumption_w=live_cons_w),
-                start_charge_hour=sch,
-            )
-        for i, profile in enumerate(self.consumption_profiles.tomorrow_profiles):
-            if tomorrow_live_profile is not None and profile is not None:
-                self.target_soc_tomorrow_prev_days[i] = calculate_target_soc(
-                    tomorrow_live_profile,
-                    profile,
-                    start_charge_hour=sch_t,
-                )
-            else:
-                self.target_soc_tomorrow_prev_days[i] = None
-
-        today_vals = [
-            r.value
-            for r in [self.target_soc_live, *self.target_soc_prev_days]
-            if r is not None
-        ]
-        self.target_soc_max = max(today_vals) if today_vals else None
-        tmrw_vals = [
-            r.value
-            for r in [
-                self.target_soc_tomorrow_live,
-                *self.target_soc_tomorrow_prev_days,
-            ]
-            if r is not None
-        ]
-        self.target_soc_tomorrow_max = max(tmrw_vals) if tmrw_vals else None
+            entity.recalculate(flat_cons, prev_cons, ctx)

@@ -1,31 +1,42 @@
-"""Pure target SOC formula — extracted from pv_forecast.py.
+"""Pure target SOC formula + per-variant `TargetSoc` entity.
 
-Simulates cumulative energy deficit across the 7-13 window and returns
-target battery SOC% plus per-bucket trace for observability. Single
-source of truth for the formula + start_charge_hour clamp.
+`calculate_target_soc` simulates cumulative energy deficit across the
+7-13 window and returns target battery SOC% plus per-bucket trace.
+Single source of truth for the formula + start_charge_hour clamp.
+
+`TargetSoc` is the per-variant domain entity (analog to `PvForecast` —
+each variant gets its own `TargetSoc` instance held by
+`TargetSocCatalog`). Owns `flat: TargetSocResult` (default consumption
+profile, main sensor value) + `prev_days: list[TargetSocResult | None]`
+(per prev-workday consumption profiles, sensor attributes) + `max`
+aggregation. Bound 1:1 with a `PvForecast` variant.
 
 Reused by:
-- `TargetSocCatalog._recalculate_target_soc` — single (PV strategy, Cons baseline)
-  pairs (existing target_soc_* sensors).
-- `pv_forecast_extrapolation` — extrapolated live variants.
+- `TargetSocCatalog.recalculate_target_soc` — iterates per-variant
+  `TargetSoc` entities, refreshing each.
+- `pv_forecast_extrapolation` — extrapolated live variants (Iter 2:
+  still inline; Iter 3 migrates to TargetSoc).
 - `domain/target_soc_matrix.compute_matrix` — full N×M matrix of strategy
   combinations.
 
-Inputs (`PvForecastResult`, `ConsumptionProfile`) are duck-typed —
-their classes live in `pv_forecast.py` to avoid pulling the entire
-PV-forecast vocabulary here. `TYPE_CHECKING` import keeps mypy/IDE
-happy without runtime coupling.
+Inputs (`PvForecastResult`, `ConsumptionProfile`, `LivePvSignals`,
+`PvForecast`) are duck-typed via `TYPE_CHECKING` to avoid circular
+imports. Their classes live in `pv_forecast.py` /
+`consumption_profiles.py` / `pv_forecast_strategy.py`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date, datetime  # noqa: TC003 — used in TargetSocContext at runtime
 from typing import TYPE_CHECKING, Final
 
 from .bucket import Buckets
 
 if TYPE_CHECKING:
-    from .pv_forecast import ConsumptionProfile
+    from .consumption_profiles import ConsumptionProfile
+    from .pv_forecast import LivePvSignals
+    from .pv_forecast_strategy import PvForecast
 
 # --- Constants --- #
 
@@ -168,3 +179,90 @@ def calculate_target_soc(
     target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
 
     return TargetSocResult(value=max(round(target), MIN_SOC_PERCENT), buckets=buckets)
+
+
+# --- Per-variant TargetSoc entity --- #
+
+
+@dataclass(frozen=True)
+class TargetSocContext:
+    """Per-call inputs for target_soc derivation.
+
+    `TargetSocCatalog` builds two contexts (today + tomorrow) per recalc
+    and dispatches the right one to each `TargetSoc` based on
+    `entity.is_today`.
+    """
+
+    target_date: date
+    signals: LivePvSignals
+    live_consumption_w: float | None
+    start_charge_hour: int | None
+    now: datetime
+
+
+@dataclass
+class TargetSoc:
+    """Per-variant target SOC entity — analog to `PvForecast` (variant concept).
+
+    Holds `flat: TargetSocResult` (main, computed with default
+    consumption profile) + `prev_days: list[TargetSocResult | None]`
+    (one per prev-workday consumption profile, sensor attributes).
+    Owns `recalculate()`, `max` aggregation, and `is_today` forwarded
+    from its bound `PvForecast` variant.
+
+    Caller (TargetSocCatalog) passes `flat_cons` + `prev_cons` explicitly
+    to `recalculate()` — TargetSoc doesn't know about
+    `ConsumptionProfile.flat()` convention or the prev-days count.
+    """
+
+    variant: PvForecast
+    flat: TargetSocResult | None = None
+    prev_days: list[TargetSocResult | None] = field(default_factory=list)
+
+    @property
+    def is_today(self) -> bool:
+        """Forwarded from PvForecast.is_today for convenience."""
+        return self.variant.is_today
+
+    @property
+    def max(self) -> int | None:
+        """Max target_soc across flat + prev_days (None when all None)."""
+        vals = [r.value for r in [self.flat, *self.prev_days] if r is not None]
+        return max(vals) if vals else None
+
+    def recalculate(
+        self,
+        flat_cons: ConsumptionProfile,
+        prev_cons: list[ConsumptionProfile | None],
+        ctx: TargetSocContext,
+    ) -> None:
+        """Recompute flat + prev_days from the variant's current forecast result."""
+        self.flat = self._one(flat_cons, ctx)
+        self.prev_days = [
+            self._one(p, ctx) if p is not None else None for p in prev_cons
+        ]
+
+    def _one(
+        self, cons: ConsumptionProfile, ctx: TargetSocContext
+    ) -> TargetSocResult | None:
+        """Single (PV variant, consumption profile) target_soc computation."""
+        result = self.variant.result
+        if result is None:
+            return None
+        if self.variant.is_today:
+            if ctx.live_consumption_w is None or ctx.signals.pv_power_w is None:
+                return None  # fail-hard: today needs both live signals
+            pv_profile = result.to_profile(
+                ctx.target_date,
+                now=ctx.now,
+                pv_power_w_5min=ctx.signals.pv_power_w,
+            )
+            cons_view = cons.to_view(
+                now=ctx.now, live_consumption_w=ctx.live_consumption_w
+            )
+        else:
+            pv_profile = result.to_profile(ctx.target_date)
+            cons_view = cons
+        return calculate_target_soc(
+            pv_profile, cons_view, start_charge_hour=ctx.start_charge_hour
+        )
