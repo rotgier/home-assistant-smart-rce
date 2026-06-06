@@ -12,6 +12,7 @@ from custom_components.smart_rce.domain.battery_schedule import (
     NotificationLevel,
     OneShotEnded,
     OneShotOperation,
+    OneShotParams,
     OneShotStarted,
     SetOneShotEndTimeCommand,
     SetOneShotTargetSocCommand,
@@ -84,6 +85,18 @@ class TestSlotProfile:
     def test_direction_property_via_slotkind(self):
         assert SlotKind.CHARGE_MORNING.direction.is_charge
         assert SlotKind.DISCHARGE_EVENING.direction.is_discharge
+
+    def test_by_precedence_order(self):
+        """Discharge > charge; evening > morning; PM charge > AM charge."""
+        prec = SlotKind.by_precedence()
+        assert prec == [
+            SlotKind.CHARGE_MORNING,
+            SlotKind.CHARGE_AFTERNOON,
+            SlotKind.DISCHARGE_MORNING,
+            SlotKind.DISCHARGE_EVENING,
+        ]
+        # Last wins — DISCHARGE_EVENING is strongest.
+        assert prec[-1] is SlotKind.DISCHARGE_EVENING
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,6 +217,95 @@ class TestEntryPredicates:
         # 14→10: 4pp × 34 = 136 sec
         # Total: 6279 sec ≈ 104.65 min (vs empirical ~104 min — match)
         assert entry.time_to_complete_at(100.0) == pytest.approx(6279.0, abs=1.0)
+
+
+class TestEntryDisengageReason:
+    """Entry.disengage_reason — replaces module-level _disengage_reason fn."""
+
+    def _evening_enabled(self) -> BatteryScheduleEntry:
+        return BatteryScheduleEntry(
+            kind=SlotKind.DISCHARGE_EVENING,
+            enabled=True,
+            start=time(20, 0),
+            end=time(22, 0),
+            target_soc=10.0,
+        )
+
+    def test_in_window_target_not_reached_returns_none(self):
+        entry = self._evening_enabled()
+        # 21:00 inside [20, 22), SoC 50% above target 10%.
+        assert entry.disengage_reason(_at(21, 0), 50.0) is None
+
+    def test_disabled_returns_disabled(self):
+        entry = self._evening_enabled()
+        entry = entry.with_enabled(False)
+        assert entry.disengage_reason(_at(21, 0), 50.0) == "disabled"
+
+    def test_after_window_returns_window_ended(self):
+        entry = self._evening_enabled()
+        assert entry.disengage_reason(_at(22, 30), 50.0) == "window_ended"
+
+    def test_target_reached_returns_target_reached(self):
+        entry = self._evening_enabled()
+        assert entry.disengage_reason(_at(21, 0), 5.0) == "target_reached"
+
+
+class TestEntryDefaultsFactory:
+    """Entry.defaults_for_all_kinds — used by BatterySchedule field factory."""
+
+    def test_returns_all_four_kinds(self):
+        defaults = BatteryScheduleEntry.defaults_for_all_kinds()
+        assert set(defaults.keys()) == set(SlotKind)
+        # All disabled by default.
+        for entry in defaults.values():
+            assert entry.enabled is False
+
+    def test_entries_match_slotkind_defaults(self):
+        defaults = BatteryScheduleEntry.defaults_for_all_kinds()
+        # CHARGE_MORNING defaults: 02:00-06:00, target 100%.
+        morning = defaults[SlotKind.CHARGE_MORNING]
+        assert morning.start == time(2, 0)
+        assert morning.end == time(6, 0)
+        assert morning.target_soc == 100.0
+
+
+class TestOneShotParamsClassmethods:
+    """OneShotParams.defaults_by_direction + restore_by_direction."""
+
+    def test_defaults_by_direction(self):
+        defaults = OneShotParams.defaults_by_direction()
+        assert defaults[Direction.DISCHARGE].target_soc == 10.0
+        assert defaults[Direction.DISCHARGE].end_time == time(22, 0)
+        assert defaults[Direction.CHARGE].target_soc == 100.0
+        assert defaults[Direction.CHARGE].end_time == time(6, 0)
+
+    def test_restore_empty_dict_returns_defaults(self):
+        restored = OneShotParams.restore_by_direction({})
+        assert restored == OneShotParams.defaults_by_direction()
+
+    def test_restore_nested_format(self):
+        """Current format: nested under 'oneshot_params' keyed by Direction.name."""
+        data = {
+            "oneshot_params": {
+                "DISCHARGE": {"target_soc": 15.0, "end_time": "21:00"},
+                "CHARGE": {"target_soc": 95.0, "end_time": "07:30"},
+            }
+        }
+        restored = OneShotParams.restore_by_direction(data)
+        assert restored[Direction.DISCHARGE].target_soc == 15.0
+        assert restored[Direction.DISCHARGE].end_time == time(21, 0)
+        assert restored[Direction.CHARGE].target_soc == 95.0
+        assert restored[Direction.CHARGE].end_time == time(7, 30)
+
+    def test_restore_legacy_flat_format(self):
+        """Backward compat: pre-refactor flat keys."""
+        data = {
+            "discharge_oneshot_params": {"target_soc": 12.0, "end_time": "22:30"},
+            "charge_oneshot_params": {"target_soc": 99.0, "end_time": "06:30"},
+        }
+        restored = OneShotParams.restore_by_direction(data)
+        assert restored[Direction.DISCHARGE].target_soc == 12.0
+        assert restored[Direction.CHARGE].target_soc == 99.0
 
 
 class TestShouldApplyNow:

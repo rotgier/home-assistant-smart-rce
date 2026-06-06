@@ -1,20 +1,10 @@
 """Battery schedule — user/proposer intent for daily charge/discharge windows.
 
-Etap 0 skeleton: aggregate structure + override property + persistence. The
-behavior layer (matching schedule windows to current time, engaging slots,
-emitting events, producing BatteryOperation) lives in Etap 2A — added in a
-later iteration. For now the aggregate exists so that:
+`BatterySchedule` (top of file) is the aggregate root — 4 named slots × 2 days
++ optional one-shot operation. It drives `ems_interventions_blocked` (consumed
+by DodPolicy + GridExportManager) and produces `BatteryOperation` per tick.
 
-1. `BatterySchedule.ems_interventions_blocked` (derived from `_user_override`
-   + `_currently_engaging`) replaces the legacy
-   `input_boolean.ems_allow_discharge_override` as source of truth for
-   DodPolicy and GridExportManager.
-2. `BatteryScheduleRepository` persists this aggregate via own Store
-   (immediate, SAVE_DELAY=0) — survives HA crash.
-3. `SmartRceEmsOverrideSwitch` HA entity views/mutates `_user_override` via
-   the repository.
-
-Eight named slots — four per day (today / tomorrow). Slot semantics:
+Eight named slots — four per day (today / tomorrow):
 
 - CHARGE_MORNING      (cheap night/early-morning RCE hours, ~02-06)
 - DISCHARGE_MORNING   (secondary morning peak; PV+battery hybrid via DISCHARGE_PV)
@@ -23,16 +13,22 @@ Eight named slots — four per day (today / tomorrow). Slot semantics:
                        other months: 13-16. User sets window manually per season.)
 - DISCHARGE_EVENING   (primary RCE peak; voice-call notification OK)
 
-Behavior model placeholder (full implementation Etap 2A):
-- `SlotBehavior.IMMEDIATE`     — engage at `start`, stop at target_soc/end
+Behavior model:
+- `SlotBehavior.IMMEDIATE`      — engage at `start`, stop at target_soc/end
 - `SlotBehavior.DELAYED_TO_END` — delay start so target_soc is reached just
-                                  before `end`. Matches the legacy
-                                  `sec_to_end <= (soc - target) * rate` template.
+                                  before `end`. Default.
 
-Reload safety: `DISCHARGE` and `CHARGE` are module-level singletons of
-`Direction`. After `live_reload()` they are re-created as new instances —
-`is` comparison breaks. Use `direction.is_discharge` / `direction.name`
-(string-based) for comparisons that must survive reload.
+File structure note: `BatterySchedule` is at the top (main aggregate). Direction
++ RateZone come next because `SlotKind` enum values eagerly bind
+`SlotProfile(direction=Direction.X)`, and SlotProfile must precede SlotKind for
+the same reason. Within "Slot domain", `BatteryScheduleEntry` is the main concept
+but `SlotBehavior` precedes it (eager default for `behavior` field). This is the
+documented eager-eval compromise from `docs/code-style.md`.
+
+Reload safety: enum members are not stable across `live_reload()` (re-imported
+enum class gives new member identity). For comparisons that must survive reload,
+use `direction.is_discharge` / `direction.is_charge` (string-name compare) or
+`direction.name == "DISCHARGE"`.
 """
 
 from __future__ import annotations
@@ -41,61 +37,392 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from enum import Enum, StrEnum
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from .ems_operation import EmsMode, EmsOperation
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Input DTO — what the schedule needs from outside on each tick
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  BatterySchedule — aggregate root
+# ═════════════════════════════════════════════════════════════════════════════
 
 
-@dataclass(frozen=True)
-class BatteryScheduleInput:
-    """Subset of system input the schedule service needs each tick.
+@dataclass
+class BatterySchedule:
+    """Aggregate root — 4 named slots × 2 days = 8 entries + optional one-shot.
 
-    Domain VO — no HA dependencies. Application layer (Ems body) translates
-    the HA `InputState` snapshot to this via a one-line factory call.
+    Plus two state fields that drive `ems_interventions_blocked`:
+    - `_currently_engaging` (persisted): which slot is currently being executed
+      by the orchestrator (set by `compute_operation`).
+    - `_interventions_blocked_override` (persisted): user-driven manual override
+      from `switch.ems_interventions_blocked`.
 
-    Etap 0: just SoC. Future extensions:
-    - battery_power_w (dynamic rate adjustment per actual discharge rate)
-    - any future signals service needs to make decisions
+    Combined via OR with `_oneshot is not None`: any reason → interventions
+    blocked → DodPolicy stays at DoD=90 and GridExportManager steps aside.
+
+    Midnight roll: tomorrow_* → today_*, tomorrow_* reset to disabled defaults.
+    Implemented in `roll_day()`; called by `compute_operation` on date change
+    (currently disabled — today's slots persist across midnight).
     """
 
-    battery_soc: float | None
+    _today: dict[SlotKind, BatteryScheduleEntry] = field(
+        default_factory=lambda: BatteryScheduleEntry.defaults_for_all_kinds()
+    )
+    _tomorrow: dict[SlotKind, BatteryScheduleEntry] = field(
+        default_factory=lambda: BatteryScheduleEntry.defaults_for_all_kinds()
+    )
+    last_seen_date: date | None = None
+    _currently_engaging: SlotKind | None = None
+    _interventions_blocked_override: bool = False
+    # When a slot or one-shot disengages, records the timestamp so consumers
+    # can ask `is_active_this_hour(now)` — GridExportManager uses this to
+    # step aside in the clock hour following any smart_rce intervention.
+    _last_disengaged_at: datetime | None = None
+    # One-shot operation state: when set, beats every scheduled slot. Auto-
+    # clears in compute_operation on target_reached / expired, or via
+    # cancel_oneshot() on user button.
+    _oneshot: OneShotOperation | None = None
+    _oneshot_params: dict[Direction, OneShotParams] = field(
+        default_factory=lambda: OneShotParams.defaults_by_direction()
+    )
+
+    @property
+    def ems_interventions_blocked(self) -> bool:
+        """True when smart_rce's internal interventions should step aside.
+
+        Any of: user manually flipped the override, orchestrator engaged a
+        scheduled slot, or a one-shot operation is active. All three make
+        DodPolicy stay at DoD=90 and GridExportManager step aside.
+        """
+        return (
+            self._interventions_blocked_override
+            or self._currently_engaging is not None
+            or self._oneshot is not None
+        )
+
+    @property
+    def ems_interventions_blocked_override(self) -> bool:
+        """User-controlled override flag (independent of slot engagement).
+
+        The combined `ems_interventions_blocked` property is True when EITHER
+        the user flipped this override OR a slot is currently engaging. This
+        accessor exposes only the user-driven half.
+        """
+        return self._interventions_blocked_override
+
+    @property
+    def currently_engaging(self) -> SlotKind | None:
+        """Slot currently being executed by the orchestrator (None when idle)."""
+        return self._currently_engaging
+
+    @property
+    def oneshot(self) -> OneShotOperation | None:
+        """Active one-shot operation, or None when idle."""
+        return self._oneshot
+
+    def oneshot_params(self, direction: Direction) -> OneShotParams:
+        """User-editable one-shot defaults for the given direction."""
+        return self._oneshot_params[direction]
+
+    def current_operation(self) -> BatteryOperation:
+        """Read-only snapshot of the BatteryOperation implied by current state.
+
+        Precedence mirrors `compute_operation`: one-shot > scheduled engaging
+        slot > idle. Pure read — no mutation. Use case: post-reload
+        reconstruction of `BatteryScheduleService._last_op` (before first
+        `compute_operation` tick has a chance to set it). compute_operation
+        keeps its own inline branches because it also mutates aggregate state
+        on engage/disengage transitions.
+        """
+        if self._oneshot is not None:
+            return self._oneshot.to_battery_operation()
+        if self._currently_engaging is not None:
+            entry = self._today[self._currently_engaging]
+            return entry.to_battery_operation()
+        return BatteryOperation.idle()
+
+    def set_ems_interventions_blocked_override(self, value: bool) -> bool:
+        """Idempotent mutator for the user-controlled override flag — True if changed."""
+        if self._interventions_blocked_override == value:
+            return False
+        self._interventions_blocked_override = value
+        return True
+
+    def is_active_this_hour(self, now: datetime) -> bool:
+        """Return True if a slot/one-shot is engaging OR disengaged within current clock hour.
+
+        Used by `GridExportManager.update` to step aside in the post-intervention
+        cleanup window (rest of the clock hour after a smart_rce slot disengaged
+        — avoids racing the inverter back to intervention state immediately
+        after we cleaned up).
+        """
+        if self._currently_engaging is not None or self._oneshot is not None:
+            return True
+        if self._last_disengaged_at is None:
+            return False
+        return self._last_disengaged_at.replace(
+            minute=0, second=0, microsecond=0
+        ) == now.replace(minute=0, second=0, microsecond=0)
+
+    # ─── Slot accessors ───
+
+    def today_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
+        return dict(self._today)
+
+    def tomorrow_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
+        return dict(self._tomorrow)
+
+    def today_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
+        return self._today[kind]
+
+    def tomorrow_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
+        return self._tomorrow[kind]
+
+    def apply_slot_command(self, cmd: SlotCommand) -> bool:
+        """Apply a slot Command to the targeted entry. True if entry changed.
+
+        Aggregate owns the read-modify-write lifecycle and dict storage;
+        Command owns the transformation (`apply_to_entry`). New editable
+        field = new Command class (no changes here). Caller is responsible
+        for persisting via repo.save_if_changed().
+
+        `BatteryScheduleEntry.__post_init__` validates invariants (target_soc
+        range, start < end when enabled) and raises ValueError on bad input.
+        """
+        target = self._today if cmd.scope == "today" else self._tomorrow
+        current = target[cmd.kind]
+        new_entry = cmd.apply_to_entry(current)
+        if new_entry == current:
+            return False
+        target[cmd.kind] = new_entry
+        return True
+
+    # ─── One-shot lifecycle ───
+
+    def start_oneshot(
+        self, direction: Direction, now: datetime
+    ) -> list[BatteryScheduleEvent]:
+        """Start one-shot using stored params for given direction. Emits OneShotStarted.
+
+        No-op if a one-shot is already active (returns empty events list).
+        Builds end_at by combining stored `end_time` (time-of-day) with
+        `now.date()`. If end_time <= now.time(), rolls to next day — handles
+        cross-midnight ("discharge until 06:00" started at 22:00 → tomorrow
+        06:00).
+        """
+        if self._oneshot is not None:
+            return []
+        params = self._oneshot_params[direction]
+        end_at = datetime.combine(now.date(), params.end_time, tzinfo=now.tzinfo)
+        if end_at <= now:
+            end_at = end_at + timedelta(days=1)
+        op = OneShotOperation(
+            direction=direction,
+            target_soc=params.target_soc,
+            end_at=end_at,
+            started_at=now,
+        )
+        self._oneshot = op
+        return [OneShotStarted(operation=op, at=now)]
+
+    def cancel_oneshot(self, now: datetime) -> list[BatteryScheduleEvent]:
+        """Cancel active one-shot. Emits OneShotEnded(reason='cancelled') if was active."""
+        if self._oneshot is None:
+            return []
+        cancelled = self._oneshot
+        self._oneshot = None
+        self._last_disengaged_at = now
+        return [OneShotEnded(operation=cancelled, reason="cancelled", at=now)]
+
+    def apply_oneshot_command(self, cmd: OneShotParamsCommand) -> bool:
+        """Update stored one-shot params via Command. True if changed.
+
+        Aggregate owns the dict storage; Command owns the transformation
+        (`apply_to_params`). New editable param field = new Command class
+        with no change here (Open/Closed).
+        """
+        current = self._oneshot_params[cmd.direction]
+        new = cmd.apply_to_params(current)
+        if new == current:
+            return False
+        self._oneshot_params[cmd.direction] = new
+        return True
+
+    # ─── compute_operation — pure decision function w/ aggregate state mutations ───
+
+    def compute_operation(
+        self, now: datetime, current_soc: float
+    ) -> tuple[BatteryOperation, list[BatteryScheduleEvent]]:
+        """Decide BatteryOperation + emit domain events for what changed.
+
+        Mutates aggregate state:
+        - `last_seen_date` set to `now.date()` (rolls tomorrow→today on date change)
+        - `_currently_engaging` flipped on engage/disengage
+
+        Hysteresis: once `_currently_engaging` is set, keep engaging that slot
+        until target_reached OR out-of-window OR slot disabled. Prevents
+        flicker when SoC change rate diverges from the rate estimate.
+
+        Precedence (when no current engagement, multiple slots in window):
+        DISCHARGE_EVENING > DISCHARGE_MORNING > CHARGE_AFTERNOON > CHARGE_MORNING
+        (see `SlotKind.by_precedence()` — last wins as strongest).
+        """
+        events: list[BatteryScheduleEvent] = []
+
+        # 1. Day roll detection
+        # TODO: temporarily disabled — today's slots persist across midnight so
+        # user's customizations apply every day until explicit edit. Tomorrow
+        # tab in UI is currently vestigial. Switch to Option B (tomorrow =
+        # deepcopy(today) on roll) when we want tomorrow-overrides back.
+        if self.last_seen_date is not None and self.last_seen_date != now.date():
+            events.append(DayRolled(from_date=self.last_seen_date, to_date=now.date()))
+            # self.roll_day()  # disabled — see TODO above
+        self.last_seen_date = now.date()
+
+        # 2. One-shot — precedence #0 (beats every scheduled slot).
+        # Auto-clears on target_reached/expired; falls through to scheduled
+        # logic after clearing so a scheduled slot can immediately take over
+        # if it's in-window.
+        if self._oneshot is not None:
+            reason = self._oneshot_disengage_reason(now, current_soc)
+            if reason is None:
+                return self._oneshot.to_battery_operation(), events
+            events.append(OneShotEnded(operation=self._oneshot, reason=reason, at=now))
+            self._oneshot = None
+            self._last_disengaged_at = now
+
+        # 3. Already engaging? Stick until target_reached / window_ended / disabled.
+        if self._currently_engaging is not None:
+            entry = self.today_entry_for(self._currently_engaging)
+            disengage_reason = entry.disengage_reason(now, current_soc)
+            if disengage_reason is None:
+                # Stay engaged — sticky hysteresis trumps DELAYED_TO_END flicker.
+                return entry.to_battery_operation(), events
+            events.append(
+                SlotDisengaged(
+                    slot=self._currently_engaging,
+                    soc=current_soc,
+                    at=now,
+                    reason=disengage_reason,
+                )
+            )
+            self._currently_engaging = None
+            self._last_disengaged_at = now
+            # Fall through — another slot might be ready to engage immediately.
+
+        # 4. Find highest-precedence slot that should engage NOW.
+        entry = self._find_engaging_entry(now, current_soc)
+        if entry is not None:
+            events.append(SlotEngaged(slot=entry.kind, soc=current_soc, at=now))
+            self._currently_engaging = entry.kind
+            return entry.to_battery_operation(), events
+
+        return BatteryOperation.idle(), events
+
+    def _find_engaging_entry(
+        self, now: datetime, current_soc: float
+    ) -> BatteryScheduleEntry | None:
+        today = self.today_entries()
+        engaging = [
+            today[k]
+            for k in SlotKind.by_precedence()
+            if today[k].should_apply_now(now, current_soc)
+        ]
+        return engaging[-1] if engaging else None
+
+    def _oneshot_disengage_reason(
+        self, now: datetime, current_soc: float
+    ) -> OneShotDisengageReason | None:
+        if self._oneshot is None:
+            return None
+        if self._oneshot.is_expired(now):
+            return "expired"
+        if self._oneshot.target_reached(current_soc):
+            return "target_reached"
+        return None
+
+    def roll_day(self) -> None:
+        """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
+
+        Idempotent — orchestrator should compare `last_seen_date` and call
+        once per midnight crossing.
+        """
+        self._today = self._tomorrow
+        self._tomorrow = BatteryScheduleEntry.defaults_for_all_kinds()
+
+    # ─── Persistence ───
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "today": {k.name: e.to_dict() for k, e in self._today.items()},
+            "tomorrow": {k.name: e.to_dict() for k, e in self._tomorrow.items()},
+            "last_seen_date": (
+                self.last_seen_date.isoformat() if self.last_seen_date else None
+            ),
+            "currently_engaging": (
+                self._currently_engaging.name if self._currently_engaging else None
+            ),
+            "interventions_blocked_override": self._interventions_blocked_override,
+            "last_disengaged_at": (
+                self._last_disengaged_at.isoformat()
+                if self._last_disengaged_at is not None
+                else None
+            ),
+            "oneshot": self._oneshot.to_dict() if self._oneshot is not None else None,
+            "oneshot_params": {
+                d.name: p.to_dict() for d, p in self._oneshot_params.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BatterySchedule:
+        def _entry(scope: str, kind: SlotKind) -> BatteryScheduleEntry:
+            payload = (data.get(scope) or {}).get(kind.name)
+            if payload is None:
+                return BatteryScheduleEntry.default_for(kind)
+            return BatteryScheduleEntry.from_dict(payload, kind=kind)
+
+        last_seen_date: date | None = None
+        if raw := data.get("last_seen_date"):
+            try:
+                last_seen_date = date.fromisoformat(raw)
+            except ValueError:
+                last_seen_date = None
+
+        currently_engaging: SlotKind | None = None
+        if engaging_name := data.get("currently_engaging"):
+            try:
+                currently_engaging = SlotKind[engaging_name]
+            except KeyError:
+                currently_engaging = None
+
+        last_disengaged_at: datetime | None = None
+        if raw := data.get("last_disengaged_at"):
+            try:
+                last_disengaged_at = datetime.fromisoformat(raw)
+            except (TypeError, ValueError):
+                last_disengaged_at = None
+
+        oneshot: OneShotOperation | None = None
+        if raw_oneshot := data.get("oneshot"):
+            oneshot = OneShotOperation.from_dict(raw_oneshot)
+
+        return cls(
+            _today={k: _entry("today", k) for k in SlotKind},
+            _tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
+            last_seen_date=last_seen_date,
+            _currently_engaging=currently_engaging,
+            _interventions_blocked_override=bool(
+                data.get("interventions_blocked_override", False)
+            ),
+            _last_disengaged_at=last_disengaged_at,
+            _oneshot=oneshot,
+            _oneshot_params=OneShotParams.restore_by_direction(data),
+        )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Enums
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class NotificationLevel(StrEnum):
-    """Telegram notification urgency.
-
-    NORMAL → telegram + persistent notification (reuse existing
-             `script.notify_alert` with voice variable = False).
-    EMERGENCY → adds voice call. OK during evening discharge (user is awake),
-                NOT for morning slots (would wake them up).
-    """
-
-    NORMAL = "NORMAL"
-    EMERGENCY = "EMERGENCY"
-
-
-class SlotBehavior(StrEnum):
-    """When inside `[start, end)` window, when to actually engage EMS."""
-
-    IMMEDIATE = "IMMEDIATE"
-    """Start ASAP at `start`. Stops on target_soc or end."""
-
-    DELAYED_TO_END = "DELAYED_TO_END"
-    """Delay engagement so target_soc is reached just before `end`. Default."""
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Direction — singleton per battery flow direction
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  Direction + rate model (eager deps of SlotKind below)
+# ═════════════════════════════════════════════════════════════════════════════
 
 
 @dataclass(frozen=True)
@@ -202,9 +529,224 @@ class Direction(Enum):
         return sum(z.overlap_seconds(low, high) for z in self.rate_zones)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SlotProfile + SlotKind
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  Slot domain — entry (main) + supporting kind/profile/behavior/notification
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class SlotBehavior(StrEnum):
+    """When inside `[start, end)` window, when to actually engage EMS."""
+
+    IMMEDIATE = "IMMEDIATE"
+    """Start ASAP at `start`. Stops on target_soc or end."""
+
+    DELAYED_TO_END = "DELAYED_TO_END"
+    """Delay engagement so target_soc is reached just before `end`. Default."""
+
+
+class NotificationLevel(StrEnum):
+    """Telegram notification urgency.
+
+    NORMAL → telegram + persistent notification (reuse existing
+             `script.notify_alert` with voice variable = False).
+    EMERGENCY → adds voice call. OK during evening discharge (user is awake),
+                NOT for morning slots (would wake them up).
+    """
+
+    NORMAL = "NORMAL"
+    EMERGENCY = "EMERGENCY"
+
+
+@dataclass(frozen=True)
+class BatteryScheduleEntry:
+    """Single time-windowed battery operation slot. Immutable value object.
+
+    `kind` is structural (tied to slot position in the aggregate). User edits
+    the other four fields via UI.
+
+    Validation (raises `ValueError`):
+    - `0 <= target_soc <= 100`
+    - `start < end` when `enabled=True`
+    """
+
+    kind: SlotKind
+    enabled: bool = False
+    start: time = time(0, 0)
+    end: time = time(0, 0)
+    target_soc: float = 10.0
+    behavior: SlotBehavior = SlotBehavior.DELAYED_TO_END
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.target_soc <= 100.0:
+            raise ValueError(f"target_soc {self.target_soc} outside [0, 100]")
+        if self.enabled and self.start >= self.end:
+            raise ValueError(
+                f"start {self.start} must be before end {self.end} when enabled"
+            )
+
+    # ─── Factories ───
+
+    @classmethod
+    def default_for(
+        cls, kind: SlotKind, *, enabled: bool = False
+    ) -> BatteryScheduleEntry:
+        start, end = kind.profile.default_window
+        return cls(
+            kind=kind,
+            enabled=enabled,
+            start=start,
+            end=end,
+            target_soc=kind.profile.default_target_soc,
+        )
+
+    @classmethod
+    def defaults_for_all_kinds(cls) -> dict[SlotKind, BatteryScheduleEntry]:
+        """Disabled-default entry for every `SlotKind` — used by aggregate factory."""
+        return {k: cls.default_for(k) for k in SlotKind}
+
+    # ─── with_* mutators (immutable replace) ───
+
+    def with_enabled(self, value: bool) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, enabled=value)
+
+    def with_start(self, value: time) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, start=value)
+
+    def with_end(self, value: time) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, end=value)
+
+    def with_target_soc(self, value: float) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, target_soc=value)
+
+    def with_behavior(self, value: SlotBehavior) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, behavior=value)
+
+    # ─── Predicates (window + target + lifecycle) ───
+
+    def is_in_window(self, now: datetime) -> bool:
+        """Return True if `now` falls inside `[start, end)`. Ignores `enabled`."""
+        return self.start <= now.time() < self.end
+
+    def soc_target_reached(self, current_soc: float) -> bool:
+        """Return True when no further work needed for this direction.
+
+        Discharge → SoC <= target. Charge → SoC >= target.
+        """
+        if self.kind.direction.is_discharge:
+            return current_soc <= self.target_soc
+        return current_soc >= self.target_soc
+
+    def time_to_complete_at(self, current_soc: float) -> float:
+        """Seconds needed to reach target_soc via zone-aware rate model.
+
+        Delegates to `direction.seconds_for_soc_traversal` — direction-agnostic
+        since it normalizes start/end internally. Returns 0 if already at target.
+
+        Zone-aware vs constant 75 sec/pp matters for full-depth discharges
+        (100→10%): empirical 104 min vs constant-model 112.5 min — DELAYED
+        engagement starts ~8 min later, less time at extreme SoC.
+        """
+        if self.soc_target_reached(current_soc):
+            return 0.0
+        return self.kind.direction.seconds_for_soc_traversal(
+            current_soc, self.target_soc
+        )
+
+    def sec_until_end(self, now: datetime) -> float:
+        """Seconds from `now` until today's `end` time. Negative if already past."""
+        end_dt = datetime.combine(now.date(), self.end, tzinfo=now.tzinfo)
+        return (end_dt - now).total_seconds()
+
+    def should_apply_now(self, now: datetime, current_soc: float) -> bool:
+        """Whether orchestrator should actively engage EMS mode at `now`.
+
+        Returns False if:
+        - slot is disabled
+        - `now` outside `[start, end)`
+        - `target_soc` already reached
+        - `behavior=DELAYED_TO_END` and remaining window time still exceeds
+          the projected time-to-complete
+
+        `behavior=IMMEDIATE` → True as soon as inside window with target not
+        reached.
+
+        NOTE: orchestrator applies hysteresis on top — once engaged, sticks
+        until target_reached or out of window, even if `should_apply_now`
+        flickers (e.g. SoC drops faster than expected). See
+        `BatterySchedule.compute_operation`.
+        """
+        if not self.enabled:
+            return False
+        if not self.is_in_window(now):
+            return False
+        if self.soc_target_reached(current_soc):
+            return False
+        if self.behavior == SlotBehavior.IMMEDIATE:
+            return True
+        # DELAYED_TO_END: engage only when remaining window time is just
+        # enough to hit target at the assumed rate.
+        return self.sec_until_end(now) <= self.time_to_complete_at(current_soc)
+
+    def disengage_reason(self, now: datetime, soc: float) -> DisengageReason | None:
+        """Return None if entry should keep engaging; otherwise the reason to stop.
+
+        Used by `BatterySchedule.compute_operation` to decide whether to hold a
+        currently-engaging slot (None → stay) or release it (reason → emit
+        SlotDisengaged event with the same reason).
+        """
+        if not self.enabled:
+            return "disabled"
+        if not self.is_in_window(now):
+            return "window_ended"
+        if self.soc_target_reached(soc):
+            return "target_reached"
+        return None
+
+    # ─── Output + serialization ───
+
+    def to_battery_operation(self) -> BatteryOperation:
+        """Build BatteryOperation (output) from this slot entry.
+
+        Caller (aggregate `compute_operation` / `current_operation`) uses this
+        to translate engaged slot → ems_op + needs_charge_toggle without
+        BatteryOperation having to know Entry's internals.
+        """
+        d = self.kind.direction
+        return BatteryOperation(
+            ems_op=EmsOperation(
+                ems_mode=d.ems_mode,
+                power_limit_w=d.power_limit_w,
+                source="schedule",
+                reason=f"slot={self.kind.name}",
+            ),
+            needs_charge_toggle=d.needs_charge_toggle,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "start": self.start.isoformat(timespec="minutes"),
+            "end": self.end.isoformat(timespec="minutes"),
+            "target_soc": self.target_soc,
+            "behavior": self.behavior.value,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], *, kind: SlotKind) -> BatteryScheduleEntry:
+        defaults = kind.profile
+        start, end = defaults.default_window
+        return cls(
+            kind=kind,
+            enabled=bool(data.get("enabled", False)),
+            start=time.fromisoformat(
+                data.get("start", start.isoformat(timespec="minutes"))
+            ),
+            end=time.fromisoformat(data.get("end", end.isoformat(timespec="minutes"))),
+            target_soc=float(data.get("target_soc", defaults.default_target_soc)),
+            behavior=SlotBehavior(
+                data.get("behavior", SlotBehavior.DELAYED_TO_END.value)
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -223,7 +765,11 @@ class SlotProfile:
 
 
 class SlotKind(Enum):
-    """Battery schedule slot kinds. Each value is its `SlotProfile`."""
+    """Battery schedule slot kinds. Each value is its `SlotProfile`.
+
+    Precedence (last wins) — see `by_precedence()` classmethod. Declaration order
+    here is alphabetical-by-category and does NOT equal precedence.
+    """
 
     CHARGE_MORNING = SlotProfile(
         direction=Direction.CHARGE,
@@ -265,177 +811,26 @@ class SlotKind(Enum):
     def direction(self) -> Direction:
         return self.value.direction
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# BatteryScheduleEntry — single slot value object (immutable)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class BatteryScheduleEntry:
-    """Single time-windowed battery operation slot. Immutable value object.
-
-    `kind` is structural (tied to slot position in the aggregate). User edits
-    the other four fields via UI.
-
-    Validation (raises `ValueError`):
-    - `0 <= target_soc <= 100`
-    - `start < end` when `enabled=True`
-    """
-
-    kind: SlotKind
-    enabled: bool = False
-    start: time = time(0, 0)
-    end: time = time(0, 0)
-    target_soc: float = 10.0
-    behavior: SlotBehavior = SlotBehavior.DELAYED_TO_END
-
-    def __post_init__(self) -> None:
-        if not 0.0 <= self.target_soc <= 100.0:
-            raise ValueError(f"target_soc {self.target_soc} outside [0, 100]")
-        if self.enabled and self.start >= self.end:
-            raise ValueError(
-                f"start {self.start} must be before end {self.end} when enabled"
-            )
-
     @classmethod
-    def default_for(
-        cls, kind: SlotKind, *, enabled: bool = False
-    ) -> BatteryScheduleEntry:
-        start, end = kind.profile.default_window
-        return cls(
-            kind=kind,
-            enabled=enabled,
-            start=start,
-            end=end,
-            target_soc=kind.profile.default_target_soc,
-        )
+    def by_precedence(cls) -> list[SlotKind]:
+        """Precedence order — last wins when multiple slots in window.
 
-    def with_enabled(self, value: bool) -> BatteryScheduleEntry:
-        return dataclasses.replace(self, enabled=value)
-
-    def with_start(self, value: time) -> BatteryScheduleEntry:
-        return dataclasses.replace(self, start=value)
-
-    def with_end(self, value: time) -> BatteryScheduleEntry:
-        return dataclasses.replace(self, end=value)
-
-    def with_target_soc(self, value: float) -> BatteryScheduleEntry:
-        return dataclasses.replace(self, target_soc=value)
-
-    def with_behavior(self, value: SlotBehavior) -> BatteryScheduleEntry:
-        return dataclasses.replace(self, behavior=value)
-
-    def to_battery_operation(self) -> BatteryOperation:
-        """Build BatteryOperation (output) from this slot entry.
-
-        Caller (aggregate `compute_operation` / `current_operation`) uses this
-        to translate engaged slot → ems_op + needs_charge_toggle without
-        BatteryOperation having to know Entry's internals.
+        Rules: Discharge beats charge (RCE peaks are time-critical; charging
+        can wait). Evening discharge beats morning (typically higher RCE
+        peak). Afternoon charge beats morning charge (closer to use, less
+        time wasted holding).
         """
-        d = self.kind.direction
-        return BatteryOperation(
-            ems_op=EmsOperation(
-                ems_mode=d.ems_mode,
-                power_limit_w=d.power_limit_w,
-                source="schedule",
-                reason=f"slot={self.kind.name}",
-            ),
-            needs_charge_toggle=d.needs_charge_toggle,
-        )
-
-    # ─── window + target predicates ───
-
-    def is_in_window(self, now: datetime) -> bool:
-        """Return True if `now` falls inside `[start, end)`. Ignores `enabled`."""
-        return self.start <= now.time() < self.end
-
-    def soc_target_reached(self, current_soc: float) -> bool:
-        """Return True when no further work needed for this direction.
-
-        Discharge → SoC <= target. Charge → SoC >= target.
-        """
-        if self.kind.direction.is_discharge:
-            return current_soc <= self.target_soc
-        return current_soc >= self.target_soc
-
-    def time_to_complete_at(self, current_soc: float) -> float:
-        """Seconds needed to reach target_soc via zone-aware rate model.
-
-        Delegates to `direction.seconds_for_soc_traversal` — direction-agnostic
-        since it normalizes start/end internally. Returns 0 if already at target.
-
-        Zone-aware vs constant 75 sec/pp matters for full-depth discharges
-        (100→10%): empirical 104 min vs constant-model 112.5 min — DELAYED
-        engagement starts ~8 min later, less time at extreme SoC.
-        """
-        if self.soc_target_reached(current_soc):
-            return 0.0
-        return self.kind.direction.seconds_for_soc_traversal(
-            current_soc, self.target_soc
-        )
-
-    def should_apply_now(self, now: datetime, current_soc: float) -> bool:
-        """Whether orchestrator should actively engage EMS mode at `now`.
-
-        Returns False if:
-        - slot is disabled
-        - `now` outside `[start, end)`
-        - `target_soc` already reached
-        - `behavior=DELAYED_TO_END` and remaining window time still exceeds
-          the projected time-to-complete
-
-        `behavior=IMMEDIATE` → True as soon as inside window with target not
-        reached.
-
-        NOTE: orchestrator applies hysteresis on top — once engaged, sticks
-        until target_reached or out of window, even if `should_apply_now`
-        flickers (e.g. SoC drops faster than expected). See
-        `BatterySchedule.compute_operation`.
-        """
-        if not self.enabled:
-            return False
-        if not self.is_in_window(now):
-            return False
-        if self.soc_target_reached(current_soc):
-            return False
-        if self.behavior == SlotBehavior.IMMEDIATE:
-            return True
-        # DELAYED_TO_END: engage only when remaining window time is just
-        # enough to hit target at the assumed rate.
-        sec_to_end = _sec_until_today(now, self.end)
-        return sec_to_end <= self.time_to_complete_at(current_soc)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "start": self.start.isoformat(timespec="minutes"),
-            "end": self.end.isoformat(timespec="minutes"),
-            "target_soc": self.target_soc,
-            "behavior": self.behavior.value,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any], *, kind: SlotKind) -> BatteryScheduleEntry:
-        defaults = kind.profile
-        start, end = defaults.default_window
-        return cls(
-            kind=kind,
-            enabled=bool(data.get("enabled", False)),
-            start=time.fromisoformat(
-                data.get("start", start.isoformat(timespec="minutes"))
-            ),
-            end=time.fromisoformat(data.get("end", end.isoformat(timespec="minutes"))),
-            target_soc=float(data.get("target_soc", defaults.default_target_soc)),
-            behavior=SlotBehavior(
-                data.get("behavior", SlotBehavior.DELAYED_TO_END.value)
-            ),
-        )
+        return [
+            cls.CHARGE_MORNING,
+            cls.CHARGE_AFTERNOON,
+            cls.DISCHARGE_MORNING,
+            cls.DISCHARGE_EVENING,
+        ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# OneShotOperation — synthetic ad-hoc engagement (highest precedence)
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  One-shot — synthetic ad-hoc engagement (highest precedence)
+# ═════════════════════════════════════════════════════════════════════════════
 
 
 OneShotDisengageReason = Literal["target_reached", "expired", "cancelled"]
@@ -541,6 +936,54 @@ class OneShotParams:
     def with_end_time(self, value: time) -> OneShotParams:
         return dataclasses.replace(self, end_time=value)
 
+    @classmethod
+    def defaults_by_direction(cls) -> dict[Direction, OneShotParams]:
+        """Build default params per direction — used by aggregate's field factory.
+
+        DISCHARGE: end at 22:00 with target SoC 10% (evening peak default).
+        CHARGE: end at 06:00 with target SoC 100% (overnight cheap-rate fill).
+        """
+        return {
+            Direction.DISCHARGE: cls(target_soc=10.0, end_time=time(22, 0)),
+            Direction.CHARGE: cls(target_soc=100.0, end_time=time(6, 0)),
+        }
+
+    @classmethod
+    def restore_by_direction(
+        cls, data: dict[str, Any]
+    ) -> dict[Direction, OneShotParams]:
+        """Restore params dict from persisted state with backward compat.
+
+        Preferred format (current): nested under "oneshot_params" keyed by
+        `Direction.name`. Falls back to legacy flat keys
+        ("discharge_oneshot_params" / "charge_oneshot_params") from
+        pre-dict-refactor deploys. Used by `BatterySchedule.from_dict`.
+        """
+        defaults = cls.defaults_by_direction()
+        nested = data.get("oneshot_params")
+        if nested:
+            return {
+                Direction.DISCHARGE: cls.from_dict(
+                    nested.get("DISCHARGE", {}),
+                    default=defaults[Direction.DISCHARGE],
+                ),
+                Direction.CHARGE: cls.from_dict(
+                    nested.get("CHARGE", {}),
+                    default=defaults[Direction.CHARGE],
+                ),
+            }
+        # Legacy flat keys — restore from pre-refactor format if present.
+        return {
+            Direction.DISCHARGE: cls.from_dict(
+                data.get("discharge_oneshot_params", {}),
+                default=defaults[Direction.DISCHARGE],
+            ),
+            Direction.CHARGE: cls.from_dict(
+                data.get("charge_oneshot_params", {}),
+                default=defaults[Direction.CHARGE],
+            ),
+        }
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "target_soc": self.target_soc,
@@ -562,9 +1005,9 @@ class OneShotParams:
             return default
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Commands — mutating actions for slot entries (Command pattern)
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  Commands — mutating actions (Command pattern, Open/Closed)
+# ═════════════════════════════════════════════════════════════════════════════
 
 
 Scope = Literal["today", "tomorrow"]
@@ -635,11 +1078,6 @@ class SetSlotBehaviorCommand:
         return entry.with_behavior(self.value)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# One-shot Commands — operate on aggregate (lifecycle) or params (apply_to_params)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @dataclass(frozen=True)
 class StartOneShotCommand:
     """Execute one-shot operation in given direction using stored params."""
@@ -684,469 +1122,24 @@ class SetOneShotEndTimeCommand:
         return params.with_end_time(self.value)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BatterySchedule — aggregate root
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  Inputs / Outputs
+# ═════════════════════════════════════════════════════════════════════════════
 
 
-def _default_today() -> dict[SlotKind, BatteryScheduleEntry]:
-    return {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
+@dataclass(frozen=True)
+class BatteryScheduleInput:
+    """Subset of system input the schedule service needs each tick.
 
+    Domain VO — no HA dependencies. Application layer (Ems body) translates
+    the HA `InputState` snapshot to this via a one-line factory call.
 
-def _default_tomorrow() -> dict[SlotKind, BatteryScheduleEntry]:
-    return {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
-
-
-def _default_oneshot_params() -> dict[Direction, OneShotParams]:
-    return {
-        Direction.DISCHARGE: OneShotParams(target_soc=10.0, end_time=time(22, 0)),
-        Direction.CHARGE: OneShotParams(target_soc=100.0, end_time=time(6, 0)),
-    }
-
-
-def _restore_oneshot_params(
-    data: dict[str, Any],
-) -> dict[Direction, OneShotParams]:
-    """Restore one-shot params dict from persisted state with backward compat.
-
-    Preferred format (current): nested under "oneshot_params" keyed by
-    Direction.name. Falls back to legacy flat keys ("discharge_oneshot_params"
-    / "charge_oneshot_params") from pre-dict-refactor deploys.
-    """
-    defaults = _default_oneshot_params()
-    nested = data.get("oneshot_params")
-    if nested:
-        return {
-            Direction.DISCHARGE: OneShotParams.from_dict(
-                nested.get("DISCHARGE", {}), default=defaults[Direction.DISCHARGE]
-            ),
-            Direction.CHARGE: OneShotParams.from_dict(
-                nested.get("CHARGE", {}), default=defaults[Direction.CHARGE]
-            ),
-        }
-    # Legacy flat keys — restore from pre-refactor format if present.
-    return {
-        Direction.DISCHARGE: OneShotParams.from_dict(
-            data.get("discharge_oneshot_params", {}),
-            default=defaults[Direction.DISCHARGE],
-        ),
-        Direction.CHARGE: OneShotParams.from_dict(
-            data.get("charge_oneshot_params", {}),
-            default=defaults[Direction.CHARGE],
-        ),
-    }
-
-
-@dataclass
-class BatterySchedule:
-    """Aggregate root — 4 named slots × 2 days = 8 entries.
-
-    Plus two state fields that drive `ems_interventions_blocked`:
-    - `_currently_engaging` (persisted): which slot is currently being executed
-      by the orchestrator (set by `compute_operation` — Etap 2A).
-    - `_interventions_blocked_override` (persisted): user-driven manual override
-      from `switch.ems_interventions_blocked`.
-
-    The two combine via OR: any reason → interventions blocked → DodPolicy
-    stays at DoD=90.
-
-    Midnight roll: tomorrow_* → today_*, tomorrow_* reset to disabled defaults.
-    Implemented in `roll_day()`; called by compute_operation in Etap 2A.
+    Etap 0: just SoC. Future extensions:
+    - battery_power_w (dynamic rate adjustment per actual discharge rate)
+    - any future signals service needs to make decisions
     """
 
-    _today: dict[SlotKind, BatteryScheduleEntry] = field(default_factory=_default_today)
-    _tomorrow: dict[SlotKind, BatteryScheduleEntry] = field(
-        default_factory=_default_tomorrow
-    )
-    last_seen_date: date | None = None
-    _currently_engaging: SlotKind | None = None
-    _interventions_blocked_override: bool = False
-    # When a slot or one-shot disengages, records the timestamp so consumers
-    # can ask `is_active_this_hour(now)` — GridExportManager uses this to
-    # step aside in the clock hour following any smart_rce intervention.
-    _last_disengaged_at: datetime | None = None
-    # One-shot operation state: when set, beats every scheduled slot. Auto-
-    # clears in compute_operation on target_reached / expired, or via
-    # cancel_oneshot() on user button.
-    _oneshot: OneShotOperation | None = None
-    _oneshot_params: dict[Direction, OneShotParams] = field(
-        default_factory=_default_oneshot_params
-    )
-
-    @property
-    def ems_interventions_blocked(self) -> bool:
-        """True when smart_rce's internal interventions should step aside.
-
-        Any of: user manually flipped the override, orchestrator engaged a
-        scheduled slot, or a one-shot operation is active. All three make
-        DodPolicy stay at DoD=90 and GridExportManager step aside.
-        """
-        return (
-            self._interventions_blocked_override
-            or self._currently_engaging is not None
-            or self._oneshot is not None
-        )
-
-    @property
-    def ems_interventions_blocked_override(self) -> bool:
-        """User-controlled override flag (independent of slot engagement).
-
-        The combined `ems_interventions_blocked` property is True when EITHER
-        the user flipped this override OR a slot is currently engaging. This
-        accessor exposes only the user-driven half.
-        """
-        return self._interventions_blocked_override
-
-    @property
-    def currently_engaging(self) -> SlotKind | None:
-        """Slot currently being executed by the orchestrator (None when idle)."""
-        return self._currently_engaging
-
-    @property
-    def oneshot(self) -> OneShotOperation | None:
-        """Active one-shot operation, or None when idle."""
-        return self._oneshot
-
-    def oneshot_params(self, direction: Direction) -> OneShotParams:
-        """User-editable one-shot defaults for the given direction."""
-        return self._oneshot_params[direction]
-
-    def current_operation(self) -> BatteryOperation:
-        """Read-only snapshot of the BatteryOperation implied by current state.
-
-        Precedence mirrors `compute_operation`: one-shot > scheduled engaging
-        slot > idle. Pure read — no mutation. Use case: post-reload
-        reconstruction of `BatteryScheduleService._last_op` (before first
-        `compute_operation` tick has a chance to set it). compute_operation
-        keeps its own inline branches because it also mutates aggregate state
-        on engage/disengage transitions.
-        """
-        if self._oneshot is not None:
-            return self._oneshot.to_battery_operation()
-        if self._currently_engaging is not None:
-            entry = self._today[self._currently_engaging]
-            return entry.to_battery_operation()
-        return BatteryOperation.idle()
-
-    def set_ems_interventions_blocked_override(self, value: bool) -> bool:
-        """Idempotent mutator for the user-controlled override flag — True if changed."""
-        if self._interventions_blocked_override == value:
-            return False
-        self._interventions_blocked_override = value
-        return True
-
-    def is_active_this_hour(self, now: datetime) -> bool:
-        """Return True if a slot/one-shot is engaging OR disengaged within current clock hour.
-
-        Used by `GridExportManager.update` to step aside in the post-intervention
-        cleanup window (rest of the clock hour after a smart_rce slot disengaged
-        — avoids racing the inverter back to intervention state immediately
-        after we cleaned up).
-        """
-        if self._currently_engaging is not None or self._oneshot is not None:
-            return True
-        if self._last_disengaged_at is None:
-            return False
-        return self._last_disengaged_at.replace(
-            minute=0, second=0, microsecond=0
-        ) == now.replace(minute=0, second=0, microsecond=0)
-
-    # ─── One-shot lifecycle ───
-
-    def start_oneshot(
-        self, direction: Direction, now: datetime
-    ) -> list[BatteryScheduleEvent]:
-        """Start one-shot using stored params for given direction. Emits OneShotStarted.
-
-        No-op if a one-shot is already active (returns empty events list).
-        Builds end_at by combining stored `end_time` (time-of-day) with
-        `now.date()`. If end_time <= now.time(), rolls to next day — handles
-        cross-midnight ("discharge until 06:00" started at 22:00 → tomorrow
-        06:00).
-        """
-        if self._oneshot is not None:
-            return []
-        params = self._oneshot_params[direction]
-        end_at = datetime.combine(now.date(), params.end_time, tzinfo=now.tzinfo)
-        if end_at <= now:
-            end_at = end_at + timedelta(days=1)
-        op = OneShotOperation(
-            direction=direction,
-            target_soc=params.target_soc,
-            end_at=end_at,
-            started_at=now,
-        )
-        self._oneshot = op
-        return [OneShotStarted(operation=op, at=now)]
-
-    def cancel_oneshot(self, now: datetime) -> list[BatteryScheduleEvent]:
-        """Cancel active one-shot. Emits OneShotEnded(reason='cancelled') if was active."""
-        if self._oneshot is None:
-            return []
-        cancelled = self._oneshot
-        self._oneshot = None
-        self._last_disengaged_at = now
-        return [OneShotEnded(operation=cancelled, reason="cancelled", at=now)]
-
-    def apply_oneshot_command(self, cmd: OneShotParamsCommand) -> bool:
-        """Update stored one-shot params via Command. True if changed.
-
-        Aggregate owns the dict storage; Command owns the transformation
-        (`apply_to_params`). New editable param field = new Command class
-        with no change here (Open/Closed).
-        """
-        current = self._oneshot_params[cmd.direction]
-        new = cmd.apply_to_params(current)
-        if new == current:
-            return False
-        self._oneshot_params[cmd.direction] = new
-        return True
-
-    def today_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
-        return dict(self._today)
-
-    def tomorrow_entries(self) -> dict[SlotKind, BatteryScheduleEntry]:
-        return dict(self._tomorrow)
-
-    def today_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
-        return self._today[kind]
-
-    def tomorrow_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
-        return self._tomorrow[kind]
-
-    def apply_slot_command(self, cmd: SlotCommand) -> bool:
-        """Apply a slot Command to the targeted entry. True if entry changed.
-
-        Aggregate owns the read-modify-write lifecycle and dict storage;
-        Command owns the transformation (`apply_to_entry`). New editable
-        field = new Command class (no changes here). Caller is responsible
-        for persisting via repo.save_if_changed().
-
-        `BatteryScheduleEntry.__post_init__` validates invariants (target_soc
-        range, start < end when enabled) and raises ValueError on bad input.
-        """
-        target = self._today if cmd.scope == "today" else self._tomorrow
-        current = target[cmd.kind]
-        new_entry = cmd.apply_to_entry(current)
-        if new_entry == current:
-            return False
-        target[cmd.kind] = new_entry
-        return True
-
-    # ─── compute_operation — pure decision function w/ aggregate state mutations ───
-
-    def compute_operation(
-        self, now: datetime, current_soc: float
-    ) -> tuple[BatteryOperation, list[BatteryScheduleEvent]]:
-        """Decide BatteryOperation + emit domain events for what changed.
-
-        Mutates aggregate state:
-        - `last_seen_date` set to `now.date()` (rolls tomorrow→today on date change)
-        - `_currently_engaging` flipped on engage/disengage
-
-        Hysteresis: once `_currently_engaging` is set, keep engaging that slot
-        until target_reached OR out-of-window OR slot disabled. Prevents
-        flicker when SoC change rate diverges from the rate estimate.
-
-        Precedence (when no current engagement, multiple slots in window):
-        DISCHARGE_EVENING > DISCHARGE_MORNING > CHARGE_AFTERNOON > CHARGE_MORNING
-        (`_PRECEDENCE` list — last wins as strongest).
-        """
-        events: list[BatteryScheduleEvent] = []
-
-        # 1. Day roll detection
-        # TODO: temporarily disabled — today's slots persist across midnight so
-        # user's customizations apply every day until explicit edit. Tomorrow
-        # tab in UI is currently vestigial. Switch to Option B (tomorrow =
-        # deepcopy(today) on roll) when we want tomorrow-overrides back.
-        if self.last_seen_date is not None and self.last_seen_date != now.date():
-            events.append(DayRolled(from_date=self.last_seen_date, to_date=now.date()))
-            # self.roll_day()  # disabled — see TODO above
-        self.last_seen_date = now.date()
-
-        # 2. One-shot — precedence #0 (beats every scheduled slot).
-        # Auto-clears on target_reached/expired; falls through to scheduled
-        # logic after clearing so a scheduled slot can immediately take over
-        # if it's in-window.
-        if self._oneshot is not None:
-            reason = self._oneshot_disengage_reason(now, current_soc)
-            if reason is None:
-                return self._oneshot.to_battery_operation(), events
-            events.append(OneShotEnded(operation=self._oneshot, reason=reason, at=now))
-            self._oneshot = None
-            self._last_disengaged_at = now
-
-        # 3. Already engaging? Stick until target_reached / window_ended / disabled.
-        if self._currently_engaging is not None:
-            entry = self.today_entry_for(self._currently_engaging)
-            disengage_reason = _disengage_reason(entry, now, current_soc)
-            if disengage_reason is None:
-                # Stay engaged — sticky hysteresis trumps DELAYED_TO_END flicker.
-                return entry.to_battery_operation(), events
-            events.append(
-                SlotDisengaged(
-                    slot=self._currently_engaging,
-                    soc=current_soc,
-                    at=now,
-                    reason=disengage_reason,
-                )
-            )
-            self._currently_engaging = None
-            self._last_disengaged_at = now
-            # Fall through — another slot might be ready to engage immediately.
-
-        # 4. Find highest-precedence slot that should engage NOW.
-        entry = self._find_engaging_entry(now, current_soc)
-        if entry is not None:
-            events.append(SlotEngaged(slot=entry.kind, soc=current_soc, at=now))
-            self._currently_engaging = entry.kind
-            return entry.to_battery_operation(), events
-
-        return BatteryOperation.idle(), events
-
-    def _find_engaging_entry(
-        self, now: datetime, current_soc: float
-    ) -> BatteryScheduleEntry | None:
-        today = self.today_entries()
-        engaging = [
-            today[k] for k in _PRECEDENCE if today[k].should_apply_now(now, current_soc)
-        ]
-        return engaging[-1] if engaging else None
-
-    def _oneshot_disengage_reason(
-        self, now: datetime, current_soc: float
-    ) -> OneShotDisengageReason | None:
-        if self._oneshot is None:
-            return None
-        if self._oneshot.is_expired(now):
-            return "expired"
-        if self._oneshot.target_reached(current_soc):
-            return "target_reached"
-        return None
-
-    def roll_day(self) -> None:
-        """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
-
-        Idempotent — orchestrator should compare `last_seen_date` and call
-        once per midnight crossing (Etap 2A).
-        """
-        self._today = self._tomorrow
-        self._tomorrow = _default_tomorrow()
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "today": {k.name: e.to_dict() for k, e in self._today.items()},
-            "tomorrow": {k.name: e.to_dict() for k, e in self._tomorrow.items()},
-            "last_seen_date": (
-                self.last_seen_date.isoformat() if self.last_seen_date else None
-            ),
-            "currently_engaging": (
-                self._currently_engaging.name if self._currently_engaging else None
-            ),
-            "interventions_blocked_override": self._interventions_blocked_override,
-            "last_disengaged_at": (
-                self._last_disengaged_at.isoformat()
-                if self._last_disengaged_at is not None
-                else None
-            ),
-            "oneshot": self._oneshot.to_dict() if self._oneshot is not None else None,
-            "oneshot_params": {
-                d.name: p.to_dict() for d, p in self._oneshot_params.items()
-            },
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> BatterySchedule:
-        def _entry(scope: str, kind: SlotKind) -> BatteryScheduleEntry:
-            payload = (data.get(scope) or {}).get(kind.name)
-            if payload is None:
-                return BatteryScheduleEntry.default_for(kind)
-            return BatteryScheduleEntry.from_dict(payload, kind=kind)
-
-        last_seen_date: date | None = None
-        if raw := data.get("last_seen_date"):
-            try:
-                last_seen_date = date.fromisoformat(raw)
-            except ValueError:
-                last_seen_date = None
-
-        currently_engaging: SlotKind | None = None
-        if engaging_name := data.get("currently_engaging"):
-            try:
-                currently_engaging = SlotKind[engaging_name]
-            except KeyError:
-                currently_engaging = None
-
-        last_disengaged_at: datetime | None = None
-        if raw := data.get("last_disengaged_at"):
-            try:
-                last_disengaged_at = datetime.fromisoformat(raw)
-            except (TypeError, ValueError):
-                last_disengaged_at = None
-
-        oneshot: OneShotOperation | None = None
-        if raw_oneshot := data.get("oneshot"):
-            oneshot = OneShotOperation.from_dict(raw_oneshot)
-
-        oneshot_params = _restore_oneshot_params(data)
-
-        return cls(
-            _today={k: _entry("today", k) for k in SlotKind},
-            _tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
-            last_seen_date=last_seen_date,
-            _currently_engaging=currently_engaging,
-            _interventions_blocked_override=bool(
-                data.get("interventions_blocked_override", False)
-            ),
-            _last_disengaged_at=last_disengaged_at,
-            _oneshot=oneshot,
-            _oneshot_params=oneshot_params,
-        )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Precedence + helpers (used by compute_operation)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# Order for resolving overlapping `should_apply_now`. Last wins (= strongest).
-# Discharge always beats charge (RCE peaks are time-critical; charging can wait).
-# Evening discharge beats morning (typically higher RCE peak). Afternoon charge
-# beats morning charge (closer to use, less time wasted holding).
-_PRECEDENCE: Final[list[SlotKind]] = [
-    SlotKind.CHARGE_MORNING,
-    SlotKind.CHARGE_AFTERNOON,
-    SlotKind.DISCHARGE_MORNING,
-    SlotKind.DISCHARGE_EVENING,
-]
-
-
-# Reason for disengaging a currently-engaging slot. None = keep engaging.
-DisengageReason = Literal["target_reached", "window_ended", "disabled"]
-
-
-def _disengage_reason(
-    entry: BatteryScheduleEntry, now: datetime, soc: float
-) -> DisengageReason | None:
-    """Return None if entry should keep engaging; otherwise the reason to stop."""
-    if not entry.enabled:
-        return "disabled"
-    if not entry.is_in_window(now):
-        return "window_ended"
-    if entry.soc_target_reached(soc):
-        return "target_reached"
-    return None
-
-
-def _sec_until_today(now: datetime, end: time) -> float:
-    """Seconds from `now` until today's `end` time. Negative if already past."""
-    end_dt = datetime.combine(now.date(), end, tzinfo=now.tzinfo)
-    return (end_dt - now).total_seconds()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# BatteryOperation — desired action this tick (input to Applier in Etap 2D)
-# ─────────────────────────────────────────────────────────────────────────────
+    battery_soc: float | None
 
 
 @dataclass(frozen=True)
@@ -1193,16 +1186,20 @@ class BatteryOperation:
     # doesn't have to know its possible sources.
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Events — domain happenings emitted by compute_operation
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  Events — domain happenings emitted by compute_operation
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# Reason for disengaging a currently-engaging slot. None = keep engaging.
+DisengageReason = Literal["target_reached", "window_ended", "disabled"]
 
 
 @dataclass(frozen=True)
 class BatteryScheduleEvent:
     """Base marker class for domain events emitted by compute_operation.
 
-    Notifier (Etap 2D) dispatches by isinstance — separate handler per type.
+    Notifier dispatches by isinstance — separate handler per type.
     """
 
 
