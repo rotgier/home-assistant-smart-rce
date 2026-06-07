@@ -11,7 +11,7 @@ per-variant algorithm details are `@staticmethod` on each class below.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import ClassVar
+from typing import Final
 
 from .extrapolation_utils import (
     assemble,
@@ -180,7 +180,7 @@ class ExtrapProportionalStrategy(_ExtrapStrategyBase):
     """
 
     # Clamp for negative cumS in projection — prevent project=0 when cumS=-1.
-    _PROPORTIONAL_FLOOR: ClassVar[float] = -0.95
+    _PROPORTIONAL_FLOOR: Final[float] = -0.95
 
     def _run_extrapolation(
         self, ctx: ForecastContext, pv_forecast_live: PvForecastResult
@@ -326,7 +326,7 @@ class ExtrapBandRecentStrategy(ExtrapBandStrategy):
 
     # Max age (steps back from current) — only current + 1 prior bucket
     # contribute. Captures recent trend without morning bias.
-    _BAND_RECENT_MAX_AGE: ClassVar[int] = 1
+    _BAND_RECENT_MAX_AGE: Final[int] = 1
 
     def _run_extrapolation(
         self, ctx: ForecastContext, pv_forecast_live: PvForecastResult

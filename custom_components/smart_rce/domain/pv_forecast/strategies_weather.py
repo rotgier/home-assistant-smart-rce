@@ -11,7 +11,7 @@ and skip the patch (no matching today-clock bucket).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import ClassVar
+from typing import Final
 
 from .strategy_base import (
     AdjustedPeriod,
@@ -41,10 +41,10 @@ class At6Strategy(ForecastStrategy):
     """
 
     # Max hourly rate at hour 7 for cloudy conditions (kWh/h cap).
-    _CLOUDY_CAP_HOUR_7: ClassVar[float] = 0.20
+    _CLOUDY_CAP_HOUR_7: Final[float] = 0.20
     # AT6 cloudy modifiers per hour (hourly rate multiplier on pv_estimate10).
-    _CLOUDY_MODIFIER_EARLY: ClassVar[float] = 0.5  # hours 7-10
-    _CLOUDY_MODIFIER_LATE: ClassVar[float] = 0.7  # hours 11+
+    _CLOUDY_MODIFIER_EARLY: Final[float] = 0.5  # hours 7-10
+    _CLOUDY_MODIFIER_LATE: Final[float] = 0.7  # hours 11+
 
     def __init__(self, today: bool = True) -> None:
         super().__init__()

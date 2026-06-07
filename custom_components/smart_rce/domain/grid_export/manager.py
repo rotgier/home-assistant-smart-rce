@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from datetime import datetime, time
 import logging
-from typing import ClassVar
+from typing import Final
 
 from custom_components.smart_rce.domain.ems_operation import EmsOperation
 from custom_components.smart_rce.domain.grid_export import negative, positive
@@ -58,19 +58,19 @@ _LOGGER = logging.getLogger(__name__)
 class GridExportManager:
     """Orchestrator — global guards + range routing + delegation to active intervention."""
 
-    AUTO_MODE: ClassVar[str] = "auto"
+    AUTO_MODE: Final[str] = "auto"
 
     # Strategy modes (input_select.smart_rce_grid_export_strategy_mode)
-    STRATEGY_MODE_DISABLED: ClassVar[str] = "disabled"
-    STRATEGY_MODE_CHARGE_ADAPTIVE: ClassVar[str] = "charge_adaptive"
+    STRATEGY_MODE_DISABLED: Final[str] = "disabled"
+    STRATEGY_MODE_CHARGE_ADAPTIVE: Final[str] = "charge_adaptive"
 
     # Global lifecycle thresholds (cross-cutting both interventions)
-    LATE_HOUR_MINUTE: ClassVar[int] = 59
-    LATE_HOUR_ENTRY_SECOND: ClassVar[int] = 40  # too_late_in_hour entry block
-    LATE_HOUR_EXIT_SECOND: ClassVar[int] = 50  # end_of_hour_cleanup exit
+    LATE_HOUR_MINUTE: Final[int] = 59
+    LATE_HOUR_ENTRY_SECOND: Final[int] = 40  # too_late_in_hour entry block
+    LATE_HOUR_EXIT_SECOND: Final[int] = 50  # end_of_hour_cleanup exit
 
     # Logging — throttle DEBUG snapshot when nothing changes (60s).
-    DEBUG_LOG_THROTTLE_SEC: ClassVar[int] = 60
+    DEBUG_LOG_THROTTLE_SEC: Final[int] = 60
 
     def __init__(self) -> None:
         self._active: Intervention | None = None
