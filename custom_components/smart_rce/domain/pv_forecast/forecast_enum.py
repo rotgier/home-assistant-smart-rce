@@ -69,6 +69,11 @@ class PvForecast(Enum):
         return self.strategy.is_extrap
 
     @property
+    def pretty_label(self) -> str:
+        """Display label — delegated to bound strategy."""
+        return self.strategy.pretty_label
+
+    @property
     def result(self) -> PvForecastResult | None:
         """Current forecast result — from bound strategy."""
         return self.strategy.result

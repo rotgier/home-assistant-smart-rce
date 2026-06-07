@@ -52,18 +52,29 @@ from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 
 _LOGGER = logging.getLogger(__name__)
 
-# Strategy key conventions — stable identifiers for matrix tuples and
-# dashboard column/row layout. Order matters: dashboards iterate the
-# tuple to choose default-on series.
-_TODAY_PV_KEYS: tuple[str, ...] = (
-    "at_6",
-    "live",
-    "extrap_pattern",
-    "extrap_propor",
-    "extrap_band",
-    "extrap_band_recent",
-)
-_TOMORROW_PV_KEYS: tuple[str, ...] = ("at_6", "live")
+# PV-strategy resolver tables (matrix key → catalog `PvForecast`). Matrix
+# keys are short stable identifiers used by dashboards (Lovelace cross-repo)
+# — independent from `enum.key` (which is longer for EXTRAP variants).
+# Order matters: dashboards iterate to choose default-on series. The
+# `_*_PV_KEYS` tuples below are derived from `dict.keys()` (Python 3.7+
+# preserves insertion order) so adding a new variant requires only one
+# entry in the resolver dict.
+
+_TODAY_PV_RESOLVERS: dict[str, PvForecast] = {
+    "at_6": PvForecast.AT_6,
+    "live": PvForecast.LIVE,
+    "extrap_pattern": PvForecast.EXTRAP_PATTERN,
+    "extrap_propor": PvForecast.EXTRAP_PROPORTIONAL,
+    "extrap_band": PvForecast.EXTRAP_BAND,
+    "extrap_band_recent": PvForecast.EXTRAP_BAND_RECENT,
+}
+_TOMORROW_PV_RESOLVERS: dict[str, PvForecast] = {
+    "at_6": PvForecast.TOMORROW_AT_6,
+    "live": PvForecast.TOMORROW_LIVE,
+}
+
+_TODAY_PV_KEYS: tuple[str, ...] = tuple(_TODAY_PV_RESOLVERS.keys())
+_TOMORROW_PV_KEYS: tuple[str, ...] = tuple(_TOMORROW_PV_RESOLVERS.keys())
 
 _LIVE_CONS_KEY: str = "live"
 
@@ -305,24 +316,6 @@ class TargetSocMatrixService:
             total = sum(v for (h, _m), v in buckets.items() if 7 <= h < 13)
             out[key] = round(total, 3) if buckets else None
         return out
-
-
-# --- PV-strategy resolver tables (matrix key → catalog PvForecast) --- #
-
-
-_TODAY_PV_RESOLVERS: dict[str, PvForecast] = {
-    "at_6": PvForecast.AT_6,
-    "live": PvForecast.LIVE,
-    "extrap_pattern": PvForecast.EXTRAP_PATTERN,
-    "extrap_propor": PvForecast.EXTRAP_PROPORTIONAL,
-    "extrap_band": PvForecast.EXTRAP_BAND,
-    "extrap_band_recent": PvForecast.EXTRAP_BAND_RECENT,
-}
-
-_TOMORROW_PV_RESOLVERS: dict[str, PvForecast] = {
-    "at_6": PvForecast.TOMORROW_AT_6,
-    "live": PvForecast.TOMORROW_LIVE,
-}
 
 
 # --- Helpers --- #

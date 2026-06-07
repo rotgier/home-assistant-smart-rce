@@ -51,6 +51,10 @@ class At6Strategy(ForecastStrategy):
         self.is_today = today
         self.supports_in_progress_patch = today
 
+    @property
+    def pretty_label(self) -> str:
+        return "At 6" if self.is_today else "Tomorrow At 6"
+
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
         periods = ctx.solcast_at_6 if self.is_today else ctx.solcast_tomorrow
         if not periods or not ctx.weather:
@@ -115,6 +119,10 @@ class LiveStrategy(ForecastStrategy):
         super().__init__()
         self.is_today = today
         self.supports_in_progress_patch = today
+
+    @property
+    def pretty_label(self) -> str:
+        return "Live" if self.is_today else "Tomorrow Live"
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
         periods = ctx.solcast_today if self.is_today else ctx.solcast_tomorrow

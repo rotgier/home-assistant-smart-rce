@@ -208,69 +208,68 @@ def _bucket_end_derivative_delta_kwh(forecasts: PvForecasts) -> float | None:
     return deriv_kwh - const_kwh
 
 
+# --- Description builders — generate per-variant sensors from PvForecast enum --- #
+
+
+def _make_pv_desc(v: PvForecast) -> PvForecastSensorDescription:
+    """Build 'Weather Adjusted PV <label>' kWh sensor for one PV forecast variant.
+
+    Dispatch by `v.is_extrap`:
+    - Extrap variants → `remaining_kwh` (forward-only, current bucket scaled).
+      Chart-friendly forecast attr — same shape as Adj PV Live.
+    - Non-extrap (AT_6 / LIVE today+tomorrow) → `total_kwh` (full-day sum).
+
+    Default arg `_v=v` captures the loop variable by value (closure gotcha:
+    without it all lambdas would close over the same final `v`).
+    """
+    if v.is_extrap:
+        return PvForecastSensorDescription(
+            name=f"Weather Adjusted PV {v.pretty_label}",
+            value_fn=lambda pv, _v=v: pv.forecasts.remaining_kwh(_v),
+            attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
+        )
+    return PvForecastSensorDescription(
+        name=f"Weather Adjusted PV {v.pretty_label}",
+        value_fn=lambda pv, _v=v: (
+            pv.forecasts.get(_v).total_kwh if pv.forecasts.get(_v) else None
+        ),
+        attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
+    )
+
+
+def _make_target_soc_desc(v: PvForecast) -> PvForecastSensorDescription:
+    """Build 'Target Battery SOC <label>' (%) sensor for one PV forecast variant.
+
+    Reads `pv.target_socs.target_socs[v].flat.value` as main reading.
+    Attributes (`_target_soc_attrs`): prev_day_1..8 (per prev-workday
+    cons profile) + max + per-bucket trace. Profile bundle is
+    `today_profiles` for today variants, `tomorrow_profiles` otherwise.
+
+    Default arg captures (`_v`, `_pa`) avoid closure-over-loop-variable.
+    """
+    profiles_attr = "today_profiles" if v.is_today else "tomorrow_profiles"
+    return PvForecastSensorDescription(
+        name=f"Target Battery SOC {v.pretty_label}",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv, _v=v: (
+            pv.target_socs.target_socs[_v].flat.value
+            if pv.target_socs.target_socs[_v].flat
+            else None
+        ),
+        attr_fn=lambda pv, _v=v, _pa=profiles_attr: _target_soc_attrs(
+            pv.target_socs.target_socs[_v],
+            getattr(pv.target_socs.consumption_profiles, _pa),
+        ),
+    )
+
+
 PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
-    # --- Weather-adjusted PV forecast (kWh, default unit) ---
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV At 6",
-        value_fn=lambda pv: pv.forecasts.get(PvForecast.AT_6).total_kwh
-        if pv.forecasts.get(PvForecast.AT_6)
-        else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecasts.get(PvForecast.AT_6)),
-    ),
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Live",
-        value_fn=lambda pv: pv.forecasts.get(PvForecast.LIVE).total_kwh
-        if pv.forecasts.get(PvForecast.LIVE)
-        else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecasts.get(PvForecast.LIVE)),
-    ),
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Tomorrow At 6",
-        value_fn=lambda pv: pv.forecasts.get(PvForecast.TOMORROW_AT_6).total_kwh
-        if pv.forecasts.get(PvForecast.TOMORROW_AT_6)
-        else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecasts.get(PvForecast.TOMORROW_AT_6)
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Tomorrow Live",
-        value_fn=lambda pv: pv.forecasts.get(PvForecast.TOMORROW_LIVE).total_kwh
-        if pv.forecasts.get(PvForecast.TOMORROW_LIVE)
-        else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecasts.get(PvForecast.TOMORROW_LIVE)
-        ),
-    ),
-    # --- Extrapolated live variants (per-minute tick) ---
-    # state = kWh remaining today (past excluded, current scaled)
-    # forecast attribute = full per-period day with current bucket rescaled
-    # (chart-friendly — same shape as Adj PV Live so adjusted_pv() helper works)
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Live Extrapolated Pattern",
-        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_PATTERN),
-        attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecasts.get(PvForecast.EXTRAP_PATTERN)
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Live Extrapolated Proportional",
-        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_PROPORTIONAL),
-        attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecasts.get(PvForecast.EXTRAP_PROPORTIONAL)
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Live Extrapolated Band",
-        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_BAND),
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecasts.get(PvForecast.EXTRAP_BAND)),
-    ),
-    PvForecastSensorDescription(
-        name="Weather Adjusted PV Live Extrapolated Band Recent",
-        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_BAND_RECENT),
-        attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.forecasts.get(PvForecast.EXTRAP_BAND_RECENT)
-        ),
+    # Per-variant pair (PV kWh + Target SOC %) — generated from PvForecast enum.
+    # Adding a new variant: just add enum member with strategy.pretty_label set.
+    *(
+        desc
+        for v in PvForecast
+        for desc in (_make_pv_desc(v), _make_target_soc_desc(v))
     ),
     # --- In-progress bucket projection observability (Phase C.1) ---
     # Compare constant-power vs derivative-aware ramp for the bucket the
@@ -289,115 +288,6 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     PvForecastSensorDescription(
         name="PV Bucket End Derivative Delta",
         value_fn=lambda pv: _bucket_end_derivative_delta_kwh(pv.forecasts),
-    ),
-    # --- Target SOC (%) — per-variant TargetSoc entity ---
-    # Main value = flat (default cons profile). Attributes: prev_day_1..8 (per
-    # prev-workday cons profile) + max + per-bucket trace of the flat result.
-    # 16 prev_day + 2 max sensors retired — consumers read attributes instead.
-    PvForecastSensorDescription(
-        name="Target Battery SOC At 6",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[PvForecast.AT_6].flat.value
-        if pv.target_socs.target_socs[PvForecast.AT_6].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.AT_6],
-            pv.target_socs.consumption_profiles.today_profiles,
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Target Battery SOC Live",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[PvForecast.LIVE].flat.value
-        if pv.target_socs.target_socs[PvForecast.LIVE].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.LIVE],
-            pv.target_socs.consumption_profiles.today_profiles,
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Target Battery SOC Tomorrow At 6",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[
-            PvForecast.TOMORROW_AT_6
-        ].flat.value
-        if pv.target_socs.target_socs[PvForecast.TOMORROW_AT_6].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.TOMORROW_AT_6],
-            pv.target_socs.consumption_profiles.tomorrow_profiles,
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Target Battery SOC Tomorrow Live",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[
-            PvForecast.TOMORROW_LIVE
-        ].flat.value
-        if pv.target_socs.target_socs[PvForecast.TOMORROW_LIVE].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.TOMORROW_LIVE],
-            pv.target_socs.consumption_profiles.tomorrow_profiles,
-        ),
-    ),
-    # --- Target SOC EXTRAP variants — per-variant TargetSoc entity ---
-    # Source switched in Iter 3b: was ExtrapolatedLive.target_soc (inline
-    # computation in _assemble); now TargetSocCatalog.target_socs[V].flat
-    # (uniform path with other 4 target_soc sensors). Attributes mirror
-    # the main TargetSoc sensors — prev_day_1..8 + max + flat trace.
-    PvForecastSensorDescription(
-        name="Target Battery SOC Live Extrapolated Pattern",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[
-            PvForecast.EXTRAP_PATTERN
-        ].flat.value
-        if pv.target_socs.target_socs[PvForecast.EXTRAP_PATTERN].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.EXTRAP_PATTERN],
-            pv.target_socs.consumption_profiles.today_profiles,
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Target Battery SOC Live Extrapolated Proportional",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[
-            PvForecast.EXTRAP_PROPORTIONAL
-        ].flat.value
-        if pv.target_socs.target_socs[PvForecast.EXTRAP_PROPORTIONAL].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.EXTRAP_PROPORTIONAL],
-            pv.target_socs.consumption_profiles.today_profiles,
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Target Battery SOC Live Extrapolated Band",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[
-            PvForecast.EXTRAP_BAND
-        ].flat.value
-        if pv.target_socs.target_socs[PvForecast.EXTRAP_BAND].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.EXTRAP_BAND],
-            pv.target_socs.consumption_profiles.today_profiles,
-        ),
-    ),
-    PvForecastSensorDescription(
-        name="Target Battery SOC Live Extrapolated Band Recent",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv: pv.target_socs.target_socs[
-            PvForecast.EXTRAP_BAND_RECENT
-        ].flat.value
-        if pv.target_socs.target_socs[PvForecast.EXTRAP_BAND_RECENT].flat
-        else None,
-        attr_fn=lambda pv: _target_soc_attrs(
-            pv.target_socs.target_socs[PvForecast.EXTRAP_BAND_RECENT],
-            pv.target_socs.consumption_profiles.today_profiles,
-        ),
     ),
     # NOTE: Prev-workday + max sensors retired in Iter 2b. Consumers should
     # read attributes on the corresponding TargetSoc sensors instead:
