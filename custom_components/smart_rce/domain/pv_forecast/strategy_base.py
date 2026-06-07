@@ -52,20 +52,6 @@ class ForecastStrategy:
         """Subclass: build fresh result from ctx, or None if input missing."""
         raise NotImplementedError
 
-    def _derive_remaining_kwh(self, ctx: ForecastContext) -> float | None:
-        """Sum kWh from `ctx.now` onwards on the result's date axis.
-
-        Default impl reuses `PvForecastResult.remaining_kwh_from(now)`.
-        Tomorrow-axis results naturally sum the whole window (all
-        periods are on a later date than `now`). EXTRAP strategies
-        inherit this default — their post-`_assemble` result already
-        has in-progress rescaled, so the sum matches the legacy
-        `ExtrapolatedLive.remaining_kwh` value exactly.
-        """
-        if self.result is None:
-            return None
-        return self.result.remaining_kwh_from(ctx.now)
-
     @staticmethod
     def _apply_chart_in_progress_patch(
         now: datetime,
@@ -80,6 +66,20 @@ class ForecastStrategy:
         return result.with_now_aware_in_progress(
             now=now, pv_power_w_5min=pv_w, pv_bucket_so_far_kwh=so_far
         )
+
+    def _derive_remaining_kwh(self, ctx: ForecastContext) -> float | None:
+        """Sum kWh from `ctx.now` onwards on the result's date axis.
+
+        Default impl reuses `PvForecastResult.remaining_kwh_from(now)`.
+        Tomorrow-axis results naturally sum the whole window (all
+        periods are on a later date than `now`). EXTRAP strategies
+        inherit this default — their post-`_assemble` result already
+        has in-progress rescaled, so the sum matches the legacy
+        `ExtrapolatedLive.remaining_kwh` value exactly.
+        """
+        if self.result is None:
+            return None
+        return self.result.remaining_kwh_from(ctx.now)
 
 
 # --- ForecastContext: input VO for ForecastStrategy.update --- #

@@ -4,9 +4,8 @@ Each subclass of `_ExtrapStrategyBase` runs the shared
 `weighted_score_over_buckets` core with its own `score_fn` (4-zone,
 proportional, band, band-recent) and projects future buckets per its
 own algorithm. Cross-cutting helpers (assemble, index_solcast_by_bucket,
-weighted_score_over_buckets, current_bucket_realized_rate) live in
-`extrapolation_utils.py`; per-variant algorithm details are
-`@staticmethod` on each class below.
+weighted_score_over_buckets) live in `extrapolation_utils.py`;
+per-variant algorithm details are `@staticmethod` on each class below.
 """
 
 from __future__ import annotations

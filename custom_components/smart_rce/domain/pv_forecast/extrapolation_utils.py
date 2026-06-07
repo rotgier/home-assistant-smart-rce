@@ -67,18 +67,6 @@ def index_solcast_by_bucket(
     return out
 
 
-def current_bucket_realized_rate(
-    now: datetime, pv_power_w_5min: float, pv_bucket_so_far_kwh: float
-) -> float:
-    """In-progress bucket realized rate (kWh/h) for score computation.
-
-    Uniform across all variants — same source of truth as chart and
-    target_soc paths: `Bucket.full_bucket_kwh(now, pv_w, so_far) × 2`
-    (kWh per 30-min × 2 = kWh/h).
-    """
-    return Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
-
-
 def weighted_score_over_buckets(
     solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
     now: datetime,
@@ -94,7 +82,7 @@ def weighted_score_over_buckets(
     differ only in `score_fn` (4-zone, proportional, band) and `max_age`
     (24 for full-history, 1 for band_recent).
 
-    Current bucket realized rate uses `current_bucket_realized_rate`
+    Current bucket realized rate uses `_current_bucket_realized_rate`
     (uniform with chart + target_soc). Past buckets use
     `realized_pv_today[(h, m)] × 2`. Buckets with
     `pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH` skipped.
@@ -115,7 +103,7 @@ def weighted_score_over_buckets(
                 break
             continue
         if (h, m) == (current_hour, current_minute):
-            realized_rate = current_bucket_realized_rate(
+            realized_rate = _current_bucket_realized_rate(
                 now, pv_power_w_5min, pv_bucket_so_far_kwh
             )
         else:
@@ -137,6 +125,18 @@ def weighted_score_over_buckets(
         return None
     total_weight = sum(w for _, w in scores)
     return sum(s * w for s, w in scores) / total_weight
+
+
+def _current_bucket_realized_rate(
+    now: datetime, pv_power_w_5min: float, pv_bucket_so_far_kwh: float
+) -> float:
+    """In-progress bucket realized rate (kWh/h) for score computation.
+
+    Uniform across all variants — same source of truth as chart and
+    target_soc paths: `Bucket.full_bucket_kwh(now, pv_w, so_far) × 2`
+    (kWh per 30-min × 2 = kWh/h).
+    """
+    return Bucket.full_bucket_kwh(now, pv_power_w_5min, pv_bucket_so_far_kwh) * 2.0
 
 
 def _step_back(h: int, m: int, age: int, weight: float) -> tuple[int, int, int, float]:
