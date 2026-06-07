@@ -73,7 +73,7 @@ class ExtrapPatternStrategy(_ExtrapStrategyBase):
     project each future bucket's PV rate.
     """
 
-    pretty_label = "Live Extrapolated Pattern"
+    pretty_label = "Extrap Pattern"
 
     def _run_extrapolation(
         self, ctx: ForecastContext, pv_forecast_live: PvForecastResult
@@ -181,7 +181,7 @@ class ExtrapProportionalStrategy(_ExtrapStrategyBase):
     so projection stays positive when realization runs well below median.
     """
 
-    pretty_label = "Live Extrapolated Proportional"
+    pretty_label = "Extrap Proportional"
 
     # Clamp for negative cumS in projection — prevent project=0 when cumS=-1.
     _PROPORTIONAL_FLOOR: Final[float] = -0.95
@@ -248,7 +248,7 @@ class ExtrapBandStrategy(_ExtrapStrategyBase):
     zero below `p10 × (1 + cumS)`.
     """
 
-    pretty_label = "Live Extrapolated Band"
+    pretty_label = "Extrap Band"
 
     def _run_extrapolation(
         self, ctx: ForecastContext, pv_forecast_live: PvForecastResult
@@ -330,7 +330,7 @@ class ExtrapBandRecentStrategy(ExtrapBandStrategy):
     only the scoring `max_age` differs.
     """
 
-    pretty_label = "Live Extrapolated Band Recent"
+    pretty_label = "Extrap Band Recent"
 
     # Max age (steps back from current) — only current + 1 prior bucket
     # contribute. Captures recent trend without morning bias.

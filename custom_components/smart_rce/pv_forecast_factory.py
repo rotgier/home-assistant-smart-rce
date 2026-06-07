@@ -1,6 +1,6 @@
-"""Composition root: instantiates PvForecastService + adapters + wires HA listeners.
+"""Composition root: instantiates EnergyBalanceService + adapters + wires HA listeners.
 
-Small "wiring" layer connecting the application layer (`PvForecastService`
+Small "wiring" layer connecting the application layer (`EnergyBalanceService`
 orchestrator) with infrastructure (driven + driving adapters) for HA. Called
 from `__init__.py::async_setup_entry`.
 
@@ -9,7 +9,7 @@ Layer responsibility (DDD):
   pure algorithms (TargetSocCatalog._adjust_pv_forecast_*), value objects, plus
   standalone domain utilities (merge_weather_conditions, walk_back_workdays)
   shared across application + infrastructure
-- application/pv_forecast_service.py — PvForecastService orchestrator
+- application/energy_balance_service.py — EnergyBalanceService orchestrator
   (read from adapters → call domain update → notify listeners). HASS-FREE.
 - infrastructure/pv_forecast/ — driving/driven adapters (SolcastReader,
   WeatherConditionsBuilder, ConsumptionProfileLoader)
@@ -35,7 +35,7 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .application.ems import Ems
-from .application.pv_forecast_service import PvForecastService
+from .application.energy_balance_service import EnergyBalanceService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.pv_forecast import PvForecasts
 from .domain.target_soc_catalog import TargetSocCatalog
@@ -53,14 +53,14 @@ from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
 _LOGGER = logging.getLogger(__name__)
 
 
-async def create_pv_forecast_service(
+async def create_energy_balance_service(
     hass: HomeAssistant,
     entry: ConfigEntry,
     weather_listener: WeatherForecastListener,
     weather_forecast_history: WeatherForecastHistory,
     ems: Ems,
     rce_coordinator: SmartRceDataUpdateCoordinator,
-) -> PvForecastService:
+) -> EnergyBalanceService:
     """Composition root — wire domain + adapters + service + HA listenery."""
     forecasts = PvForecasts()
     target_socs = TargetSocCatalog()
@@ -70,7 +70,7 @@ async def create_pv_forecast_service(
     live_rates = LiveRateReader(hass)
     realized_pv_loader = RealizedPvLoader(hass)
 
-    service = PvForecastService(
+    service = EnergyBalanceService(
         hass=hass,
         forecasts=forecasts,
         target_socs=target_socs,

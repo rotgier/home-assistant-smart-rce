@@ -11,7 +11,7 @@ from homeassistant.components.sensor import SensorEntityDescription, SensorState
 from homeassistant.const import UnitOfEnergy
 from homeassistant.util import dt as dt_util
 
-from ..application.pv_forecast_service import PvForecastService
+from ..application.energy_balance_service import EnergyBalanceService
 from ..const import DOMAIN
 from ..coordinator import SmartRceDataUpdateCoordinator
 from ..domain.bucket import Bucket
@@ -31,7 +31,7 @@ class PvForecastSensor(StateWriterMixin):
 
     def __init__(
         self,
-        pv_forecast: PvForecastService,
+        pv_forecast: EnergyBalanceService,
         rce_coordinator: SmartRceDataUpdateCoordinator,
         description: PvForecastSensorDescription,
     ) -> None:
@@ -74,8 +74,8 @@ class PvForecastSensorDescription(SensorEntityDescription):
     """Description schema for PvForecastSensor — value_fn/attr_fn lambdas."""
 
     key: str = field(init=False)
-    value_fn: Callable[[PvForecastService], float | int | None]
-    attr_fn: Callable[[PvForecastService], dict[str, Any]] = lambda _: {}
+    value_fn: Callable[[EnergyBalanceService], float | int | None]
+    attr_fn: Callable[[EnergyBalanceService], dict[str, Any]] = lambda _: {}
 
     def __post_init__(self):
         self.key = self.name.lower().replace(" ", "_")
@@ -212,7 +212,7 @@ def _bucket_end_derivative_delta_kwh(forecasts: PvForecasts) -> float | None:
 
 
 def _make_pv_desc(v: PvForecast) -> PvForecastSensorDescription:
-    """Build 'Weather Adjusted PV <label>' kWh sensor for one PV forecast variant.
+    """Build 'PV Forecast <label>' kWh sensor for one PV forecast variant.
 
     Dispatch by `v.is_extrap`:
     - Extrap variants → `remaining_kwh` (forward-only, current bucket scaled).
@@ -224,12 +224,12 @@ def _make_pv_desc(v: PvForecast) -> PvForecastSensorDescription:
     """
     if v.is_extrap:
         return PvForecastSensorDescription(
-            name=f"Weather Adjusted PV {v.pretty_label}",
+            name=f"PV Forecast {v.pretty_label}",
             value_fn=lambda pv, _v=v: pv.forecasts.remaining_kwh(_v),
             attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
         )
     return PvForecastSensorDescription(
-        name=f"Weather Adjusted PV {v.pretty_label}",
+        name=f"PV Forecast {v.pretty_label}",
         value_fn=lambda pv, _v=v: (
             pv.forecasts.get(_v).total_kwh if pv.forecasts.get(_v) else None
         ),
@@ -249,7 +249,7 @@ def _make_target_soc_desc(v: PvForecast) -> PvForecastSensorDescription:
     """
     profiles_attr = "today_profiles" if v.is_today else "tomorrow_profiles"
     return PvForecastSensorDescription(
-        name=f"Target Battery SOC {v.pretty_label}",
+        name=f"Target SOC {v.pretty_label}",
         native_unit_of_measurement="%",
         value_fn=lambda pv, _v=v: (
             pv.target_socs.target_socs[_v].flat.value

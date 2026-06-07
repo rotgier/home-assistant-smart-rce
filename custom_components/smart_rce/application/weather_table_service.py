@@ -1,6 +1,6 @@
 """WeatherTableService — application service orchestrating dashboard weather table.
 
-DDD application layer (analog of `pv_forecast_service.py`): pulls history
+DDD application layer (analog of `energy_balance_service.py`): pulls history
 from the recorder (driving adapter `WeatherHistoryLoader`), reads the live
 forecast attribute via `WeatherForecastListener.forecast_hourly` (already
 subscribed in smart_rce), and delegates row assembly + dedupe to the pure

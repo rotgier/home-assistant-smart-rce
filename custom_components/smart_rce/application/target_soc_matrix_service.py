@@ -40,7 +40,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from ..application.pv_forecast_service import PvForecastService
+from ..application.energy_balance_service import EnergyBalanceService
 from ..domain.consumption_profiles import PREV_DAYS_COUNT, ConsumptionProfile
 from ..domain.pv_forecast import PvForecast, PvForecasts
 from ..domain.target_soc import PvProfile
@@ -99,12 +99,12 @@ class TargetSocMatrixService:
     def __init__(
         self,
         hass: HomeAssistant,
-        pv_forecast_service: PvForecastService,
+        energy_balance_service: EnergyBalanceService,
         realized_pv_loader: RealizedPvLoader,
         consumption_loader: ConsumptionProfileLoader,
     ) -> None:
         self._hass = hass
-        self._pv_forecast_service = pv_forecast_service
+        self._energy_balance_service = energy_balance_service
         self._realized_pv_loader = realized_pv_loader
         self._consumption_loader = consumption_loader
 
@@ -120,8 +120,8 @@ class TargetSocMatrixService:
             }
         is_today = target_date == today
         is_tomorrow = target_date == today + timedelta(days=1)
-        target_socs = self._pv_forecast_service.target_socs
-        forecasts = self._pv_forecast_service.forecasts
+        target_socs = self._energy_balance_service.target_socs
+        forecasts = self._energy_balance_service.forecasts
 
         # Now-aware only for today's matrix. Toggle defaults to ON when
         # the input_boolean is missing or in an unknown state — explicit
@@ -148,7 +148,7 @@ class TargetSocMatrixService:
             live_pv_power_w=live_pv_w,
         )
         # Reuse the TargetSocCatalog aggregate's cached profiles for today /
-        # tomorrow (refreshed by `PvForecastService.refresh_profiles_*`
+        # tomorrow (refreshed by `EnergyBalanceService.refresh_profiles_*`
         # — every minute / bucket-boundary refetches were a waste, the
         # data only changes daily plus today-prev_1-of-tomorrow grows
         # within the PV window). For target_date == D+2 or further, fall

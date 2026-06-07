@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .application.ems import Ems
-from .application.pv_forecast_service import PvForecastService
+from .application.energy_balance_service import EnergyBalanceService
 from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
@@ -26,7 +26,7 @@ from .infrastructure.rce_api import RceApi
 from .infrastructure.weather_history_loader import WeatherHistoryLoader
 from .infrastructure.weather_listener import WeatherForecastListener
 from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
-from .pv_forecast_factory import create_pv_forecast_service
+from .pv_forecast_factory import create_energy_balance_service
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class SmartRceData:
     ems: Ems
     rce_coordinator: SmartRceDataUpdateCoordinator
     weather_listener: WeatherForecastListener
-    pv_forecast: PvForecastService
+    pv_forecast: EnergyBalanceService
     weather_forecast_history: WeatherForecastHistory
     weather_table_service: WeatherTableService
     target_soc_matrix_service: TargetSocMatrixService
@@ -82,7 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     weather_listener = WeatherForecastListener(hass, entry)
 
     weather_forecast_history = WeatherForecastHistory()
-    pv_forecast = await create_pv_forecast_service(
+    pv_forecast = await create_energy_balance_service(
         hass, entry, weather_listener, weather_forecast_history, ems, rce_coordinator
     )
 
@@ -346,7 +346,9 @@ def live_reload():
         )
     )
     reload(import_module("custom_components.smart_rce.infrastructure.pv_forecast"))
-    reload(import_module("custom_components.smart_rce.application.pv_forecast_service"))
+    reload(
+        import_module("custom_components.smart_rce.application.energy_balance_service")
+    )
     reload(
         import_module("custom_components.smart_rce.application.weather_table_service")
     )

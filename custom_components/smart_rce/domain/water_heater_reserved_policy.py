@@ -158,7 +158,7 @@ class WaterHeaterReservedInput:
     """Inputs for compute_current_value. All fields optional — None = unavailable.
 
     Ems.update_state aggregates these from existing collaborators
-    (RcePrices coordinator, pv_forecast_service, weather_listener) and
+    (RcePrices coordinator, energy_balance_service, weather_listener) and
     passes the snapshot to `WaterHeaterReservedService.update`.
     """
 

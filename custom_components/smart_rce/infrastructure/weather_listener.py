@@ -5,13 +5,13 @@ Wraps HA weather entity (`weather.wetteronline`):
 - Tracks entity availability (re-register on entity reappear)
 - Exposes `forecast_conditions` property — parsed domain types
   (HA dict shape → list[WeatherConditionAtHour])
-- Listener fan-out (technical event dispatch, używane przez PvForecastService
+- Listener fan-out (technical event dispatch, używane przez EnergyBalanceService
   + WeatherForecastHistorySensor)
 
 Hexagonal pattern: **driving adapter (inbound)** — adapts HA push-style API
 to domain types (forecast_conditions zwraca list[WeatherConditionAtHour]).
 Konsumenci subscribed listenerów to application/presentation: factory
-(write side hook), PvForecastService (recalculation trigger), sensor
+(write side hook), EnergyBalanceService (recalculation trigger), sensor
 (state refresh).
 """
 

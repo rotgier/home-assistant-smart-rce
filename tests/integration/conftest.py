@@ -64,7 +64,7 @@ def disable_live_reload() -> None:
 
 @pytest.fixture(autouse=True)
 def mock_pv_forecast_start() -> Generator[None]:
-    """Stub PvForecastService.refresh_profiles_full — bez recorder query.
+    """Stub EnergyBalanceService.refresh_profiles_full — bez recorder query.
 
     pv_forecast_factory deferred initial fetch wywołuje
     service.refresh_profiles_full() po EVENT_HOMEASSISTANT_STARTED;
@@ -72,7 +72,7 @@ def mock_pv_forecast_start() -> Generator[None]:
     skomplikowanego setupu). Aktuator nie potrzebuje PV forecast → no-op stub.
     """
     with patch(
-        "custom_components.smart_rce.application.pv_forecast_service.PvForecastService.refresh_profiles_full",
+        "custom_components.smart_rce.application.energy_balance_service.EnergyBalanceService.refresh_profiles_full",
         new=AsyncMock(),
     ):
         yield

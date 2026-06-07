@@ -1,6 +1,6 @@
 """StateWriterMixin — listener-driven state refresh for sensor entities.
 
-Subscribe to a domain source (Ems / PvForecastService / WeatherForecastListener)
+Subscribe to a domain source (Ems / EnergyBalanceService / WeatherForecastListener)
 and invoke `async_write_ha_state` on each notify. Eliminates duplication of
 listener wiring boilerplate in `async_added_to_hass` per sensor class.
 """

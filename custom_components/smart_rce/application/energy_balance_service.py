@@ -1,14 +1,20 @@
-"""PvForecastService — application service orchestrating PV forecast pipeline.
+"""EnergyBalanceService — application service orchestrating energy balance pipeline.
 
 DDD application layer. Reads driving adapters (Solcast, weather, live rates,
-charge slots) and pushes data as semantic VOs to two domain aggregates:
+charge slots) and pushes data as semantic VOs to two domain aggregates that
+together describe the energy-in vs energy-out balance over time:
 
-- `PvForecasts` — owns "what PV looks like": 8 forecast strategies +
-  extrapolation + PV-side live signals (live_pv_power_w, bucket_so_far,
+- `PvForecasts` — energy IN: 8 PV forecast strategies (AT6/Live × today/tomorrow
+  + 4 EXTRAP variants) + PV-side live signals (live_pv_power_w, bucket_so_far,
   derivative, stability).
-- `TargetSocCatalog` — owns "what battery target SoC results from forecast +
-  consumption": target_soc_* cache + consumption profiles + cons-side live
-  signal + pre-charge gates.
+- `TargetSocCatalog` — energy OUT (consumption) + derived target SoC: per-variant
+  cumulative balance (`PV - consumption` over 7:00..12:30 buckets) → target_soc_*
+  cache + consumption profiles + cons-side live signal + pre-charge gates.
+
+The "balance" concept: `calculate_target_soc()` in `target_soc.py` literally
+sums per-bucket `PV - consumption` cumulatively; the maximum deficit drives
+the SoC% needed. Service orchestrates the inputs to this computation across
+both aggregates plus listener fan-out.
 
 Service writes via VOs (`LivePvSignals`, `TargetSocInputs`), never field-by-
 field. Catalog update methods are trigger-source-named (match HA events);
@@ -16,14 +22,16 @@ service does NOT know which strategies a trigger touches.
 
 Update sequence per tick:
 1. `_refresh_target_soc_inputs()` — read cons signal + 2 start_charge
-   gates from `LiveRateReader` / `ChargeSlots`; push to catalog/forecast as VOs.
-2. `catalog.update_from_X(...)` or `catalog.tick_minute(...)` — catalog
-   refreshes affected forecast strategies + raw solcast_today.
-3. `forecast.recalculate_target_soc(catalog, now)` — derive target_soc_*
-   from catalog state + consumption profiles.
+   gates from `LiveRateReader` / `ChargeSlots`; push to aggregates as VOs.
+2. `forecasts.solcast_*_updated(...)` or `forecasts.live_pv_updated(...)` —
+   refreshes affected forecast strategies + extrap projection.
+3. `target_socs.recalculate_target_soc(forecasts, now)` — derive target_soc_*
+   from forecasts state + consumption profiles (cumulative balance).
 4. `_notify_listeners()` — fan out to sensors.
 
-HASS-FREE: dependencies injected by `pv_forecast_factory.py`.
+HASS-FREE: dependencies injected by `pv_forecast_factory.py`. Future extension:
+afternoon balance projection (12:30..22:00 window) lands here naturally —
+same primitives, different bucket window.
 """
 
 from __future__ import annotations
@@ -57,8 +65,8 @@ _PROFILE_RETRY_INTERVAL_SEC: float = 60.0
 _LOGGER = logging.getLogger(__name__)
 
 
-class PvForecastService:
-    """Orchestrates Solcast/weather reads → catalog updates → target_soc recalc → listeners."""
+class EnergyBalanceService:
+    """Orchestrate energy balance pipeline: Solcast/weather reads → forecasts + cons updates → target_soc recalc → listeners."""
 
     def __init__(
         self,

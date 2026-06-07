@@ -1,6 +1,6 @@
 """LiveRateReader — driving adapter for real-time PV/consumption rates.
 
-Two flavours of "current rate" data, used by PvForecastService for two
+Two flavours of "current rate" data, used by EnergyBalanceService for two
 different extrapolation strategies of the in-progress 30-min bucket:
 
 1. Bucket-so-far utility meter values (kWh accumulated since :00/:30 reset):

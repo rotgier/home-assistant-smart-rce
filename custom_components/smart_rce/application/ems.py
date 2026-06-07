@@ -163,7 +163,7 @@ class Ems:
             self.water_heater_reserved_service.compute_current_value(
                 WaterHeaterReservedInput(
                     rce_today=None,  # TODO: wire from self.rce_prices
-                    pv_forecast_today=None,  # TODO: wire from pv_forecast_service
+                    pv_forecast_today=None,  # TODO: wire from energy_balance_service
                     weather_summary=None,  # TODO: wire from weather_listener
                 )
             )

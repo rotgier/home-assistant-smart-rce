@@ -162,7 +162,7 @@ class ConsumptionProfileLoader:
         # (startup race vs. calendar.workday_calendar / recorder
         # warming) are handled by deferring `refresh_profiles` to
         # `EVENT_HOMEASSISTANT_STARTED` and retrying on partial fetch
-        # (see `PvForecastService`). Filling missing buckets with
+        # (see `EnergyBalanceService`). Filling missing buckets with
         # defaults only applies to a date that DID return some slots
         # (graceful degradation around small historical gaps).
         return [

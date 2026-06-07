@@ -5,7 +5,7 @@ Pure domain (zero HA imports). Trzyma per-hour `condition_custom` dict
 minęły są "frozen" (nie nadpisywane przez świeże forecasty).
 
 Konsumowane przez:
-- application service (`PvForecastService._build_weather` — czyta past hours)
+- application service (`EnergyBalanceService._build_weather` — czyta past hours)
 - HA sensor (`WeatherForecastHistorySensor` — write side: zapisuje przy każdym
   weather forecast update; plus restore at startup)
 """

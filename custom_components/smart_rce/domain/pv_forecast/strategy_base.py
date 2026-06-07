@@ -155,7 +155,7 @@ class WeatherConditions:
     ) -> WeatherConditions:
         """Merge — forecast wins over history per (date, hour).
 
-        Used by application service (`PvForecastService._build_weather`)
+        Used by application service (`EnergyBalanceService._build_weather`)
         to assemble the full conditions window for AT6 + LIVE strategies.
         """
         combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
