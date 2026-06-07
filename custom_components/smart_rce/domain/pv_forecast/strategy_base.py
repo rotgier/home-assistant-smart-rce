@@ -1,11 +1,9 @@
 """Forecast strategy framework + shared value objects.
 
-Top-down narrative: the public framework class `ForecastStrategy`
-(template method) comes first; supporting types — `ForecastContext`
-(input), `PvForecastResult` (output), `WeatherConditions` (merged
-history+forecast weather), and the small VO building blocks — follow
-below. Concrete strategies live in sibling modules
-(`strategies_weather.py`, `strategies_extrapolation.py`).
+DFS class ordering (caller zaraz przed callee, depth-first per child):
+ForecastStrategy → ForecastContext → ctx VOs (signals, weather/conditions,
+solcast) → PvForecastResult → AdjustedPeriod. Concrete strategies live in
+sibling modules (`strategies_weather.py`, `strategies_extrapolation.py`).
 """
 
 from __future__ import annotations
@@ -109,6 +107,99 @@ class ForecastContext:
     realized_pv_today: dict[tuple[int, int], float] = field(default_factory=dict)
     consumption_w: float | None = None
     start_charge_hour: int | None = None
+
+
+# --- LivePvSignals: ctx.signals field 1 --- #
+
+
+@dataclass(frozen=True)
+class LivePvSignals:
+    """PV-side live readings snapshot — single VO passed to forecasts per tick.
+
+    Replaces 4 separate field writes on the aggregate from application
+    service. Service builds via `LiveRateReader` once per tick, hands to
+    `forecasts.live_pv_updated(signals, ...)`.
+    """
+
+    pv_power_w: float | None = None
+    bucket_so_far_kwh: float | None = None
+    derivative_w_per_min: float | None = None
+    stability_stable: bool | None = None
+
+
+# --- WeatherConditions: ctx.weather field 2 (merged history + forecast) --- #
+
+
+@dataclass(frozen=True)
+class WeatherConditions:
+    """Merged weather snapshot (history + forecast).
+
+    Conditions with no `forecast_date` are ignored — they can't be matched
+    to a specific day. `for_hour(...)` accepts a target date for precise
+    matching; falls back to undated entries (legacy / single-day callers)
+    before defaulting to `"cloudy"`.
+    """
+
+    conditions: list[WeatherConditionAtHour]
+
+    @classmethod
+    def empty(cls) -> WeatherConditions:
+        return cls(conditions=[])
+
+    @classmethod
+    def from_history_and_forecast(
+        cls,
+        history: list[WeatherConditionAtHour],
+        forecast: list[WeatherConditionAtHour],
+    ) -> WeatherConditions:
+        """Merge — forecast wins over history per (date, hour).
+
+        Used by application service (`PvForecastService._build_weather`)
+        to assemble the full conditions window for AT6 + LIVE strategies.
+        """
+        combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
+        for c in history:
+            if c.forecast_date:
+                combined[(c.forecast_date, c.hour)] = c
+        for c in forecast:
+            if c.forecast_date:
+                combined[(c.forecast_date, c.hour)] = c
+        return cls(conditions=list(combined.values()))
+
+    def for_hour(self, hour: int, target_date: date | None = None) -> str:
+        """Find weather condition for given hour/date. Fallback to 'cloudy'."""
+        if target_date:
+            for w in self.conditions:
+                if w.forecast_date == target_date and w.hour == hour:
+                    return w.condition_custom
+        for w in self.conditions:
+            if w.hour == hour and w.forecast_date is None:
+                return w.condition_custom
+        return "cloudy"
+
+    def __bool__(self) -> bool:
+        return bool(self.conditions)
+
+
+# --- WeatherConditionAtHour: WeatherConditions.conditions list element --- #
+
+
+@dataclass
+class WeatherConditionAtHour:
+    hour: int  # 0-23 local time
+    condition_custom: str
+    forecast_date: date | None = None  # None = match only by hour
+
+
+# --- SolcastPeriod: ctx.solcast_* field 3 element --- #
+
+
+@dataclass
+class SolcastPeriod:
+    period_start: str  # ISO 8601
+    pv_estimate: float  # hourly rate kWh/h
+    pv_estimate10: float
+    pv_estimate90: float
 
 
 # --- PvForecastResult: return type from ForecastStrategy._compute --- #
@@ -316,94 +407,10 @@ class PvForecastResult:
         return round(total, 4)
 
 
-# --- WeatherConditions: merged history + forecast weather VO --- #
-
-
-@dataclass(frozen=True)
-class WeatherConditions:
-    """Merged weather snapshot (history + forecast).
-
-    Conditions with no `forecast_date` are ignored — they can't be matched
-    to a specific day. `for_hour(...)` accepts a target date for precise
-    matching; falls back to undated entries (legacy / single-day callers)
-    before defaulting to `"cloudy"`.
-    """
-
-    conditions: list[WeatherConditionAtHour]
-
-    @classmethod
-    def empty(cls) -> WeatherConditions:
-        return cls(conditions=[])
-
-    @classmethod
-    def from_history_and_forecast(
-        cls,
-        history: list[WeatherConditionAtHour],
-        forecast: list[WeatherConditionAtHour],
-    ) -> WeatherConditions:
-        """Merge — forecast wins over history per (date, hour).
-
-        Used by application service (`PvForecastService._build_weather`)
-        to assemble the full conditions window for AT6 + LIVE strategies.
-        """
-        combined: dict[tuple[date, int], WeatherConditionAtHour] = {}
-        for c in history:
-            if c.forecast_date:
-                combined[(c.forecast_date, c.hour)] = c
-        for c in forecast:
-            if c.forecast_date:
-                combined[(c.forecast_date, c.hour)] = c
-        return cls(conditions=list(combined.values()))
-
-    def for_hour(self, hour: int, target_date: date | None = None) -> str:
-        """Find weather condition for given hour/date. Fallback to 'cloudy'."""
-        if target_date:
-            for w in self.conditions:
-                if w.forecast_date == target_date and w.hour == hour:
-                    return w.condition_custom
-        for w in self.conditions:
-            if w.hour == hour and w.forecast_date is None:
-                return w.condition_custom
-        return "cloudy"
-
-    def __bool__(self) -> bool:
-        return bool(self.conditions)
-
-
-# --- Building-block VOs --- #
-
-
-@dataclass
-class SolcastPeriod:
-    period_start: str  # ISO 8601
-    pv_estimate: float  # hourly rate kWh/h
-    pv_estimate10: float
-    pv_estimate90: float
+# --- AdjustedPeriod: PvForecastResult.forecast list element --- #
 
 
 @dataclass
 class AdjustedPeriod:
     period_start: str  # ISO 8601
     pv_estimate_adjusted: float  # hourly rate kWh/h
-
-
-@dataclass
-class WeatherConditionAtHour:
-    hour: int  # 0-23 local time
-    condition_custom: str
-    forecast_date: date | None = None  # None = match only by hour
-
-
-@dataclass(frozen=True)
-class LivePvSignals:
-    """PV-side live readings snapshot — single VO passed to forecasts per tick.
-
-    Replaces 4 separate field writes on the aggregate from application
-    service. Service builds via `LiveRateReader` once per tick, hands to
-    `forecasts.live_pv_updated(signals, ...)`.
-    """
-
-    pv_power_w: float | None = None
-    bucket_so_far_kwh: float | None = None
-    derivative_w_per_min: float | None = None
-    stability_stable: bool | None = None
