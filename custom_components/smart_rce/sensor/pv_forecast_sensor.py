@@ -162,7 +162,7 @@ def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
     return attrs
 
 
-def _effective_derivative(updater: PvForecasts) -> float:
+def _effective_derivative(forecasts: PvForecasts) -> float:
     """Return the derivative to feed the ramp formula, gated on stability.
 
     Returns `signals.derivative_w_per_min` when the stability binary is
@@ -170,15 +170,15 @@ def _effective_derivative(updater: PvForecasts) -> float:
     collapses the ramp integral back to the constant-power formula —
     so callers can pass this unconditionally to `Bucket.full_bucket_kwh`.
     """
-    signals = updater.signals
+    signals = forecasts.signals
     if signals.stability_stable and signals.derivative_w_per_min is not None:
         return signals.derivative_w_per_min
     return 0.0
 
 
-def _bucket_end_constant_kwh(updater: PvForecasts) -> float | None:
+def _bucket_end_constant_kwh(forecasts: PvForecasts) -> float | None:
     """Projected in-progress bucket kWh assuming constant `signals.pv_power_w`."""
-    signals = updater.signals
+    signals = forecasts.signals
     if signals.pv_power_w is None or signals.bucket_so_far_kwh is None:
         return None
     return Bucket.full_bucket_kwh(
@@ -186,23 +186,23 @@ def _bucket_end_constant_kwh(updater: PvForecasts) -> float | None:
     )
 
 
-def _bucket_end_derivative_kwh(updater: PvForecasts) -> float | None:
+def _bucket_end_derivative_kwh(forecasts: PvForecasts) -> float | None:
     """Projected in-progress bucket kWh using ramp when derivative is stable."""
-    signals = updater.signals
+    signals = forecasts.signals
     if signals.pv_power_w is None or signals.bucket_so_far_kwh is None:
         return None
     return Bucket.full_bucket_kwh(
         dt_util.now(),
         signals.pv_power_w,
         signals.bucket_so_far_kwh,
-        derivative_w_per_min=_effective_derivative(updater),
+        derivative_w_per_min=_effective_derivative(forecasts),
     )
 
 
-def _bucket_end_derivative_delta_kwh(updater: PvForecasts) -> float | None:
+def _bucket_end_derivative_delta_kwh(forecasts: PvForecasts) -> float | None:
     """Derivative-aware minus constant projection — zero when ramp inactive."""
-    deriv_kwh = _bucket_end_derivative_kwh(updater)
-    const_kwh = _bucket_end_constant_kwh(updater)
+    deriv_kwh = _bucket_end_derivative_kwh(forecasts)
+    const_kwh = _bucket_end_constant_kwh(forecasts)
     if deriv_kwh is None or const_kwh is None:
         return None
     return deriv_kwh - const_kwh
@@ -212,31 +212,35 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # --- Weather-adjusted PV forecast (kWh, default unit) ---
     PvForecastSensorDescription(
         name="Weather Adjusted PV At 6",
-        value_fn=lambda pv: pv.updater.get(PvForecast.AT_6).total_kwh
-        if pv.updater.get(PvForecast.AT_6)
+        value_fn=lambda pv: pv.forecasts.get(PvForecast.AT_6).total_kwh
+        if pv.forecasts.get(PvForecast.AT_6)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.updater.get(PvForecast.AT_6)),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecasts.get(PvForecast.AT_6)),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live",
-        value_fn=lambda pv: pv.updater.get(PvForecast.LIVE).total_kwh
-        if pv.updater.get(PvForecast.LIVE)
+        value_fn=lambda pv: pv.forecasts.get(PvForecast.LIVE).total_kwh
+        if pv.forecasts.get(PvForecast.LIVE)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.updater.get(PvForecast.LIVE)),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecasts.get(PvForecast.LIVE)),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Tomorrow At 6",
-        value_fn=lambda pv: pv.updater.get(PvForecast.TOMORROW_AT_6).total_kwh
-        if pv.updater.get(PvForecast.TOMORROW_AT_6)
+        value_fn=lambda pv: pv.forecasts.get(PvForecast.TOMORROW_AT_6).total_kwh
+        if pv.forecasts.get(PvForecast.TOMORROW_AT_6)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.updater.get(PvForecast.TOMORROW_AT_6)),
+        attr_fn=lambda pv: _pv_forecast_attrs(
+            pv.forecasts.get(PvForecast.TOMORROW_AT_6)
+        ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Tomorrow Live",
-        value_fn=lambda pv: pv.updater.get(PvForecast.TOMORROW_LIVE).total_kwh
-        if pv.updater.get(PvForecast.TOMORROW_LIVE)
+        value_fn=lambda pv: pv.forecasts.get(PvForecast.TOMORROW_LIVE).total_kwh
+        if pv.forecasts.get(PvForecast.TOMORROW_LIVE)
         else None,
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.updater.get(PvForecast.TOMORROW_LIVE)),
+        attr_fn=lambda pv: _pv_forecast_attrs(
+            pv.forecasts.get(PvForecast.TOMORROW_LIVE)
+        ),
     ),
     # --- Extrapolated live variants (per-minute tick) ---
     # state = kWh remaining today (past excluded, current scaled)
@@ -244,28 +248,28 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # (chart-friendly — same shape as Adj PV Live so adjusted_pv() helper works)
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Pattern",
-        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_PATTERN),
+        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_PATTERN),
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.updater.get(PvForecast.EXTRAP_PATTERN)
+            pv.forecasts.get(PvForecast.EXTRAP_PATTERN)
         ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Proportional",
-        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_PROPORTIONAL),
+        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_PROPORTIONAL),
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.updater.get(PvForecast.EXTRAP_PROPORTIONAL)
+            pv.forecasts.get(PvForecast.EXTRAP_PROPORTIONAL)
         ),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Band",
-        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_BAND),
-        attr_fn=lambda pv: _pv_forecast_attrs(pv.updater.get(PvForecast.EXTRAP_BAND)),
+        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_BAND),
+        attr_fn=lambda pv: _pv_forecast_attrs(pv.forecasts.get(PvForecast.EXTRAP_BAND)),
     ),
     PvForecastSensorDescription(
         name="Weather Adjusted PV Live Extrapolated Band Recent",
-        value_fn=lambda pv: pv.updater.remaining_kwh(PvForecast.EXTRAP_BAND_RECENT),
+        value_fn=lambda pv: pv.forecasts.remaining_kwh(PvForecast.EXTRAP_BAND_RECENT),
         attr_fn=lambda pv: _pv_forecast_attrs(
-            pv.updater.get(PvForecast.EXTRAP_BAND_RECENT)
+            pv.forecasts.get(PvForecast.EXTRAP_BAND_RECENT)
         ),
     ),
     # --- In-progress bucket projection observability (Phase C.1) ---
@@ -276,15 +280,15 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # patch to use ramp (Phase C.2).
     PvForecastSensorDescription(
         name="PV Bucket End Constant",
-        value_fn=lambda pv: _bucket_end_constant_kwh(pv.updater),
+        value_fn=lambda pv: _bucket_end_constant_kwh(pv.forecasts),
     ),
     PvForecastSensorDescription(
         name="PV Bucket End Derivative",
-        value_fn=lambda pv: _bucket_end_derivative_kwh(pv.updater),
+        value_fn=lambda pv: _bucket_end_derivative_kwh(pv.forecasts),
     ),
     PvForecastSensorDescription(
         name="PV Bucket End Derivative Delta",
-        value_fn=lambda pv: _bucket_end_derivative_delta_kwh(pv.updater),
+        value_fn=lambda pv: _bucket_end_derivative_delta_kwh(pv.forecasts),
     ),
     # --- Target SOC (%) — per-variant TargetSoc entity ---
     # Main value = flat (default cons profile). Attributes: prev_day_1..8 (per

@@ -62,7 +62,7 @@ async def create_pv_forecast_service(
     rce_coordinator: SmartRceDataUpdateCoordinator,
 ) -> PvForecastService:
     """Composition root — wire domain + adapters + service + HA listenery."""
-    updater = PvForecasts()
+    forecasts = PvForecasts()
     target_socs = TargetSocCatalog()
     solcast = SolcastReader(hass)
     workday_reader = WorkdayCalendarReader(hass)
@@ -72,7 +72,7 @@ async def create_pv_forecast_service(
 
     service = PvForecastService(
         hass=hass,
-        updater=updater,
+        forecasts=forecasts,
         target_socs=target_socs,
         solcast=solcast,
         weather_listener=weather_listener,

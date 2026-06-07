@@ -62,8 +62,8 @@ def test_live_pv_updated_replaces_signals_atomically() -> None:
     """live_pv_updated replaces all 4 signal fields in one call (Tell-Don't-Ask)."""
     from datetime import datetime
 
-    updater = PvForecasts()
-    updater.live_pv_updated(
+    forecasts = PvForecasts()
+    forecasts.live_pv_updated(
         LivePvSignals(
             pv_power_w=1500.0,
             bucket_so_far_kwh=0.3,
@@ -75,21 +75,21 @@ def test_live_pv_updated_replaces_signals_atomically() -> None:
         start_charge_hour=None,
         now=datetime(2026, 1, 1, 12, 0),
     )
-    snap = updater.signals
+    snap = forecasts.signals
     assert snap.pv_power_w == 1500.0
     assert snap.bucket_so_far_kwh == 0.3
     assert snap.derivative_w_per_min == 60.0
     assert snap.stability_stable is True
 
     # Second tick fully replaces — no field-by-field merge.
-    updater.live_pv_updated(
+    forecasts.live_pv_updated(
         LivePvSignals(pv_power_w=2000.0),
         realized_pv_today={},
         consumption_w=None,
         start_charge_hour=None,
         now=datetime(2026, 1, 1, 12, 1),
     )
-    snap = updater.signals
+    snap = forecasts.signals
     assert snap.pv_power_w == 2000.0
     assert snap.bucket_so_far_kwh is None
     assert snap.derivative_w_per_min is None

@@ -110,7 +110,7 @@ class TargetSocMatrixService:
         is_today = target_date == today
         is_tomorrow = target_date == today + timedelta(days=1)
         target_socs = self._pv_forecast_service.target_socs
-        updater = self._pv_forecast_service.updater
+        forecasts = self._pv_forecast_service.forecasts
 
         # Now-aware only for today's matrix. Toggle defaults to ON when
         # the input_boolean is missing or in an unknown state — explicit
@@ -118,7 +118,7 @@ class TargetSocMatrixService:
         # signals must be available too (fail-hard contract on to_view /
         # to_profile when `now` is given).
         live_cons_w_raw = target_socs.inputs.live_consumption_w
-        live_pv_w_raw = updater.signals.pv_power_w
+        live_pv_w_raw = forecasts.signals.pv_power_w
         now_aware = (
             is_today
             and self._now_aware_enabled()
@@ -130,7 +130,7 @@ class TargetSocMatrixService:
         live_pv_w = live_pv_w_raw if now_aware else None
 
         pv_profiles = self._pv_profiles(
-            updater,
+            forecasts,
             is_today=is_today,
             target_date=target_date,
             now=matrix_now,
@@ -208,7 +208,7 @@ class TargetSocMatrixService:
 
     def _pv_profiles(
         self,
-        updater: PvForecasts,
+        forecasts: PvForecasts,
         *,
         is_today: bool,
         target_date: date,
@@ -230,7 +230,7 @@ class TargetSocMatrixService:
         out: dict[str, PvProfile] = {}
         resolver_map = _TODAY_PV_RESOLVERS if is_today else _TOMORROW_PV_RESOLVERS
         for key in keys:
-            adjusted = updater.get(resolver_map[key])
+            adjusted = forecasts.get(resolver_map[key])
             if adjusted is None or not adjusted.forecast:
                 continue
             try:

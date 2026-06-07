@@ -7,7 +7,7 @@ forecast + consumption" concern.
 
 Public API is **trigger-source-named**: each method takes only the delta
 that changed (Solcast at_6 / live / tomorrow periods, weather, live PV
-signals + per-tick cons knobs for EXTRAP strategies). The updater
+signals + per-tick cons knobs for EXTRAP strategies). The forecasts
 caches all inputs and rebuilds the full `ForecastContext` per dispatch.
 
 After Iter 3b: every PvForecast variant has a bound `ForecastStrategy`
@@ -42,7 +42,7 @@ __all__ = [
 class PvForecasts:
     """Orchestrates `PvForecast` strategy updates + caches inputs.
 
-    Callers push only what changed via trigger-named methods; the updater
+    Callers push only what changed via trigger-named methods; the forecasts
     builds the full `ForecastContext` from cached inputs and dispatches
     to all bound strategies.
     """

@@ -63,7 +63,7 @@ class PvForecastService:
     def __init__(
         self,
         hass: HomeAssistant,
-        updater: PvForecasts,
+        forecasts: PvForecasts,
         target_socs: TargetSocCatalog,
         solcast: SolcastReader,
         weather_listener: WeatherForecastListener,
@@ -74,7 +74,7 @@ class PvForecastService:
         charge_slots: ChargeSlots,
     ) -> None:
         self._hass = hass
-        self.updater = updater
+        self.forecasts = forecasts
         self.target_socs = target_socs
         self._solcast = solcast
         self._weather_listener = weather_listener
@@ -153,7 +153,7 @@ class PvForecastService:
     # ─── Updater dispatch paths (trigger-named, delta-only) ────────────────
 
     def _recalculate_at6(self) -> None:
-        """Refresh AT_6 via updater.solcast_at_6_updated.
+        """Refresh AT_6 via forecasts.solcast_at_6_updated.
 
         Before 6:01 — use live Solcast (has forecast fetched at 22:00).
         After 6:01 — use at_6 snapshot (fresh for today).
@@ -167,33 +167,33 @@ class PvForecastService:
             return
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self.updater.solcast_at_6_updated(solcast_periods, weather, now)
+        self.forecasts.solcast_at_6_updated(solcast_periods, weather, now)
 
     def _recalculate_live(self) -> None:
-        """Refresh LIVE via updater.solcast_today_updated."""
+        """Refresh LIVE via forecasts.solcast_today_updated."""
         solcast_periods = self._solcast.read_today()
         if not solcast_periods:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self.updater.solcast_today_updated(solcast_periods, weather, now)
+        self.forecasts.solcast_today_updated(solcast_periods, weather, now)
 
     def _recalculate_tomorrow(self) -> None:
-        """Refresh TOMORROW_* via updater.solcast_tomorrow_updated."""
+        """Refresh TOMORROW_* via forecasts.solcast_tomorrow_updated."""
         solcast_periods = self._solcast.read_tomorrow()
         if not solcast_periods:
             return
         now = dt_util.now()
         weather = self._build_weather(now.date())
         self._refresh_target_soc_inputs()
-        self.updater.solcast_tomorrow_updated(solcast_periods, weather, now)
+        self.forecasts.solcast_tomorrow_updated(solcast_periods, weather, now)
 
     def _tick_extrapolated(self) -> None:
         """Per-minute tick — refresh inputs + dispatch (EXTRAP recomputes too)."""
         now = dt_util.now()
         self._refresh_target_soc_inputs()
-        self.updater.live_pv_updated(
+        self.forecasts.live_pv_updated(
             signals=self._build_live_signals(),
             realized_pv_today=self._realized_pv_today,
             consumption_w=self.target_socs.inputs.live_consumption_w,
@@ -204,8 +204,8 @@ class PvForecastService:
     # ─── TargetSoc recalc (forecast aggregate) ─────────────────────────────
 
     def _recalculate_target_soc_now(self) -> None:
-        """Pull current updater state + recompute target_soc_*. Cheap (pure)."""
-        self.target_socs.recalculate_target_soc(self.updater, dt_util.now())
+        """Pull current forecasts state + recompute target_soc_*. Cheap (pure)."""
+        self.target_socs.recalculate_target_soc(self.forecasts, dt_util.now())
 
     # ─── Input VO builders — read boundary, push to aggregates ─────────────
 
@@ -261,7 +261,7 @@ class PvForecastService:
         except Exception:  # noqa: BLE001 — defensive, don't crash integration
             _LOGGER.exception("Failed to refresh consumption profiles (full)")
             return
-        self.target_socs.recalculate_target_soc(self.updater, now)
+        self.target_socs.recalculate_target_soc(self.forecasts, now)
         self._notify_listeners()
         self._maybe_schedule_profile_retry()
 
@@ -282,7 +282,7 @@ class PvForecastService:
         except Exception:  # noqa: BLE001 — defensive
             _LOGGER.exception("Failed to refresh consumption profiles (tomorrow)")
             return
-        self.target_socs.recalculate_target_soc(self.updater, now)
+        self.target_socs.recalculate_target_soc(self.forecasts, now)
         self._notify_listeners()
 
     def _maybe_schedule_profile_retry(self) -> None:

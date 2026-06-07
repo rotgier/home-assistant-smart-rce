@@ -6,7 +6,7 @@ target SOC results from forecast + consumption" concern (per-variant
 pre-charge gates), while `PvForecasts` owns the "what PV looks like"
 concern (forecast scenarios + extrapolation + PV-side live signals).
 
-`recalculate_target_soc(updater, now)` iterates **all 8 PvForecast
+`recalculate_target_soc(forecasts, now)` iterates **all 8 PvForecast
 variants** uniformly. Unbound variants (Iter 2: EXTRAP × 4) naturally
 produce `None` from their `TargetSoc._one()` because `variant.result`
 is `None`. EXTRAP sensors keep reading from `ExtrapolatedLive.target_soc`
@@ -60,7 +60,7 @@ class TargetSocCatalog:
         """Atomic snapshot of cons-side live + pre-charge gates."""
         self._inputs = inputs
 
-    def recalculate_target_soc(self, updater: PvForecasts, now: datetime) -> None:
+    def recalculate_target_soc(self, forecasts: PvForecasts, now: datetime) -> None:
         """Recompute every `TargetSoc` entity from current forecasts + profiles.
 
         Today variants build now-aware profiles via
@@ -80,14 +80,14 @@ class TargetSocCatalog:
         """
         today_ctx = TargetSocContext(
             target_date=now.date(),
-            signals=updater.signals,
+            signals=forecasts.signals,
             live_consumption_w=self._inputs.live_consumption_w,
             start_charge_hour=self._inputs.start_charge_hour_today,
             now=now,
         )
         tomorrow_ctx = TargetSocContext(
             target_date=now.date() + timedelta(days=1),
-            signals=updater.signals,
+            signals=forecasts.signals,
             live_consumption_w=None,  # not used in is_today=False branch
             start_charge_hour=self._inputs.start_charge_hour_tomorrow,
             now=now,

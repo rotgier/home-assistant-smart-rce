@@ -387,11 +387,11 @@ class WeatherConditionAtHour:
 
 @dataclass(frozen=True)
 class LivePvSignals:
-    """PV-side live readings snapshot — single VO passed to updater per tick.
+    """PV-side live readings snapshot — single VO passed to forecasts per tick.
 
     Replaces 4 separate field writes on the aggregate from application
     service. Service builds via `LiveRateReader` once per tick, hands to
-    `updater.live_pv_updated(signals, ...)`.
+    `forecasts.live_pv_updated(signals, ...)`.
     """
 
     pv_power_w: float | None = None
