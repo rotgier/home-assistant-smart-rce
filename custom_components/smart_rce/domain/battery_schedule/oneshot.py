@@ -131,18 +131,6 @@ class OneShotParams:
         return dataclasses.replace(self, end_time=value)
 
     @classmethod
-    def defaults_by_direction(cls) -> dict[Direction, OneShotParams]:
-        """Build default params per direction — used by aggregate's field factory.
-
-        DISCHARGE: end at 22:00 with target SoC 10% (evening peak default).
-        CHARGE: end at 06:00 with target SoC 100% (overnight cheap-rate fill).
-        """
-        return {
-            Direction.DISCHARGE: cls(target_soc=10.0, end_time=time(22, 0)),
-            Direction.CHARGE: cls(target_soc=100.0, end_time=time(6, 0)),
-        }
-
-    @classmethod
     def restore_by_direction(
         cls, data: dict[str, Any]
     ) -> dict[Direction, OneShotParams]:
@@ -176,6 +164,18 @@ class OneShotParams:
                 data.get("charge_oneshot_params", {}),
                 default=defaults[Direction.CHARGE],
             ),
+        }
+
+    @classmethod
+    def defaults_by_direction(cls) -> dict[Direction, OneShotParams]:
+        """Build default params per direction — used by aggregate's field factory.
+
+        DISCHARGE: end at 22:00 with target SoC 10% (evening peak default).
+        CHARGE: end at 06:00 with target SoC 100% (overnight cheap-rate fill).
+        """
+        return {
+            Direction.DISCHARGE: cls(target_soc=10.0, end_time=time(22, 0)),
+            Direction.CHARGE: cls(target_soc=100.0, end_time=time(6, 0)),
         }
 
     def to_dict(self) -> dict[str, Any]:

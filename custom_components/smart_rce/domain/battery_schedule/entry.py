@@ -86,6 +86,11 @@ class BatteryScheduleEntry:
     # ─── Factories ───
 
     @classmethod
+    def defaults_for_all_kinds(cls) -> dict[SlotKind, BatteryScheduleEntry]:
+        """Disabled-default entry for every `SlotKind` — used by aggregate factory."""
+        return {k: cls.default_for(k) for k in SlotKind}
+
+    @classmethod
     def default_for(
         cls, kind: SlotKind, *, enabled: bool = False
     ) -> BatteryScheduleEntry:
@@ -97,11 +102,6 @@ class BatteryScheduleEntry:
             end=end,
             target_soc=kind.profile.default_target_soc,
         )
-
-    @classmethod
-    def defaults_for_all_kinds(cls) -> dict[SlotKind, BatteryScheduleEntry]:
-        """Disabled-default entry for every `SlotKind` — used by aggregate factory."""
-        return {k: cls.default_for(k) for k in SlotKind}
 
     # ─── with_* mutators (immutable replace) ───
 
@@ -121,40 +121,6 @@ class BatteryScheduleEntry:
         return dataclasses.replace(self, behavior=value)
 
     # ─── Predicates (window + target + lifecycle) ───
-
-    def is_in_window(self, now: datetime) -> bool:
-        """Return True if `now` falls inside `[start, end)`. Ignores `enabled`."""
-        return self.start <= now.time() < self.end
-
-    def soc_target_reached(self, current_soc: float) -> bool:
-        """Return True when no further work needed for this direction.
-
-        Discharge → SoC <= target. Charge → SoC >= target.
-        """
-        if self.kind.direction.is_discharge:
-            return current_soc <= self.target_soc
-        return current_soc >= self.target_soc
-
-    def time_to_complete_at(self, current_soc: float) -> float:
-        """Seconds needed to reach target_soc via zone-aware rate model.
-
-        Delegates to `direction.seconds_for_soc_traversal` — direction-agnostic
-        since it normalizes start/end internally. Returns 0 if already at target.
-
-        Zone-aware vs constant 75 sec/pp matters for full-depth discharges
-        (100→10%): empirical 104 min vs constant-model 112.5 min — DELAYED
-        engagement starts ~8 min later, less time at extreme SoC.
-        """
-        if self.soc_target_reached(current_soc):
-            return 0.0
-        return self.kind.direction.seconds_for_soc_traversal(
-            current_soc, self.target_soc
-        )
-
-    def sec_until_end(self, now: datetime) -> float:
-        """Seconds from `now` until today's `end` time. Negative if already past."""
-        end_dt = datetime.combine(now.date(), self.end, tzinfo=now.tzinfo)
-        return (end_dt - now).total_seconds()
 
     def should_apply_now(self, now: datetime, current_soc: float) -> bool:
         """Whether orchestrator should actively engage EMS mode at `now`.
@@ -184,7 +150,28 @@ class BatteryScheduleEntry:
             return True
         # DELAYED_TO_END: engage only when remaining window time is just
         # enough to hit target at the assumed rate.
-        return self.sec_until_end(now) <= self.time_to_complete_at(current_soc)
+        return self._sec_until_end(now) <= self.time_to_complete_at(current_soc)
+
+    def _sec_until_end(self, now: datetime) -> float:
+        """Seconds from `now` until today's `end` time. Negative if already past."""
+        end_dt = datetime.combine(now.date(), self.end, tzinfo=now.tzinfo)
+        return (end_dt - now).total_seconds()
+
+    def time_to_complete_at(self, current_soc: float) -> float:
+        """Seconds needed to reach target_soc via zone-aware rate model.
+
+        Delegates to `direction.seconds_for_soc_traversal` — direction-agnostic
+        since it normalizes start/end internally. Returns 0 if already at target.
+
+        Zone-aware vs constant 75 sec/pp matters for full-depth discharges
+        (100→10%): empirical 104 min vs constant-model 112.5 min — DELAYED
+        engagement starts ~8 min later, less time at extreme SoC.
+        """
+        if self.soc_target_reached(current_soc):
+            return 0.0
+        return self.kind.direction.seconds_for_soc_traversal(
+            current_soc, self.target_soc
+        )
 
     def disengage_reason(self, now: datetime, soc: float) -> DisengageReason | None:
         """Return None if entry should keep engaging; otherwise the reason to stop.
@@ -200,6 +187,19 @@ class BatteryScheduleEntry:
         if self.soc_target_reached(soc):
             return DisengageReason.TARGET_REACHED
         return None
+
+    def is_in_window(self, now: datetime) -> bool:
+        """Return True if `now` falls inside `[start, end)`. Ignores `enabled`."""
+        return self.start <= now.time() < self.end
+
+    def soc_target_reached(self, current_soc: float) -> bool:
+        """Return True when no further work needed for this direction.
+
+        Discharge → SoC <= target. Charge → SoC >= target.
+        """
+        if self.kind.direction.is_discharge:
+            return current_soc <= self.target_soc
+        return current_soc >= self.target_soc
 
     # ─── Output + serialization ───
 

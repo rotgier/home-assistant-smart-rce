@@ -311,17 +311,6 @@ class BatterySchedule:
 
         return BatteryOperation.idle(), events
 
-    def _find_engaging_entry(
-        self, now: datetime, current_soc: float
-    ) -> BatteryScheduleEntry | None:
-        today = self.today_entries()
-        engaging = [
-            today[k]
-            for k in SlotKind.by_precedence()
-            if today[k].should_apply_now(now, current_soc)
-        ]
-        return engaging[-1] if engaging else None
-
     def _oneshot_disengage_reason(
         self, now: datetime, current_soc: float
     ) -> OneShotDisengageReason | None:
@@ -332,6 +321,17 @@ class BatterySchedule:
         if self._oneshot.target_reached(current_soc):
             return OneShotDisengageReason.TARGET_REACHED
         return None
+
+    def _find_engaging_entry(
+        self, now: datetime, current_soc: float
+    ) -> BatteryScheduleEntry | None:
+        today = self.today_entries()
+        engaging = [
+            today[k]
+            for k in SlotKind.by_precedence()
+            if today[k].should_apply_now(now, current_soc)
+        ]
+        return engaging[-1] if engaging else None
 
     def roll_day(self) -> None:
         """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
