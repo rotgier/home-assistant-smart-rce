@@ -1,8 +1,9 @@
 """`PvForecast` enum — all 8 variants + axis classmethods.
 
-Each enum member declares at the source: string key, bound `ForecastStrategy`
-instance, `is_today` (date axis), `is_extrap` (source kind). Consumers
-iterate partitions via `PvForecast.today()` / `.tomorrow()` / `.extrap()`.
+Each enum member declares at the source: string key + bound `ForecastStrategy`
+instance. Axis flags (`is_today`, `is_extrap`) live on the strategy itself —
+enum's properties delegate, no duplication in tuple values. Consumers iterate
+partitions via `PvForecast.today()` / `.tomorrow()` / `.extrap()`.
 
 This file imports the concrete strategy classes; sibling strategy files
 must not import the enum at module top level (would create a cycle).
@@ -25,51 +26,47 @@ from .strategy_base import ForecastStrategy, PvForecastResult
 
 
 class PvForecast(Enum):
-    """All PV forecast variants — key + bound strategy + axis flags.
+    """All PV forecast variants — string key + bound `ForecastStrategy`.
 
-    Each member declares at the source: string key, ForecastStrategy
-    instance, `is_today` (date axis), `is_extrap` (source/computation
-    kind). Consumers iterate partitions via `PvForecast.today()` /
-    `.tomorrow()` / `.extrap()` classmethods.
+    Axis flags are read from the bound strategy (`is_today` set per ctor arg
+    on At6/LiveStrategy; `is_extrap=True` class attr on _ExtrapStrategyBase).
+    Consumers iterate partitions via `PvForecast.today()` / `.tomorrow()` /
+    `.extrap()` classmethods.
 
     Naming convention: `<date_axis>_<source>` where source ∈ {at_6, live,
     extrap_*}. Today's variants drop the date prefix (implicit).
     """
 
-    AT_6 = ("at_6", At6Strategy(today=True), True, False)
-    LIVE = ("live", LiveStrategy(today=True), True, False)
-    TOMORROW_AT_6 = ("tomorrow_at_6", At6Strategy(today=False), False, False)
-    TOMORROW_LIVE = ("tomorrow_live", LiveStrategy(today=False), False, False)
-    EXTRAP_PATTERN = ("extrapolated_live_pattern", ExtrapPatternStrategy(), True, True)
+    AT_6 = ("at_6", At6Strategy(today=True))
+    LIVE = ("live", LiveStrategy(today=True))
+    TOMORROW_AT_6 = ("tomorrow_at_6", At6Strategy(today=False))
+    TOMORROW_LIVE = ("tomorrow_live", LiveStrategy(today=False))
+    EXTRAP_PATTERN = ("extrapolated_live_pattern", ExtrapPatternStrategy())
     EXTRAP_PROPORTIONAL = (
         "extrapolated_live_proportional",
         ExtrapProportionalStrategy(),
-        True,
-        True,
     )
-    EXTRAP_BAND = ("extrapolated_live_band", ExtrapBandStrategy(), True, True)
+    EXTRAP_BAND = ("extrapolated_live_band", ExtrapBandStrategy())
     EXTRAP_BAND_RECENT = (
         "extrapolated_live_band_recent",
         ExtrapBandRecentStrategy(),
-        True,
-        True,
     )
 
-    def __init__(
-        self,
-        key: str,
-        strategy: ForecastStrategy,
-        is_today: bool,
-        is_extrap: bool,
-    ) -> None:
+    def __init__(self, key: str, strategy: ForecastStrategy) -> None:
         self.key = key
         self.strategy = strategy
-        self.is_today = is_today
-        self.is_extrap = is_extrap
+
+    @property
+    def is_today(self) -> bool:
+        return self.strategy.is_today
 
     @property
     def is_tomorrow(self) -> bool:
-        return not self.is_today
+        return not self.strategy.is_today
+
+    @property
+    def is_extrap(self) -> bool:
+        return self.strategy.is_extrap
 
     @property
     def result(self) -> PvForecastResult | None:

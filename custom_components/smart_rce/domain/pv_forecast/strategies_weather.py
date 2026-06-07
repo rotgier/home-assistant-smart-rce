@@ -48,11 +48,11 @@ class At6Strategy(ForecastStrategy):
 
     def __init__(self, today: bool = True) -> None:
         super().__init__()
-        self._today = today
+        self.is_today = today
         self.supports_in_progress_patch = today
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
-        periods = ctx.solcast_at_6 if self._today else ctx.solcast_tomorrow
+        periods = ctx.solcast_at_6 if self.is_today else ctx.solcast_tomorrow
         if not periods or not ctx.weather:
             return None
         return self._adjust_forecast(periods, ctx)
@@ -113,11 +113,11 @@ class LiveStrategy(ForecastStrategy):
 
     def __init__(self, today: bool = True) -> None:
         super().__init__()
-        self._today = today
+        self.is_today = today
         self.supports_in_progress_patch = today
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
-        periods = ctx.solcast_today if self._today else ctx.solcast_tomorrow
+        periods = ctx.solcast_today if self.is_today else ctx.solcast_tomorrow
         if not periods or not ctx.weather:
             return None
         return self._adjust_forecast(periods, ctx)

@@ -26,9 +26,18 @@ class ForecastStrategy:
     bucket with live signals (today-variants only), and derives
     `remaining_kwh`. Every strategy exposes the unifying contract
     `(result, total_kwh, remaining_kwh)`.
+
+    Axis flags (`is_today`, `is_extrap`) live on strategy instances —
+    `PvForecast` enum delegates `.is_today` / `.is_extrap` properties
+    to its bound strategy (no duplication in enum tuple values).
+    Defaults: today (`is_today=True`) + non-extrap (`is_extrap=False`).
+    At6/LiveStrategy override `is_today` per `today` ctor arg;
+    `_ExtrapStrategyBase` overrides `is_extrap=True`.
     """
 
     supports_in_progress_patch: bool = False
+    is_today: bool = True
+    is_extrap: bool = False
 
     def __init__(self) -> None:
         self.result: PvForecastResult | None = None

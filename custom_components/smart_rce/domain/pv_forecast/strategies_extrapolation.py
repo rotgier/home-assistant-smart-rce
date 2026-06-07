@@ -35,9 +35,11 @@ class _ExtrapStrategyBase(ForecastStrategy):
 
     `assemble` in `extrapolation_utils` already handles in-progress
     patch + future overrides → `supports_in_progress_patch=False`.
+    All EXTRAP variants are today-axis (`is_today=True` inherited from base).
     """
 
     supports_in_progress_patch = False
+    is_extrap = True
 
     def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
         # Lazy import to break the strategies → forecast_enum → strategies cycle.
