@@ -81,6 +81,32 @@ class PvForecastSensorDescription(SensorEntityDescription):
         self.key = self.name.lower().replace(" ", "_")
 
 
+def _make_pv_desc(v: PvForecast) -> PvForecastSensorDescription:
+    """Build 'PV Forecast <label>' kWh sensor for one PV forecast variant.
+
+    Dispatch by `v.is_extrap`:
+    - Extrap variants → `remaining_kwh` (forward-only, current bucket scaled).
+      Chart-friendly forecast attr — same shape as Adj PV Live.
+    - Non-extrap (AT_6 / LIVE today+tomorrow) → `total_kwh` (full-day sum).
+
+    Default arg `_v=v` captures the loop variable by value (closure gotcha:
+    without it all lambdas would close over the same final `v`).
+    """
+    if v.is_extrap:
+        return PvForecastSensorDescription(
+            name=f"PV Forecast {v.pretty_label}",
+            value_fn=lambda pv, _v=v: pv.forecasts.remaining_kwh(_v),
+            attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
+        )
+    return PvForecastSensorDescription(
+        name=f"PV Forecast {v.pretty_label}",
+        value_fn=lambda pv, _v=v: (
+            pv.forecasts.get(_v).total_kwh if pv.forecasts.get(_v) else None
+        ),
+        attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
+    )
+
+
 def _pv_forecast_attrs(forecast) -> dict[str, Any]:
     if not forecast:
         return {}
@@ -93,6 +119,32 @@ def _pv_forecast_attrs(forecast) -> dict[str, Any]:
             for p in forecast.forecast
         ]
     }
+
+
+def _make_target_soc_desc(v: PvForecast) -> PvForecastSensorDescription:
+    """Build 'Target Battery SOC <label>' (%) sensor for one PV forecast variant.
+
+    Reads `pv.target_socs.target_socs[v].flat.value` as main reading.
+    Attributes (`_target_soc_attrs`): prev_day_1..8 (per prev-workday
+    cons profile) + max + per-bucket trace. Profile bundle is
+    `today_profiles` for today variants, `tomorrow_profiles` otherwise.
+
+    Default arg captures (`_v`, `_pa`) avoid closure-over-loop-variable.
+    """
+    profiles_attr = "today_profiles" if v.is_today else "tomorrow_profiles"
+    return PvForecastSensorDescription(
+        name=f"Target SOC {v.pretty_label}",
+        native_unit_of_measurement="%",
+        value_fn=lambda pv, _v=v: (
+            pv.target_socs.target_socs[_v].flat.value
+            if pv.target_socs.target_socs[_v].flat
+            else None
+        ),
+        attr_fn=lambda pv, _v=v, _pa=profiles_attr: _target_soc_attrs(
+            pv.target_socs.target_socs[_v],
+            getattr(pv.target_socs.consumption_profiles, _pa),
+        ),
+    )
 
 
 def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
@@ -140,20 +192,6 @@ def _buckets_to_dict(result) -> list[dict[str, Any]]:
     ]
 
 
-def _effective_derivative(forecasts: PvForecasts) -> float:
-    """Return the derivative to feed the ramp formula, gated on stability.
-
-    Returns `signals.derivative_w_per_min` when the stability binary is
-    True AND the value is available; 0.0 otherwise. A 0.0 derivative
-    collapses the ramp integral back to the constant-power formula —
-    so callers can pass this unconditionally to `Bucket.full_bucket_kwh`.
-    """
-    signals = forecasts.signals
-    if signals.stability_stable and signals.derivative_w_per_min is not None:
-        return signals.derivative_w_per_min
-    return 0.0
-
-
 def _bucket_end_constant_kwh(forecasts: PvForecasts) -> float | None:
     """Projected in-progress bucket kWh assuming constant `signals.pv_power_w`."""
     signals = forecasts.signals
@@ -177,6 +215,20 @@ def _bucket_end_derivative_kwh(forecasts: PvForecasts) -> float | None:
     )
 
 
+def _effective_derivative(forecasts: PvForecasts) -> float:
+    """Return the derivative to feed the ramp formula, gated on stability.
+
+    Returns `signals.derivative_w_per_min` when the stability binary is
+    True AND the value is available; 0.0 otherwise. A 0.0 derivative
+    collapses the ramp integral back to the constant-power formula —
+    so callers can pass this unconditionally to `Bucket.full_bucket_kwh`.
+    """
+    signals = forecasts.signals
+    if signals.stability_stable and signals.derivative_w_per_min is not None:
+        return signals.derivative_w_per_min
+    return 0.0
+
+
 def _bucket_end_derivative_delta_kwh(forecasts: PvForecasts) -> float | None:
     """Derivative-aware minus constant projection — zero when ramp inactive."""
     deriv_kwh = _bucket_end_derivative_kwh(forecasts)
@@ -184,61 +236,6 @@ def _bucket_end_derivative_delta_kwh(forecasts: PvForecasts) -> float | None:
     if deriv_kwh is None or const_kwh is None:
         return None
     return deriv_kwh - const_kwh
-
-
-# --- Description builders — generate per-variant sensors from PvForecast enum --- #
-
-
-def _make_pv_desc(v: PvForecast) -> PvForecastSensorDescription:
-    """Build 'PV Forecast <label>' kWh sensor for one PV forecast variant.
-
-    Dispatch by `v.is_extrap`:
-    - Extrap variants → `remaining_kwh` (forward-only, current bucket scaled).
-      Chart-friendly forecast attr — same shape as Adj PV Live.
-    - Non-extrap (AT_6 / LIVE today+tomorrow) → `total_kwh` (full-day sum).
-
-    Default arg `_v=v` captures the loop variable by value (closure gotcha:
-    without it all lambdas would close over the same final `v`).
-    """
-    if v.is_extrap:
-        return PvForecastSensorDescription(
-            name=f"PV Forecast {v.pretty_label}",
-            value_fn=lambda pv, _v=v: pv.forecasts.remaining_kwh(_v),
-            attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
-        )
-    return PvForecastSensorDescription(
-        name=f"PV Forecast {v.pretty_label}",
-        value_fn=lambda pv, _v=v: (
-            pv.forecasts.get(_v).total_kwh if pv.forecasts.get(_v) else None
-        ),
-        attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
-    )
-
-
-def _make_target_soc_desc(v: PvForecast) -> PvForecastSensorDescription:
-    """Build 'Target Battery SOC <label>' (%) sensor for one PV forecast variant.
-
-    Reads `pv.target_socs.target_socs[v].flat.value` as main reading.
-    Attributes (`_target_soc_attrs`): prev_day_1..8 (per prev-workday
-    cons profile) + max + per-bucket trace. Profile bundle is
-    `today_profiles` for today variants, `tomorrow_profiles` otherwise.
-
-    Default arg captures (`_v`, `_pa`) avoid closure-over-loop-variable.
-    """
-    profiles_attr = "today_profiles" if v.is_today else "tomorrow_profiles"
-    return PvForecastSensorDescription(
-        name=f"Target SOC {v.pretty_label}",
-        native_unit_of_measurement="%",
-        value_fn=lambda pv, _v=v: (
-            pv.target_socs.target_socs[_v].flat.value
-            if pv.target_socs.target_socs[_v].flat
-            else None
-        ),
-        attr_fn=lambda pv, _v=v, _pa=profiles_attr: _target_soc_attrs(
-            pv.target_socs.target_socs[_v],
-            getattr(pv.target_socs.consumption_profiles, _pa),
-        ),
-    )
 
 
 PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
