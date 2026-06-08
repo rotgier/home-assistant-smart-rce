@@ -95,32 +95,6 @@ def _pv_forecast_attrs(forecast) -> dict[str, Any]:
     }
 
 
-def _target_soc_trace_attrs(result, profile=None) -> dict[str, Any]:
-    """Trace for target_soc_* sensors: per-bucket pv/cons/balance/cumulative + is_min.
-
-    If profile is given and has source_date, adds 'profile_date' attribute
-    (informs which prev-workday consumption profile was used).
-    """
-    if not result or not result.buckets:
-        return {}
-    attrs: dict[str, Any] = {
-        "buckets": [
-            {
-                "period": b.period,
-                "pv": b.pv_kwh,
-                "cons": b.cons_kwh,
-                "balance": b.balance,
-                "cumulative": b.cumulative,
-                "is_min": b.is_min,
-            }
-            for b in result.buckets
-        ]
-    }
-    if profile is not None and profile.source_date is not None:
-        attrs["profile_date"] = profile.source_date.isoformat()
-    return attrs
-
-
 def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
     """Build per-variant TargetSoc sensor attrs: flat trace + 8 prev_days + max + source_dates.
 
@@ -128,14 +102,12 @@ def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
     `profiles`: list of ConsumptionProfile | None (today_profiles or tomorrow_profiles).
     """
     attrs: dict[str, Any] = {}
-    # Per-prev-day values (None when entity hasn't been recalculated yet)
     for i in range(8):
         if i < len(entity.prev_days):
             r = entity.prev_days[i]
             attrs[f"prev_day_{i + 1}"] = r.value if r is not None else None
         else:
             attrs[f"prev_day_{i + 1}"] = None
-    # Source dates per prev-day slot (informs which workday consumption profile fed each)
     attrs["prev_day_source_dates"] = [
         (
             p.source_date.isoformat()
@@ -144,22 +116,28 @@ def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
         )
         for p in profiles
     ]
-    # Max across flat + prev_days (replaces former target_soc_max / target_soc_tomorrow_max sensors)
     attrs["max"] = entity.max
-    # Trace of the flat (main) result — same shape as legacy _target_soc_trace_attrs
-    if entity.flat is not None and entity.flat.buckets:
-        attrs["buckets"] = [
-            {
-                "period": b.period,
-                "pv": b.pv_kwh,
-                "cons": b.cons_kwh,
-                "balance": b.balance,
-                "cumulative": b.cumulative,
-                "is_min": b.is_min,
-            }
-            for b in entity.flat.buckets
-        ]
+    buckets = _buckets_to_dict(entity.flat)
+    if buckets:
+        attrs["buckets"] = buckets
     return attrs
+
+
+def _buckets_to_dict(result) -> list[dict[str, Any]]:
+    """Serialize result.buckets as list of dicts for sensor trace attrs."""
+    if not result or not result.buckets:
+        return []
+    return [
+        {
+            "period": b.period,
+            "pv": b.pv_kwh,
+            "cons": b.cons_kwh,
+            "balance": b.balance,
+            "cumulative": b.cumulative,
+            "is_min": b.is_min,
+        }
+        for b in result.buckets
+    ]
 
 
 def _effective_derivative(forecasts: PvForecasts) -> float:
