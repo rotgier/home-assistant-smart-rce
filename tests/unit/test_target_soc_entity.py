@@ -52,6 +52,7 @@ def _today_ctx(
         live_consumption_w=live_consumption_w,
         start_charge_hour=None,
         now=datetime(2026, 1, 15, 9, 0),
+        now_in_window=True,  # 9:00 is inside the 7-13 PV window
     )
 
 
@@ -62,6 +63,7 @@ def _tomorrow_ctx() -> TargetSocContext:
         live_consumption_w=None,
         start_charge_hour=None,
         now=datetime(2026, 1, 15, 9, 0),
+        now_in_window=False,  # tomorrow never has in-progress
     )
 
 

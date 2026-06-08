@@ -21,7 +21,7 @@ from custom_components.smart_rce.domain.target_soc import (
     CONSUMPTION_PER_30MIN,
     MIN_SOC_PERCENT,
     PvProfile,
-    calculate_target_soc as _calculate_target_soc,
+    _calculate_target_soc,
 )
 import pytest
 
@@ -57,6 +57,15 @@ def test_surplus_pv_returns_min_soc() -> None:
     result = _calculate_target_soc(_make_profile(2.0), ConsumptionProfile.flat())
     assert result.value == MIN_SOC_PERCENT
     assert len(result.buckets) == 12
+    assert result.dip_kwh == 0.0  # No deficit → no dip
+
+
+def test_deficit_pv_yields_positive_dip_kwh() -> None:
+    """Deficit PV → result.dip_kwh = absolute most-negative cumulative balance."""
+    # PV 0.15 kWh/30min, cons 0.45 → balance -0.3 kWh per bucket × 12 = -3.6 cumulative
+    result = _calculate_target_soc(_make_profile(0.3), ConsumptionProfile.flat())
+    assert result.dip_kwh == pytest.approx(3.6, abs=0.01)
+    assert result.value > MIN_SOC_PERCENT
 
 
 def test_flat_profile_matches_constant_consumption() -> None:

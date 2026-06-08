@@ -1,11 +1,17 @@
 """TargetSocMatrixService — application service for the target-SOC matrix.
 
-DDD application layer: pulls PV strategy buckets from the TargetSocCatalog
-aggregate (today: 6 strategies, tomorrow: 2 — fewer because extrapolated
-variants are dziś-only), Cons baselines from consumption_profiles + a
-synthetic live baseline, and source-day realized PV sums via
-`RealizedPvLoader.fetch_for_dates`. Delegates the cross-product to the
-pure domain `target_soc_matrix.compute_matrix`.
+DDD application layer: reads pre-computed cells from `TargetSocCatalog`
+aggregate (every `TargetSoc` persistuje `pv_profile` + `cons_view_flat` +
+`cons_views_prev` + `flat.dip_kwh`/`prev_days[N].dip_kwh` after each
+`recalculate_target_soc`). Matrix service is now a **pure view** —
+no `_calculate_target_soc` calls, no profile building, just reads +
+serialization for the dashboard payload.
+
+Source-day realized PV is fetched on demand via `RealizedPvLoader`
+(orthogonal concern, prev-workday data not owned by catalog). Apples-to-apples
+comparison with today's Σ PV per strategy is enforced by routing realized
+PV through `PvProfile.from_realized_buckets(...).with_now_override(now, pv_w)`
+— same time-shift formula as today's `PvForecastResult.to_profile(now, pv_w)`.
 
 Returns a dict shaped for the smart_rce service response and the
 bridging sensor attribute:
@@ -13,7 +19,7 @@ bridging sensor attribute:
 ```python
 {
     "date": "2026-05-13",
-    "kind": "today" | "tomorrow" | "past_unsupported",
+    "kind": "today" | "tomorrow" | "past_unsupported" | "out_of_cache" | "error",
     "matrix": {
         "pv_strategies": [...],
         "cons_strategies": [{"key": "...", "weekday": "Mon"}, ...],
@@ -26,9 +32,10 @@ bridging sensor attribute:
 }
 ```
 
-Past dates surface as `kind: "past_unsupported"` (no matrix) — the
-dashboard renders an "N/A" message. v2 will add recorder-based
-reconstruction; out of scope here.
+Past dates surface as `kind: "past_unsupported"` (Iter 2 will add Historical
+matrix support via sensor history reads). D+2+ dates surface as
+`kind: "out_of_cache"` — catalog only caches today + tomorrow, no on-demand
+fetch path for further-future dates.
 """
 
 from __future__ import annotations
@@ -41,13 +48,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from ..application.energy_balance_service import EnergyBalanceService
-from ..domain.consumption_profiles import PREV_DAYS_COUNT, ConsumptionProfile
-from ..domain.pv_forecast import PvForecast, PvForecasts
-from ..domain.target_soc import PvProfile
-from ..domain.target_soc_matrix import ConsLabel, TargetSocMatrix, compute_matrix
-from ..infrastructure.pv_forecast.consumption_profile_loader import (
-    ConsumptionProfileLoader,
-)
+from ..domain.pv_forecast import PvForecast
+from ..domain.target_soc import PvProfile, TargetSoc
+from ..domain.target_soc_matrix import ConsLabel
 from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,11 +58,7 @@ _LOGGER = logging.getLogger(__name__)
 # PV-strategy resolver tables (matrix key → catalog `PvForecast`). Matrix
 # keys are short stable identifiers used by dashboards (Lovelace cross-repo)
 # — independent from `enum.key` (which is longer for EXTRAP variants).
-# Order matters: dashboards iterate to choose default-on series. The
-# `_*_PV_KEYS` tuples below are derived from `dict.keys()` (Python 3.7+
-# preserves insertion order) so adding a new variant requires only one
-# entry in the resolver dict.
-
+# Order matters: dashboards iterate to choose default-on series.
 _TODAY_PV_RESOLVERS: dict[str, PvForecast] = {
     "at_6": PvForecast.AT_6,
     "live": PvForecast.LIVE,
@@ -73,9 +72,6 @@ _TOMORROW_PV_RESOLVERS: dict[str, PvForecast] = {
     "live": PvForecast.TOMORROW_LIVE,
 }
 
-_TODAY_PV_KEYS: tuple[str, ...] = tuple(_TODAY_PV_RESOLVERS.keys())
-_TOMORROW_PV_KEYS: tuple[str, ...] = tuple(_TOMORROW_PV_RESOLVERS.keys())
-
 _LIVE_CONS_KEY: str = "live"
 
 # 12-bucket window (7:00..12:30) — strict PvProfile/ConsumptionProfile contract.
@@ -84,13 +80,6 @@ _BUCKET_TIMES: tuple[tuple[int, int], ...] = tuple(
 )
 
 _WEEKDAY_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-
-# Toggle that controls whether the *today* matrix is computed in
-# "now-aware" mode (in-progress bucket time-prorated, past buckets
-# skipped — cells match the bridging sensors) or full-window mode
-# (iterate 7:00..12:30 unconditionally — porównywalnie z prev workday).
-# Default: now-aware (state missing / unknown → True).
-_NOW_AWARE_TOGGLE = "input_boolean.rce_target_soc_matrix_now_aware"
 
 
 class TargetSocMatrixService:
@@ -101,12 +90,10 @@ class TargetSocMatrixService:
         hass: HomeAssistant,
         energy_balance_service: EnergyBalanceService,
         realized_pv_loader: RealizedPvLoader,
-        consumption_loader: ConsumptionProfileLoader,
     ) -> None:
         self._hass = hass
         self._energy_balance_service = energy_balance_service
         self._realized_pv_loader = realized_pv_loader
-        self._consumption_loader = consumption_loader
 
     async def async_get_matrix(self, target_date: date) -> dict[str, Any]:
         """Build and return the matrix payload for `target_date`."""
@@ -118,54 +105,21 @@ class TargetSocMatrixService:
                 "kind": "past_unsupported",
                 "matrix": None,
             }
+        if target_date > today + timedelta(days=1):
+            return {
+                "date": target_date.isoformat(),
+                "kind": "out_of_cache",
+                "matrix": None,
+            }
         is_today = target_date == today
-        is_tomorrow = target_date == today + timedelta(days=1)
-        target_socs = self._energy_balance_service.target_socs
-        forecasts = self._energy_balance_service.forecasts
-
-        # Now-aware only for today's matrix. Toggle defaults to ON when
-        # the input_boolean is missing or in an unknown state — explicit
-        # "off" needed to revert to full-window simulation. Both live
-        # signals must be available too (fail-hard contract on to_view /
-        # to_profile when `now` is given).
-        live_cons_w_raw = target_socs.inputs.live_consumption_w
-        live_pv_w_raw = forecasts.signals.pv_power_w
-        now_aware = (
-            is_today
-            and self._now_aware_enabled()
-            and live_cons_w_raw is not None
-            and live_pv_w_raw is not None
+        target_socs_aggregate = self._energy_balance_service.target_socs
+        resolvers = _TODAY_PV_RESOLVERS if is_today else _TOMORROW_PV_RESOLVERS
+        profiles = (
+            target_socs_aggregate.consumption_profiles.today_profiles
+            if is_today
+            else target_socs_aggregate.consumption_profiles.tomorrow_profiles
         )
-        matrix_now: datetime | None = now if now_aware else None
-        live_cons_w = live_cons_w_raw if now_aware else None
-        live_pv_w = live_pv_w_raw if now_aware else None
-
-        pv_profiles = self._pv_profiles(
-            forecasts,
-            is_today=is_today,
-            target_date=target_date,
-            now=matrix_now,
-            live_pv_power_w=live_pv_w,
-        )
-        # Reuse the TargetSocCatalog aggregate's cached profiles for today /
-        # tomorrow (refreshed by `EnergyBalanceService.refresh_profiles_*`
-        # — every minute / bucket-boundary refetches were a waste, the
-        # data only changes daily plus today-prev_1-of-tomorrow grows
-        # within the PV window). For target_date == D+2 or further, fall
-        # back to an on-demand fetch — rare path, no cache.
-        if is_today:
-            loaded_profiles = target_socs.consumption_profiles.today_profiles
-        elif is_tomorrow:
-            loaded_profiles = target_socs.consumption_profiles.tomorrow_profiles
-        else:
-            loaded_profiles = await self._consumption_loader.fetch_for_anchor(
-                target_date, PREV_DAYS_COUNT
-            )
-        # Surface a loud error when ALL slots are None — likely the
-        # workday calendar / recorder hasn't loaded yet (startup race)
-        # or has been broken for a while. Custom card renders the error
-        # panel instead of a misleading partial matrix.
-        if all(p is None for p in loaded_profiles):
+        if all(p is None for p in profiles):
             _LOGGER.warning(
                 "TargetSocMatrixService: no consumption profiles available "
                 "for %s — returning error payload",
@@ -177,129 +131,192 @@ class TargetSocMatrixService:
                 "error": "consumption_profiles_unavailable",
                 "matrix": None,
             }
-        cons_profiles, cons_labels, cons_source_dates = self._cons_inputs(
-            loaded_profiles, now=matrix_now, live_consumption_w=live_cons_w
+
+        cells_pct, cells_kwh, pv_sums_kwh, pv_buckets = self._read_cells(
+            resolvers, target_socs_aggregate
         )
-        source_day_pv_sums = await self._source_day_pv_sums(cons_source_dates)
-        sch = (
-            target_socs.inputs.start_charge_hour_today
-            if is_today
-            else target_socs.inputs.start_charge_hour_tomorrow
+        if not cells_pct:
+            # No variant has both result + recalc-computed flat — startup race
+            # (PV forecast not yet bound, or fail-hard branch tripped on live
+            # signals missing). Surface same error as no-cons case.
+            _LOGGER.warning(
+                "TargetSocMatrixService: no target_soc cells for %s — "
+                "returning error payload (catalog not yet populated?)",
+                target_date,
+            )
+            return {
+                "date": target_date.isoformat(),
+                "kind": "error",
+                "error": "catalog_unavailable",
+                "matrix": None,
+            }
+
+        cons_labels, cons_source_dates, cons_sums_kwh, cons_buckets = self._read_cons(
+            resolvers, target_socs_aggregate
         )
 
-        matrix = compute_matrix(
-            pv_profiles_by_strategy=pv_profiles,
-            cons_profiles_by_strategy=cons_profiles,
-            cons_labels=cons_labels,
-            source_day_pv_sums=source_day_pv_sums,
-            start_charge_hour=sch,
+        # Apples-to-apples Σ PV source via PvProfile.with_now_override —
+        # same time-shift formula as today's PvForecastResult.to_profile.
+        # `now` is None outside the 7-13 window (no in-progress override).
+        matrix_now = now if is_today and 7 <= now.hour < 13 else None
+        live_pv_w = (
+            self._energy_balance_service.forecasts.signals.pv_power_w
+            if matrix_now
+            else None
         )
+        source_day_pv_sums = await self._source_day_pv_sums(
+            cons_source_dates, now=matrix_now, live_pv_w=live_pv_w
+        )
+
         _LOGGER.debug(
             "TargetSocMatrixService: %s for %s — %d PV × %d Cons, %d cells",
             "today" if is_today else "tomorrow",
             target_date,
-            len(matrix.pv_strategies),
-            len(matrix.cons_strategies),
-            len(matrix.cells_pct),
+            len(pv_sums_kwh),
+            len(cons_labels),
+            len(cells_pct),
         )
         return {
             "date": target_date.isoformat(),
             "kind": "today" if is_today else "tomorrow",
-            "matrix": _serialize(matrix, pv_profiles, cons_profiles, cons_source_dates),
+            "matrix": _serialize(
+                pv_strategies=tuple(pv_sums_kwh.keys()),
+                cons_strategies=tuple(cons_labels.values()),
+                cells_pct=cells_pct,
+                cells_kwh=cells_kwh,
+                pv_sums_kwh=pv_sums_kwh,
+                cons_sums_kwh=cons_sums_kwh,
+                source_day_pv_sums_kwh=source_day_pv_sums,
+                pv_buckets=pv_buckets,
+                cons_buckets=cons_buckets,
+                cons_source_dates=cons_source_dates,
+            ),
         }
 
-    def _now_aware_enabled(self) -> bool:
-        """Read the now-aware toggle; default ON when missing/unknown."""
-        state = self._hass.states.get(_NOW_AWARE_TOGGLE)
-        if state is None or state.state in ("unknown", "unavailable"):
-            return True
-        return state.state == "on"
+    # --- Catalog reads --- #
 
-    # --- PV inputs --- #
-
-    def _pv_profiles(
+    def _read_cells(
         self,
-        forecasts: PvForecasts,
-        *,
-        is_today: bool,
-        target_date: date,
-        now: datetime | None,
-        live_pv_power_w: float | None,
-    ) -> dict[str, PvProfile]:
-        """Map each PV strategy key to its 12-bucket `PvProfile`.
+        resolvers: dict[str, PvForecast],
+        target_socs_aggregate,
+    ) -> tuple[
+        dict[tuple[str, str], int],
+        dict[tuple[str, str], float],
+        dict[str, float],
+        dict[str, list[float]],
+    ]:
+        """Read every (PV strategy, Cons strategy) cell from catalog.
 
-        For today + now-aware mode, profiles are built with `now` and
-        `live_pv_power_w` so the in-progress bucket carries live remaining
-        kWh (matrix cells then match the bridging sensors). For tomorrow
-        or full-window today, plain forecast snapshots — `now=None`.
+        Catalog already computed all cells (per-variant TargetSoc holds
+        flat + 8 prev_days TargetSocResults plus the pv_profile / cons_views
+        that produced them). We just project into matrix dicts.
 
-        Strategies whose `PvForecastResult` is missing or doesn't cover
-        `target_date` are skipped — `to_profile()` raises `ValueError`
-        and the strategy simply doesn't appear in the matrix.
+        Returns:
+            cells_pct: {(pv_key, cons_key): target_soc_percent}
+            cells_kwh: {(pv_key, cons_key): dip_kwh}
+            pv_sums_kwh: {pv_key: sum(pv_profile.buckets) kWh}
+            pv_buckets: {pv_key: list[12 floats]} for chart serialization
+
         """
-        keys = _TODAY_PV_KEYS if is_today else _TOMORROW_PV_KEYS
-        out: dict[str, PvProfile] = {}
-        resolver_map = _TODAY_PV_RESOLVERS if is_today else _TOMORROW_PV_RESOLVERS
-        for key in keys:
-            adjusted = forecasts.get(resolver_map[key])
-            if adjusted is None or not adjusted.forecast:
-                continue
-            try:
-                out[key] = adjusted.to_profile(
-                    target_date, now=now, pv_power_w_5min=live_pv_power_w
-                )
-            except ValueError:
-                # Strategy has no periods for target_date (date-picker out of range).
-                continue
-        return out
+        cells_pct: dict[tuple[str, str], int] = {}
+        cells_kwh: dict[tuple[str, str], float] = {}
+        pv_sums_kwh: dict[str, float] = {}
+        pv_buckets: dict[str, list[float]] = {}
+        for pv_key, variant in resolvers.items():
+            entity: TargetSoc | None = target_socs_aggregate.target_socs.get(variant)
+            if entity is None or entity.flat is None or entity.pv_profile is None:
+                continue  # variant doesn't cover this target_date / not ready
+            pv_sums_kwh[pv_key] = round(sum(entity.pv_profile.buckets.values()), 3)
+            pv_buckets[pv_key] = [
+                round(entity.pv_profile.get(h, m), 4) for h, m in _BUCKET_TIMES
+            ]
+            # Live cons (flat baseline with optional live override)
+            cells_pct[(pv_key, _LIVE_CONS_KEY)] = entity.flat.value
+            cells_kwh[(pv_key, _LIVE_CONS_KEY)] = entity.flat.dip_kwh
+            # Prev cons N
+            for idx, result in enumerate(entity.prev_days):
+                if result is None:
+                    continue
+                key = f"prev_{idx + 1}"
+                cells_pct[(pv_key, key)] = result.value
+                cells_kwh[(pv_key, key)] = result.dip_kwh
+        return cells_pct, cells_kwh, pv_sums_kwh, pv_buckets
 
-    # --- Cons inputs --- #
-
-    def _cons_inputs(
+    def _read_cons(
         self,
-        profiles: list[ConsumptionProfile | None],
-        *,
-        now: datetime | None,
-        live_consumption_w: float | None,
-    ) -> tuple[dict[str, ConsumptionProfile], dict[str, ConsLabel], dict[str, date]]:
-        """Build Cons profile map + labels + source-date map (for realized PV lookup).
+        resolvers: dict[str, PvForecast],
+        target_socs_aggregate,
+    ) -> tuple[
+        dict[str, ConsLabel],
+        dict[str, date],
+        dict[str, float],
+        dict[str, list[float]],
+    ]:
+        """Read Cons labels + source dates + cons_views (same for every variant).
 
-        Each profile is passed through `to_view(now, live_consumption_w)`
-        — for today+now-aware that bakes the live in-progress integration
-        into the bucket values; for tomorrow / non-today (`now=None`) it
-        returns the profile unchanged (back-compat).
+        All variants share the same cons profile bundle (today_profiles or
+        tomorrow_profiles), so reading from the first ready variant gives
+        cons_view_flat + cons_views_prev that drove all cells_pct entries.
         """
-        flat = ConsumptionProfile.flat()
-        cons_profiles: dict[str, ConsumptionProfile] = {
-            _LIVE_CONS_KEY: flat.to_view(now=now, live_consumption_w=live_consumption_w)
-        }
         cons_labels: dict[str, ConsLabel] = {
             _LIVE_CONS_KEY: ConsLabel(key=_LIVE_CONS_KEY, weekday=None)
         }
         cons_source_dates: dict[str, date] = {}
-        for idx, profile in enumerate(profiles):
-            if profile is None:
+        cons_sums_kwh: dict[str, float] = {}
+        cons_buckets: dict[str, list[float]] = {}
+
+        # Find the first variant whose recalc populated cons_view_flat.
+        first_entity: TargetSoc | None = None
+        for variant in resolvers.values():
+            entity = target_socs_aggregate.target_socs.get(variant)
+            if entity is not None and entity.cons_view_flat is not None:
+                first_entity = entity
+                break
+        if first_entity is None:
+            return cons_labels, cons_source_dates, cons_sums_kwh, cons_buckets
+
+        cons_sums_kwh[_LIVE_CONS_KEY] = round(
+            sum(first_entity.cons_view_flat.buckets.values()), 3
+        )
+        cons_buckets[_LIVE_CONS_KEY] = [
+            round(first_entity.cons_view_flat.get(h, m), 4) for h, m in _BUCKET_TIMES
+        ]
+
+        for idx, cv in enumerate(first_entity.cons_views_prev):
+            if cv is None:
                 continue
             key = f"prev_{idx + 1}"
-            cons_profiles[key] = profile.to_view(
-                now=now, live_consumption_w=live_consumption_w
-            )
+            cons_sums_kwh[key] = round(sum(cv.buckets.values()), 3)
+            cons_buckets[key] = [round(cv.get(h, m), 4) for h, m in _BUCKET_TIMES]
             weekday = (
-                _WEEKDAY_ABBR[profile.source_date.weekday()]
-                if profile.source_date is not None
+                _WEEKDAY_ABBR[cv.source_date.weekday()]
+                if cv.source_date is not None
                 else None
             )
             cons_labels[key] = ConsLabel(key=key, weekday=weekday)
-            if profile.source_date is not None:
-                cons_source_dates[key] = profile.source_date
-        return cons_profiles, cons_labels, cons_source_dates
+            if cv.source_date is not None:
+                cons_source_dates[key] = cv.source_date
+
+        return cons_labels, cons_source_dates, cons_sums_kwh, cons_buckets
 
     # --- Source-day realized PV --- #
 
     async def _source_day_pv_sums(
-        self, cons_source_dates: dict[str, date]
+        self,
+        cons_source_dates: dict[str, date],
+        *,
+        now: datetime | None,
+        live_pv_w: float | None,
     ) -> dict[str, float | None]:
-        """For each Cons strategy, fetch the realized PV sum (7-13) that day."""
+        """Realized PV sum per Cons-prev source day, time-shifted symmetric to today.
+
+        Routes realized 30-min bucket totals through
+        `PvProfile.from_realized_buckets(realized).with_now_override(now, pv_w)`
+        → past=0, in-progress=pv_w×remaining, future=raw bucket value. Same
+        formula as today's `PvForecastResult.to_profile(now, pv_w)` for cells
+        and `Σ PV per strategy` — automatic apples-to-apples comparison with
+        today's column when `now_in_window`.
+        """
         out: dict[str, float | None] = {_LIVE_CONS_KEY: None}
         if not cons_source_dates:
             return out
@@ -312,56 +329,51 @@ class TargetSocMatrixService:
                 out[key] = None
             return out
         for key, src in cons_source_dates.items():
-            buckets = per_date.get(src, {})
-            total = sum(v for (h, _m), v in buckets.items() if 7 <= h < 13)
-            out[key] = round(total, 3) if buckets else None
+            realized = per_date.get(src, {})
+            if not realized:
+                out[key] = None
+                continue
+            profile = PvProfile.from_realized_buckets(realized).with_now_override(
+                now=now, pv_power_w_5min=live_pv_w
+            )
+            out[key] = round(sum(profile.buckets.values()), 3)
         return out
 
 
 # --- Helpers --- #
 
 
-def _profile_to_buckets_list(
-    profile: PvProfile | ConsumptionProfile,
-) -> list[float]:
-    """Project strict 12-bucket VO → ordered list for serialization."""
-    return [profile.get(h, m) for h, m in _BUCKET_TIMES]
-
-
 def _serialize(
-    matrix: TargetSocMatrix,
-    pv_profiles: dict[str, PvProfile],
-    cons_profiles: dict[str, ConsumptionProfile],
+    *,
+    pv_strategies: tuple[str, ...],
+    cons_strategies: tuple[ConsLabel, ...],
+    cells_pct: dict[tuple[str, str], int],
+    cells_kwh: dict[tuple[str, str], float],
+    pv_sums_kwh: dict[str, float],
+    cons_sums_kwh: dict[str, float],
+    source_day_pv_sums_kwh: dict[str, float | None],
+    pv_buckets: dict[str, list[float]],
+    cons_buckets: dict[str, list[float]],
     cons_source_dates: dict[str, date],
 ) -> dict[str, Any]:
     """Convert dataclass + tuple-keyed dicts → JSON-friendly attribute shape.
 
     HA attributes must be JSON-serializable; `dict[tuple, ...]` isn't.
     Stringify cell keys as `"<pv_key>|<cons_key>"` so Jinja in markdown
-    cards can split on `|` and look up entries directly. Also surfaces
-    the raw 30-min bucket lists per strategy so the dashboard chart can
-    plot each PV/Cons strategy as a time-series, and the source date
-    per Cons-prev strategy (ISO string) so the chart can shift history
-    onto the date-picker target day.
+    cards can split on `|` and look up entries directly.
     """
     return {
-        "pv_strategies": list(matrix.pv_strategies),
+        "pv_strategies": list(pv_strategies),
         "cons_strategies": [
-            {"key": c.key, "weekday": c.weekday} for c in matrix.cons_strategies
+            {"key": c.key, "weekday": c.weekday} for c in cons_strategies
         ],
-        "cells_pct": {f"{pv}|{cons}": v for (pv, cons), v in matrix.cells_pct.items()},
-        "cells_kwh": {f"{pv}|{cons}": v for (pv, cons), v in matrix.cells_kwh.items()},
-        "pv_sums_kwh": dict(matrix.pv_sums_kwh),
-        "cons_sums_kwh": dict(matrix.cons_sums_kwh),
-        "source_day_pv_sums_kwh": dict(matrix.source_day_pv_sums_kwh),
-        "pv_buckets_by_strategy": {
-            k: [round(v, 4) for v in _profile_to_buckets_list(p)]
-            for k, p in pv_profiles.items()
-        },
-        "cons_buckets_by_strategy": {
-            k: [round(v, 4) for v in _profile_to_buckets_list(p)]
-            for k, p in cons_profiles.items()
-        },
+        "cells_pct": {f"{pv}|{cons}": v for (pv, cons), v in cells_pct.items()},
+        "cells_kwh": {f"{pv}|{cons}": v for (pv, cons), v in cells_kwh.items()},
+        "pv_sums_kwh": dict(pv_sums_kwh),
+        "cons_sums_kwh": dict(cons_sums_kwh),
+        "source_day_pv_sums_kwh": dict(source_day_pv_sums_kwh),
+        "pv_buckets_by_strategy": dict(pv_buckets),
+        "cons_buckets_by_strategy": dict(cons_buckets),
         "cons_source_dates_by_strategy": {
             k: d.isoformat() for k, d in cons_source_dates.items()
         },

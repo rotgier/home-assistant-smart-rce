@@ -35,6 +35,10 @@ class TargetSoc:
     Owns `recalculate()`, `max` aggregation, and `is_today` forwarded
     from its bound `PvForecast` variant.
 
+    Plus persists `pv_profile` + `cons_view_flat` + `cons_views_prev` after
+    each `recalculate()` — **in-memory only** (no sensor attrs), used by
+    the matrix service for reads instead of recomputing per cell.
+
     Caller (TargetSocCatalog) passes `flat_cons` + `prev_cons` explicitly
     to `recalculate()` — TargetSoc doesn't know about
     `ConsumptionProfile.flat()` convention or the prev-days count.
@@ -43,6 +47,10 @@ class TargetSoc:
     variant: PvForecast
     flat: TargetSocResult | None = None
     prev_days: list[TargetSocResult | None] = field(default_factory=list)
+    # In-memory cache for matrix reads (NOT exposed in sensor attrs).
+    pv_profile: PvProfile | None = None
+    cons_view_flat: ConsumptionProfile | None = None
+    cons_views_prev: list[ConsumptionProfile | None] = field(default_factory=list)
 
     @property
     def is_today(self) -> bool:
@@ -61,35 +69,68 @@ class TargetSoc:
         prev_cons: list[ConsumptionProfile | None],
         ctx: TargetSocContext,
     ) -> None:
-        """Recompute flat + prev_days from the variant's current forecast result."""
-        self.flat = self._one(flat_cons, ctx)
-        self.prev_days = [
-            self._one(p, ctx) if p is not None else None for p in prev_cons
-        ]
+        """Recompute flat + prev_days + persisted profiles for this variant.
 
-    def _one(
-        self, cons: ConsumptionProfile, ctx: TargetSocContext
-    ) -> TargetSocResult | None:
-        """Single (PV variant, consumption profile) target_soc computation."""
+        Builds `pv_profile` once (shared across all cons strategies), then
+        `cons_view_flat` + `cons_views_prev` (per cons strategy, time-shifted
+        when today + now_in_window). Computes flat + prev_days results from
+        those profiles. Matrix service then reads these without recomputing.
+        """
         result = self.variant.result
         if result is None:
-            return None
-        if self.variant.is_today:
+            self.flat = None
+            self.prev_days = [None] * len(prev_cons)
+            self.pv_profile = None
+            self.cons_view_flat = None
+            self.cons_views_prev = [None] * len(prev_cons)
+            return
+
+        # Time-shift only when today AND now is inside the PV window (7-13).
+        # Post-13 → fall back to full-window so the matrix renders sensible
+        # cells (otherwise all today buckets would be past = sum 0).
+        apply_now = self.variant.is_today and ctx.now_in_window
+        if apply_now:
             if ctx.live_consumption_w is None or ctx.signals.pv_power_w is None:
-                return None  # fail-hard: today needs both live signals
-            pv_profile = result.to_profile(
+                # Fail-hard: today inside window needs both live signals.
+                self.flat = None
+                self.prev_days = [None] * len(prev_cons)
+                self.pv_profile = None
+                self.cons_view_flat = None
+                self.cons_views_prev = [None] * len(prev_cons)
+                return
+            self.pv_profile = result.to_profile(
                 ctx.target_date,
                 now=ctx.now,
                 pv_power_w_5min=ctx.signals.pv_power_w,
             )
-            cons_view = cons.to_view(
-                now=ctx.now, live_consumption_w=ctx.live_consumption_w
-            )
         else:
-            pv_profile = result.to_profile(ctx.target_date)
-            cons_view = cons
-        return calculate_target_soc(
-            pv_profile, cons_view, start_charge_hour=ctx.start_charge_hour
+            self.pv_profile = result.to_profile(ctx.target_date)
+
+        self.cons_view_flat = self._cons_view(flat_cons, ctx, apply_now)
+        self.cons_views_prev = [
+            self._cons_view(p, ctx, apply_now) if p is not None else None
+            for p in prev_cons
+        ]
+        self.flat = self._compute(self.cons_view_flat, ctx)
+        self.prev_days = [
+            self._compute(cv, ctx) if cv is not None else None
+            for cv in self.cons_views_prev
+        ]
+
+    def _cons_view(
+        self, cons: ConsumptionProfile, ctx: TargetSocContext, apply_now: bool
+    ) -> ConsumptionProfile:
+        """Apply now-aware time-shift to consumption profile when in window."""
+        if apply_now:
+            return cons.to_view(now=ctx.now, live_consumption_w=ctx.live_consumption_w)
+        return cons
+
+    def _compute(
+        self, cons_view: ConsumptionProfile, ctx: TargetSocContext
+    ) -> TargetSocResult:
+        """Single target_soc computation reusing cached pv_profile."""
+        return _calculate_target_soc(
+            self.pv_profile, cons_view, start_charge_hour=ctx.start_charge_hour
         )
 
 
@@ -103,6 +144,11 @@ class TargetSocContext:
     `TargetSocCatalog` builds two contexts (today + tomorrow) per recalc
     and dispatches the right one to each `TargetSoc` based on
     `entity.is_today`.
+
+    `now_in_window` is True when `now` is within the PV window (7-13) AND
+    the variant is for today. Triggers time-shift application (in-progress
+    bucket prorated, past buckets skipped). Post-13 → False → full-window
+    fallback (matrix doesn't go degenerate).
     """
 
     target_date: date
@@ -110,6 +156,7 @@ class TargetSocContext:
     live_consumption_w: float | None
     start_charge_hour: int | None
     now: datetime
+    now_in_window: bool
 
 
 @dataclass(frozen=True)
@@ -132,10 +179,17 @@ class TargetSocInputs:
 
 @dataclass(frozen=True)
 class TargetSocResult:
-    """Target SOC + per-bucket trace for observability."""
+    """Target SOC + per-bucket trace + most-negative cumulative balance.
+
+    `dip_kwh` is the absolute value of the lowest cumulative_balance reached
+    during the 7:00..12:30 walk (0.0 when PV always covered consumption).
+    Exposed as sensor attribute so recorder keeps history — Historical
+    matrix can read it at any past `T` without recomputing from `buckets`.
+    """
 
     value: int  # target SOC percent (MIN_SOC_PERCENT or higher)
     buckets: list[TargetSocBucket]
+    dip_kwh: float
 
 
 @dataclass(frozen=True)
@@ -218,10 +272,10 @@ class PvProfile:
         return PvProfile(buckets=new_buckets)
 
 
-# --- Pure function --- #
+# --- Pure function (private — TargetSoc._compute is the sole caller) --- #
 
 
-def calculate_target_soc(
+def _calculate_target_soc(
     pv_profile: PvProfile,
     consumption_profile: ConsumptionProfile,
     start_charge_hour: int | None = None,
@@ -296,11 +350,17 @@ def calculate_target_soc(
             is_min=True,
         )
 
+    dip_kwh = round(abs(min_balance), 3) if min_balance < 0 else 0.0
+
     if min_balance >= 0:
-        return TargetSocResult(value=MIN_SOC_PERCENT, buckets=buckets)
+        return TargetSocResult(value=MIN_SOC_PERCENT, buckets=buckets, dip_kwh=dip_kwh)
 
     deficit_kwh = abs(min_balance)
     deficit_percent = deficit_kwh / (BATTERY_CAPACITY_KWH / 100)
     target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
 
-    return TargetSocResult(value=max(round(target), MIN_SOC_PERCENT), buckets=buckets)
+    return TargetSocResult(
+        value=max(round(target), MIN_SOC_PERCENT),
+        buckets=buckets,
+        dip_kwh=dip_kwh,
+    )

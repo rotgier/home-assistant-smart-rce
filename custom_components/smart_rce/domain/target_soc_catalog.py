@@ -78,19 +78,24 @@ class TargetSocCatalog:
         deficit by propagating its positive cumulative balance across the
         hour boundary into the gated post-charge window.
         """
+        # Auto-switch by now vs the 7-13 PV window: now-aware inside window,
+        # full-window fallback post-13 (matrix would otherwise go degenerate).
+        now_in_window = 7 <= now.hour < 13
         today_ctx = TargetSocContext(
             target_date=now.date(),
             signals=forecasts.signals,
             live_consumption_w=self._inputs.live_consumption_w,
             start_charge_hour=self._inputs.start_charge_hour_today,
             now=now,
+            now_in_window=now_in_window,
         )
         tomorrow_ctx = TargetSocContext(
             target_date=now.date() + timedelta(days=1),
             signals=forecasts.signals,
-            live_consumption_w=None,  # not used in is_today=False branch
+            live_consumption_w=None,  # not used for tomorrow (always full-window)
             start_charge_hour=self._inputs.start_charge_hour_tomorrow,
             now=now,
+            now_in_window=False,  # tomorrow never has in-progress bucket
         )
         flat_cons = ConsumptionProfile.flat()
         for entity in self.target_socs.values():
