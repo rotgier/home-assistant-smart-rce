@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime  # noqa: TC003 — used in TargetSocContext at runtime
 from typing import TYPE_CHECKING, Final
 
-from .bucket import Buckets
+from .bucket import Bucket, Buckets
 
 if TYPE_CHECKING:
     from .consumption_profiles import ConsumptionProfile
@@ -172,6 +172,50 @@ class PvProfile:
     def flat(cls, value: float = 0.0) -> PvProfile:
         """Synthetic flat profile — every bucket = `value` kWh (default 0)."""
         return cls(buckets=Buckets.flat(value))
+
+    @classmethod
+    def from_realized_buckets(cls, realized: dict[tuple[int, int], float]) -> PvProfile:
+        """Build PvProfile from RealizedPvLoader output (30-min bucket totals).
+
+        Missing slots in the 7:00..12:30 window default to 0.0. Use case:
+        prev-workday realized PV — no `PvForecastResult` is available, so
+        `to_profile()` can't be called; this factory + `with_now_override`
+        gives the same shape for symmetric apples-to-apples comparison
+        with today's `PvForecastResult.to_profile(now, pv_w)` output.
+        """
+        by_bucket = {
+            Bucket(h, m): realized.get((h, m), 0.0)
+            for h in range(7, 13)
+            for m in (0, 30)
+        }
+        return cls(buckets=Buckets(by_bucket=by_bucket))
+
+    def with_now_override(
+        self,
+        now: datetime | None = None,
+        pv_power_w_5min: float | None = None,
+    ) -> PvProfile:
+        """Return a now-aware view of this profile.
+
+        Symmetric to `ConsumptionProfile.to_view`. Per-bucket transformation:
+        - Closed bucket (bucket_end <= now): 0.0
+        - In-progress bucket: `pv_power_w_5min × remaining_sec / 3_600_000`
+        - Future bucket: unchanged
+
+        When `now` is None the profile is returned unchanged (back-compat
+        for tomorrow / matrix non-today). Fail-hard contract: pv_power_w_5min
+        required when `now` is given (raises ValueError if None).
+        """
+        if now is None:
+            return self
+        if pv_power_w_5min is None:
+            raise ValueError(
+                "PvProfile.with_now_override: pv_power_w_5min required when now is given"
+            )
+        new_buckets = self.buckets.from_now(
+            now, Bucket.live_remaining_kwh(now, pv_power_w_5min)
+        )
+        return PvProfile(buckets=new_buckets)
 
 
 # --- Pure function --- #

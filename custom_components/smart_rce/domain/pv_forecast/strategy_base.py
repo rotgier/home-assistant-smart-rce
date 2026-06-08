@@ -279,13 +279,9 @@ class PvForecastResult:
         for h in range(7, 13):
             for m in (0, 30):
                 by_bucket.setdefault(Bucket(h, m), 0.0)
-        buckets = Buckets(by_bucket=by_bucket)
-        if now is not None:
-            assert pv_power_w_5min is not None  # narrowed by guard above
-            buckets = buckets.from_now(
-                now, Bucket.live_remaining_kwh(now, pv_power_w_5min)
-            )
-        return PvProfile(buckets=buckets)
+        return PvProfile(buckets=Buckets(by_bucket=by_bucket)).with_now_override(
+            now, pv_power_w_5min
+        )
 
     def with_now_aware_in_progress(
         self,
