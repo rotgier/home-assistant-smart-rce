@@ -169,6 +169,13 @@ def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
         for p in profiles
     ]
     attrs["max"] = entity.max
+    # dip_kwh per cell (flat + 8 prev_days) — Historical matrix (Iter 2)
+    # reads these directly from sensor history at any past T without
+    # recomputing from buckets. 0.0 when PV always covered consumption.
+    attrs["dip_kwh_flat"] = entity.flat.dip_kwh if entity.flat is not None else None
+    attrs["dip_kwh_prev"] = [
+        r.dip_kwh if r is not None else None for r in entity.prev_days
+    ]
     buckets = _buckets_to_dict(entity.flat)
     if buckets:
         attrs["buckets"] = buckets
