@@ -1,4 +1,4 @@
-"""PvForecastSensor — weather-adjusted PV forecast + target SOC sensors."""
+"""EnergyBalanceSensor — weather-adjusted PV forecast + target SOC sensors."""
 
 from __future__ import annotations
 
@@ -23,17 +23,17 @@ UNIQUE_ID_PREFIX: Final = DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
-class PvForecastSensor(StateWriterMixin):
+class EnergyBalanceSensor(StateWriterMixin):
     """Sensor for weather-adjusted PV forecast data."""
 
     _attr_has_entity_name = True
-    entity_description: PvForecastSensorDescription
+    entity_description: EnergyBalanceSensorDescription
 
     def __init__(
         self,
         pv_forecast: EnergyBalanceService,
         rce_coordinator: SmartRceDataUpdateCoordinator,
-        description: PvForecastSensorDescription,
+        description: EnergyBalanceSensorDescription,
     ) -> None:
         self._pv_forecast = pv_forecast
         self.entity_description = description
@@ -70,8 +70,8 @@ class PvForecastSensor(StateWriterMixin):
 
 
 @dataclass(frozen=False, kw_only=True)
-class PvForecastSensorDescription(SensorEntityDescription):
-    """Description schema for PvForecastSensor — value_fn/attr_fn lambdas."""
+class EnergyBalanceSensorDescription(SensorEntityDescription):
+    """Description schema for EnergyBalanceSensor — value_fn/attr_fn lambdas."""
 
     key: str = field(init=False)
     value_fn: Callable[[EnergyBalanceService], float | int | None]
@@ -81,7 +81,7 @@ class PvForecastSensorDescription(SensorEntityDescription):
         self.key = self.name.lower().replace(" ", "_")
 
 
-def _make_pv_desc(v: PvForecast) -> PvForecastSensorDescription:
+def _make_pv_desc(v: PvForecast) -> EnergyBalanceSensorDescription:
     """Build 'PV Forecast <label>' kWh sensor for one PV forecast variant.
 
     Dispatch by `v.is_extrap`:
@@ -93,12 +93,12 @@ def _make_pv_desc(v: PvForecast) -> PvForecastSensorDescription:
     without it all lambdas would close over the same final `v`).
     """
     if v.is_extrap:
-        return PvForecastSensorDescription(
+        return EnergyBalanceSensorDescription(
             name=f"PV Forecast {v.pretty_label}",
             value_fn=lambda pv, _v=v: pv.forecasts.remaining_kwh(_v),
             attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
         )
-    return PvForecastSensorDescription(
+    return EnergyBalanceSensorDescription(
         name=f"PV Forecast {v.pretty_label}",
         value_fn=lambda pv, _v=v: (
             pv.forecasts.get(_v).total_kwh if pv.forecasts.get(_v) else None
@@ -121,7 +121,7 @@ def _pv_forecast_attrs(forecast) -> dict[str, Any]:
     }
 
 
-def _make_target_soc_desc(v: PvForecast) -> PvForecastSensorDescription:
+def _make_target_soc_desc(v: PvForecast) -> EnergyBalanceSensorDescription:
     """Build 'Target Battery SOC <label>' (%) sensor for one PV forecast variant.
 
     Reads `pv.target_socs.target_socs[v].flat.value` as main reading.
@@ -132,7 +132,7 @@ def _make_target_soc_desc(v: PvForecast) -> PvForecastSensorDescription:
     Default arg captures (`_v`, `_pa`) avoid closure-over-loop-variable.
     """
     profiles_attr = "today_profiles" if v.is_today else "tomorrow_profiles"
-    return PvForecastSensorDescription(
+    return EnergyBalanceSensorDescription(
         name=f"Target SOC {v.pretty_label}",
         native_unit_of_measurement="%",
         value_fn=lambda pv, _v=v: (
@@ -238,7 +238,7 @@ def _bucket_end_derivative_delta_kwh(forecasts: PvForecasts) -> float | None:
     return deriv_kwh - const_kwh
 
 
-PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
+ENERGY_BALANCE_DESCRIPTIONS: tuple[EnergyBalanceSensorDescription, ...] = (
     # Per-variant pair (PV kWh + Target SOC %) — generated from PvForecast enum.
     # Adding a new variant: just add enum member with strategy.pretty_label set.
     *(
@@ -252,15 +252,15 @@ PV_FORECAST_DESCRIPTIONS: tuple[PvForecastSensorDescription, ...] = (
     # stability binary flags the derivative trustworthy — observation
     # period before deciding whether to switch the chart/target_soc
     # patch to use ramp (Phase C.2).
-    PvForecastSensorDescription(
+    EnergyBalanceSensorDescription(
         name="PV Bucket End Constant",
         value_fn=lambda pv: _bucket_end_constant_kwh(pv.forecasts),
     ),
-    PvForecastSensorDescription(
+    EnergyBalanceSensorDescription(
         name="PV Bucket End Derivative",
         value_fn=lambda pv: _bucket_end_derivative_kwh(pv.forecasts),
     ),
-    PvForecastSensorDescription(
+    EnergyBalanceSensorDescription(
         name="PV Bucket End Derivative Delta",
         value_fn=lambda pv: _bucket_end_derivative_delta_kwh(pv.forecasts),
     ),

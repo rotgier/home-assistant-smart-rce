@@ -361,7 +361,7 @@ def live_reload():
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor._state_writer_mixin"))
     reload(import_module("custom_components.smart_rce.sensor.rce_sensor"))
-    reload(import_module("custom_components.smart_rce.sensor.pv_forecast_sensor"))
+    reload(import_module("custom_components.smart_rce.sensor.energy_balance_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.weather_history_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.weather_table_sensor"))
     reload(import_module("custom_components.smart_rce.sensor.target_soc_matrix_sensor"))

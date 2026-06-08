@@ -127,7 +127,7 @@ class Bucket:
         - `Bucket.full_bucket_kwh` (chart display, combined with so_far).
         - `pv_forecast_extrapolation._compute_*_score` indirectly via
           `Bucket.full_bucket_kwh` (realized rate = full_bucket × 2).
-        - `PvForecastSensor` observability variants in Phase C (constant
+        - `EnergyBalanceSensor` observability variants in Phase C (constant
           vs derivative-aware projection of the in-progress bucket).
         """
         remaining_sec = Bucket.enclosing(now).remaining_sec_at(now)

@@ -1,4 +1,4 @@
-"""Tests for `pv_forecast_sensor` observability helpers (Phase C.1)."""
+"""Tests for `energy_balance_sensor` observability helpers (Phase C.1)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from custom_components.smart_rce.domain.bucket import Bucket
 from custom_components.smart_rce.domain.pv_forecast import LivePvSignals, PvForecasts
-from custom_components.smart_rce.sensor.pv_forecast_sensor import (
+from custom_components.smart_rce.sensor.energy_balance_sensor import (
     _bucket_end_constant_kwh,
     _bucket_end_derivative_delta_kwh,
     _bucket_end_derivative_kwh,
@@ -82,7 +82,7 @@ def test_bucket_end_constant_kwh_matches_full_bucket_kwh() -> None:
     forecast = _forecast(live_pv_power_w=1500.0, pv_bucket_so_far_kwh=0.3)
     fixed_now = datetime(2026, 5, 15, 9, 13)
     with patch(
-        "custom_components.smart_rce.sensor.pv_forecast_sensor.dt_util.now",
+        "custom_components.smart_rce.sensor.energy_balance_sensor.dt_util.now",
         return_value=fixed_now,
     ):
         actual = _bucket_end_constant_kwh(forecast)
@@ -99,7 +99,7 @@ def test_bucket_end_derivative_kwh_equals_constant_when_unstable() -> None:
     )
     fixed_now = datetime(2026, 5, 15, 9, 13)
     with patch(
-        "custom_components.smart_rce.sensor.pv_forecast_sensor.dt_util.now",
+        "custom_components.smart_rce.sensor.energy_balance_sensor.dt_util.now",
         return_value=fixed_now,
     ):
         const_val = _bucket_end_constant_kwh(forecast)
@@ -116,7 +116,7 @@ def test_bucket_end_derivative_kwh_uses_ramp_when_stable() -> None:
     )
     fixed_now = datetime(2026, 5, 15, 9, 13)
     with patch(
-        "custom_components.smart_rce.sensor.pv_forecast_sensor.dt_util.now",
+        "custom_components.smart_rce.sensor.energy_balance_sensor.dt_util.now",
         return_value=fixed_now,
     ):
         const_val = _bucket_end_constant_kwh(forecast)
@@ -133,7 +133,7 @@ def test_bucket_end_derivative_delta_kwh_zero_when_unstable() -> None:
         live_pv_derivative_w_per_min=60.0,
     )
     with patch(
-        "custom_components.smart_rce.sensor.pv_forecast_sensor.dt_util.now",
+        "custom_components.smart_rce.sensor.energy_balance_sensor.dt_util.now",
         return_value=datetime(2026, 5, 15, 9, 13),
     ):
         assert _bucket_end_derivative_delta_kwh(forecast) == 0.0
@@ -147,7 +147,7 @@ def test_bucket_end_derivative_delta_kwh_positive_when_ramp_active() -> None:
         live_pv_derivative_w_per_min=60.0,
     )
     with patch(
-        "custom_components.smart_rce.sensor.pv_forecast_sensor.dt_util.now",
+        "custom_components.smart_rce.sensor.energy_balance_sensor.dt_util.now",
         return_value=datetime(2026, 5, 15, 9, 13),
     ):
         assert _bucket_end_derivative_delta_kwh(forecast) > 0.0

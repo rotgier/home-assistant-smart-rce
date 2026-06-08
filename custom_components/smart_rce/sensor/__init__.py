@@ -2,7 +2,7 @@
 
 Sensors split per concept (4 modules):
 - rce_sensor: SmartRceSensor + SENSOR_DESCRIPTIONS (RCE prices + charge/discharge slots)
-- pv_forecast_sensor: PvForecastSensor + build_pv_forecast_sensors factory
+- energy_balance_sensor: EnergyBalanceSensor + ENERGY_BALANCE_DESCRIPTIONS (PV kWh + Target SOC % + bucket projections)
 - weather_history_sensor: WeatherForecastHistorySensor
 - ems_sensor: EmsSensor + EMS_SENSOR_DESCRIPTIONS
 
@@ -20,7 +20,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .. import SmartRceConfigEntry
 from .ems_sensor import EMS_SENSOR_DESCRIPTIONS, EmsSensor
-from .pv_forecast_sensor import PV_FORECAST_DESCRIPTIONS, PvForecastSensor
+from .energy_balance_sensor import ENERGY_BALANCE_DESCRIPTIONS, EnergyBalanceSensor
 from .rce_sensor import SENSOR_DESCRIPTIONS, SmartRceSensor
 from .target_soc_matrix_sensor import SmartRceTargetSocMatrixSensor
 from .weather_history_sensor import WeatherForecastHistorySensor
@@ -50,8 +50,8 @@ async def async_setup_entry(
     ]
 
     sensors.extend(
-        PvForecastSensor(pv_forecast, coordinator, description)
-        for description in PV_FORECAST_DESCRIPTIONS
+        EnergyBalanceSensor(pv_forecast, coordinator, description)
+        for description in ENERGY_BALANCE_DESCRIPTIONS
     )
     sensors.append(
         WeatherForecastHistorySensor(weather_history, weather_listener, coordinator)
