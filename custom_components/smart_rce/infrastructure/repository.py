@@ -25,12 +25,16 @@ Hexagonal pattern: **driven adapter (outbound)** — domain dictates
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import logging
+import traceback
 from typing import Any, ClassVar
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 
 from .async_task_runner import AsyncTaskRunner
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class Repository[T](ABC):
@@ -60,9 +64,44 @@ class Repository[T](ABC):
 
         Awaitable directly from async mutators (immediate persistence).
         For sync callers use `save_if_changed()` which dispatches via tasks.
+
+        Logs INFO when a save actually happens — including the per-field diff
+        and the calling frame, so we can trace why a save was triggered if
+        storage state ever drifts unexpectedly from entity state.
         """
         current = self._get_aggregate().to_dict()
         if current == self._last_saved:
             return
+        diff = _dict_diff(self._last_saved, current)
+        caller = _format_caller_frames(skip=2, depth=3)
+        _LOGGER.info(
+            "Repository[%s]: saving — diff=%s, caller=%s",
+            self.STORAGE_KEY,
+            diff,
+            caller,
+        )
         await self._store.async_save(current)
         self._last_saved = current
+
+
+def _dict_diff(before: dict[str, Any] | None, after: dict[str, Any]) -> dict[str, Any]:
+    """Return {key: {"before": ..., "after": ...}} for keys whose value changed."""
+    before = before or {}
+    keys = set(before.keys()) | set(after.keys())
+    return {
+        k: {"before": before.get(k), "after": after.get(k)}
+        for k in sorted(keys)
+        if before.get(k) != after.get(k)
+    }
+
+
+def _format_caller_frames(*, skip: int, depth: int) -> list[str]:
+    """Top N frames above this point (skip own + caller), formatted short.
+
+    Skips `persist()` and `_format_caller_frames()` frames so the topmost
+    entry is the mutator that triggered the save (e.g. service.set_X).
+    """
+    stack = traceback.extract_stack()
+    # Stack is innermost-last; drop this fn + `skip` frames above it.
+    frames = stack[-(skip + depth + 1) : -(skip + 1)]
+    return [f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno} {f.name}" for f in frames]
