@@ -74,6 +74,26 @@ class PvForecast(Enum):
         return self.strategy.pretty_label
 
     @property
+    def matrix_key(self) -> str:
+        """Short stable key used by dashboard matrix dicts (cross-repo contract).
+
+        Today/tomorrow live in separate dicts per render so keys can reuse
+        (TOMORROW_AT_6.matrix_key == AT_6.matrix_key == 'at_6'). Transformations:
+        - Drop 'tomorrow_' prefix → today-axis-style key
+        - 'extrapolated_live_' → 'extrap_' (shorter for dashboard headers)
+        - Special case EXTRAP_PROPORTIONAL → 'extrap_propor' (matches
+          `PV_LABELS` lookup in `target-soc-matrix-card.js` — cross-repo).
+        """
+        if self is PvForecast.EXTRAP_PROPORTIONAL:
+            return "extrap_propor"
+        k = self.key
+        if k.startswith("tomorrow_"):
+            k = k[len("tomorrow_") :]
+        if k.startswith("extrapolated_live_"):
+            k = "extrap_" + k[len("extrapolated_live_") :]
+        return k
+
+    @property
     def result(self) -> PvForecastResult | None:
         """Current forecast result — from bound strategy."""
         return self.strategy.result

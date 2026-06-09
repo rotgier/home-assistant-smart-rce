@@ -55,21 +55,16 @@ from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 
 _LOGGER = logging.getLogger(__name__)
 
-# PV-strategy resolver tables (matrix key → catalog `PvForecast`). Matrix
-# keys are short stable identifiers used by dashboards (Lovelace cross-repo)
-# — independent from `enum.key` (which is longer for EXTRAP variants).
-# Order matters: dashboards iterate to choose default-on series.
+# PV-strategy resolver tables (matrix key → catalog `PvForecast`). Generated
+# from the enum so adding a new variant requires NO update here — just declare
+# the new member in `PvForecast` and `matrix_key` property derives the key.
+# Order follows enum declaration (preserved by Python 3.7+ dict + classmethod
+# partitions); dashboards iterate this order to choose default-on series.
 _TODAY_PV_RESOLVERS: dict[str, PvForecast] = {
-    "at_6": PvForecast.AT_6,
-    "live": PvForecast.LIVE,
-    "extrap_pattern": PvForecast.EXTRAP_PATTERN,
-    "extrap_propor": PvForecast.EXTRAP_PROPORTIONAL,
-    "extrap_band": PvForecast.EXTRAP_BAND,
-    "extrap_band_recent": PvForecast.EXTRAP_BAND_RECENT,
+    v.matrix_key: v for v in PvForecast.today()
 }
 _TOMORROW_PV_RESOLVERS: dict[str, PvForecast] = {
-    "at_6": PvForecast.TOMORROW_AT_6,
-    "live": PvForecast.TOMORROW_LIVE,
+    v.matrix_key: v for v in PvForecast.tomorrow()
 }
 
 _LIVE_CONS_KEY: str = "live"
