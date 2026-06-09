@@ -1,6 +1,7 @@
 """Tests for weather_table.assemble_rows — dedupe, source labels, edge cases."""
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from custom_components.smart_rce.domain.weather_table import (
     DEDUPE_FIELDS,
@@ -11,7 +12,6 @@ from custom_components.smart_rce.domain.weather_table import (
     StateSnapshot,
     assemble_rows,
 )
-from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Europe/Warsaw")
 
