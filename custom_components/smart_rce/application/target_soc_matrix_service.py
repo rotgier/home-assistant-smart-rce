@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import logging
-from typing import Any
+from typing import Any, assert_never
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
@@ -55,16 +55,47 @@ from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _matrix_key(v: PvForecast) -> str:
+    """Cross-repo dashboard contract — short stable key per variant.
+
+    Today/tomorrow live in separate resolver dicts (no key collision), so
+    AT_6 and TOMORROW_AT_6 deliberately share key 'at_6'. EXTRAP_PROPORTIONAL
+    abbreviated to 'extrap_propor' to match `PV_LABELS` lookup in
+    `target-soc-matrix-card.js` (cross-repo coupling).
+
+    Exhaustive match — `assert_never` rzuca `AssertionError` przy starcie
+    smart_rce dla nowego wariantu w PvForecast bez case tutaj (resolver
+    dict comprehensions na module-level wykonują się przy imporcie). Bez
+    mypy/CI to wciąż fail-loud at startup; dashboard nie wystartuje aż
+    wariant zostanie dodany do tej funkcji.
+    """
+    match v:
+        case PvForecast.AT_6 | PvForecast.TOMORROW_AT_6:
+            return "at_6"
+        case PvForecast.LIVE | PvForecast.TOMORROW_LIVE:
+            return "live"
+        case PvForecast.EXTRAP_PATTERN:
+            return "extrap_pattern"
+        case PvForecast.EXTRAP_PROPORTIONAL:
+            return "extrap_propor"
+        case PvForecast.EXTRAP_BAND:
+            return "extrap_band"
+        case PvForecast.EXTRAP_BAND_RECENT:
+            return "extrap_band_recent"
+        case _:
+            assert_never(v)
+
+
 # PV-strategy resolver tables (matrix key → catalog `PvForecast`). Generated
-# from the enum so adding a new variant requires NO update here — just declare
-# the new member in `PvForecast` and `matrix_key` property derives the key.
-# Order follows enum declaration (preserved by Python 3.7+ dict + classmethod
-# partitions); dashboards iterate this order to choose default-on series.
+# from the enum at import-time. Order follows enum declaration (preserved
+# by Python 3.7+ dict + classmethod partitions); dashboards iterate this
+# order to choose default-on series.
 _TODAY_PV_RESOLVERS: dict[str, PvForecast] = {
-    v.matrix_key: v for v in PvForecast.today()
+    _matrix_key(v): v for v in PvForecast.today()
 }
 _TOMORROW_PV_RESOLVERS: dict[str, PvForecast] = {
-    v.matrix_key: v for v in PvForecast.tomorrow()
+    _matrix_key(v): v for v in PvForecast.tomorrow()
 }
 
 _LIVE_CONS_KEY: str = "live"
