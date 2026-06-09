@@ -1,13 +1,13 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.5
+    rev: v0.15.12
     hooks:
-      - id: ruff
+      - id: ruff-check
         args:
           - --fix
       - id: ruff-format
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.3.0
+    rev: v2.4.2
     hooks:
       - id: codespell
         args:
@@ -17,7 +17,7 @@ repos:
         exclude_types: [csv, json]
         exclude: ^(tests/fixtures/|context/logika_baterii\.md$)
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
       - id: mixed-line-ending
@@ -25,6 +25,11 @@ repos:
       - id: check-yaml
       - id: check-json
       - id: check-toml
+      - id: check-added-large-files
+      # no-commit-to-branch disabled — single-user repo, direct push to main OK.
+      # Re-enable if switching to PR flow:
+      # - id: no-commit-to-branch
+      #   args: ["--branch", "main"]
       - id: pretty-format-json
         args:
           - --no-sort-keys
@@ -33,10 +38,14 @@ repos:
     hooks:
       - id: prettier
         stages: [manual]
-#  - repo: https://github.com/pre-commit/mirrors-mypy
-#    rev: "v1.11.2"
-#    hooks:
-#      - id: mypy
-#        additional_dependencies:
-#          - types-orjson
-#        files: ^(custom_components)/.+\.py$
+  # mypy enabled — cleanup commit 3e84ef6 (177 → 0 errors).
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: .venv/bin/mypy
+        language: system
+        types_or: [python, pyi]
+        files: ^custom_components/smart_rce/.+\.py$
+        pass_filenames: true
+        require_serial: true

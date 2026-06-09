@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      lint-and-type:
+        patterns:
+          - ruff
+          - mypy
+          - "types-*"
+      test:
+        patterns:
+          - pytest
+          - "pytest-*"
+          - pytest-homeassistant-custom-component
+
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      pre-commit:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      ci:
+        patterns: ["*"]

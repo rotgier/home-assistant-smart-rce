@@ -1,8 +1,42 @@
+# Python
 **/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+/.idea/**
+/.vscode/*
+!/.vscode/settings.json
+!/.vscode/launch.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
 example/**
 scaffold/**
 homeassistant/**
 homeassistant
 /test_api.py
-/.idea/**
-.DS_Store
+/.claude/
+
+# Build / packaging
+*.egg-info/
+build/
+dist/
