@@ -18,7 +18,7 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 
 from homeassistant.core import HomeAssistant
 

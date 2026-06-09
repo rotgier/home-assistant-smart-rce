@@ -212,7 +212,7 @@ def update_input_state(hass: HomeAssistant, input_state: InputState) -> InputSta
     spójne) oraz przy hourly tick i hass_started.
     """
     for entity, setter in HASS_STATE_MAPPER.items():
-        state_object: State = hass.states.get(entity)
+        state_object: State | None = hass.states.get(entity)
         if state_object is None:
             _LOGGER.error("State %s is not present in state machine", entity)
         else:
@@ -250,13 +250,13 @@ def listen_for_state_changes(hass: HomeAssistant, entry: ConfigEntry, ems: Ems) 
         input_state: InputState = InputState()
         input_state = update_input_state(hass, input_state)
         new_state = event.data["new_state"]
-        new_state_value = new_state.state if new_state else None
+        new_state_value = new_state.state if new_state else ""
         entity_id = event.data["entity_id"]
         HASS_STATE_MAPPER[entity_id](entity_id, input_state, new_state_value)
         ems.update_state(input_state)
 
     @callback
-    def hass_started(_=Event) -> None:
+    def hass_started(_: Event | None = None) -> None:
         _LOGGER.debug("hass_started")
         entry.async_on_unload(
             async_track_state_change_event(

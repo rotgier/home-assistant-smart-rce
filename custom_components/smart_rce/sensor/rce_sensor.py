@@ -75,17 +75,18 @@ class SmartRceSensor(
         return self.entity_description.attr_fn(self.ems)
 
 
-@dataclass(frozen=False, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class SmartRceSensorDescription(SensorEntityDescription):
     """Description schema for SmartRceSensor — value_fn/attr_fn lambdas + optional restore_fn."""
 
     key: str = field(init=False)
     value_fn: Callable[[Ems], str | int | float | datetime | None]
-    attr_fn: Callable[[dict[str, Any]], dict[str, Any]] = lambda _: {}
+    attr_fn: Callable[[Ems], dict[str, Any]] = lambda _: {}
     restore_fn: Callable[[Ems, dict[str, Any]], None] | None = None
 
-    def __post_init__(self):
-        self.key = self.name.lower().replace(" ", "_")
+    def __post_init__(self) -> None:
+        assert isinstance(self.name, str)
+        object.__setattr__(self, "key", self.name.lower().replace(" ", "_"))
 
 
 def _avg_price(ems: Ems, day: str) -> float | None:

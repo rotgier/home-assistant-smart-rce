@@ -46,6 +46,7 @@ async def async_setup_entry(
         ("start", SetSlotStartCommand),
         ("end", SetSlotEndCommand),
     ]
+    scopes: tuple[Scope, ...] = ("today", "tomorrow")
     async_add_entities(
         [
             EmsBatteryChargeStartHourOverrideTime(entry),
@@ -57,7 +58,7 @@ async def async_setup_entry(
                     field=field,
                     command_cls=command_cls,
                 )
-                for scope in ("today", "tomorrow")
+                for scope in scopes
                 for kind in SlotKind
                 for field, command_cls in time_fields
             ],
@@ -147,7 +148,10 @@ class BatteryScheduleSlotTime(TimeEntity):
 
     @property
     def native_value(self) -> time | None:
-        return getattr(self._service.slot(self._scope, self._kind), self._field)
+        value: time | None = getattr(
+            self._service.slot(self._scope, self._kind), self._field
+        )
+        return value
 
     async def async_set_value(self, value: time) -> None:
         await self._service.handle_slot_command(

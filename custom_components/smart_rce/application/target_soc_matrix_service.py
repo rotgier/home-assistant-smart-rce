@@ -50,6 +50,7 @@ from homeassistant.util import dt as dt_util
 from ..application.energy_balance_service import EnergyBalanceService
 from ..domain.pv_forecast import PvForecast
 from ..domain.target_soc import PvProfile, TargetSoc
+from ..domain.target_soc_catalog import TargetSocCatalog
 from ..domain.target_soc_matrix import ConsLabel
 from ..infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 
@@ -224,7 +225,7 @@ class TargetSocMatrixService:
     def _read_cells(
         self,
         resolvers: dict[str, PvForecast],
-        target_socs_aggregate,
+        target_socs_aggregate: TargetSocCatalog,
     ) -> tuple[
         dict[tuple[str, str], int],
         dict[tuple[str, str], float],
@@ -271,7 +272,7 @@ class TargetSocMatrixService:
     def _read_cons(
         self,
         resolvers: dict[str, PvForecast],
-        target_socs_aggregate,
+        target_socs_aggregate: TargetSocCatalog,
     ) -> tuple[
         dict[str, ConsLabel],
         dict[str, date],
@@ -301,6 +302,7 @@ class TargetSocMatrixService:
         if first_entity is None:
             return cons_labels, cons_source_dates, cons_sums_kwh, cons_buckets
 
+        assert first_entity.cons_view_flat is not None
         cons_sums_kwh[_LIVE_CONS_KEY] = round(
             sum(first_entity.cons_view_flat.buckets.values()), 3
         )

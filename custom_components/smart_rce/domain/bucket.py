@@ -21,6 +21,7 @@ cons) on top of a shared storage + validation primitive.
 
 from __future__ import annotations
 
+from collections.abc import ItemsView, Iterator, KeysView, ValuesView
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import Final
@@ -184,7 +185,7 @@ class Buckets:
                 f"missing={missing}, extra={extra}"
             )
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Bucket]:
         """Iterate `Bucket` keys (matches dict iteration semantics)."""
         return iter(self.by_bucket)
 
@@ -197,15 +198,15 @@ class Buckets:
         """Lookup by (hour, minute) tuple — convenience for numeric callers."""
         return self.by_bucket[Bucket(hour, minute)]
 
-    def keys(self):
+    def keys(self) -> KeysView[Bucket]:
         """Iterate over `Bucket` keys (no value)."""
         return self.by_bucket.keys()
 
-    def values(self):
+    def values(self) -> ValuesView[float]:
         """Iterate over kWh values (no key)."""
         return self.by_bucket.values()
 
-    def items(self):
+    def items(self) -> ItemsView[Bucket, float]:
         """Iterate over `(Bucket, kWh)` pairs."""
         return self.by_bucket.items()
 

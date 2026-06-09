@@ -39,9 +39,8 @@ from ..domain.battery_schedule import (
     Direction,
     OneShotOperation,
     OneShotParams,
+    OneShotParamsCommand,
     Scope,
-    SetOneShotEndTimeCommand,
-    SetOneShotTargetSocCommand,
     SlotCommand,
     SlotKind,
 )
@@ -269,9 +268,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
                 self._notifier.notify(event)
         self._notify_all()
 
-    async def handle_oneshot_command(
-        self, cmd: SetOneShotTargetSocCommand | SetOneShotEndTimeCommand
-    ) -> None:
+    async def handle_oneshot_command(self, cmd: OneShotParamsCommand) -> None:
         """Apply one-shot params Command. Persists + notifies on delta.
 
         `OneShotParams.__post_init__` validates target_soc range and raises

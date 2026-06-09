@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Final
 
 from ..const import GROSS_MULTIPLIER
-from .rce import RcePrices
+from .rce import RceDayPrices, RcePrices
 
 # Morning discharge window — szukamy peak ceny rano przed startem PV.
 # Use case: niedzielny weekend morning, gdy RCE peak rano > niska niedzielna
@@ -64,7 +64,9 @@ class DischargeSlots:
         self.best_morning_discharge_slot = best_morning_discharge_slot(rce_data, now)
 
 
-def _hourly_slots(day_prices) -> list[tuple[float, datetime]]:
+def _hourly_slots(
+    day_prices: RceDayPrices | None,
+) -> list[tuple[float, datetime]]:
     """Build (price, datetime) pairs from RceDayPrices."""
     if day_prices is None or not day_prices.hour_price:
         return []

@@ -34,8 +34,8 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RcePrices]):
         """Initialize."""
         self._rce_api = rce_api
         self._ems = ems
-        self._last_rce_data: RcePrices = None
-        self._cancel_track_time_change_cb: CALLBACK_TYPE = None
+        self._last_rce_data: RcePrices | None = None
+        self._cancel_track_time_change_cb: CALLBACK_TYPE | None = None
 
         self.device_info = DeviceInfo(
             name="RCE",
@@ -49,7 +49,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RcePrices]):
         """Update data via library."""
         now = now_local()
         _LOGGER.debug("_async_update_data start")
-        updated_data: RcePrices = None
+        updated_data: RcePrices | None = None
         if not self.data or not self.data.today:
             _LOGGER.debug(
                 "_async_update_data doing full_update because data is: %s", self.data
@@ -99,7 +99,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RcePrices]):
             tomorrow=await self._fetch_prices_for_day(now + timedelta(days=1)),
         )
 
-    async def _fetch_prices_for_day(self, day: datetime) -> RceDayPrices:
+    async def _fetch_prices_for_day(self, day: datetime) -> RceDayPrices | None:
         try:
             async with timeout(10):
                 result = await self._rce_api.async_get_prices(day)
@@ -122,7 +122,7 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RcePrices]):
         async def async_refresh_with_datetime(now: datetime) -> None:
             await self.async_refresh()
 
-        if not self._shutdown_requested and not self._cancel_track_time_change_cb:
+        if not self._shutdown_requested and self._cancel_track_time_change_cb is None:
             self._cancel_track_time_change_cb = async_track_time_change(
                 self.hass,
                 async_refresh_with_datetime,
@@ -138,6 +138,6 @@ class SmartRceDataUpdateCoordinator(DataUpdateCoordinator[RcePrices]):
             self._cancel_track_time_change()
 
     def _cancel_track_time_change(self) -> None:
-        if self._cancel_track_time_change_cb:
+        if self._cancel_track_time_change_cb is not None:
             self._cancel_track_time_change_cb()
         self._cancel_track_time_change_cb = None

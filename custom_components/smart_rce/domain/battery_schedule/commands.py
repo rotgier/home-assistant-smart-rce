@@ -26,8 +26,11 @@ class SlotCommand(Protocol):
     changes to aggregate or service — Open/Closed).
     """
 
-    scope: Scope
-    kind: SlotKind
+    @property
+    def scope(self) -> Scope: ...
+
+    @property
+    def kind(self) -> SlotKind: ...
 
     def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry: ...
 
@@ -103,7 +106,8 @@ class OneShotParamsCommand(Protocol):
     changes to aggregate or service — Open/Closed).
     """
 
-    direction: Direction
+    @property
+    def direction(self) -> Direction: ...
 
     def apply_to_params(self, params: OneShotParams) -> OneShotParams: ...
 

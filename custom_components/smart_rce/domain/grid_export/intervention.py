@@ -54,7 +54,7 @@ class Intervention(Protocol):
 
     direction: ClassVar[InterventionDirection]
     recommended_mode: str
-    recommended_xset: int
+    recommended_xset: int | None
     started_hour: int
     last_reason: str
 

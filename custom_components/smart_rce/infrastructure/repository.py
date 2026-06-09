@@ -27,7 +27,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import logging
 import traceback
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
@@ -37,7 +37,13 @@ from .async_task_runner import AsyncTaskRunner
 _LOGGER = logging.getLogger(__name__)
 
 
-class Repository[T](ABC):
+class _ToDictAggregate(Protocol):
+    """Aggregate contract — must expose `to_dict()` for persistence."""
+
+    def to_dict(self) -> dict[str, Any]: ...
+
+
+class Repository[T: _ToDictAggregate](ABC):
     """Base — persists aggregate of type T via HA Store."""
 
     STORAGE_KEY: ClassVar[str]

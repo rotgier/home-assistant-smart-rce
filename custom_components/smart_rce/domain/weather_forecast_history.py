@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import logging
+from typing import Any
 
 from .pv_forecast import WeatherConditionAtHour
 
@@ -33,7 +34,10 @@ class WeatherForecastHistory:
         self._today: date | None = None
 
     def update_from_forecast(
-        self, forecast_hourly: list[dict] | None, today: date, now: datetime
+        self,
+        forecast_hourly: list[dict[Any, Any]] | None,
+        today: date,
+        now: datetime,
     ) -> tuple[str, bool] | None:
         """Update from wetteronline hourly forecast.
 

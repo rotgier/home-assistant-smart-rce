@@ -260,6 +260,8 @@ class GridExportManager:
         start_charge_hour_override: time | None,
     ) -> None:
         """Continue path — global exit checks first, then delegate to intervention."""
+        assert state.now is not None
+        assert self._active is not None
         # Hour rollover (utility_meter resets hourly balance on the full hour,
         # each hour = a separate intervention decision).
         if state.now.hour != self._active.started_hour:
@@ -281,9 +283,11 @@ class GridExportManager:
             start_charge_hour_override=start_charge_hour_override,
         )
         if result.is_exit:
+            assert result.exit_reason is not None
             self._set_neutral(result.exit_reason)
         else:
             # self._active mutated in place — sync last_decision_reason.
+            assert self._active is not None
             self.last_decision_reason = self._active.last_reason
 
     def _try_enter(
@@ -303,6 +307,7 @@ class GridExportManager:
         # POSITIVE: balance > +0.06 (excessive export → CHARGE_BATTERY)
         # NEGATIVE: balance < entry_threshold (-0.05 pre-45min, 0.0 post-45min)
         # Deadzone (-0.05..+0.06): no intervention applies.
+        assert state.exported_energy_hourly is not None
         balance = state.exported_energy_hourly
         if balance > positive.BALANCE_GATE_KWH:
             result = PositiveIntervention.try_enter(
@@ -321,11 +326,13 @@ class GridExportManager:
         if result.is_blocked:
             self.last_decision_reason = result.block_reason
         else:
+            assert result.intervention is not None
             self._active = result.intervention
             self.last_decision_reason = result.intervention.last_reason
 
     @classmethod
     def _is_end_of_hour(cls, state: InputState) -> bool:
+        assert state.now is not None
         return (
             state.now.minute >= cls.LATE_HOUR_MINUTE
             and state.now.second >= cls.LATE_HOUR_EXIT_SECOND
@@ -333,6 +340,7 @@ class GridExportManager:
 
     @classmethod
     def _is_too_late_for_entry(cls, state: InputState) -> bool:
+        assert state.now is not None
         return (
             state.now.minute >= cls.LATE_HOUR_MINUTE
             and state.now.second >= cls.LATE_HOUR_ENTRY_SECOND

@@ -25,7 +25,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util.dt import now as now_local
 
@@ -164,7 +164,7 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     # place that knows about EVENT_HOMEASSISTANT_STOP. EVENT_HOMEASSISTANT_STOP
     # fires ~30s before shutdown so there's headroom for the awaited
     # scene.apply.
-    async def _on_hass_stop(event):
+    async def _on_hass_stop(event: Event) -> None:
         await ems.async_on_stop()
 
     entry.async_on_unload(

@@ -134,6 +134,7 @@ def entry_threshold(state: InputState) -> float:
     routing balance < threshold uses the dynamic threshold. Module-level
     because used from another module (manager) — not a class helper.
     """
+    assert state.now is not None
     if state.now.minute < LATE_HALF_HOUR_MINUTE:
         return ENTRY_THRESHOLD_EARLY_KWH
     return ENTRY_THRESHOLD_LATE_KWH
@@ -151,7 +152,7 @@ class NegativeIntervention:
 
     started_hour: int
     recommended_mode: str = _STANDBY_MODE
-    recommended_xset: int = 0
+    recommended_xset: int | None = 0
     last_reason: str = ""
     _xset_signed: int | None = field(default=None, repr=False)
     """Signed bucket value (positive=charge, negative=discharge, 0=STOP).
@@ -175,6 +176,7 @@ class NegativeIntervention:
         `battery_charge_allowed` is forwarded to `_continue` via `_enter`
         so charge-bucket clamp can respect it inside `_clamp_bucket_per_soc`.
         """
+        assert state.battery_soc is not None
         if state.battery_soc <= SOC_HARD_FLOOR:
             return EntryResult.blocked("soc_below_hard_floor")
         if state.depth_of_discharge is None:
@@ -203,11 +205,13 @@ class NegativeIntervention:
 
         Initial _xset_signed=None default → fresh lookup (no hysteresis on entry).
         """
+        assert state.now is not None
         intervention = cls(started_hour=state.now.hour)
         result = intervention._continue(  # noqa: SLF001 — same-class access
             state, battery_charge_allowed=battery_charge_allowed
         )
         if result.is_exit:
+            assert result.exit_reason is not None
             return EntryResult.blocked(result.exit_reason)
         return EntryResult.entered(intervention)
 
@@ -241,6 +245,7 @@ class NegativeIntervention:
         - end_of_hour_cleanup (now ≥ XX:59:50)
         - no ems_interventions_blocked
         """
+        assert state.exported_energy_hourly is not None
         if state.exported_energy_hourly > EXIT_BALANCE_KWH:
             return ContinueResult.exit_with("negative_balance_recovered")
         if state.depth_of_discharge is None:
@@ -260,6 +265,9 @@ class NegativeIntervention:
 
         Flow: hysteresis lookup → SoC clamp → post-clamp DoD check → commit.
         """
+        assert state.pv_available is not None
+        assert state.battery_soc is not None
+        assert state.depth_of_discharge is not None
         xset_signed, is_stay = self._resolve_xset_with_hysteresis(state.pv_available)
         xset_signed, is_stay = self._clamp_bucket_per_soc(
             xset_signed, is_stay, state, battery_charge_allowed=battery_charge_allowed
@@ -353,6 +361,8 @@ class NegativeIntervention:
         if xset_signed < 0:
             if state.depth_of_discharge is None:
                 return xset_signed, is_stay  # defensive — caller verified not None
+            assert state.battery_soc is not None
+            assert state.pv_available is not None
             at_floor = state.battery_soc <= (100 - state.depth_of_discharge)
             if at_floor and state.pv_available >= -DISCHARGE_FLOOR_HYSTERESIS_W:
                 return 0, False  # clamp to STOP, PV surplus / mild deficit

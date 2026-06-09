@@ -67,8 +67,6 @@ class PvForecasts:
 
     def remaining_kwh(self, variant: PvForecast) -> float | None:
         """Strategy-bound remaining kWh from now onwards (None when no result)."""
-        if variant.strategy is None:
-            return None
         return variant.strategy.remaining_kwh
 
     def all(self) -> dict[PvForecast, PvForecastResult | None]:

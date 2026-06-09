@@ -144,9 +144,15 @@ class WaterHeaterManager:
         callees ordered by call sequence below). Returns the target
         `HeaterState`; side-effects diagnostic fields via `_set_diagnostics`.
         """
+        # Required state must be present (caller guards via `_none_present`).
+        assert state.battery_charge_limit is not None
+        assert state.exported_energy_hourly is not None
+        assert state.pv_available is not None
+        assert state.now is not None
+
         # When charge disabled (pre-charge window), treat as 0 regardless of
         # BMS hardware cap. BatteryChargeService.charge_allowed is single source.
-        battery_charge_limit = (
+        battery_charge_limit: float = (
             0.0 if not battery_charge_allowed else state.battery_charge_limit
         )
         exported_energy_wh = state.exported_energy_hourly * 1000
@@ -394,7 +400,8 @@ class HeaterState(Enum):
         """HA sensor compat — str(state) returns the short label."""
         return self.label
 
-    def __lt__(self, other) -> bool:
+    def __lt__(self, other: object) -> bool:
         if self.__class__ is other.__class__:
+            assert isinstance(other, HeaterState)
             return self.power < other.power
         return NotImplemented

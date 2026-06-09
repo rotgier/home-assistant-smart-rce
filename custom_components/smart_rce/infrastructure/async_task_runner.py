@@ -43,4 +43,6 @@ class AsyncTaskRunner:
         self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
     ) -> object:
         """Background task — auto-cancels on unload. Use for actuator writes."""
-        return self._entry.async_create_background_task(self._hass, coro, name=name)
+        return self._entry.async_create_background_task(
+            self._hass, coro, name=name or ""
+        )

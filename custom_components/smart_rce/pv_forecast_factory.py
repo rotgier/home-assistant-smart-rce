@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
@@ -92,8 +93,12 @@ async def create_energy_balance_service(
     @callback
     def _update_weather_history() -> None:
         now = dt_util.now()
+        raw = weather_listener.forecast_hourly
+        forecast_dicts: list[dict[Any, Any]] | None = (
+            [item for item in raw if isinstance(item, dict)] if raw else None
+        )
         result = weather_forecast_history.update_from_forecast(
-            weather_listener.forecast_hourly, now.date(), now
+            forecast_dicts, now.date(), now
         )
         if result:
             diff_text, is_initial = result

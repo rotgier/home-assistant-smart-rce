@@ -36,7 +36,11 @@ class ForecastStrategy:
     supports_in_progress_patch: bool = False
     is_today: bool = True
     is_extrap: bool = False
-    pretty_label: str = ""  # display name; concrete strategies must override
+
+    @property
+    def pretty_label(self) -> str:
+        """Display name — concrete strategies must override."""
+        return ""
 
     def __init__(self) -> None:
         self.result: PvForecastResult | None = None

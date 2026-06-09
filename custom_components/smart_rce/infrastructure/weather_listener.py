@@ -41,7 +41,7 @@ from homeassistant.util.json import JsonValueType
 from ..domain.pv_forecast import WeatherConditionAtHour
 
 WEATHER_ENTITY: Final[str] = "weather.wetteronline"
-UNAVAILABLE_STATES: Final[tuple[str | None]] = (
+UNAVAILABLE_STATES: Final[tuple[str | None, ...]] = (
     STATE_UNKNOWN,
     STATE_UNAVAILABLE,
     "",
@@ -66,13 +66,13 @@ class WeatherForecastListener:
         self._hass_started: bool = False
         self._shutdown_requested: bool = False
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
-        self._unsubscribe_callback: CALLBACK_TYPE = None
+        self._unsubscribe_callback: CALLBACK_TYPE | None = None
 
         _LOGGER.debug("WeatherForecastListener init")
         entry.async_on_unload(self._shutdown)
 
         @callback
-        def hass_started(_=Event) -> None:
+        def hass_started(_: Event | None = None) -> None:
             _LOGGER.debug("hass_started")
             self._hass_started = True
             self._register_for_weather_updates()
@@ -85,17 +85,17 @@ class WeatherForecastListener:
 
         @callback
         def weather_state_changed(event: Event[EventStateChangedData]) -> None:
-            old_state = event.data["old_state"]
-            new_state = event.data["new_state"]
-            old_state = old_state.state if old_state else None
-            new_state = new_state.state if new_state else None
-            if (old_state in UNAVAILABLE_STATES) != (new_state in UNAVAILABLE_STATES):
+            old_obj = event.data["old_state"]
+            new_obj = event.data["new_state"]
+            old_value: str | None = old_obj.state if old_obj else None
+            new_value: str | None = new_obj.state if new_obj else None
+            if (old_value in UNAVAILABLE_STATES) != (new_value in UNAVAILABLE_STATES):
                 msg = "weather entity %s availability changed from: '%s' to: '%s'"
-                _LOGGER.debug(msg, WEATHER_ENTITY, old_state, new_state)
+                _LOGGER.debug(msg, WEATHER_ENTITY, old_value, new_value)
 
             if (
-                old_state in UNAVAILABLE_STATES
-                and new_state not in UNAVAILABLE_STATES
+                old_value in UNAVAILABLE_STATES
+                and new_value not in UNAVAILABLE_STATES
                 and self._hass_started
             ):
                 _LOGGER.debug("weather entity appeared -> register_for_weather_updates")
@@ -126,21 +126,30 @@ class WeatherForecastListener:
         """Parse HA weather forecast attribute → domain WeatherConditionAtHour."""
         if not forecast_hourly:
             return []
-        return [
-            WeatherConditionAtHour(
-                hour=datetime.fromisoformat(item["datetime"]).hour,
-                condition_custom=item.get("condition_custom", "cloudy"),
-                forecast_date=datetime.fromisoformat(item["datetime"]).date(),
+        result: list[WeatherConditionAtHour] = []
+        for item in forecast_hourly:
+            if not isinstance(item, dict):
+                continue
+            dt_value = item.get("datetime")
+            if not isinstance(dt_value, str):
+                continue
+            condition = item.get("condition_custom", "cloudy")
+            if not isinstance(condition, str):
+                condition = "cloudy"
+            result.append(
+                WeatherConditionAtHour(
+                    hour=datetime.fromisoformat(dt_value).hour,
+                    condition_custom=condition,
+                    forecast_date=datetime.fromisoformat(dt_value).date(),
+                )
             )
-            for item in forecast_hourly
-            if isinstance(item, dict) and "datetime" in item
-        ]
+        return result
 
     @callback
-    def _register_for_weather_updates(self):
+    def _register_for_weather_updates(self) -> None:
         _LOGGER.debug("_register_for_weather_updates")
         component: EntityComponent[WeatherEntity] = self.hass.data[WEATHER]
-        entity: WeatherEntity = component.get_entity(WEATHER_ENTITY)
+        entity: WeatherEntity | None = component.get_entity(WEATHER_ENTITY)
         if entity:
             _LOGGER.debug("weather entity is available")
             self._unregister_weather_updates()
@@ -176,9 +185,9 @@ class WeatherForecastListener:
             _LOGGER.debug("weather entity is NOT available")
 
     @callback
-    def _unregister_weather_updates(self):
+    def _unregister_weather_updates(self) -> None:
         _LOGGER.debug("_unregister_weather_updates cb: %s", self._unsubscribe_callback)
-        if self._unsubscribe_callback:
+        if self._unsubscribe_callback is not None:
             self._unsubscribe_callback()
 
     @callback
@@ -186,7 +195,8 @@ class WeatherForecastListener:
         """Listen for data updates."""
         _LOGGER.debug("async_add_listener")
         if self._shutdown_requested:
-            return None
+            # No-op unsubscribe — listener never registered.
+            return lambda: None
 
         @callback
         def remove_listener() -> None:

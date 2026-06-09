@@ -37,10 +37,16 @@ same primitives, different bucket window.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 import logging
 
-from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
+)
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
@@ -118,14 +124,14 @@ class EnergyBalanceService:
         self.recalculate_all()
 
     @callback
-    def on_solcast_at6_change(self, event: Event) -> None:
+    def on_solcast_at6_change(self, event: Event[EventStateChangedData]) -> None:
         """Solcast at_6 snapshot changed — refresh AT_6 strategy + target_soc."""
         self._recalculate_at6()
         self._recalculate_target_soc_now()
         self._notify_listeners()
 
     @callback
-    def on_solcast_today_change(self, event: Event) -> None:
+    def on_solcast_today_change(self, event: Event[EventStateChangedData]) -> None:
         """Solcast live changed — refresh LIVE + extrap variants + target_soc."""
         self._recalculate_live()
         self._tick_extrapolated()
@@ -133,7 +139,7 @@ class EnergyBalanceService:
         self._notify_listeners()
 
     @callback
-    def on_solcast_tomorrow_change(self, event: Event) -> None:
+    def on_solcast_tomorrow_change(self, event: Event[EventStateChangedData]) -> None:
         """Solcast tomorrow changed — refresh TOMORROW_AT_6 + TOMORROW_LIVE + target_soc."""
         self._recalculate_tomorrow()
         self._recalculate_target_soc_now()
@@ -314,7 +320,7 @@ class EnergyBalanceService:
         )
 
         @callback
-        def _on_retry(_now) -> None:
+        def _on_retry(_now: datetime) -> None:
             self._profile_retry_cancel = None
             self._hass.async_create_task(self.refresh_profiles_full())
 

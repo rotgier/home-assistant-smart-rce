@@ -169,6 +169,7 @@ class PositiveIntervention:
         (Etap B / B'-2 — replaces legacy `state.battery_charge_toggle_on` +
         `state.start_charge_hour_override`).
         """
+        assert state.battery_soc is not None
         if cls._is_in_pre_charge_window(state, start_charge_hour_override):
             return EntryResult.blocked("in_pre_charge_window")
         if state.battery_soc >= SOC_ENTRY_CEILING:
@@ -186,9 +187,11 @@ class PositiveIntervention:
         intervention is possible (e.g. pv_available is None) — propagated
         as EntryResult.blocked.
         """
+        assert state.now is not None
         intervention = cls(started_hour=state.now.hour)
         result = intervention._continue(state)  # noqa: SLF001 — same-class access
         if result.is_exit:
+            assert result.exit_reason is not None
             return EntryResult.blocked(result.exit_reason)
         return EntryResult.entered(intervention)
 
@@ -206,6 +209,8 @@ class PositiveIntervention:
         - end_of_hour_cleanup (now ≥ XX:59:50)
         - no ems_interventions_blocked
         """
+        assert state.exported_energy_hourly is not None
+        assert state.battery_soc is not None
         if self._is_in_pre_charge_window(state, start_charge_hour_override):
             return ContinueResult.exit_with("in_pre_charge_window")
         if state.exported_energy_hourly < EXIT_BALANCE_KWH:
@@ -228,6 +233,7 @@ class PositiveIntervention:
         """
         if start_charge_hour_override is None:
             return False
+        assert state.now is not None
         if state.now.hour < PRE_CHARGE_WINDOW_START_HOUR:
             return False
         return state.now.time() < start_charge_hour_override
@@ -245,6 +251,7 @@ class PositiveIntervention:
         """
         # 1. PV low → STANDBY (instantaneous pv_power flaps, use 2-min avg;
         # fallback to instantaneous when avg=None — e.g. after HA restart).
+        assert state.pv_power is not None
         pv_for_standby = (
             state.pv_power_avg_2_minutes
             if state.pv_power_avg_2_minutes is not None

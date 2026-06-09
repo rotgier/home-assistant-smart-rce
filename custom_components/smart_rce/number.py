@@ -39,6 +39,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add smart_rce number entities."""
+    scopes: tuple[Scope, ...] = ("today", "tomorrow")
     async_add_entities(
         [
             EmsWaterHeaterReservedNumber(entry),
@@ -46,7 +47,7 @@ async def async_setup_entry(
             EmsWaterHeaterBonusGateOffNumber(entry),
             *[
                 BatteryScheduleSlotTargetSocNumber(entry, scope=scope, kind=kind)
-                for scope in ("today", "tomorrow")
+                for scope in scopes
                 for kind in SlotKind
             ],
             OneShotTargetSocNumber(entry, direction=Direction.DISCHARGE),

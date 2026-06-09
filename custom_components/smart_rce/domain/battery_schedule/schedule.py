@@ -303,11 +303,13 @@ class BatterySchedule:
             # Fall through — another slot might be ready to engage immediately.
 
         # 4. Find highest-precedence slot that should engage NOW.
-        entry = self._find_engaging_entry(now, current_soc)
-        if entry is not None:
-            events.append(SlotEngaged(slot=entry.kind, soc=current_soc, at=now))
-            self._currently_engaging = entry.kind
-            return entry.to_battery_operation(), events
+        engaging_entry = self._find_engaging_entry(now, current_soc)
+        if engaging_entry is not None:
+            events.append(
+                SlotEngaged(slot=engaging_entry.kind, soc=current_soc, at=now)
+            )
+            self._currently_engaging = engaging_entry.kind
+            return engaging_entry.to_battery_operation(), events
 
         return BatteryOperation.idle(), events
 

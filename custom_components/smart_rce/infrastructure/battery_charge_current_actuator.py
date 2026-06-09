@@ -43,7 +43,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, Event, HomeAssistant, callback
@@ -150,7 +150,7 @@ class BatteryChargeCurrentActuator:
                     readback,
                 )
 
-    async def _on_ha_started(self, _event: Event) -> None:
+    async def _on_ha_started(self, _event: Event | None) -> None:
         """One-shot Modbus cache reconcile after HA fully started."""
         async with self._lock:
             await self._refresh_modbus_cache()
@@ -246,7 +246,7 @@ class BatteryChargeCurrentActuator:
         await self._repo.record_modbus_read(value, dt_util.now())
         return value
 
-    def _get_inverter(self):
+    def _get_inverter(self) -> Any:
         """Resolve `Inverter` instance from `hass.data["goodwe"]` runtime_data.
 
         Mirrors `goodwe/services.py:_get_inverter_by_device_id`: looks up

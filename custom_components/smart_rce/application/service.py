@@ -21,11 +21,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import contextlib
+from typing import Protocol
 
 from homeassistant.core import callback
 
 
-class Service[TRepo]:
+class _RepoProto(Protocol):
+    """Repository contract used by `Service` — persist + save_if_changed."""
+
+    async def persist(self) -> None: ...
+
+    def save_if_changed(self) -> None: ...
+
+
+class Service[TRepo: _RepoProto]:
     """Base — listener registry + notify dispatch + persist-and-notify helpers."""
 
     def __init__(self, repo: TRepo) -> None:

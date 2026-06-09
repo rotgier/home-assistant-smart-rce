@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Final
+from typing import Any, Final
 
 from zoneinfo import ZoneInfo
 
@@ -30,7 +30,7 @@ class RceDayPrices:
         return datetime.combine(self.day, time(hour, 0), TIMEZONE)
 
     @classmethod
-    def create_from_json(cls, data) -> RceDayPrices | None:
+    def create_from_json(cls, data: dict[str, Any]) -> RceDayPrices | None:
         """Parse RCE api data into domain object.
 
         API returns 15-minute intervals. We aggregate to hourly averages,

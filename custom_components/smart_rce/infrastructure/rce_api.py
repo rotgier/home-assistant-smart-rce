@@ -32,7 +32,7 @@ class RceApi:
     def __init__(self, session: ClientSession) -> None:  # noqa: D107
         self._session = session
 
-    async def async_get_prices(self, day: datetime) -> RceDayPrices:
+    async def async_get_prices(self, day: datetime) -> RceDayPrices | None:
         data = await self._async_get_prices_raw(day)
         return RceDayPrices.create_from_json(data)
 
@@ -45,4 +45,5 @@ class RceApi:
             if resp.status != HTTPStatus.OK.value:
                 text = await resp.text()
                 raise ApiError(f"Invalid response from RCE API: {resp.status} {text}")
-            return await resp.json()
+            json_data: dict[Any, Any] = await resp.json()
+            return json_data

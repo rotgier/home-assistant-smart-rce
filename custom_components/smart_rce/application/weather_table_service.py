@@ -70,7 +70,8 @@ class WeatherTableService:
         if snapshot_time is not None:
             forecast_raw = await self._history_loader.fetch_forecast_at(snapshot_time)
         else:
-            forecast_raw = list(self._weather_listener.forecast_hourly or [])
+            raw_items = self._weather_listener.forecast_hourly or []
+            forecast_raw = [item for item in raw_items if isinstance(item, dict)]
 
         current_obs: dict[str, Any] | None = None
         future_hours: list[dict[str, Any]] = []

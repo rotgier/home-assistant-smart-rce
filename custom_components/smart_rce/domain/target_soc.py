@@ -129,6 +129,7 @@ class TargetSoc:
         self, cons_view: ConsumptionProfile, ctx: TargetSocContext
     ) -> TargetSocResult:
         """Single target_soc computation reusing cached pv_profile."""
+        assert self.pv_profile is not None
         return _calculate_target_soc(
             self.pv_profile, cons_view, start_charge_hour=ctx.start_charge_hour
         )

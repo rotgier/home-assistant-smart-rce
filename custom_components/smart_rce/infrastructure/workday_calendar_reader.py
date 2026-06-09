@@ -74,7 +74,10 @@ class WorkdayCalendarReader:
             return set()
 
         entity_data = response.get(WORKDAY_CALENDAR_ENTITY, {})
-        events = entity_data.get("events", []) if isinstance(entity_data, dict) else []
+        raw_events = (
+            entity_data.get("events", []) if isinstance(entity_data, dict) else []
+        )
+        events = raw_events if isinstance(raw_events, list) else []
         workdays = {
             d for d in (_parse_event_date(e, tz) for e in events) if d is not None
         }

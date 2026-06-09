@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, time
 import logging
-from typing import Final
+from typing import Any, Final, cast
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
@@ -96,7 +96,7 @@ class ConsumptionProfileLoader:
         slots = await self._fetch_5min_slots(valid_dates)
         return self._bucket_profiles_by_date(slots, dates, valid_dates)
 
-    async def _fetch_5min_slots(self, valid_dates: list[date]) -> list[dict]:
+    async def _fetch_5min_slots(self, valid_dates: list[date]) -> list[dict[Any, Any]]:
         tz = dt_util.DEFAULT_TIME_ZONE
         earliest, latest = min(valid_dates), max(valid_dates)
         start = datetime.combine(earliest, time(6, 30), tzinfo=tz)
@@ -113,7 +113,12 @@ class ConsumptionProfileLoader:
             None,
             {"state"},
         )
-        slots = stats.get(_CONSUMPTION_SENSOR_ID, [])
+        # StatisticsRow is a TypedDict — compatible with dict[str, Any] at runtime
+        # but mypy strict-checks the literal type. Cast to the more permissive
+        # type for our downstream `_bucket_profiles_by_date` which only reads keys.
+        slots: list[dict[Any, Any]] = cast(
+            "list[dict[Any, Any]]", list(stats.get(_CONSUMPTION_SENSOR_ID, []))
+        )
         _LOGGER.debug(
             "Fetched %d 5-min slots for %s between %s and %s",
             len(slots),

@@ -15,7 +15,9 @@ from ..application.energy_balance_service import EnergyBalanceService
 from ..const import DOMAIN
 from ..coordinator import SmartRceDataUpdateCoordinator
 from ..domain.bucket import Bucket
-from ..domain.pv_forecast import PvForecast, PvForecasts
+from ..domain.consumption_profiles import ConsumptionProfile
+from ..domain.pv_forecast import PvForecast, PvForecastResult, PvForecasts
+from ..domain.target_soc import TargetSoc, TargetSocResult
 from ._state_writer_mixin import StateWriterMixin
 
 UNIQUE_ID_PREFIX: Final = DOMAIN
@@ -69,7 +71,7 @@ class EnergyBalanceSensor(StateWriterMixin):
         return self.entity_description.attr_fn(self._pv_forecast)
 
 
-@dataclass(frozen=False, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class EnergyBalanceSensorDescription(SensorEntityDescription):
     """Description schema for EnergyBalanceSensor — value_fn/attr_fn lambdas."""
 
@@ -77,8 +79,9 @@ class EnergyBalanceSensorDescription(SensorEntityDescription):
     value_fn: Callable[[EnergyBalanceService], float | int | None]
     attr_fn: Callable[[EnergyBalanceService], dict[str, Any]] = lambda _: {}
 
-    def __post_init__(self):
-        self.key = self.name.lower().replace(" ", "_")
+    def __post_init__(self) -> None:
+        assert isinstance(self.name, str)
+        object.__setattr__(self, "key", self.name.lower().replace(" ", "_"))
 
 
 def _make_pv_desc(v: PvForecast) -> EnergyBalanceSensorDescription:
@@ -92,22 +95,36 @@ def _make_pv_desc(v: PvForecast) -> EnergyBalanceSensorDescription:
     Default arg `_v=v` captures the loop variable by value (closure gotcha:
     without it all lambdas would close over the same final `v`).
     """
+    captured: PvForecast = v
     if v.is_extrap:
+
+        def _remaining(pv: EnergyBalanceService) -> float | int | None:
+            return pv.forecasts.remaining_kwh(captured)
+
+        def _attrs_extrap(pv: EnergyBalanceService) -> dict[str, Any]:
+            return _pv_forecast_attrs(pv.forecasts.get(captured))
+
         return EnergyBalanceSensorDescription(
             name=f"PV Forecast {v.pretty_label}",
-            value_fn=lambda pv, _v=v: pv.forecasts.remaining_kwh(_v),
-            attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
+            value_fn=_remaining,
+            attr_fn=_attrs_extrap,
         )
+
+    def _total(pv: EnergyBalanceService) -> float | int | None:
+        forecast = pv.forecasts.get(captured)
+        return forecast.total_kwh if forecast else None
+
+    def _attrs_total(pv: EnergyBalanceService) -> dict[str, Any]:
+        return _pv_forecast_attrs(pv.forecasts.get(captured))
+
     return EnergyBalanceSensorDescription(
         name=f"PV Forecast {v.pretty_label}",
-        value_fn=lambda pv, _v=v: (
-            pv.forecasts.get(_v).total_kwh if pv.forecasts.get(_v) else None
-        ),
-        attr_fn=lambda pv, _v=v: _pv_forecast_attrs(pv.forecasts.get(_v)),
+        value_fn=_total,
+        attr_fn=_attrs_total,
     )
 
 
-def _pv_forecast_attrs(forecast) -> dict[str, Any]:
+def _pv_forecast_attrs(forecast: PvForecastResult | None) -> dict[str, Any]:
     if not forecast:
         return {}
     return {
@@ -132,22 +149,29 @@ def _make_target_soc_desc(v: PvForecast) -> EnergyBalanceSensorDescription:
     Default arg captures (`_v`, `_pa`) avoid closure-over-loop-variable.
     """
     profiles_attr = "today_profiles" if v.is_today else "tomorrow_profiles"
+    captured: PvForecast = v
+
+    def _value(pv: EnergyBalanceService) -> float | int | None:
+        flat = pv.target_socs.target_socs[captured].flat
+        return flat.value if flat else None
+
+    def _attrs(pv: EnergyBalanceService) -> dict[str, Any]:
+        return _target_soc_attrs(
+            pv.target_socs.target_socs[captured],
+            getattr(pv.target_socs.consumption_profiles, profiles_attr),
+        )
+
     return EnergyBalanceSensorDescription(
         name=f"Target SOC {v.pretty_label}",
         native_unit_of_measurement="%",
-        value_fn=lambda pv, _v=v: (
-            pv.target_socs.target_socs[_v].flat.value
-            if pv.target_socs.target_socs[_v].flat
-            else None
-        ),
-        attr_fn=lambda pv, _v=v, _pa=profiles_attr: _target_soc_attrs(
-            pv.target_socs.target_socs[_v],
-            getattr(pv.target_socs.consumption_profiles, _pa),
-        ),
+        value_fn=_value,
+        attr_fn=_attrs,
     )
 
 
-def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
+def _target_soc_attrs(
+    entity: TargetSoc, profiles: list[ConsumptionProfile | None]
+) -> dict[str, Any]:
     """Build per-variant TargetSoc sensor attrs: flat trace + 8 prev_days + max + source_dates.
 
     `entity`: TargetSoc per-variant.
@@ -182,7 +206,7 @@ def _target_soc_attrs(entity, profiles) -> dict[str, Any]:
     return attrs
 
 
-def _buckets_to_dict(result) -> list[dict[str, Any]]:
+def _buckets_to_dict(result: TargetSocResult | None) -> list[dict[str, Any]]:
     """Serialize result.buckets as list of dicts for sensor trace attrs."""
     if not result or not result.buckets:
         return []

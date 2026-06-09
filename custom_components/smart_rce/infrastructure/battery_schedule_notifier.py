@@ -25,10 +25,18 @@ original `script.notify_alert`).
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from homeassistant.core import HomeAssistant, callback
 
-from ..domain.battery_schedule import BatteryScheduleEvent, NotificationLevel
+from ..domain.battery_schedule import (
+    BatteryScheduleEvent,
+    NotificationLevel,
+    OneShotEnded,
+    OneShotStarted,
+    SlotDisengaged,
+    SlotEngaged,
+)
 from .async_task_runner import AsyncTaskRunner
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,19 +115,23 @@ class BatteryScheduleNotifier:
         """
         event_type = type(event).__name__
         if event_type == "SlotEngaged":
-            level = event.slot.value.notification_level
+            engaged = cast("SlotEngaged", event)
+            level = engaged.slot.value.notification_level
             return (
-                f"🔋 BatterySchedule: {event.slot.name} start",
-                f"Slot {event.slot.name} started at SoC={event.soc:.1f}%.",
+                f"🔋 BatterySchedule: {engaged.slot.name} start",
+                f"Slot {engaged.slot.name} started at SoC={engaged.soc:.1f}%.",
                 level,
             )
         if event_type == "SlotDisengaged":
-            level = event.slot.value.notification_level
-            reason_label = _DISENGAGE_REASON_LABEL.get(event.reason, event.reason)
+            disengaged = cast("SlotDisengaged", event)
+            level = disengaged.slot.value.notification_level
+            reason_label = _DISENGAGE_REASON_LABEL.get(
+                disengaged.reason, disengaged.reason
+            )
             return (
-                f"🏁 BatterySchedule: {event.slot.name} end",
+                f"🏁 BatterySchedule: {disengaged.slot.name} end",
                 (
-                    f"Slot {event.slot.name} ended at SoC={event.soc:.1f}%, "
+                    f"Slot {disengaged.slot.name} ended at SoC={disengaged.soc:.1f}%, "
                     f"reason: {reason_label}."
                 ),
                 level,
@@ -127,7 +139,8 @@ class BatteryScheduleNotifier:
         if event_type == "DayRolled":
             return None  # midnight roll — internal only, no telegram
         if event_type == "OneShotStarted":
-            op = event.operation
+            started = cast("OneShotStarted", event)
+            op = started.operation
             return (
                 f"⚡ One-Shot {op.direction.name} start",
                 (
@@ -137,8 +150,9 @@ class BatteryScheduleNotifier:
                 op.notification_level,
             )
         if event_type == "OneShotEnded":
-            op = event.operation
-            reason_label = _DISENGAGE_REASON_LABEL.get(event.reason, event.reason)
+            ended = cast("OneShotEnded", event)
+            op = ended.operation
+            reason_label = _DISENGAGE_REASON_LABEL.get(ended.reason, ended.reason)
             return (
                 f"🏁 One-Shot {op.direction.name} end",
                 (

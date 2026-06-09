@@ -17,6 +17,7 @@ from homeassistant.const import UnitOfPower
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from ..application.ems import Ems
+from ..domain.battery_schedule import OneShotOperation
 from ._state_writer_mixin import StateWriterMixin
 
 EMS_UNIQUE_ID_PREFIX: Final = "ems"
@@ -65,15 +66,16 @@ class EmsSensor(StateWriterMixin):
         return self.entity_description.value_fn(self.ems)
 
 
-@dataclass(frozen=False, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class EmsSensorDescription(SensorEntityDescription):
     """Description schema for EmsSensor — value_fn lambda extracting from Ems."""
 
     key: str = field(init=False)
     value_fn: Callable[[Ems], str | int | float | None]
 
-    def __post_init__(self):
-        self.key = self.name.lower().replace(" ", "_")
+    def __post_init__(self) -> None:
+        assert isinstance(self.name, str)
+        object.__setattr__(self, "key", self.name.lower().replace(" ", "_"))
 
 
 EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
@@ -167,7 +169,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
 )
 
 
-def _format_oneshot(op) -> str:
+def _format_oneshot(op: OneShotOperation | None) -> str:
     if op is None:
         return "IDLE"
     return (

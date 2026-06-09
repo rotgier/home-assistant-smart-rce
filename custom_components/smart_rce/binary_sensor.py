@@ -29,14 +29,16 @@ PARALLEL_UPDATES = 1
 _LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(frozen=False, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class EmsBinarySensorDescription(BinarySensorEntityDescription):
     key: str = field(init=False)
     value_fn: Callable[[Ems], bool]
     attr_fn: Callable[[dict[str, Any]], dict[str, Any]] = lambda _: {}
 
-    def __post_init__(self):
-        self.key = self.name.lower().replace(" ", "_")
+    def __post_init__(self) -> None:
+        assert isinstance(self.name, str)
+        # `key` initialized via object.__setattr__ — frozen dataclass.
+        object.__setattr__(self, "key", self.name.lower().replace(" ", "_"))
 
 
 SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
@@ -110,7 +112,7 @@ async def async_setup_entry(
     device_info = ems_device_info(entry)
     ems = entry.runtime_data.ems
 
-    sensors: list[EmsBinarySensorDescription] = [
+    sensors: list[EmsBinarySensor] = [
         EmsBinarySensor(device_info, ems, description)
         for description in SENSOR_DESCRIPTIONS
     ]

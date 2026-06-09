@@ -365,6 +365,7 @@ class DodPolicy:
         discharge only (5:00..7:00 window) and not reliable as preservation
         trigger.
         """
+        assert state.now is not None
         morning_is_workday = (
             state.is_workday_tomorrow if state.now.hour >= 22 else state.is_workday
         )

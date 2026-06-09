@@ -42,13 +42,14 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add smart_rce select entities."""
+    scopes: tuple[Scope, ...] = ("today", "tomorrow")
     async_add_entities(
         [
             EmsBatteryChargeAllowedOverrideSelect(entry),
             EmsWaterHeaterReservedModeSelect(entry),
             *[
                 BatteryScheduleSlotBehaviorSelect(entry, scope=scope, kind=kind)
-                for scope in ("today", "tomorrow")
+                for scope in scopes
                 for kind in SlotKind
             ],
         ]

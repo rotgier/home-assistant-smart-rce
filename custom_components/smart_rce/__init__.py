@@ -188,7 +188,7 @@ def _register_services(
         )
 
 
-def live_reload():
+def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.const"))
     reload(import_module("custom_components.smart_rce.infrastructure.rce_api"))
     reload(import_module("custom_components.smart_rce.infrastructure"))
