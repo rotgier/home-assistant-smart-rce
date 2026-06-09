@@ -312,8 +312,7 @@ class EnergyBalanceService:
         self._cancel_profile_retry()
         attempt = self.target_socs.consumption_profiles.failed_attempts
         _LOGGER.warning(
-            "Consumption profile refresh partial (attempt %d/%d) — "
-            "retrying in %.0fs",
+            "Consumption profile refresh partial (attempt %d/%d) — retrying in %.0fs",
             attempt,
             self.target_socs.consumption_profiles.MAX_RETRIES,
             _PROFILE_RETRY_INTERVAL_SEC,

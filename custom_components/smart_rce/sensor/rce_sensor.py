@@ -202,61 +202,65 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
         name="Start Charge Hour Today",
         native_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: ems.charge_slots.today.start_hour
-        if ems.charge_slots.today
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.today.start_hour if ems.charge_slots.today else None
+        ),
     ),
     SmartRceSensorDescription(
         name="Start Charge Hour Today Time",
         device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda ems: ems.charge_slots.today.start_datetime
-        if ems.charge_slots.today
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.today.start_datetime if ems.charge_slots.today else None
+        ),
     ),
     SmartRceSensorDescription(
         name="End Charge Hour Today",
         native_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: ems.charge_slots.today.end_hour
-        if ems.charge_slots.today
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.today.end_hour if ems.charge_slots.today else None
+        ),
     ),
     SmartRceSensorDescription(
         name="End Charge Hour Today Time",
         device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda ems: ems.charge_slots.today.end_datetime
-        if ems.charge_slots.today
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.today.end_datetime if ems.charge_slots.today else None
+        ),
     ),
     # --- Tomorrow charge slots ---
     SmartRceSensorDescription(
         name="Start Charge Hour Tomorrow",
         native_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: ems.charge_slots.tomorrow.start_hour
-        if ems.charge_slots.tomorrow
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.tomorrow.start_hour if ems.charge_slots.tomorrow else None
+        ),
     ),
     SmartRceSensorDescription(
         name="Start Charge Hour Tomorrow Time",
         device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda ems: ems.charge_slots.tomorrow.start_datetime
-        if ems.charge_slots.tomorrow
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.tomorrow.start_datetime
+            if ems.charge_slots.tomorrow
+            else None
+        ),
     ),
     SmartRceSensorDescription(
         name="End Charge Hour Tomorrow",
         native_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: ems.charge_slots.tomorrow.end_hour
-        if ems.charge_slots.tomorrow
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.tomorrow.end_hour if ems.charge_slots.tomorrow else None
+        ),
     ),
     SmartRceSensorDescription(
         name="End Charge Hour Tomorrow Time",
         device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda ems: ems.charge_slots.tomorrow.end_datetime
-        if ems.charge_slots.tomorrow
-        else None,
+        value_fn=lambda ems: (
+            ems.charge_slots.tomorrow.end_datetime
+            if ems.charge_slots.tomorrow
+            else None
+        ),
     ),
 )

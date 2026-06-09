@@ -155,10 +155,7 @@ class BatteryScheduleNotifier:
             reason_label = _DISENGAGE_REASON_LABEL.get(ended.reason, ended.reason)
             return (
                 f"🏁 One-Shot {op.direction.name} end",
-                (
-                    f"Ad-hoc {op.direction.name.lower()} ended, "
-                    f"reason: {reason_label}."
-                ),
+                (f"Ad-hoc {op.direction.name.lower()} ended, reason: {reason_label}."),
                 op.notification_level,
             )
         _LOGGER.warning("BatteryScheduleNotifier: unhandled event type %s", event_type)
