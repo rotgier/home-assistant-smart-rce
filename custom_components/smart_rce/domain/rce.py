@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Final
-
 from zoneinfo import ZoneInfo
 
 TIMEZONE: Final = ZoneInfo("Europe/Warsaw")

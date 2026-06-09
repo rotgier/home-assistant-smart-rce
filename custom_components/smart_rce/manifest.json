@@ -4,6 +4,9 @@
   "codeowners": [
     "@rotgier"
   ],
+  "after_dependencies": [
+    "recorder"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/rotgier/home-assistant-smart-rce",
   "integration_type": "service",

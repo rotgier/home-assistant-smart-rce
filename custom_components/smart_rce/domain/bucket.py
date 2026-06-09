@@ -192,7 +192,7 @@ class Buckets:
     @classmethod
     def flat(cls, value: float) -> Buckets:
         """Synthetic snapshot — every bucket = `value` kWh."""
-        return cls(by_bucket={bucket: value for bucket in _PV_WINDOW_BUCKETS})
+        return cls(by_bucket=dict.fromkeys(_PV_WINDOW_BUCKETS, value))
 
     def get(self, hour: int, minute: int) -> float:
         """Lookup by (hour, minute) tuple — convenience for numeric callers."""

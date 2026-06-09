@@ -10,8 +10,8 @@ LIVE result via `PvForecastResult.with_now_aware_in_progress_and_future_override
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable
 
 from ..bucket import Bucket
 from .strategy_base import PvForecastResult, SolcastPeriod

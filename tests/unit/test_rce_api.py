@@ -1,6 +1,7 @@
 """Tests for accuweather package."""
 
 from datetime import datetime
+import os
 
 import aiofiles
 from aiohttp import ClientSession
@@ -12,6 +13,10 @@ from pytest_socket import _remove_restrictions, socket_allow_hosts
 
 @pytest.mark.asyncio
 @pytest.mark.enable_socket
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="Hits real api.raporty.pse.pl — network not available in CI sandbox",
+)
 @pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_get_prices_raw() -> None:
     """Test get prices."""
