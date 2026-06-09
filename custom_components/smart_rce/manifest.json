@@ -1,11 +1,11 @@
 {
   "domain": "smart_rce",
   "name": "Smart RCE",
-  "codeowners": [
-    "@rotgier"
-  ],
   "after_dependencies": [
     "recorder"
+  ],
+  "codeowners": [
+    "@rotgier"
   ],
   "config_flow": true,
   "documentation": "https://github.com/rotgier/home-assistant-smart-rce",
