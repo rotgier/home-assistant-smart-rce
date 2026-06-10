@@ -152,8 +152,17 @@ def main() -> int:
         f"\nTotal pinned: {len(pins)}  |  Safe: {len(safe)}  |  "
         f"Blocked: {len(blocked)}  |  Up-to-date: {len(up_to_date)}"
     )
-    # Exit non-zero gdy są outdated piny — CI/pre-commit signal.
-    return 1 if (safe or blocked) else 0
+    # Exit non-zero TYLKO gdy są actionable bumpy (SAFE TO BUMP).
+    # BLOCKED-only (bez pytest-ha gateway w SAFE) = czekamy na pytest-ha
+    # release — nic nie możemy zrobić sami, więc nie spamujemy notyfikacji.
+    if not safe:
+        if blocked:
+            print(
+                "\n  ℹ️  Tylko BLOCKED — czekamy na pytest-homeassistant-custom-component\n"
+                "     release. Nothing actionable. Exit 0."
+            )
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
