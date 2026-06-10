@@ -1,20 +1,17 @@
 version: 2
 updates:
-  - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: weekly
-    groups:
-      lint-and-type:
-        patterns:
-          - ruff
-          - mypy
-          - "types-*"
-      test:
-        patterns:
-          - pytest
-          - "pytest-*"
-          - pytest-homeassistant-custom-component
+  # pip ecosystem disabled — HA Core approach. Większość pip bumpów blokuje
+  # `pytest-homeassistant-custom-component` transitive constraints (pytest,
+  # pytest-asyncio, pytest-cov, syrupy, coverage, aioresponses, aiofiles).
+  # Manual bump przez `scripts/check_outdated_deps.py`:
+  #   1. .venv/bin/python scripts/check_outdated_deps.py
+  #   2. Bump pinów w requirements-test.txt (start od pytest-ha — gateway
+  #      do bumpa blocked deps)
+  #   3. pip install -r requirements-test.txt && pytest + mypy lokalnie
+  #   4. Commit "deps: bump X 1.2 → 1.3"
+  #
+  # Sprawdzaj raz na miesiąc lub gdy pytest-homeassistant-custom-component
+  # release wyjdzie. CLAUDE.md → "CI / pre-commit / dependabot".
 
   - package-ecosystem: pre-commit
     directory: "/"

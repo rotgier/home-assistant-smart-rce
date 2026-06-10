@@ -49,3 +49,14 @@ repos:
         files: ^custom_components/smart_rce/.+\.py$
         pass_filenames: true
         require_serial: true
+      # Manual-only — chodzi tylko via `pre-commit run check-outdated-deps --hook-stage manual`.
+      # Scheduled weekly w .github/workflows/deps-check.yml. Verbose żeby
+      # zawsze pokazać output (script exit 0, więc pre-commit zatailuje
+      # output bez `verbose: true`).
+      - id: check-outdated-deps
+        name: check outdated pip pins
+        entry: .venv/bin/python scripts/check_outdated_deps.py
+        language: system
+        pass_filenames: false
+        stages: [manual]
+        verbose: true

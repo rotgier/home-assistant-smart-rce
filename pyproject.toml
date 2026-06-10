@@ -838,6 +838,7 @@ split-on-trailing-comma = false
 "homeassistant/__main__.py" = ["T201"]
 "homeassistant/scripts/*" = ["T201"]
 "script/*" = ["T20"]
+"scripts/*" = ["T20"]
 
 # Temporary
 "homeassistant/**" = ["PTH"]
