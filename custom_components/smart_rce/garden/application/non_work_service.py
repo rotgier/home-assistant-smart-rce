@@ -50,3 +50,19 @@ class NonWorkService(Service[NonWorkRepository]):
         await self._persist_and_notify(changed)
         if changed:
             await self._actuator.apply()
+
+    async def reconcile_from_cloud(self, current: NonWorkHours | None) -> None:
+        """React to a mammotion sensor change (wired in factory).
+
+        Seeds the target when unset (fresh install — adopt the robot's current
+        value, so we never overwrite it), or reasserts our target when the cloud
+        drifted from it (HA is the source of truth). Listener-driven, so it
+        works whenever the sensor becomes available — no startup-timing race.
+        """
+        if current is None:
+            return
+        target = self._repo.schedule.target
+        if target is None:
+            await self.set_target(current)  # seed → apply diff=0, no write
+        elif current != target:
+            await self._actuator.apply()  # drift → reassert our target

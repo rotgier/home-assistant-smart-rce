@@ -56,3 +56,33 @@ async def test_set_start_noop_when_target_unset() -> None:
     await service.set_start(time(21, 0))
 
     actuator.apply.assert_not_awaited()
+
+
+async def test_reconcile_seeds_when_target_unset() -> None:
+    service, repo, actuator = _service()
+    repo.schedule = NonWorkSchedule(target=None)
+    cloud = NonWorkHours(time(20, 35), time(10, 5))
+
+    await service.reconcile_from_cloud(cloud)
+
+    assert repo.schedule.target == cloud  # adopted robot's value
+    repo.persist.assert_awaited_once()
+
+
+async def test_reconcile_reasserts_on_drift() -> None:
+    service, repo, actuator = _service()  # target = 20:35-10:05
+
+    await service.reconcile_from_cloud(NonWorkHours(time(21, 0), time(10, 5)))
+
+    assert repo.schedule.target == NonWorkHours(time(20, 35), time(10, 5))  # unchanged
+    actuator.apply.assert_awaited_once()  # reassert our target
+
+
+async def test_reconcile_noop_when_cloud_matches_or_none() -> None:
+    service, repo, actuator = _service()  # target = 20:35-10:05
+
+    await service.reconcile_from_cloud(NonWorkHours(time(20, 35), time(10, 5)))
+    await service.reconcile_from_cloud(None)
+
+    actuator.apply.assert_not_awaited()
+    repo.persist.assert_not_awaited()
