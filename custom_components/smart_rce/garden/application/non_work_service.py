@@ -35,6 +35,16 @@ class NonWorkService(Service[NonWorkRepository]):
         super().__init__(repo)
         self._actuator = actuator
 
+    @property
+    def start(self) -> time | None:
+        target = self._repo.schedule.target
+        return target.start if target else None
+
+    @property
+    def end(self) -> time | None:
+        target = self._repo.schedule.target
+        return target.end if target else None
+
     async def set_start(self, start: time) -> None:
         target = self._repo.schedule.target
         if target is not None:

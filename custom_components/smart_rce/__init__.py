@@ -18,6 +18,7 @@ from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
+from .garden.factory import Garden, create_garden
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.rce_api import RceApi
 from .infrastructure.weather_history_loader import WeatherHistoryLoader
@@ -60,6 +61,7 @@ class SmartRceData:
     weather_forecast_history: WeatherForecastHistory
     weather_table_service: WeatherTableService
     target_soc_matrix_service: TargetSocMatrixService
+    garden: Garden
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -92,6 +94,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         hass, pv_forecast, realized_pv_loader
     )
 
+    garden = await create_garden(hass, entry)
+
     await rce_coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = SmartRceData(
@@ -102,6 +106,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         weather_forecast_history,
         weather_table_service,
         target_soc_matrix_service,
+        garden,
     )
 
     _register_services(hass, weather_table_service, target_soc_matrix_service)

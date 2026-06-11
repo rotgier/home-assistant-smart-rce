@@ -30,6 +30,7 @@ from .domain.battery_schedule import (
     SlotKind,
 )
 from .ems_device import ems_device_info
+from .garden.time_entities import build_times
 
 PARALLEL_UPDATES = 1
 
@@ -64,6 +65,7 @@ async def async_setup_entry(
             ],
             OneShotEndTime(entry, direction=Direction.DISCHARGE),
             OneShotEndTime(entry, direction=Direction.CHARGE),
+            *build_times(entry),
         ]
     )
 
