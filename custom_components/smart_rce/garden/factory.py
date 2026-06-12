@@ -2,10 +2,11 @@
 
 Modular per ADR-024: garden owns its factory (unlike `ems_factory` at repo root,
 since ems is still flat). v1 wires non-work ownership only — repo (restored) +
-actuator + service, plus a listener on the mammotion non_work sensor that drives
-`NonWorkService.reconcile_from_cloud` (seed when unset, reassert on drift). The
-listener fixes the startup race: it fires whenever the sensor becomes available,
-not at a fixed `EVENT_HOMEASSISTANT_STARTED` moment. Mowing planner (2b) joins here.
+service, plus a listener on the mammotion non_work sensor that feeds
+`NonWorkService.update_cloud_state` (drift detection; observe-first — no seed,
+no device writes; `NonWorkActuator` stays dormant until phase 2). The listener
+fires whenever the sensor changes, so it works regardless of mammotion's
+startup timing. Mowing planner (2b) joins here.
 """
 
 from __future__ import annotations
@@ -16,13 +17,7 @@ from typing import TYPE_CHECKING
 from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
 )
-from custom_components.smart_rce.garden.const import (
-    LUBA_LAWN_MOWER,
-    LUBA_NON_WORK_SENSOR,
-)
-from custom_components.smart_rce.garden.infrastructure.non_work_actuator import (
-    NonWorkActuator,
-)
+from custom_components.smart_rce.garden.const import LUBA_NON_WORK_SENSOR
 from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
     read_non_work_hours,
 )
@@ -51,38 +46,29 @@ async def create_garden(hass: HomeAssistant, entry: ConfigEntry) -> Garden:
     tasks = AsyncTaskRunner(hass, entry)
     repo = NonWorkRepository(hass, tasks)
     await repo.async_restore()
-    actuator = NonWorkActuator(
-        hass, repo, sensor_id=LUBA_NON_WORK_SENSOR, mower_id=LUBA_LAWN_MOWER
-    )
-    service = NonWorkService(repo, actuator)
-    _wire_non_work_reconcile(hass, entry, tasks, service)
+    service = NonWorkService(repo)
+    _wire_non_work_cloud_listener(hass, entry, service)
     return Garden(non_work=service)
 
 
-def _wire_non_work_reconcile(
+def _wire_non_work_cloud_listener(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    tasks: AsyncTaskRunner,
     service: NonWorkService,
 ) -> None:
     @callback
-    def _reconcile() -> None:
-        tasks.run_background(
-            service.reconcile_from_cloud(
-                read_non_work_hours(hass, LUBA_NON_WORK_SENSOR)
-            ),
-            name="smart_rce_garden_non_work_reconcile",
-        )
+    def _update() -> None:
+        service.update_cloud_state(read_non_work_hours(hass, LUBA_NON_WORK_SENSOR))
 
     @callback
     def _on_sensor_change(_event: Event[EventStateChangedData]) -> None:
-        _reconcile()
+        _update()
 
     entry.async_on_unload(
         async_track_state_change_event(hass, [LUBA_NON_WORK_SENSOR], _on_sensor_change)
     )
     # Reload scenario: sensor may already be available (no future state-change
-    # event), so reconcile once now. Fresh HA start: the listener catches
+    # event), so read once now. Fresh HA start: the listener catches
     # mammotion's load (unavailable → value).
     if hass.state is CoreState.running:
-        _reconcile()
+        _update()

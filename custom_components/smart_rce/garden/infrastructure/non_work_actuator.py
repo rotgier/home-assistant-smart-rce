@@ -1,17 +1,19 @@
 """NonWorkActuator — driven adapter pushing the garden non-work target to mammotion.
 
+DORMANT (2026-06-12): not wired in the factory. Phase 1 is observe-first —
+drift between the HA target and the cloud sensor only raises
+`binary_sensor.luba_non_work_drift` (alert automation notifies; no device
+writes). The cloud feed proved untrustworthy (ghost redelivered snapshots)
+and every `set_non_work_hours` consumes the 300-sends/24h MQTT budget, so
+auto-reassert returns in phase 2 only if drift data shows it is needed —
+then with a stable-mismatch debounce and a write cooldown.
+
 HA is the source of truth. The garden-owned target (`NonWorkRepository`) is
 pushed to the robot via `mammotion.set_non_work_hours`. `apply()` is state-diff:
 write only when the target differs from what the sensor currently reports. The
 mammotion integration optimistically updates that sensor after the write, so a
 no-op diff closes the loop — no own cache needed (ADR-024; contrast
 `BatteryChargeCurrentActuator`, which caches because goodwe exposes no readback).
-
-Seed + drift handling live in `NonWorkService.reconcile_from_cloud`, driven by a
-sensor state-change listener (wired in the factory). That avoids the startup
-race of a one-shot `EVENT_HOMEASSISTANT_STARTED` seed: mammotion loads slowly,
-so at HA-start the sensor is often still `None`; a listener reconciles whenever
-the sensor actually becomes available.
 """
 
 from __future__ import annotations

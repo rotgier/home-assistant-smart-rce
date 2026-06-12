@@ -20,6 +20,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from . import SmartRceConfigEntry
 from .application.ems import Ems
 from .ems_device import ems_device_info
+from .garden.binary_sensor_entities import build_binary_sensors
 
 UNIQUE_ID_PREFIX = "ems"
 
@@ -112,10 +113,11 @@ async def async_setup_entry(
     device_info = ems_device_info(entry)
     ems = entry.runtime_data.ems
 
-    sensors: list[EmsBinarySensor] = [
+    sensors: list[BinarySensorEntity] = [
         EmsBinarySensor(device_info, ems, description)
         for description in SENSOR_DESCRIPTIONS
     ]
+    sensors.extend(build_binary_sensors(entry))
 
     async_add_entities(sensors)
 

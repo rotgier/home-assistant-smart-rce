@@ -1,9 +1,12 @@
 """Garden time entities — non-work window start/end (target = HA source of truth).
 
-Two `time` entities backed by `NonWorkService` (which owns the target via repo +
-pushes it to mammotion). They subscribe to the service so any change — UI edit
-or startup seed — refreshes them. Top-level `time.py` aggregates these via
-`build_times` (Decyzja #8 contract), so garden owns its presentation.
+Two `time` entities backed by `NonWorkService` (which owns the target via the
+repo; observe-first — no device writes, drift is surfaced via
+`binary_sensor.luba_non_work_drift`). They subscribe to the service so any
+change refreshes them. First-time setup: both edges start empty; entering one
+shows as a pending value until the other completes the target. Top-level
+`time.py` aggregates these via `build_times` (Decyzja #8 contract), so garden
+owns its presentation.
 """
 
 from __future__ import annotations
