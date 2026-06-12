@@ -25,6 +25,7 @@ from custom_components.smart_rce.garden.domain.mowing_planner import (
     MowingPlanner,
     PlannerDecision,
 )
+from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
     parse_forecast_slots,
 )
@@ -89,6 +90,7 @@ class MowingPlannerService:
                 now=now,
                 slots=parse_forecast_slots(self._forecast.forecast_hourly),
                 non_work_start=self._next_non_work_start(now),
+                quiet_until=self._quiet_until(now),
             )
         )
         if decision == self._decision:
@@ -114,19 +116,48 @@ class MowingPlannerService:
             candidate += _ONE_DAY
         return candidate
 
-    def _non_work_start_time(self) -> time | None:
-        target_start = self._non_work.start
-        if target_start is not None:
-            return target_start
+    def _quiet_until(self, now: datetime) -> datetime | None:
+        """End of the quiet window when `now` is inside it, else None.
+
+        Handles the midnight-crossing window (e.g. 20:35-10:05): inside when
+        the time of day is past `start` OR before `end`.
+        """
+        hours = self._non_work_hours()
+        if hours is None:
+            return None
+        start, end = hours.start, hours.end
+        tod = now.time()
+        if start <= end:
+            inside = start <= tod < end
+        else:  # crosses midnight
+            inside = tod >= start or tod < end
+        if not inside:
+            return None
+        candidate = now.replace(
+            hour=end.hour, minute=end.minute, second=0, microsecond=0
+        )
+        if candidate < now:
+            candidate += _ONE_DAY
+        return candidate
+
+    def _non_work_hours(self) -> NonWorkHours | None:
+        """HA-owned target; cloud-sensor fallback (with warn) while unset."""
+        start, end = self._non_work.start, self._non_work.end
+        if start is not None and end is not None:
+            return NonWorkHours(start, end)
         cloud = self._non_work_fallback.read_non_work_hours()
         if cloud is not None:
             _LOGGER.warning(
                 "MowingPlannerService: non-work target unset — falling back to "
-                "cloud-reported %s (set time.luba_non_work_start/end)",
+                "cloud-reported %s-%s (set time.luba_non_work_start/end)",
                 cloud.start,
+                cloud.end,
             )
-            return cloud.start
-        return None
+        return cloud
+
+    def _non_work_start_time(self) -> time | None:
+        hours = self._non_work_hours()
+        return hours.start if hours else None
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Subscribe to decision changes; returns unsubscribe."""

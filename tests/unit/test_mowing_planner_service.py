@@ -30,6 +30,7 @@ def _service(
     at_dock: bool = True,
     forecast: list[dict] | None = None,
     target_start: time | None = time(20, 35),
+    target_end: time | None = time(10, 5),
     cloud: NonWorkHours | None = None,
     now: datetime = NOW,
 ) -> MowingPlannerService:
@@ -43,6 +44,7 @@ def _service(
     )
     non_work = MagicMock()
     non_work.start = target_start
+    non_work.end = target_end
     fallback = MagicMock()
     fallback.read_non_work_hours.return_value = cloud
     return MowingPlannerService(
@@ -110,3 +112,32 @@ def test_notifies_only_on_decision_change() -> None:
     service.recompute()  # same inputs, same minute → same decision
 
     assert len(notified) == 1
+
+
+def test_inside_quiet_hours_window_opens_at_quiet_end() -> None:
+    # 22:00, quiet 20:35-10:05 → window cannot open before tomorrow 10:05.
+    late = NOW.replace(hour=22, minute=0)
+    forecast = [
+        {
+            "datetime": (late + timedelta(hours=i)).isoformat(),
+            "precipitation_probability": 0,
+        }
+        for i in range(16)
+    ]
+    service = _service(now=late, forecast=forecast)
+
+    service.recompute()
+
+    decision = service.decision
+    assert decision is not None
+    assert decision.should_start is False  # legacy+patch parity: no night alert
+    assert decision.window_start == late.replace(hour=10, minute=5) + timedelta(days=1)
+
+
+def test_daytime_outside_quiet_hours_window_opens_now() -> None:
+    service = _service()  # 12:00, quiet 20:35-10:05 → outside
+
+    service.recompute()
+
+    assert service.decision is not None
+    assert service.decision.window_start == NOW
