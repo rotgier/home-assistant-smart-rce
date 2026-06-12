@@ -8,15 +8,19 @@ write behind a dashboard button (the actuator is state-diff, so pressing
 with no drift is a no-op and costs nothing from the 300-sends/24h budget).
 Automatic reassert remains phase 2, pending drift data.
 
-There is deliberately no seed-from-cloud: the cloud sensor serves ghost
-values (multi-day-old redelivered snapshots), so adopting its value as our
-target would consecrate garbage. The user sets the target once in the UI.
+There is deliberately no AUTOMATIC seed-from-cloud: the cloud sensor serves
+ghost values (multi-day-old redelivered snapshots), so silently adopting its
+value as our target would consecrate garbage. The only adoption is
+user-initiated and visible: editing one edge in the UI composes with the
+other edge currently displayed there (see below).
 
 `set_start`/`set_end` compose a full `NonWorkHours` from the single value a
-`time` entity supplies plus the other edge — from the current target when one
-exists, otherwise from a pending in-memory edge (first-time setup: the target
-is created when both edges have been entered; a restart mid-entry simply
-forgets the single pending edge).
+`time` entity supplies plus the other edge of `effective_hours` — i.e. exactly
+what the UI currently shows (target, or the device-reported value while the
+target is unset). Editing one edge therefore always persists a full target
+immediately (WYSIWYG, no transient pending state); with no source at all the
+other edge degenerates to the same value (zero-length window — harmless,
+visibly odd, fixed by setting the second edge).
 """
 
 from __future__ import annotations
@@ -46,8 +50,6 @@ class NonWorkService(Service[NonWorkRepository]):
     def __init__(self, repo: NonWorkRepository, actuator: NonWorkActuator) -> None:
         super().__init__(repo)
         self._actuator = actuator
-        self._pending_start: time | None = None
-        self._pending_end: time | None = None
         self._cloud: NonWorkHours | None = None
         self._fallback_warned = False
 
@@ -61,39 +63,23 @@ class NonWorkService(Service[NonWorkRepository]):
 
     @property
     def start(self) -> time | None:
-        target = self._repo.schedule.target
-        return target.start if target else self._pending_start
+        hours = self.effective_hours
+        return hours.start if hours else None
 
     @property
     def end(self) -> time | None:
-        target = self._repo.schedule.target
-        return target.end if target else self._pending_end
+        hours = self.effective_hours
+        return hours.end if hours else None
 
     async def set_start(self, start: time) -> None:
-        target = self._repo.schedule.target
-        if target is not None:
-            await self._set_target(NonWorkHours(start, target.end))
-            return
-        self._pending_start = start
-        await self._set_target_when_both_edges_pending()
+        end = self.end
+        await self._set_target(NonWorkHours(start, end if end is not None else start))
 
     async def set_end(self, end: time) -> None:
-        target = self._repo.schedule.target
-        if target is not None:
-            await self._set_target(NonWorkHours(target.start, end))
-            return
-        self._pending_end = end
-        await self._set_target_when_both_edges_pending()
-
-    async def _set_target_when_both_edges_pending(self) -> None:
-        if self._pending_start is not None and self._pending_end is not None:
-            await self._set_target(NonWorkHours(self._pending_start, self._pending_end))
-        else:
-            self._notify_all()  # reflect the lone pending edge in the UI
+        start = self.start
+        await self._set_target(NonWorkHours(start if start is not None else end, end))
 
     async def _set_target(self, hours: NonWorkHours) -> None:
-        self._pending_start = None
-        self._pending_end = None
         self._fallback_warned = False  # target known again — re-arm the warn
         await self._persist_and_notify(self._repo.schedule.set_target(hours))
 

@@ -52,29 +52,36 @@ async def test_no_change_skips_persist() -> None:
     repo.persist.assert_not_awaited()
 
 
-async def test_first_edge_is_pending_until_both_set() -> None:
+async def test_single_edge_composes_with_cloud_when_target_unset() -> None:
+    # Fresh install: editing one edge adopts the other from what the UI shows
+    # (device-reported value) and persists a full target immediately.
     service, repo, _ = _service(target=None)
-
-    await service.set_start(time(20, 35))
-
-    assert repo.schedule.target is None  # no half-target persisted
-    assert service.start == time(20, 35)  # pending edge visible in UI
-    assert service.end is None
-    repo.persist.assert_not_awaited()
+    service.update_cloud_state(GHOST)
 
     await service.set_end(time(10, 5))
 
-    assert repo.schedule.target == TARGET
+    assert repo.schedule.target == NonWorkHours(GHOST.start, time(10, 5))
     repo.persist.assert_awaited_once()
 
 
-async def test_both_pending_edges_in_end_first_order() -> None:
+async def test_single_edge_without_any_source_degenerates_to_zero_window() -> None:
     service, repo, _ = _service(target=None)
 
-    await service.set_end(time(10, 5))
     await service.set_start(time(20, 35))
 
+    assert repo.schedule.target == NonWorkHours(time(20, 35), time(20, 35))
+
+    await service.set_end(time(10, 5))
+
     assert repo.schedule.target == TARGET
+
+
+async def test_ui_shows_cloud_value_while_target_unset() -> None:
+    service, _, _ = _service(target=None)
+    service.update_cloud_state(GHOST)
+
+    assert service.start == GHOST.start
+    assert service.end == GHOST.end
 
 
 async def test_drift_false_without_target_or_cloud() -> None:
