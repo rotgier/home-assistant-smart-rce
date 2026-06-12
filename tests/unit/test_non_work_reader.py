@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
+    NonWorkReader,
     parse_non_work_state,
-    read_non_work_hours,
 )
 
 
@@ -43,13 +43,14 @@ def test_read_returns_parsed_value_from_hass_state() -> None:
     hass = MagicMock()
     hass.states.get.return_value = MagicMock(state="08:35pm - 10:05am")
 
-    assert read_non_work_hours(hass, "sensor.x") == NonWorkHours(
+    assert NonWorkReader(hass).read_non_work_hours() == NonWorkHours(
         start=time(20, 35), end=time(10, 5)
     )
+    hass.states.get.assert_called_once_with(NonWorkReader._ENTITY_ID)
 
 
 def test_read_returns_none_when_entity_missing() -> None:
     hass = MagicMock()
     hass.states.get.return_value = None
 
-    assert read_non_work_hours(hass, "sensor.x") is None
+    assert NonWorkReader(hass).read_non_work_hours() is None

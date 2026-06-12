@@ -17,21 +17,18 @@ from typing import TYPE_CHECKING
 from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
 )
-from custom_components.smart_rce.garden.const import LUBA_NON_WORK_SENSOR
 from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
-    read_non_work_hours,
+    NonWorkReader,
 )
 from custom_components.smart_rce.garden.infrastructure.non_work_repository import (
     NonWorkRepository,
 )
 from custom_components.smart_rce.infrastructure.async_task_runner import AsyncTaskRunner
 from homeassistant.core import CoreState, callback
-from homeassistant.helpers.event import async_track_state_change_event
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import Event, HomeAssistant
-    from homeassistant.helpers.event import EventStateChangedData
+    from homeassistant.core import HomeAssistant
 
 
 @dataclass
@@ -47,28 +44,23 @@ async def create_garden(hass: HomeAssistant, entry: ConfigEntry) -> Garden:
     repo = NonWorkRepository(hass, tasks)
     await repo.async_restore()
     service = NonWorkService(repo)
-    _wire_non_work_cloud_listener(hass, entry, service)
+    _wire_non_work_cloud_listener(hass, entry, NonWorkReader(hass), service)
     return Garden(non_work=service)
 
 
 def _wire_non_work_cloud_listener(
     hass: HomeAssistant,
     entry: ConfigEntry,
+    reader: NonWorkReader,
     service: NonWorkService,
 ) -> None:
     @callback
     def _update() -> None:
-        service.update_cloud_state(read_non_work_hours(hass, LUBA_NON_WORK_SENSOR))
+        service.update_cloud_state(reader.read_non_work_hours())
 
-    @callback
-    def _on_sensor_change(_event: Event[EventStateChangedData]) -> None:
-        _update()
-
-    entry.async_on_unload(
-        async_track_state_change_event(hass, [LUBA_NON_WORK_SENSOR], _on_sensor_change)
-    )
+    entry.async_on_unload(reader.subscribe(_update))
     # Reload scenario: sensor may already be available (no future state-change
-    # event), so read once now. Fresh HA start: the listener catches
+    # event), so read once now. Fresh HA start: the subscription catches
     # mammotion's load (unavailable → value).
     if hass.state is CoreState.running:
         _update()

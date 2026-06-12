@@ -20,14 +20,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
-from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
-    read_non_work_hours,
-)
+from custom_components.smart_rce.garden.const import LUBA_LAWN_MOWER
 
 if TYPE_CHECKING:
     from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
+    from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
+        NonWorkReader,
+    )
     from custom_components.smart_rce.garden.infrastructure.non_work_repository import (
         NonWorkRepository,
     )
@@ -42,18 +43,17 @@ SERVICE_SET_NON_WORK_HOURS = "set_non_work_hours"
 class NonWorkActuator:
     """Pushes the garden non-work target to mammotion (state-diff reconcile)."""
 
+    _MOWER_ID: Final[str] = LUBA_LAWN_MOWER
+
     def __init__(
         self,
         hass: HomeAssistant,
         repo: NonWorkRepository,
-        *,
-        sensor_id: str,
-        mower_id: str,
+        reader: NonWorkReader,
     ) -> None:
         self._hass = hass
         self._repo = repo
-        self._sensor_id = sensor_id
-        self._mower_id = mower_id
+        self._reader = reader
         self._lock = asyncio.Lock()
 
     async def apply(self) -> None:
@@ -62,7 +62,7 @@ class NonWorkActuator:
             target = self._repo.schedule.target
             if target is None:
                 return
-            if read_non_work_hours(self._hass, self._sensor_id) == target:
+            if self._reader.read_non_work_hours() == target:
                 return
             await self._push(target)
 
@@ -72,7 +72,7 @@ class NonWorkActuator:
             MAMMOTION_DOMAIN,
             SERVICE_SET_NON_WORK_HOURS,
             {
-                "entity_id": self._mower_id,
+                "entity_id": NonWorkActuator._MOWER_ID,
                 "start_time": target.start.isoformat(timespec="minutes"),
                 "end_time": target.end.isoformat(timespec="minutes"),
             },
