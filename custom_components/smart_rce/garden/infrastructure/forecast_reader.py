@@ -1,20 +1,46 @@
 """Forecast reader — weather.wetteronline `forecast_hourly` → garden slots.
 
-Driving-adapter parse: maps the raw HA weather forecast attribute (as exposed
-by `WeatherForecastListener.forecast_hourly`) into domain `ForecastSlot`s. Each
-hour expands to its 15-min `nowcast_15min` slots when present, otherwise becomes
-a single 60-min slot — mirroring the legacy Jinja planner's slot build.
+`ForecastReader` is the driving adapter: it owns the ems-published
+`HourlyForecastProvider` port (cross-context contract, see
+`application/hourly_forecast.py`), so the application layer never sees the
+provider — it calls `read_forecast_slots()` and subscribes via `subscribe()`.
 
-Pure (no hass): takes the raw list, returns domain VOs — testable directly.
-Past nowcast slots are already dropped at the wetteronline source.
+Mapping lives in `parse_forecast_slots` (pure, unit-tested directly): each hour
+expands to its 15-min `nowcast_15min` slots when present, otherwise becomes a
+single 60-min slot — mirroring the legacy Jinja planner's slot build. Past
+nowcast slots are already dropped at the wetteronline source.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from custom_components.smart_rce.garden.domain.forecast_window import ForecastSlot
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from custom_components.smart_rce.application.hourly_forecast import (
+        HourlyForecastProvider,
+    )
+    from homeassistant.core import CALLBACK_TYPE
+
+
+class ForecastReader:
+    """Reads + watches the hourly forecast (owns the ems-published port)."""
+
+    def __init__(self, forecast: HourlyForecastProvider) -> None:
+        self._forecast = forecast
+
+    def read_forecast_slots(self) -> list[ForecastSlot]:
+        """Return the current forecast as normalized domain slots."""
+        return parse_forecast_slots(self._forecast.forecast_hourly)
+
+    def subscribe(self, on_change: CALLBACK_TYPE) -> Callable[[], None]:
+        """Invoke `on_change` on forecast updates; returns unsubscribe."""
+        return self._forecast.async_add_listener(on_change)
+
 
 _NOWCAST_SLOT = timedelta(minutes=15)
 _HOURLY_SLOT = timedelta(minutes=60)

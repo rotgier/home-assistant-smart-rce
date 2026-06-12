@@ -8,10 +8,12 @@ sensor entities. Notifies listeners only when the decision actually changed,
 so the minutely tick is free while nothing moves.
 
 No hass and no entity ids here: telemetry comes from `LubaStateReader`,
-forecast from the ems-published `HourlyForecastProvider` Protocol (cross-context
-port, see `application/hourly_forecast.py`), quiet hours from `NonWorkService`
+forecast from `ForecastReader` (which owns the ems-published cross-context
+port), quiet hours from `NonWorkService`
 (the HA-owned target; falls back to the cloud sensor via `NonWorkReader` with a
-warning while the target is unset).
+warning while the target is unset). Source selection is the only non-work
+concern here — calendar math (next start, end of the active window) lives on
+the `NonWorkHours` domain VO and is derived inside the planner.
 """
 
 from __future__ import annotations
@@ -26,20 +28,17 @@ from custom_components.smart_rce.garden.domain.mowing_planner import (
     PlannerDecision,
 )
 from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
-from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
-    parse_forecast_slots,
-)
 from homeassistant.core import callback
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime, time
+    from datetime import datetime
 
-    from custom_components.smart_rce.application.hourly_forecast import (
-        HourlyForecastProvider,
-    )
     from custom_components.smart_rce.garden.application.non_work_service import (
         NonWorkService,
+    )
+    from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
+        ForecastReader,
     )
     from custom_components.smart_rce.garden.infrastructure.luba_state_reader import (
         LubaStateReader,
@@ -59,7 +58,7 @@ class MowingPlannerService:
     def __init__(
         self,
         luba: LubaStateReader,
-        forecast: HourlyForecastProvider,
+        forecast: ForecastReader,
         non_work: NonWorkService,
         non_work_fallback: NonWorkReader,
         now_provider: Callable[[], datetime],
@@ -88,9 +87,8 @@ class MowingPlannerService:
                 progress=self._luba.read_progress(),
                 at_dock=self._luba.read_at_dock(),
                 now=now,
-                slots=parse_forecast_slots(self._forecast.forecast_hourly),
-                non_work_start=self._next_non_work_start(now),
-                quiet_until=self._quiet_until(now),
+                slots=self._forecast.read_forecast_slots(),
+                non_work=self._non_work_hours(),
             )
         )
         if decision == self._decision:
@@ -98,47 +96,6 @@ class MowingPlannerService:
         self._decision = decision
         for listener in list(self._listeners):
             listener()
-
-    def _next_non_work_start(self, now: datetime) -> datetime | None:
-        """Upcoming quiet-hours start: today at `start`, or tomorrow if past.
-
-        Prefers the HA-owned target (garden 2a); falls back to the cloud sensor
-        while the target is unset (fresh install) — with a warning, since the
-        cloud value is the untrusted side.
-        """
-        start = self._non_work_start_time()
-        if start is None:
-            return None
-        candidate = now.replace(
-            hour=start.hour, minute=start.minute, second=0, microsecond=0
-        )
-        if candidate < now:
-            candidate += _ONE_DAY
-        return candidate
-
-    def _quiet_until(self, now: datetime) -> datetime | None:
-        """End of the quiet window when `now` is inside it, else None.
-
-        Handles the midnight-crossing window (e.g. 20:35-10:05): inside when
-        the time of day is past `start` OR before `end`.
-        """
-        hours = self._non_work_hours()
-        if hours is None:
-            return None
-        start, end = hours.start, hours.end
-        tod = now.time()
-        if start <= end:
-            inside = start <= tod < end
-        else:  # crosses midnight
-            inside = tod >= start or tod < end
-        if not inside:
-            return None
-        candidate = now.replace(
-            hour=end.hour, minute=end.minute, second=0, microsecond=0
-        )
-        if candidate < now:
-            candidate += _ONE_DAY
-        return candidate
 
     def _non_work_hours(self) -> NonWorkHours | None:
         """HA-owned target; cloud-sensor fallback (with warn) while unset."""
@@ -154,10 +111,6 @@ class MowingPlannerService:
                 cloud.end,
             )
         return cloud
-
-    def _non_work_start_time(self) -> time | None:
-        hours = self._non_work_hours()
-        return hours.start if hours else None
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Subscribe to decision changes; returns unsubscribe."""

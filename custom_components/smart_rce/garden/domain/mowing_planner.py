@@ -21,6 +21,7 @@ from custom_components.smart_rce.garden.domain.forecast_window import (
     ForecastWindow,
     WindowBound,
 )
+from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 
 
 class MowingPlanner:
@@ -39,9 +40,13 @@ class MowingPlanner:
         # Jinja missed this (it only clipped to the NEXT quiet start) and was
         # patched with a time-of-day condition on the alert automation; the
         # domain handles it properly instead.
-        from_moment = max(inp.now, inp.quiet_until) if inp.quiet_until else inp.now
+        non_work_start = inp.non_work.next_start(inp.now) if inp.non_work else None
+        quiet_until = (
+            inp.non_work.end_of_active_window(inp.now) if inp.non_work else None
+        )
+        from_moment = max(inp.now, quiet_until) if quiet_until else inp.now
         window = ForecastWindow.from_slots(
-            inp.slots, from_moment, inp.non_work_start, self.RAIN_PROB
+            inp.slots, from_moment, non_work_start, self.RAIN_PROB
         )
         time_to_drain = self._time_to_drain(inp.battery)
         time_to_finish = self._time_to_finish(inp.progress, time_to_drain)
@@ -115,8 +120,7 @@ class MowingInput:
     at_dock: bool
     now: datetime
     slots: list[ForecastSlot]
-    non_work_start: datetime | None
-    quiet_until: datetime | None = None  # quiet hours active now → their end
+    non_work: NonWorkHours | None  # planner derives next start / active end
 
 
 @dataclass(frozen=True)

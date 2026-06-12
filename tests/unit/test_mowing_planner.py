@@ -1,7 +1,7 @@
 """Unit tests for the garden mowing planner domain (parity with legacy Jinja)."""
 
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 import json
 
 from custom_components.smart_rce.garden.domain.forecast_window import (
@@ -14,6 +14,7 @@ from custom_components.smart_rce.garden.domain.mowing_planner import (
     PlannerDecision,
     StartStrategy,
 )
+from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 
 NOW = datetime(2026, 6, 9, 12, 0, tzinfo=UTC)
 
@@ -38,7 +39,7 @@ def _decide(**kwargs: object) -> PlannerDecision:
         "at_dock": True,
         "now": NOW,
         "slots": _dry_hours(6),
-        "non_work_start": NOW + timedelta(hours=5),
+        "non_work": NonWorkHours(time(17, 0), time(10, 0)),
     }
     defaults.update(kwargs)
     return MowingPlanner().decide(MowingInput(**defaults))  # type: ignore[arg-type]
@@ -124,7 +125,7 @@ def test_no_slot_covering_now_treated_as_dry() -> None:
     # Only a past slot exists → nothing covers now → dry; no future rain →
     # window clipped to non-work (5h, longer than needed → lazy).
     slots = [_slot(-60, 80)]
-    d = _decide(slots=slots, non_work_start=NOW + timedelta(hours=5))
+    d = _decide(slots=slots, non_work=NonWorkHours(time(17, 0), time(10, 0)))
 
     assert d.window_start == NOW
     assert d.deadline == NOW + timedelta(hours=5)

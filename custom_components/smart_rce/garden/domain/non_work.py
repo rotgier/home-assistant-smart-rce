@@ -7,8 +7,10 @@ source of truth); `NonWorkHours` is the immutable value it carries.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import time
+from datetime import datetime, time, timedelta
 from typing import Any
+
+_ONE_DAY = timedelta(days=1)
 
 
 @dataclass
@@ -53,3 +55,28 @@ class NonWorkHours:
 
     start: time
     end: time
+
+    def next_start(self, now: datetime) -> datetime:
+        """Upcoming quiet-window start: today at `start`, or tomorrow if past."""
+        candidate = self._at(now, self.start)
+        return candidate if candidate >= now else candidate + _ONE_DAY
+
+    def end_of_active_window(self, now: datetime) -> datetime | None:
+        """When the currently-active quiet window ends; None when not inside.
+
+        Handles the midnight-crossing window (start > end): inside when the
+        time of day is past `start` OR before `end`.
+        """
+        tod = now.time()
+        if self.start <= self.end:
+            inside = self.start <= tod < self.end
+        else:
+            inside = tod >= self.start or tod < self.end
+        if not inside:
+            return None
+        candidate = self._at(now, self.end)
+        return candidate if candidate >= now else candidate + _ONE_DAY
+
+    @staticmethod
+    def _at(now: datetime, tod: time) -> datetime:
+        return now.replace(hour=tod.hour, minute=tod.minute, second=0, microsecond=0)

@@ -25,6 +25,9 @@ from custom_components.smart_rce.garden.application.mowing_planner_service impor
 from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
 )
+from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
+    ForecastReader,
+)
 from custom_components.smart_rce.garden.infrastructure.luba_state_reader import (
     LubaStateReader,
 )
@@ -71,8 +74,9 @@ async def create_garden(
     service = NonWorkService(repo, NonWorkActuator(hass, repo, reader))
     _wire_non_work_cloud_listener(hass, entry, reader, service)
     luba = LubaStateReader(hass)
-    mowing = MowingPlannerService(luba, forecast, service, reader, dt_util.now)
-    _wire_mowing_recompute(hass, entry, luba, forecast, service, mowing)
+    forecast_reader = ForecastReader(forecast)
+    mowing = MowingPlannerService(luba, forecast_reader, service, reader, dt_util.now)
+    _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, mowing)
     return Garden(non_work=service, mowing=mowing)
 
 
@@ -80,13 +84,13 @@ def _wire_mowing_recompute(
     hass: HomeAssistant,
     entry: ConfigEntry,
     luba: LubaStateReader,
-    forecast: HourlyForecastProvider,
+    forecast: ForecastReader,
     non_work: NonWorkService,
     mowing: MowingPlannerService,
 ) -> None:
     """Recompute on every input change + a 1-minute tick (time is an input)."""
     entry.async_on_unload(luba.subscribe(mowing.recompute))
-    entry.async_on_unload(forecast.async_add_listener(mowing.recompute))
+    entry.async_on_unload(forecast.subscribe(mowing.recompute))
     entry.async_on_unload(non_work.add_listener(mowing.recompute))
     entry.async_on_unload(
         async_track_time_interval(hass, lambda _now: mowing.recompute(), _PLANNER_TICK)
