@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .. import SmartRceConfigEntry
+from ..garden.sensor_entities import build_sensors as build_garden_sensors
 from .ems_sensor import EMS_SENSOR_DESCRIPTIONS, EmsSensor
 from .energy_balance_sensor import ENERGY_BALANCE_DESCRIPTIONS, EnergyBalanceSensor
 from .rce_sensor import SENSOR_DESCRIPTIONS, SmartRceSensor
@@ -86,5 +87,7 @@ async def async_setup_entry(
         EmsSensor(entry.entry_id, ems, description)
         for description in EMS_SENSOR_DESCRIPTIONS
     )
+
+    sensors.extend(build_garden_sensors(entry))
 
     async_add_entities(sensors)

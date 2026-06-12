@@ -94,7 +94,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         hass, pv_forecast, realized_pv_loader
     )
 
-    garden = await create_garden(hass, entry)
+    # Cross-context port (factory-level integration): ems's listener satisfies
+    # the application HourlyForecastProvider Protocol consumed by garden.
+    garden = await create_garden(hass, entry, weather_listener)
 
     await rce_coordinator.async_config_entry_first_refresh()
 

@@ -1,10 +1,15 @@
-"""Garden binary sensors — non-work drift (cloud vs HA target).
+"""Garden binary sensors — non-work drift + mowing should-start.
 
 `binary_sensor.luba_non_work_drift` turns on when the mammotion non-work
 sensor reports a different window than the user-set target (observe-first:
 the alert automation notifies; nothing is written to the device). Off when
-either side is unknown. Top-level `binary_sensor.py` aggregates these via
-`build_binary_sensors`, so garden owns its presentation.
+either side is unknown.
+
+`binary_sensor.mowing_should_start` mirrors `PlannerDecision.should_start`
+(garden 2b) — the trigger entity for the "Puść Lubę" alert automation.
+
+Top-level `binary_sensor.py` aggregates these via `build_binary_sensors`,
+so garden owns its presentation.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ if TYPE_CHECKING:
 
 def build_binary_sensors(entry: SmartRceConfigEntry) -> list[BinarySensorEntity]:
     """Garden binary sensors for top-level `binary_sensor.py` to add."""
-    return [LubaNonWorkDriftBinarySensor(entry)]
+    return [LubaNonWorkDriftBinarySensor(entry), MowingShouldStartBinarySensor(entry)]
 
 
 class LubaNonWorkDriftBinarySensor(BinarySensorEntity):
@@ -67,3 +72,27 @@ class LubaNonWorkDriftBinarySensor(BinarySensorEntity):
                 else None
             ),
         }
+
+
+class MowingShouldStartBinarySensor(BinarySensorEntity):
+    """On when the mowing planner says: start Luba now."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Mowing Should Start"
+    _attr_should_poll = False
+    _attr_icon = "mdi:robot-mower"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._service = entry.runtime_data.garden.mowing
+        self._attr_unique_id = f"{DOMAIN}_mowing_should_start"
+        self.entity_id = "binary_sensor.mowing_should_start"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def is_on(self) -> bool:
+        decision = self._service.decision
+        return decision.should_start if decision else False
