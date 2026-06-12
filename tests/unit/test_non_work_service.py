@@ -47,7 +47,7 @@ async def test_set_end_composes_with_existing_start() -> None:
 async def test_no_change_skips_persist() -> None:
     service, repo, _ = _service()
 
-    await service.set_target(TARGET)  # identical
+    await service.set_start(TARGET.start)  # identical to current target
 
     repo.persist.assert_not_awaited()
 
@@ -121,3 +121,23 @@ async def test_push_to_device_delegates_to_actuator() -> None:
     await service.push_to_device()
 
     actuator.apply.assert_awaited_once()
+
+
+async def test_effective_hours_prefers_target_over_cloud() -> None:
+    service, _, _ = _service()
+    service.update_cloud_state(GHOST)
+
+    assert service.effective_hours == TARGET
+
+
+async def test_effective_hours_falls_back_to_cloud_when_target_unset() -> None:
+    service, _, _ = _service(target=None)
+    service.update_cloud_state(GHOST)
+
+    assert service.effective_hours == GHOST
+
+
+async def test_effective_hours_none_without_any_source() -> None:
+    service, _, _ = _service(target=None)
+
+    assert service.effective_hours is None

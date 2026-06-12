@@ -9,25 +9,20 @@ so the minutely tick is free while nothing moves.
 
 No hass and no entity ids here: telemetry comes from `LubaStateReader`,
 forecast from `ForecastReader` (which owns the ems-published cross-context
-port), quiet hours from `NonWorkService`
-(the HA-owned target; falls back to the cloud sensor via `NonWorkReader` with a
-warning while the target is unset). Source selection is the only non-work
-concern here — calendar math (next start, end of the active window) lives on
-the `NonWorkHours` domain VO and is derived inside the planner.
+port), quiet hours from `NonWorkService.effective_hours` (target-or-cloud
+source selection is NonWorkService's concern; calendar math lives on the
+`NonWorkHours` domain VO and is derived inside the planner).
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
-import logging
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.garden.domain.mowing_planner import (
     MowingInput,
     MowingPlanner,
     PlannerDecision,
 )
-from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 from homeassistant.core import callback
 
 if TYPE_CHECKING:
@@ -43,13 +38,6 @@ if TYPE_CHECKING:
     from custom_components.smart_rce.garden.infrastructure.luba_state_reader import (
         LubaStateReader,
     )
-    from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
-        NonWorkReader,
-    )
-
-_LOGGER = logging.getLogger(__name__)
-
-_ONE_DAY: Final = timedelta(days=1)
 
 
 class MowingPlannerService:
@@ -60,14 +48,12 @@ class MowingPlannerService:
         luba: LubaStateReader,
         forecast: ForecastReader,
         non_work: NonWorkService,
-        non_work_fallback: NonWorkReader,
         now_provider: Callable[[], datetime],
     ) -> None:
         self._planner = MowingPlanner()
         self._luba = luba
         self._forecast = forecast
         self._non_work = non_work
-        self._non_work_fallback = non_work_fallback
         self._now = now_provider
         self._decision: PlannerDecision | None = None
         self._listeners: list[Callable[[], None]] = []
@@ -88,7 +74,7 @@ class MowingPlannerService:
                 at_dock=self._luba.read_at_dock(),
                 now=now,
                 slots=self._forecast.read_forecast_slots(),
-                non_work=self._non_work_hours(),
+                non_work=self._non_work.effective_hours,
             )
         )
         if decision == self._decision:
@@ -96,21 +82,6 @@ class MowingPlannerService:
         self._decision = decision
         for listener in list(self._listeners):
             listener()
-
-    def _non_work_hours(self) -> NonWorkHours | None:
-        """HA-owned target; cloud-sensor fallback (with warn) while unset."""
-        start, end = self._non_work.start, self._non_work.end
-        if start is not None and end is not None:
-            return NonWorkHours(start, end)
-        cloud = self._non_work_fallback.read_non_work_hours()
-        if cloud is not None:
-            _LOGGER.warning(
-                "MowingPlannerService: non-work target unset — falling back to "
-                "cloud-reported %s-%s (set time.luba_non_work_start/end)",
-                cloud.start,
-                cloud.end,
-            )
-        return cloud
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Subscribe to decision changes; returns unsubscribe."""

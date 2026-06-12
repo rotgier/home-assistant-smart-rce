@@ -75,7 +75,7 @@ async def create_garden(
     _wire_non_work_cloud_listener(hass, entry, reader, service)
     luba = LubaStateReader(hass)
     forecast_reader = ForecastReader(forecast)
-    mowing = MowingPlannerService(luba, forecast_reader, service, reader, dt_util.now)
+    mowing = MowingPlannerService(luba, forecast_reader, service, dt_util.now)
     _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, mowing)
     return Garden(non_work=service, mowing=mowing)
 

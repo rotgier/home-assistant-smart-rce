@@ -21,6 +21,7 @@ forgets the single pending edge).
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.application.service import Service
@@ -36,6 +37,8 @@ if TYPE_CHECKING:
         NonWorkActuator,
     )
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class NonWorkService(Service[NonWorkRepository]):
     """Owns non-work target mutations + drift detection against the cloud."""
@@ -46,6 +49,7 @@ class NonWorkService(Service[NonWorkRepository]):
         self._pending_start: time | None = None
         self._pending_end: time | None = None
         self._cloud: NonWorkHours | None = None
+        self._fallback_warned = False
 
     async def push_to_device(self) -> None:
         """User-initiated write of the target to mammotion (dashboard button).
@@ -68,7 +72,7 @@ class NonWorkService(Service[NonWorkRepository]):
     async def set_start(self, start: time) -> None:
         target = self._repo.schedule.target
         if target is not None:
-            await self.set_target(NonWorkHours(start, target.end))
+            await self._set_target(NonWorkHours(start, target.end))
             return
         self._pending_start = start
         await self._set_target_when_both_edges_pending()
@@ -76,21 +80,43 @@ class NonWorkService(Service[NonWorkRepository]):
     async def set_end(self, end: time) -> None:
         target = self._repo.schedule.target
         if target is not None:
-            await self.set_target(NonWorkHours(target.start, end))
+            await self._set_target(NonWorkHours(target.start, end))
             return
         self._pending_end = end
         await self._set_target_when_both_edges_pending()
 
     async def _set_target_when_both_edges_pending(self) -> None:
         if self._pending_start is not None and self._pending_end is not None:
-            await self.set_target(NonWorkHours(self._pending_start, self._pending_end))
+            await self._set_target(NonWorkHours(self._pending_start, self._pending_end))
         else:
             self._notify_all()  # reflect the lone pending edge in the UI
 
-    async def set_target(self, hours: NonWorkHours) -> None:
+    async def _set_target(self, hours: NonWorkHours) -> None:
         self._pending_start = None
         self._pending_end = None
+        self._fallback_warned = False  # target known again — re-arm the warn
         await self._persist_and_notify(self._repo.schedule.set_target(hours))
+
+    @property
+    def effective_hours(self) -> NonWorkHours | None:
+        """Quiet window for consumers (planner): target, or cloud fallback.
+
+        Prefers the HA-owned target; while it is unset (fresh install) falls
+        back to the cloud-reported value — warned once, since the cloud side
+        is the untrusted one.
+        """
+        target = self._repo.schedule.target
+        if target is not None:
+            return target
+        if self._cloud is not None and not self._fallback_warned:
+            self._fallback_warned = True
+            _LOGGER.warning(
+                "NonWorkService: target unset — consumers fall back to "
+                "cloud-reported %s-%s (set time.luba_non_work_start/end)",
+                self._cloud.start,
+                self._cloud.end,
+            )
+        return self._cloud
 
     @property
     def drift(self) -> bool:
