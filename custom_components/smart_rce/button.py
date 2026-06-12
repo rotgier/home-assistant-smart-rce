@@ -20,6 +20,7 @@ from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .domain.battery_schedule import Direction
 from .ems_device import ems_device_info
+from .garden.button_entities import build_buttons
 
 PARALLEL_UPDATES = 1
 
@@ -38,6 +39,7 @@ async def async_setup_entry(
             OneShotCancelButton(entry, direction=Direction.DISCHARGE),
             OneShotExecuteButton(entry, direction=Direction.CHARGE),
             OneShotCancelButton(entry, direction=Direction.CHARGE),
+            *build_buttons(entry),
         ]
     )
 

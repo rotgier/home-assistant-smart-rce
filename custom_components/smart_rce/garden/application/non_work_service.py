@@ -2,9 +2,11 @@
 
 Mediates UI (time entities) ↔ repository and tracks drift against the
 mammotion cloud sensor. Observe-first design (2026-06-12): HA never writes
-to the device — drift is only *reported* (binary sensor → Telegram alert).
-The dormant `NonWorkActuator` returns in phase 2 (auto-reassert) once drift
-data proves the cloud feed is trustworthy enough.
+to the device on its own — drift is only *reported* (binary sensor →
+Telegram alert). The one exception is `push_to_device()`, a user-initiated
+write behind a dashboard button (the actuator is state-diff, so pressing
+with no drift is a no-op and costs nothing from the 300-sends/24h budget).
+Automatic reassert remains phase 2, pending drift data.
 
 There is deliberately no seed-from-cloud: the cloud sensor serves ghost
 values (multi-day-old redelivered snapshots), so adopting its value as our
@@ -30,15 +32,28 @@ from custom_components.smart_rce.garden.infrastructure.non_work_repository impor
 if TYPE_CHECKING:
     from datetime import time
 
+    from custom_components.smart_rce.garden.infrastructure.non_work_actuator import (
+        NonWorkActuator,
+    )
+
 
 class NonWorkService(Service[NonWorkRepository]):
     """Owns non-work target mutations + drift detection against the cloud."""
 
-    def __init__(self, repo: NonWorkRepository) -> None:
+    def __init__(self, repo: NonWorkRepository, actuator: NonWorkActuator) -> None:
         super().__init__(repo)
+        self._actuator = actuator
         self._pending_start: time | None = None
         self._pending_end: time | None = None
         self._cloud: NonWorkHours | None = None
+
+    async def push_to_device(self) -> None:
+        """User-initiated write of the target to mammotion (dashboard button).
+
+        Delegates to the state-diff actuator: no target or device already in
+        sync → no-op, no cloud send.
+        """
+        await self._actuator.apply()
 
     @property
     def start(self) -> time | None:

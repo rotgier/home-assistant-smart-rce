@@ -15,15 +15,19 @@ TARGET = NonWorkHours(time(20, 35), time(10, 5))
 GHOST = NonWorkHours(time(4, 31), time(20, 49))
 
 
-def _service(target: NonWorkHours | None = TARGET) -> tuple[NonWorkService, MagicMock]:
+def _service(
+    target: NonWorkHours | None = TARGET,
+) -> tuple[NonWorkService, MagicMock, MagicMock]:
     repo = MagicMock()
     repo.schedule = NonWorkSchedule(target)
     repo.persist = AsyncMock()
-    return NonWorkService(repo), repo
+    actuator = MagicMock()
+    actuator.apply = AsyncMock()
+    return NonWorkService(repo, actuator), repo, actuator
 
 
 async def test_set_start_composes_with_existing_end() -> None:
-    service, repo = _service()
+    service, repo, _ = _service()
 
     await service.set_start(time(21, 0))
 
@@ -32,7 +36,7 @@ async def test_set_start_composes_with_existing_end() -> None:
 
 
 async def test_set_end_composes_with_existing_start() -> None:
-    service, repo = _service()
+    service, repo, _ = _service()
 
     await service.set_end(time(9, 0))
 
@@ -41,7 +45,7 @@ async def test_set_end_composes_with_existing_start() -> None:
 
 
 async def test_no_change_skips_persist() -> None:
-    service, repo = _service()
+    service, repo, _ = _service()
 
     await service.set_target(TARGET)  # identical
 
@@ -49,7 +53,7 @@ async def test_no_change_skips_persist() -> None:
 
 
 async def test_first_edge_is_pending_until_both_set() -> None:
-    service, repo = _service(target=None)
+    service, repo, _ = _service(target=None)
 
     await service.set_start(time(20, 35))
 
@@ -65,7 +69,7 @@ async def test_first_edge_is_pending_until_both_set() -> None:
 
 
 async def test_both_pending_edges_in_end_first_order() -> None:
-    service, repo = _service(target=None)
+    service, repo, _ = _service(target=None)
 
     await service.set_end(time(10, 5))
     await service.set_start(time(20, 35))
@@ -74,18 +78,18 @@ async def test_both_pending_edges_in_end_first_order() -> None:
 
 
 async def test_drift_false_without_target_or_cloud() -> None:
-    service, _ = _service(target=None)
+    service, _, _ = _service(target=None)
     assert service.drift is False  # no target, no cloud
 
     service.update_cloud_state(GHOST)
     assert service.drift is False  # cloud known, target still unset
 
-    service_with_target, _ = _service()
+    service_with_target, _, _ = _service()
     assert service_with_target.drift is False  # target known, cloud unknown
 
 
 async def test_drift_tracks_cloud_vs_target() -> None:
-    service, repo = _service()
+    service, repo, _ = _service()
 
     service.update_cloud_state(TARGET)
     assert service.drift is False
@@ -101,7 +105,7 @@ async def test_drift_tracks_cloud_vs_target() -> None:
 
 
 async def test_update_cloud_state_notifies_only_on_change() -> None:
-    service, _ = _service()
+    service, _, _ = _service()
     notified = []
     service.add_listener(lambda: notified.append(1))
 
@@ -109,3 +113,11 @@ async def test_update_cloud_state_notifies_only_on_change() -> None:
     service.update_cloud_state(GHOST)  # same value — no second notify
 
     assert len(notified) == 1
+
+
+async def test_push_to_device_delegates_to_actuator() -> None:
+    service, _, actuator = _service()
+
+    await service.push_to_device()
+
+    actuator.apply.assert_awaited_once()

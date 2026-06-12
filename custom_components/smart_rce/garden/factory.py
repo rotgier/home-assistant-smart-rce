@@ -4,7 +4,8 @@ Modular per ADR-024: garden owns its factory (unlike `ems_factory` at repo root,
 since ems is still flat). v1 wires non-work ownership only — repo (restored) +
 service, plus a listener on the mammotion non_work sensor that feeds
 `NonWorkService.update_cloud_state` (drift detection; observe-first — no seed,
-no device writes; `NonWorkActuator` stays dormant until phase 2). The listener
+no automatic writes; `NonWorkActuator` fires only via the user's dashboard
+push button until phase 2). The listener
 fires whenever the sensor changes, so it works regardless of mammotion's
 startup timing. Mowing planner (2b) joins here.
 """
@@ -16,6 +17,9 @@ from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
+)
+from custom_components.smart_rce.garden.infrastructure.non_work_actuator import (
+    NonWorkActuator,
 )
 from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
     NonWorkReader,
@@ -43,8 +47,9 @@ async def create_garden(hass: HomeAssistant, entry: ConfigEntry) -> Garden:
     tasks = AsyncTaskRunner(hass, entry)
     repo = NonWorkRepository(hass, tasks)
     await repo.async_restore()
-    service = NonWorkService(repo)
-    _wire_non_work_cloud_listener(hass, entry, NonWorkReader(hass), service)
+    reader = NonWorkReader(hass)
+    service = NonWorkService(repo, NonWorkActuator(hass, repo, reader))
+    _wire_non_work_cloud_listener(hass, entry, reader, service)
     return Garden(non_work=service)
 
 

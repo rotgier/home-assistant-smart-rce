@@ -1,12 +1,13 @@
 """NonWorkActuator — driven adapter pushing the garden non-work target to mammotion.
 
-DORMANT (2026-06-12): not wired in the factory. Phase 1 is observe-first —
-drift between the HA target and the cloud sensor only raises
-`binary_sensor.luba_non_work_drift` (alert automation notifies; no device
-writes). The cloud feed proved untrustworthy (ghost redelivered snapshots)
-and every `set_non_work_hours` consumes the 300-sends/24h MQTT budget, so
-auto-reassert returns in phase 2 only if drift data shows it is needed —
-then with a stable-mismatch debounce and a write cooldown.
+Phase 1.5 (2026-06-12): fired ONLY by the user's dashboard push button
+(`NonWorkService.push_to_device`) — no automatic writes. Drift between the
+HA target and the cloud sensor only raises `binary_sensor.luba_non_work_drift`
+(alert automation notifies). The cloud feed proved untrustworthy (ghost
+redelivered snapshots) and every `set_non_work_hours` consumes the
+300-sends/24h MQTT budget, so auto-reassert returns in phase 2 only if drift
+data shows it is needed — then with a stable-mismatch debounce and a write
+cooldown.
 
 HA is the source of truth. The garden-owned target (`NonWorkRepository`) is
 pushed to the robot via `mammotion.set_non_work_hours`. `apply()` is state-diff:
