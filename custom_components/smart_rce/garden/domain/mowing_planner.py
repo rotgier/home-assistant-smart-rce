@@ -5,8 +5,9 @@ Pure domain (no hass). Mirrors the legacy Jinja `sensor.luba_mowing_planner`.
 
 Two start strategies once a usable window exists:
 - ASAP: window shorter than needed → start now, mow what we can before rain.
-- LAZY: window long enough → start late so we finish near the window end (mow
-  on the freshest forecast, minimize weather-change risk).
+- GO: window fits the job → start late enough to finish END_BUFFER before the
+  window closes (a safety buffer against rain arriving earlier than forecast),
+  clamped to the window open so a tight window just starts now.
 """
 
 from __future__ import annotations
@@ -97,7 +98,14 @@ class MowingPlanner:
             return StartStrategy.SKIP_SHORT_WINDOW, None, win_min
         if win_min < needed:
             return StartStrategy.ASAP, window.start, win_min
-        return StartStrategy.LAZY, window.end - timedelta(minutes=needed), win_min
+        # Window fits the job: start late enough to finish END_BUFFER before the
+        # window closes (buffer against rain earlier than forecast), but never
+        # before the window opens — a tight (needed..needed+buffer) window just
+        # starts at the open.
+        opt_start = max(
+            window.start, window.end - timedelta(minutes=needed) - self.END_BUFFER
+        )
+        return StartStrategy.GO, opt_start, win_min
 
     def _should_start(
         self, inp: MowingInput, window: ForecastWindow, opt_start: datetime | None
@@ -158,4 +166,4 @@ class StartStrategy(StrEnum):
     NO_WINDOW = "no_window"
     SKIP_SHORT_WINDOW = "skip_short_window"
     ASAP = "asap"
-    LAZY = "lazy"
+    GO = "go"

@@ -59,17 +59,32 @@ def test_rain_window_asap_starts_now() -> None:
     assert d.should_start is True
 
 
-def test_long_window_lazy_start_not_yet() -> None:
-    # Dry all day, window clipped to non-work: window (300) >= needed → lazy
-    # start at end-needed, still in the future → don't start yet.
+def test_long_window_go_start_not_yet() -> None:
+    # Dry all day, window clipped to non-work: window (300) >= needed → GO,
+    # start at end-needed-END_BUFFER (finish 10 min before close), still in the
+    # future → don't start yet.
     d = _decide()
 
-    assert d.strategy is StartStrategy.LAZY
+    assert d.strategy is StartStrategy.GO
     assert d.window_bound is WindowBound.NON_WORK
     assert d.needed_min == 71
     assert d.time_to_finish_min == 138
-    assert d.opt_start == NOW + timedelta(hours=5) - timedelta(minutes=71)
+    assert d.opt_start == NOW + timedelta(hours=5) - timedelta(minutes=71 + 10)
     assert d.should_start is False
+
+
+def test_tight_window_go_starts_at_open() -> None:
+    # Window just over `needed` (no room for the 10-min finish buffer) → GO
+    # clamps opt_start to the window open, i.e. start now.
+    # battery 54 → drain 71 min; rain at +80 min → window 80 >= needed 71.
+    slots = [_slot(i * 15, 0) for i in range(6)] + [_slot(80, 60)]
+    d = _decide(slots=slots)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.needed_min == 71
+    assert d.window_min == 80
+    assert d.opt_start == NOW  # clamped to window open (80 < 71+10)
+    assert d.should_start is True
 
 
 def test_short_window_skipped() -> None:
@@ -123,7 +138,7 @@ def test_wet_now_window_starts_at_next_dry_slot() -> None:
 
 def test_no_slot_covering_now_treated_as_dry() -> None:
     # Only a past slot exists → nothing covers now → dry; no future rain →
-    # window clipped to non-work (5h, longer than needed → lazy).
+    # window clipped to non-work (5h, longer than needed → GO).
     slots = [_slot(-60, 80)]
     d = _decide(slots=slots, non_work=NonWorkHours(time(17, 0), time(10, 0)))
 
@@ -154,7 +169,7 @@ def test_decision_serializes_for_ha_attributes() -> None:
     d = _decide()
     payload = asdict(d)
 
-    assert payload["strategy"] == "lazy"
+    assert payload["strategy"] == "go"
     assert payload["window_bound"] == "non_work"
     text = json.dumps(payload, default=str)
-    assert '"strategy": "lazy"' in text
+    assert '"strategy": "go"' in text
