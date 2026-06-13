@@ -68,7 +68,7 @@ def test_non_work_target_clips_window_today() -> None:
     service.recompute()
 
     assert service.decision is not None
-    assert service.decision.deadline == NOW.replace(hour=20, minute=35)
+    assert service.decision.window_end == NOW.replace(hour=20, minute=35)
 
 
 def test_non_work_start_rolls_to_tomorrow_when_past() -> None:
@@ -78,7 +78,7 @@ def test_non_work_start_rolls_to_tomorrow_when_past() -> None:
     service.recompute()
 
     assert service.decision is not None
-    assert service.decision.deadline == late.replace(hour=20, minute=35) + timedelta(
+    assert service.decision.window_end == late.replace(hour=20, minute=35) + timedelta(
         days=1
     )
 
@@ -91,7 +91,7 @@ def test_effective_hours_drive_the_window() -> None:
     service.recompute()
 
     assert service.decision is not None
-    assert service.decision.deadline == NOW.replace(hour=19, minute=0)
+    assert service.decision.window_end == NOW.replace(hour=19, minute=0)
 
 
 def test_no_non_work_source_means_unbounded_window() -> None:

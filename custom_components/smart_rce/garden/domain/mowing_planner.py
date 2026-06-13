@@ -3,11 +3,15 @@
 Decides from battery, task progress, dock state and the forecast window.
 Pure domain (no hass). Mirrors the legacy Jinja `sensor.luba_mowing_planner`.
 
-Two start strategies once a usable window exists:
-- ASAP: window shorter than needed → start now, mow what we can before rain.
-- GO: window fits the job → start late enough to finish END_BUFFER before the
-  window closes (a safety buffer against rain arriving earlier than forecast),
-  clamped to the window open so a tight window just starts now.
+Start strategies once a usable window exists:
+- ASAP: window shorter than what we could mow → start now, grab what we can
+  before rain (battery- or rain-bound, whichever is shorter).
+- WAIT_BATTERY: window fits the task but the battery would not outlast it by
+  BATTERY_RESERVE_MIN → stay docked and charge (flips to GO as it charges; a
+  task too big for one charge is left to Luba's own post-charge auto-resume).
+- GO: window fits AND battery finishes the task with reserve → start late
+  enough to finish END_BUFFER before the window closes (buffer against rain
+  earlier than forecast), clamped to the window open so a tight window starts now.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ class MowingPlanner:
     WIN_MIN: Final = 30  # shortest worthwhile window (minutes)
     RAIN_PROB: Final = 50  # precipitation probability threshold (%)
     END_BUFFER: Final = timedelta(minutes=10)  # need >10 min left to start
+    BATTERY_RESERVE_MIN: Final = 10  # battery must outlast the task by this (min)
 
     def decide(self, inp: MowingInput) -> PlannerDecision:
         # The window cannot open before the latest of: now, the end of an
@@ -57,13 +62,15 @@ class MowingPlanner:
         time_to_finish = self._time_to_finish(inp.progress, time_to_drain)
         needed = min(time_to_drain, time_to_finish)
 
-        strategy, opt_start, win_min = self._resolve_start(window, needed)
+        strategy, opt_start, win_min = self._resolve_start(
+            window, time_to_finish, time_to_drain
+        )
         should = self._should_start(inp, window, opt_start)
 
         return PlannerDecision(
             should_start=should,
             window_start=window.start,
-            deadline=window.end,
+            window_end=window.end,
             opt_start=opt_start,
             window_bound=window.bound,
             strategy=strategy,
@@ -87,7 +94,7 @@ class MowingPlanner:
         return round((100 - progress) / self.PROGRESS_RATE)
 
     def _resolve_start(
-        self, window: ForecastWindow, needed: int
+        self, window: ForecastWindow, finish: int, drain: int
     ) -> tuple[StartStrategy, datetime | None, int]:
         """Pick the start strategy. Returns (strategy, opt_start, window_min)."""
         if window.start is None or window.end is None or window.end <= window.start:
@@ -96,14 +103,20 @@ class MowingPlanner:
         win_min = round((window.end - window.start).total_seconds() / 60)
         if win_min < self.WIN_MIN:
             return StartStrategy.SKIP_SHORT_WINDOW, None, win_min
-        if win_min < needed:
+        if win_min < min(finish, drain):
             return StartStrategy.ASAP, window.start, win_min
-        # Window fits the job: start late enough to finish END_BUFFER before the
-        # window closes (buffer against rain earlier than forecast), but never
-        # before the window opens — a tight (needed..needed+buffer) window just
-        # starts at the open.
+        # Window fits the job. Commit to a finishing run only when the battery
+        # outlasts the remaining task by BATTERY_RESERVE_MIN; otherwise stay on
+        # the dock and charge — `drain` grows as it charges, so this flips to GO
+        # by itself (and a task too big for one charge is left to Luba's own
+        # post-charge auto-resume, not forced here).
+        if drain < finish + self.BATTERY_RESERVE_MIN:
+            return StartStrategy.WAIT_BATTERY, None, win_min
+        # GO: start late enough to finish END_BUFFER before the window closes
+        # (buffer against rain earlier than forecast), but never before the
+        # window opens — a tight window just starts at the open.
         opt_start = max(
-            window.start, window.end - timedelta(minutes=needed) - self.END_BUFFER
+            window.start, window.end - timedelta(minutes=finish) - self.END_BUFFER
         )
         return StartStrategy.GO, opt_start, win_min
 
@@ -147,7 +160,7 @@ class PlannerDecision:
 
     should_start: bool
     window_start: datetime | None
-    deadline: datetime | None
+    window_end: datetime | None
     opt_start: datetime | None
     window_bound: WindowBound
     strategy: StartStrategy
@@ -166,4 +179,5 @@ class StartStrategy(StrEnum):
     NO_WINDOW = "no_window"
     SKIP_SHORT_WINDOW = "skip_short_window"
     ASAP = "asap"
+    WAIT_BATTERY = "wait_battery"
     GO = "go"

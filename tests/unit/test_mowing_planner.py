@@ -55,35 +55,57 @@ def test_rain_window_asap_starts_now() -> None:
     assert d.window_min == 33
     assert d.needed_min == 71
     assert d.opt_start == NOW
-    assert d.deadline == NOW + timedelta(minutes=33)
+    assert d.window_end == NOW + timedelta(minutes=33)
     assert d.should_start is True
 
 
-def test_long_window_go_start_not_yet() -> None:
-    # Dry all day, window clipped to non-work: window (300) >= needed → GO,
-    # start at end-needed-END_BUFFER (finish 10 min before close), still in the
-    # future → don't start yet.
-    d = _decide()
+def test_long_window_battery_short_waits_to_charge() -> None:
+    # Dry all day, window fits, but battery (drain 71) can't outlast the task
+    # (finish 138) + reserve → WAIT_BATTERY: stay docked and charge, don't start.
+    d = _decide()  # battery 54, progress 45
+
+    assert d.strategy is StartStrategy.WAIT_BATTERY
+    assert d.window_bound is WindowBound.NON_WORK
+    assert d.needed_min == 71
+    assert d.time_to_drain_min == 71
+    assert d.time_to_finish_min == 138
+    assert d.opt_start is None
+    assert d.should_start is False
+
+
+def test_long_window_battery_enough_go_start_not_yet() -> None:
+    # Battery covers the task + reserve (drain 100 >= finish 50 + 10) and window
+    # fits → GO, start at end-finish-END_BUFFER (finish 10 min before close).
+    d = _decide(battery=70, progress=80)
 
     assert d.strategy is StartStrategy.GO
     assert d.window_bound is WindowBound.NON_WORK
-    assert d.needed_min == 71
-    assert d.time_to_finish_min == 138
-    assert d.opt_start == NOW + timedelta(hours=5) - timedelta(minutes=71 + 10)
+    assert d.time_to_finish_min == 50
+    assert d.time_to_drain_min == 100
+    assert d.opt_start == NOW + timedelta(hours=5) - timedelta(minutes=50 + 10)
+    assert d.should_start is False
+
+
+def test_battery_covers_task_but_not_reserve_waits() -> None:
+    # drain 55 covers finish 50 but not the +10 reserve (55 < 60) → WAIT_BATTERY.
+    d = _decide(battery=45, progress=80)
+
+    assert d.time_to_drain_min == 55
+    assert d.time_to_finish_min == 50
+    assert d.strategy is StartStrategy.WAIT_BATTERY
     assert d.should_start is False
 
 
 def test_tight_window_go_starts_at_open() -> None:
-    # Window just over `needed` (no room for the 10-min finish buffer) → GO
-    # clamps opt_start to the window open, i.e. start now.
-    # battery 54 → drain 71 min; rain at +80 min → window 80 >= needed 71.
-    slots = [_slot(i * 15, 0) for i in range(6)] + [_slot(80, 60)]
-    d = _decide(slots=slots)
+    # Battery enough (drain 100 >= finish 50 + 10); window just over finish (55,
+    # no room for the 10-min finish buffer) → GO clamps opt_start to the open.
+    slots = [_slot(0, 0), _slot(15, 0), _slot(30, 0), _slot(45, 0), _slot(55, 60)]
+    d = _decide(slots=slots, battery=70, progress=80)
 
     assert d.strategy is StartStrategy.GO
-    assert d.needed_min == 71
-    assert d.window_min == 80
-    assert d.opt_start == NOW  # clamped to window open (80 < 71+10)
+    assert d.time_to_finish_min == 50
+    assert d.window_min == 55
+    assert d.opt_start == NOW  # clamped to window open (55 < 50+10)
     assert d.should_start is True
 
 
@@ -122,7 +144,7 @@ def test_window_end_is_start_of_next_rainy_slot() -> None:
     d = _decide(slots=slots, now=NOW + timedelta(minutes=1))
 
     assert d.window_start == NOW + timedelta(minutes=1)
-    assert d.deadline == NOW + timedelta(minutes=15)
+    assert d.window_end == NOW + timedelta(minutes=15)
     assert d.window_bound is WindowBound.RAIN
 
 
@@ -132,18 +154,18 @@ def test_wet_now_window_starts_at_next_dry_slot() -> None:
     d = _decide(slots=slots)
 
     assert d.window_start == NOW + timedelta(minutes=15)
-    assert d.deadline == NOW + timedelta(minutes=30)
+    assert d.window_end == NOW + timedelta(minutes=30)
     assert d.strategy is StartStrategy.SKIP_SHORT_WINDOW  # 15 min < WIN_MIN
 
 
 def test_no_slot_covering_now_treated_as_dry() -> None:
     # Only a past slot exists → nothing covers now → dry; no future rain →
-    # window clipped to non-work (5h, longer than needed → GO).
+    # window clipped to non-work (5h). Here we only check the window geometry.
     slots = [_slot(-60, 80)]
     d = _decide(slots=slots, non_work=NonWorkHours(time(17, 0), time(10, 0)))
 
     assert d.window_start == NOW
-    assert d.deadline == NOW + timedelta(hours=5)
+    assert d.window_end == NOW + timedelta(hours=5)
     assert d.window_bound is WindowBound.NON_WORK
 
 
@@ -169,7 +191,8 @@ def test_decision_serializes_for_ha_attributes() -> None:
     d = _decide()
     payload = asdict(d)
 
-    assert payload["strategy"] == "go"
+    assert payload["strategy"] == "wait_battery"  # default fixture: battery short
     assert payload["window_bound"] == "non_work"
+    assert "window_end" in payload  # renamed from `deadline`
     text = json.dumps(payload, default=str)
-    assert '"strategy": "go"' in text
+    assert '"strategy": "wait_battery"' in text
