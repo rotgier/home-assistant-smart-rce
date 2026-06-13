@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-DEFAULT_DRY_HOURS = 4.5
+DEFAULT_DRY_HOURS = 5.0
 
 
 @dataclass

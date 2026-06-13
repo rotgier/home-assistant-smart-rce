@@ -127,7 +127,15 @@ async def test_push_to_device_delegates_to_actuator() -> None:
 
     await service.push_to_device()
 
-    actuator.apply.assert_awaited_once()
+    actuator.apply.assert_awaited_once_with(TARGET)
+
+
+async def test_push_to_device_no_target_skips_actuator() -> None:
+    service, _, actuator = _service(target=None)
+
+    await service.push_to_device()
+
+    actuator.apply.assert_not_awaited()
 
 
 async def test_effective_hours_prefers_target_over_cloud() -> None:

@@ -11,6 +11,10 @@ startup timing. Mowing planner (2b): `MowingPlannerService` pulls telemetry
 (LubaStateReader), forecast (ems-published HourlyForecastProvider — handed in
 by `async_setup_entry`, factory-level integration via an application Protocol)
 and the non-work target; recomputes on input changes plus a 1-minute tick.
+Rain gate (2d): `RainGateService` extends the non-work end past the morning
+boundary while the grass is wet (so the device never auto-resumes into wet
+grass) and restores the target once dry — sharing the single `NonWorkActuator`
+write path with the manual push button.
 """
 
 from __future__ import annotations
@@ -24,6 +28,9 @@ from custom_components.smart_rce.garden.application.mowing_planner_service impor
 )
 from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
+)
+from custom_components.smart_rce.garden.application.rain_gate_service import (
+    RainGateService,
 )
 from custom_components.smart_rce.garden.application.rain_service import RainService
 from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
@@ -69,6 +76,7 @@ class Garden:
 
     non_work: NonWorkService
     rain: RainService
+    gate: RainGateService
     mowing: MowingPlannerService
 
 
@@ -77,10 +85,11 @@ async def create_garden(
 ) -> Garden:
     """Wire the garden context (call from async_setup_entry before runtime_data)."""
     tasks = AsyncTaskRunner(hass, entry)
+    actuator = NonWorkActuator(hass)
     repo = NonWorkRepository(hass, tasks)
     await repo.async_restore()
     reader = NonWorkReader(hass)
-    service = NonWorkService(repo, NonWorkActuator(hass, repo))
+    service = NonWorkService(repo, actuator)
     _wire_non_work_cloud_listener(hass, entry, reader, service)
 
     rain_repo = RainRepository(hass, tasks)
@@ -88,11 +97,14 @@ async def create_garden(
     rain = RainService(rain_repo)
     _wire_rain(hass, entry, RainReader(hass), rain)
 
+    gate = RainGateService(service, rain, actuator, tasks, dt_util.now)
+    _wire_rain_gate(hass, entry, service, rain, gate)
+
     luba = LubaStateReader(hass)
     forecast_reader = ForecastReader(forecast)
     mowing = MowingPlannerService(luba, forecast_reader, service, rain, dt_util.now)
     _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, rain, mowing)
-    return Garden(non_work=service, rain=rain, mowing=mowing)
+    return Garden(non_work=service, rain=rain, gate=gate, mowing=mowing)
 
 
 def _wire_rain(
@@ -115,6 +127,28 @@ def _wire_rain(
     entry.async_on_unload(async_track_time_interval(hass, _tick, _RAIN_TICK))
     if hass.state is CoreState.running:
         _observe()
+
+
+def _wire_rain_gate(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    non_work: NonWorkService,
+    rain: RainService,
+    gate: RainGateService,
+) -> None:
+    """Evaluate the gate on rain/target changes + a 1-min tick (boundary = now)."""
+    entry.async_on_unload(rain.add_listener(gate.evaluate))
+    entry.async_on_unload(non_work.add_listener(gate.evaluate))
+
+    @callback
+    def _tick(_now: datetime) -> None:
+        # @callback: a plain function is a JobType.Executor (worker thread),
+        # where the entity notify in evaluate() would be thread-unsafe.
+        gate.evaluate()
+
+    entry.async_on_unload(async_track_time_interval(hass, _tick, _PLANNER_TICK))
+    if hass.state is CoreState.running:
+        gate.evaluate()
 
 
 def _wire_non_work_cloud_listener(

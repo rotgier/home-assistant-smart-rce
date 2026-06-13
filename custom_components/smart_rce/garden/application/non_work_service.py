@@ -59,7 +59,9 @@ class NonWorkService(Service[NonWorkRepository]):
         Always writes (one MQTT send) when a target exists — the button is an
         explicit action, honored even if the (laggy) cloud sensor claims sync.
         """
-        await self._actuator.apply()
+        hours = self.effective_hours
+        if hours is not None:
+            await self._actuator.apply(hours)
 
     @property
     def start(self) -> time | None:
