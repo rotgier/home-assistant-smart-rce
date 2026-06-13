@@ -1,9 +1,11 @@
-"""Garden buttons — manual push of the non-work target to the device.
+"""Garden buttons — manual non-work push + rain-gate release.
 
 `button.luba_non_work_push` triggers `NonWorkService.push_to_device()` — the
-only write path to mammotion in phase 1.5 (user-initiated; the actuator is
-state-diff, so pressing with no drift is a no-op). Top-level `button.py`
-aggregates these via `build_buttons`, so garden owns its presentation.
+user-initiated write of the HA target to mammotion (the actuator always writes
+when a target exists). `button.garden_rain_gate_clear` triggers
+`RainGateService.clear_hold()` — drops a rain-gate extension and restores the
+target ("grass is fine, resume now"). Top-level `button.py` aggregates these
+via `build_buttons`, so garden owns its presentation.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ if TYPE_CHECKING:
 
 def build_buttons(entry: SmartRceConfigEntry) -> list[ButtonEntity]:
     """Garden button entities for top-level `button.py` to add."""
-    return [LubaNonWorkPushButton(entry)]
+    return [LubaNonWorkPushButton(entry), GardenRainGateClearButton(entry)]
 
 
 class LubaNonWorkPushButton(ButtonEntity):
@@ -39,3 +41,21 @@ class LubaNonWorkPushButton(ButtonEntity):
 
     async def async_press(self) -> None:
         await self._service.push_to_device()
+
+
+class GardenRainGateClearButton(ButtonEntity):
+    """Press to drop a rain-gate extension and resume the target window now."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Garden Rain Gate Clear"
+    _attr_should_poll = False
+    _attr_icon = "mdi:weather-sunny-alert"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._gate = entry.runtime_data.garden.gate
+        self._attr_unique_id = f"{DOMAIN}_garden_rain_gate_clear"
+        self.entity_id = "button.garden_rain_gate_clear"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_press(self) -> None:
+        self._gate.clear_hold()

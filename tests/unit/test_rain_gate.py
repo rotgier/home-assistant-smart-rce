@@ -126,3 +126,23 @@ def test_service_restore_pushes_target() -> None:
     assert service.hold_until is None
     actuator.apply.assert_called_once_with(TARGET)
     tasks.run_background.assert_called_once()
+
+
+def test_clear_hold_releases_and_restores_target() -> None:
+    service, actuator, tasks = _service()
+    service._gate.hold_until = datetime(2026, 6, 13, 14, 55, tzinfo=UTC)  # noqa: SLF001
+    notified: list[int] = []
+    service.add_listener(lambda: notified.append(1))
+
+    service.clear_hold()
+
+    assert service.hold_until is None
+    actuator.apply.assert_called_once_with(TARGET)  # restore target
+    assert notified == [1]
+
+
+def test_clear_hold_noop_when_not_holding() -> None:
+    service, actuator, tasks = _service()
+    service.clear_hold()
+    actuator.apply.assert_not_called()
+    tasks.run_background.assert_not_called()

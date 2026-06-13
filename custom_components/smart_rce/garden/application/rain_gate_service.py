@@ -62,6 +62,20 @@ class RainGateService(Listenable):
         """True while non-work is extended past the user target (gate active)."""
         return self._gate.is_holding
 
+    @callback
+    def clear_hold(self) -> None:
+        """User-initiated release (dashboard button) → restore target to device.
+
+        For "the grass is actually fine, resume now". Pushes the target back
+        and notifies. If it is still confirmed-wet near the morning boundary
+        the next tick may re-hold; releasing mid-hold (outside the quiet
+        window) sticks. To EXTEND instead, raise `number.garden_dry_out_hours`.
+        """
+        base = self._non_work.effective_hours
+        if base is not None and self._gate.release():
+            self._push(base)
+            self._notify_all()
+
     @property
     def hold_until(self) -> datetime | None:
         """The extended non-work end currently asserted, or None when restored."""

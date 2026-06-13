@@ -39,6 +39,15 @@ class RainGate:
         """True while we are extending non-work past the user target."""
         return self.hold_until is not None
 
+    def release(self) -> bool:
+        """Manually drop the hold (user override). Returns True if it changed.
+
+        The next `evaluate` may re-hold if conditions still warrant it
+        (confirmed-wet near the morning boundary); releasing mid-hold while
+        outside the quiet window sticks.
+        """
+        return self._clear()
+
     def evaluate(
         self,
         now: datetime,
