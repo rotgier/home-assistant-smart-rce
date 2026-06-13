@@ -29,15 +29,15 @@ class RainService(Service[RainRepository]):
     """Owns rain-end observation + dry-out policy; notifies entities + planner."""
 
     @callback
-    def observe(self, currently_wet: bool, now: datetime) -> None:
-        """Feed a wetness observation to the aggregate (sync, fire-and-forget).
+    def observe(self, raw_wet: bool, now: datetime) -> None:
+        """Feed a raw wetness reading to the aggregate (sync, fire-and-forget).
 
-        Delegates the wet→dry edge detection to `RainState.observe`; persists
-        (diff-guarded) and refreshes entities whenever anything observable
-        changed — including a plain dry→wet onset, so the grass-wet sensor
-        turns on immediately, not only on the eventual dry edge.
+        `raw_wet` is the instantaneous weather reading (`RainReader`); the
+        aggregate confirms it only after `WET_DWELL` of sustained rain (a few
+        drops never confirm). Persists (diff-guarded) and refreshes entities
+        whenever the confirmed state changes.
         """
-        self._save_if_changed_and_notify(self._repo.state.observe(currently_wet, now))
+        self._save_if_changed_and_notify(self._repo.state.observe(raw_wet, now))
 
     async def set_dry_hours(self, hours: float) -> None:
         await self._persist_and_notify(self._repo.state.set_dry_hours(hours))
@@ -53,5 +53,5 @@ class RainService(Service[RainRepository]):
 
     @property
     def currently_wet(self) -> bool:
-        """Last observed wet state (drives the grass-wet binary sensor)."""
+        """Confirmed wet state — raw rain sustained past WET_DWELL."""
         return self._repo.state.is_wet

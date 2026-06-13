@@ -28,36 +28,65 @@ def test_record_dry_transition_changed_flag() -> None:
     assert state.record_dry_transition(NOW) is False  # same → no change
 
 
+def _min(m: int) -> datetime:
+    return NOW + timedelta(minutes=m)
+
+
 def test_observe_dry_first_reading_no_change() -> None:
     state = RainState()
-    assert state.observe(currently_wet=False, now=NOW) is False
+    assert state.observe(raw_wet=False, now=NOW) is False
     assert state.rain_ended_at is None
     assert state.is_wet is False
 
 
-def test_observe_onset_flips_wet_changed() -> None:
+def test_observe_onset_does_not_confirm_within_dwell() -> None:
     state = RainState()
-    assert state.observe(currently_wet=True, now=NOW) is True  # dry→wet flip
-    assert state.is_wet is True
-    assert state.rain_ended_at is None  # onset does not stamp rain end
-
-
-def test_observe_wet_to_dry_records_rain_end() -> None:
-    state = RainState(is_wet=True)
-    later = NOW + timedelta(minutes=5)
-    assert state.observe(currently_wet=False, now=later) is True
-    assert state.rain_ended_at == later
+    assert state.observe(raw_wet=True, now=NOW) is False  # arms wet_since only
+    assert state.is_wet is False
+    assert state.wet_since == NOW
+    assert state.observe(raw_wet=True, now=_min(5)) is False  # 5 min < dwell
     assert state.is_wet is False
 
 
-def test_observe_staying_wet_no_change() -> None:
-    state = RainState(is_wet=True)
-    assert state.observe(currently_wet=True, now=NOW) is False
+def test_observe_few_drops_under_dwell_never_confirm() -> None:
+    state = RainState()
+    state.observe(raw_wet=True, now=NOW)
+    state.observe(raw_wet=True, now=_min(3))
+    assert state.observe(raw_wet=False, now=_min(4)) is False  # cleared, no edge
+    assert state.is_wet is False
+    assert state.rain_ended_at is None  # never confirmed → no rain end
+    assert state.wet_since is None
 
 
-def test_is_wet_is_transient_not_serialized() -> None:
-    assert "is_wet" not in RainState(is_wet=True).to_dict()
-    assert RainState.from_dict({"is_wet": True}).is_wet is False  # ignored on load
+def test_observe_sustained_rain_confirms_after_dwell() -> None:
+    state = RainState()
+    state.observe(raw_wet=True, now=NOW)
+    assert state.observe(raw_wet=True, now=_min(11)) is True  # >10 min → confirm
+    assert state.is_wet is True
+    assert state.rain_ended_at is None  # confirming wet does not stamp end
+
+
+def test_observe_confirmed_then_dry_records_rain_end() -> None:
+    state = RainState()
+    state.observe(raw_wet=True, now=NOW)
+    state.observe(raw_wet=True, now=_min(11))  # confirmed wet
+    assert state.observe(raw_wet=False, now=_min(20)) is True
+    assert state.rain_ended_at == _min(20)
+    assert state.is_wet is False
+
+
+def test_observe_staying_confirmed_no_change() -> None:
+    state = RainState(is_wet=True, wet_since=NOW)
+    assert state.observe(raw_wet=True, now=_min(30)) is False  # already confirmed
+
+
+def test_transient_fields_not_serialized() -> None:
+    dumped = RainState(is_wet=True, wet_since=NOW).to_dict()
+    assert "is_wet" not in dumped
+    assert "wet_since" not in dumped
+    restored = RainState.from_dict({"is_wet": True, "wet_since": NOW.isoformat()})
+    assert restored.is_wet is False  # ignored on load
+    assert restored.wet_since is None
 
 
 def test_set_dry_hours_changed_flag() -> None:
@@ -94,45 +123,37 @@ def _service() -> tuple[RainService, MagicMock]:
 def test_first_dry_reading_no_transition() -> None:
     service, repo = _service()
 
-    service.observe(currently_wet=False, now=NOW)
+    service.observe(raw_wet=False, now=NOW)
 
     assert repo.state.rain_ended_at is None
     repo.save_if_changed.assert_not_called()
 
 
-def test_wet_then_dry_records_transition() -> None:
-    service, repo = _service()
-
-    service.observe(currently_wet=True, now=NOW)  # onset: flips wet
-    service.observe(currently_wet=False, now=NOW + timedelta(minutes=5))
-
-    assert repo.state.rain_ended_at == NOW + timedelta(minutes=5)
-    # onset + transition both observable changes → save_if_changed each time
-    # (diff-guarded in the real repo, so the onset is a no-op disk write).
-    assert repo.save_if_changed.call_count == 2
-
-
-def test_onset_notifies_so_grass_wet_sensor_refreshes() -> None:
+def test_few_drops_never_notify_or_persist() -> None:
     service, repo = _service()
     notified: list[int] = []
     service.add_listener(lambda: notified.append(1))
 
-    service.observe(currently_wet=True, now=NOW)  # dry→wet onset
+    service.observe(raw_wet=True, now=NOW)  # arms dwell, not confirmed
+    service.observe(raw_wet=False, now=_min(3))  # cleared before dwell
 
-    assert service.currently_wet is True
-    assert notified == [1]  # used to be missed — sensor stayed stale on onset
-    repo.save_if_changed.assert_called_once()
+    assert service.currently_wet is False
+    assert notified == []  # never confirmed → sensor never flickered
+    repo.save_if_changed.assert_not_called()
 
 
-def test_staying_wet_no_transition() -> None:
+def test_confirmed_rain_then_dry_records_transition() -> None:
     service, repo = _service()
+    notified: list[int] = []
+    service.add_listener(lambda: notified.append(1))
 
-    service.observe(currently_wet=True, now=NOW)  # onset (1 save)
-    service.observe(currently_wet=True, now=NOW + timedelta(minutes=5))  # no change
+    service.observe(raw_wet=True, now=NOW)  # arms dwell (no change)
+    service.observe(raw_wet=True, now=_min(11))  # confirm → notify
+    service.observe(raw_wet=False, now=_min(20))  # rain end → notify
 
-    assert repo.state.rain_ended_at is None
-    repo.save_if_changed.assert_called_once()  # only the onset, not the repeat
-    assert service.currently_wet is True
+    assert repo.state.rain_ended_at == _min(20)
+    assert notified == [1, 1]  # confirm + end (dwell ticks were quiet)
+    assert repo.save_if_changed.call_count == 2
 
 
 async def test_set_dry_hours_persists() -> None:
@@ -148,7 +169,8 @@ def test_dry_at_reflects_state_after_transition() -> None:
     service, repo = _service()
     repo.state.dry_hours = 4.5
 
-    service.observe(currently_wet=True, now=NOW)
-    service.observe(currently_wet=False, now=NOW)
+    service.observe(raw_wet=True, now=NOW)
+    service.observe(raw_wet=True, now=_min(11))  # confirmed wet
+    service.observe(raw_wet=False, now=_min(20))  # rain ended
 
-    assert service.dry_at == NOW + timedelta(hours=4, minutes=30)
+    assert service.dry_at == _min(20) + timedelta(hours=4, minutes=30)

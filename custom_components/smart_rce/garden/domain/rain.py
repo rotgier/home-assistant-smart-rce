@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 DEFAULT_DRY_HOURS = 5.0
 
@@ -26,34 +26,47 @@ DEFAULT_DRY_HOURS = 5.0
 class RainState:
     """Mutable aggregate — last rain-end + dry-out policy, persisted via repo.
 
-    `rain_ended_at` is `None` until the first observed wet→dry transition
+    `rain_ended_at` is `None` until the first confirmed wet→dry transition
     (fresh install, or never rained since). Serialization: `datetime` via
     `isoformat`/`fromisoformat` (tz-aware, HA convention); `dry_hours` is plain
     float (Store persists JSON).
 
-    `is_wet` is the last observed wet state (drives the grass-wet sensor and
-    the rain gate). It is TRANSIENT — re-derived from the weather entity on
-    every observation, so it is deliberately excluded from `to_dict` (we
-    persist the derived fact `rain_ended_at`, not the volatile observation).
+    `is_wet` is the CONFIRMED wet state (drives the grass-wet sensor and the
+    rain gate) and `wet_since` is when the raw reading first turned wet. Both
+    are TRANSIENT — re-derived from the weather entity on every observation,
+    so they are deliberately excluded from `to_dict` (we persist the derived
+    fact `rain_ended_at`, not the volatile observation).
     """
+
+    WET_DWELL: ClassVar[timedelta] = timedelta(minutes=10)  # rain must persist
 
     rain_ended_at: datetime | None = None
     dry_hours: float = DEFAULT_DRY_HOURS
     is_wet: bool = False
+    wet_since: datetime | None = None
 
-    def observe(self, currently_wet: bool, now: datetime) -> bool:
-        """Feed a wetness observation; stamp rain end on the wet→dry edge.
+    def observe(self, raw_wet: bool, now: datetime) -> bool:
+        """Feed a raw wetness reading; confirm wet only after WET_DWELL of rain.
 
-        Returns True if anything observable changed (the wet flag flipped or
-        `rain_ended_at` advanced) so the service can refresh entities. Only a
-        wet→dry edge advances `rain_ended_at` — the dry-out clock starts when
-        rain ENDS, not while it falls. `is_wet` starts False, so a dry first
-        reading is a no-op and a wet first reading only arms the eventual edge.
+        A brief shower (a few drops) trips the raw reading but never wets the
+        grass, so `is_wet` — the confirmed state consumed by the sensor, gate
+        and rain-end stamp — flips True only once raw rain has PERSISTED longer
+        than `WET_DWELL`. `wet_since` tracks the current raw-wet streak (reset
+        the moment it reads dry). Returns True if anything observable changed.
+        Only a confirmed wet→dry edge advances `rain_ended_at` — the dry-out
+        clock starts when real rain ENDS, not while a passing shower clears.
         """
-        changed = self.is_wet != currently_wet
-        if self.is_wet and not currently_wet:
+        if raw_wet:
+            if self.wet_since is None:
+                self.wet_since = now
+            confirmed = now - self.wet_since > self.WET_DWELL
+        else:
+            self.wet_since = None
+            confirmed = False
+        changed = self.is_wet != confirmed
+        if self.is_wet and not confirmed:
             changed |= self.record_dry_transition(now)
-        self.is_wet = currently_wet
+        self.is_wet = confirmed
         return changed
 
     def record_dry_transition(self, now: datetime) -> bool:

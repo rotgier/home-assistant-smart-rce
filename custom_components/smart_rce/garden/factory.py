@@ -67,7 +67,10 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _PLANNER_TICK = timedelta(minutes=1)
-_RAIN_TICK = timedelta(minutes=5)
+# 2 min (not 5) so the WET_DWELL crossing is noticed close to its 10-min mark
+# rather than up to a tick late; the reading itself is static between wo-cloud
+# coordinator updates, the tick just advances the dwell clock.
+_RAIN_TICK = timedelta(minutes=2)
 
 
 @dataclass
