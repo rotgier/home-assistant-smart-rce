@@ -307,9 +307,6 @@ def live_reload() -> None:
             "custom_components.smart_rce.infrastructure.workday_calendar_reader"
         )
     )
-    reload(
-        import_module("custom_components.smart_rce.domain.pv_forecast_extrapolation")
-    )
     reload(import_module("custom_components.smart_rce.domain.weather_forecast_history"))
     reload(import_module("custom_components.smart_rce.domain.weather_multiplier"))
     reload(import_module("custom_components.smart_rce.domain.weather_table"))
