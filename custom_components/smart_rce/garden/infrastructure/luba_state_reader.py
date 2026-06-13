@@ -17,6 +17,7 @@ from custom_components.smart_rce.garden.const import (
     LUBA_LAWN_MOWER,
     LUBA_PROGRESS_SENSOR,
 )
+from homeassistant.components.lawn_mower import LawnMowerActivity
 from homeassistant.const import STATE_ON
 from homeassistant.helpers.event import async_track_state_change_event
 
@@ -45,7 +46,7 @@ class LubaStateReader:
 
     def read_at_dock(self) -> bool:
         return (
-            self._read_state(LubaStateReader._LAWN_MOWER) == "docked"
+            self._read_state(LubaStateReader._LAWN_MOWER) == LawnMowerActivity.DOCKED
             or self._read_state(LubaStateReader._CHARGING) == STATE_ON
         )
 

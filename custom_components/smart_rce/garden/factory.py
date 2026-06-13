@@ -80,6 +80,24 @@ async def create_garden(
     return Garden(non_work=service, mowing=mowing)
 
 
+def _wire_non_work_cloud_listener(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    reader: NonWorkReader,
+    service: NonWorkService,
+) -> None:
+    @callback
+    def _update() -> None:
+        service.update_cloud_state(reader.read_non_work_hours())
+
+    entry.async_on_unload(reader.subscribe(_update))
+    # Reload scenario: sensor may already be available (no future state-change
+    # event), so read once now. Fresh HA start: the subscription catches
+    # mammotion's load (unavailable → value).
+    if hass.state is CoreState.running:
+        _update()
+
+
 def _wire_mowing_recompute(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -97,21 +115,3 @@ def _wire_mowing_recompute(
     )
     if hass.state is CoreState.running:
         mowing.recompute()
-
-
-def _wire_non_work_cloud_listener(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    reader: NonWorkReader,
-    service: NonWorkService,
-) -> None:
-    @callback
-    def _update() -> None:
-        service.update_cloud_state(reader.read_non_work_hours())
-
-    entry.async_on_unload(reader.subscribe(_update))
-    # Reload scenario: sensor may already be available (no future state-change
-    # event), so read once now. Fresh HA start: the subscription catches
-    # mammotion's load (unavailable → value).
-    if hass.state is CoreState.running:
-        _update()

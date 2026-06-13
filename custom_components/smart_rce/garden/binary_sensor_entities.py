@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from custom_components.smart_rce.const import DOMAIN
-from custom_components.smart_rce.ems_device import ems_device_info
+from custom_components.smart_rce.garden.garden_device import luba_device_info
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -45,7 +45,7 @@ class LubaNonWorkDriftBinarySensor(BinarySensorEntity):
         self._service = entry.runtime_data.garden.non_work
         self._attr_unique_id = f"{DOMAIN}_luba_non_work_drift"
         self.entity_id = "binary_sensor.luba_non_work_drift"
-        self._attr_device_info = ems_device_info(entry)
+        self._attr_device_info = luba_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -86,7 +86,7 @@ class MowingShouldStartBinarySensor(BinarySensorEntity):
         self._service = entry.runtime_data.garden.mowing
         self._attr_unique_id = f"{DOMAIN}_mowing_should_start"
         self.entity_id = "binary_sensor.mowing_should_start"
-        self._attr_device_info = ems_device_info(entry)
+        self._attr_device_info = luba_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

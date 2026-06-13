@@ -1,12 +1,13 @@
 """Garden time entities — non-work window start/end (target = HA source of truth).
 
 Two `time` entities backed by `NonWorkService` (which owns the target via the
-repo; observe-first — no device writes, drift is surfaced via
-`binary_sensor.luba_non_work_drift`). They subscribe to the service so any
-change refreshes them. First-time setup: both edges start empty; entering one
-shows as a pending value until the other completes the target. Top-level
-`time.py` aggregates these via `build_times` (Decyzja #8 contract), so garden
-owns its presentation.
+repo; observe-first — no automatic device writes, drift is surfaced via
+`binary_sensor.luba_non_work_drift` and pushed only on the dashboard button).
+They subscribe to the service so any change refreshes them. Editing one edge
+persists a full target immediately — the other edge comes from what the entity
+currently shows (target, or the device-reported value while the target is
+unset). Top-level `time.py` aggregates these via `build_times` (Decyzja #8
+contract), so garden owns its presentation.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.const import DOMAIN
-from custom_components.smart_rce.ems_device import ems_device_info
+from custom_components.smart_rce.garden.garden_device import luba_device_info
 from homeassistant.components.time import TimeEntity
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ class LubaNonWorkTime(TimeEntity):
         self._attr_name = f"Luba Non-Work {field.capitalize()}"
         self._attr_unique_id = f"{DOMAIN}_luba_non_work_{field}"
         self.entity_id = f"time.luba_non_work_{field}"
-        self._attr_device_info = ems_device_info(entry)
+        self._attr_device_info = luba_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

@@ -2,8 +2,9 @@
 
 Driven adapter for HA Store (extends `Repository[NonWorkSchedule]`). Service +
 Actuator depend on this repo to read the target + persist it — siblings, no
-circular dependency. HA is the source of truth: the schedule is seeded once
-from the mammotion sensor (actuator startup), then garden owns it.
+circular dependency. HA is the source of truth: the user sets the target via
+the time entities; the cloud sensor is only observed (drift), never seeded
+into the schedule (observe-first — the cloud feed is untrusted).
 
 Depends only on the shared technical base (`Repository`, `AsyncTaskRunner`) —
 not on the `ems` bounded context (per ADR-024).

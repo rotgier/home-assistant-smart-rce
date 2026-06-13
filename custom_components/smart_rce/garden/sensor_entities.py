@@ -13,10 +13,9 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from custom_components.smart_rce.const import DOMAIN
-from custom_components.smart_rce.ems_device import ems_device_info
+from custom_components.smart_rce.garden.domain.mowing_planner import StartStrategy
+from custom_components.smart_rce.garden.garden_device import luba_device_info
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
-
-from .domain.mowing_planner import StartStrategy
 
 if TYPE_CHECKING:
     from custom_components.smart_rce import SmartRceConfigEntry
@@ -41,7 +40,7 @@ class MowingPlannerSensor(SensorEntity):
         self._service = entry.runtime_data.garden.mowing
         self._attr_unique_id = f"{DOMAIN}_mowing_planner"
         self.entity_id = "sensor.mowing_planner"
-        self._attr_device_info = ems_device_info(entry)
+        self._attr_device_info = luba_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

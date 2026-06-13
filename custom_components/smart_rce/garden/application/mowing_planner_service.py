@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from custom_components.smart_rce.application.listenable import Listenable
 from custom_components.smart_rce.garden.domain.mowing_planner import (
     MowingInput,
     MowingPlanner,
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     )
 
 
-class MowingPlannerService:
+class MowingPlannerService(Listenable):
     """Computes and caches the planner decision; notifies entities on change."""
 
     def __init__(
@@ -50,13 +51,13 @@ class MowingPlannerService:
         non_work: NonWorkService,
         now_provider: Callable[[], datetime],
     ) -> None:
+        super().__init__()
         self._planner = MowingPlanner()
         self._luba = luba
         self._forecast = forecast
         self._non_work = non_work
         self._now = now_provider
         self._decision: PlannerDecision | None = None
-        self._listeners: list[Callable[[], None]] = []
 
     @property
     def decision(self) -> PlannerDecision | None:
@@ -80,15 +81,4 @@ class MowingPlannerService:
         if decision == self._decision:
             return
         self._decision = decision
-        for listener in list(self._listeners):
-            listener()
-
-    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
-        """Subscribe to decision changes; returns unsubscribe."""
-        self._listeners.append(listener)
-
-        def _remove() -> None:
-            if listener in self._listeners:
-                self._listeners.remove(listener)
-
-        return _remove
+        self._notify_all()

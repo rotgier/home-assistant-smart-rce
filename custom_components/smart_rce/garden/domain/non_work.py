@@ -17,7 +17,7 @@ _ONE_DAY = timedelta(days=1)
 class NonWorkSchedule:
     """Mutable aggregate — the garden-owned non-work target, persisted via repo.
 
-    `target` is `None` before the first seed (analog to a not-yet-read cache).
+    `target` is `None` until the user sets it (fresh install, nothing restored).
     Serialization mirrors `BatteryChargePolicy`: `time` via `isoformat` /
     `fromisoformat` (Store persists JSON, `time` is not JSON-native).
     """
