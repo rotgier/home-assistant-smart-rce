@@ -46,6 +46,8 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from custom_components.smart_rce.application.hourly_forecast import (
         HourlyForecastProvider,
     )
@@ -110,8 +112,14 @@ def _wire_mowing_recompute(
     entry.async_on_unload(luba.subscribe(mowing.recompute))
     entry.async_on_unload(forecast.subscribe(mowing.recompute))
     entry.async_on_unload(non_work.add_listener(mowing.recompute))
-    entry.async_on_unload(
-        async_track_time_interval(hass, lambda _now: mowing.recompute(), _PLANNER_TICK)
-    )
+
+    @callback
+    def _tick(_now: datetime) -> None:
+        # Must be @callback: a plain function is a JobType.Executor and HA runs
+        # it in a worker thread, where recompute()'s async_write_ha_state is
+        # thread-unsafe (raises in current HA).
+        mowing.recompute()
+
+    entry.async_on_unload(async_track_time_interval(hass, _tick, _PLANNER_TICK))
     if hass.state is CoreState.running:
         mowing.recompute()

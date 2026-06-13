@@ -18,12 +18,14 @@ from typing import TYPE_CHECKING, Final
 from custom_components.smart_rce.garden.const import LUBA_NON_WORK_SENSOR
 from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+    from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant
+    from homeassistant.helpers.event import EventStateChangedData
 
 _UNAVAILABLE: Final = (STATE_UNKNOWN, STATE_UNAVAILABLE)
 
@@ -43,8 +45,13 @@ class NonWorkReader:
 
     def subscribe(self, on_change: Callable[[], None]) -> CALLBACK_TYPE:
         """Invoke `on_change` on every sensor state change; returns unsubscribe."""
+
+        @callback
+        def _changed(_event: Event[EventStateChangedData]) -> None:
+            on_change()
+
         return async_track_state_change_event(
-            self._hass, [NonWorkReader._ENTITY_ID], lambda _event: on_change()
+            self._hass, [NonWorkReader._ENTITY_ID], _changed
         )
 
 

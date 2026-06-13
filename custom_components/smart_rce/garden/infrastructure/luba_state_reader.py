@@ -19,12 +19,14 @@ from custom_components.smart_rce.garden.const import (
 )
 from homeassistant.components.lawn_mower import LawnMowerActivity
 from homeassistant.const import STATE_ON
+from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+    from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant
+    from homeassistant.helpers.event import EventStateChangedData
 
 
 class LubaStateReader:
@@ -52,6 +54,11 @@ class LubaStateReader:
 
     def subscribe(self, on_change: Callable[[], None]) -> CALLBACK_TYPE:
         """Invoke `on_change` on any tracked entity change; returns unsubscribe."""
+
+        @callback
+        def _changed(_event: Event[EventStateChangedData]) -> None:
+            on_change()
+
         return async_track_state_change_event(
             self._hass,
             [
@@ -60,7 +67,7 @@ class LubaStateReader:
                 LubaStateReader._LAWN_MOWER,
                 LubaStateReader._CHARGING,
             ],
-            lambda _event: on_change(),
+            _changed,
         )
 
     def _read_state(self, entity_id: str) -> str | None:
