@@ -33,6 +33,7 @@ def _service(
     at_dock: bool = True,
     forecast: list[dict] | None = None,  # raw HA shape — parsed in the fixture
     effective: NonWorkHours | None = NonWorkHours(time(20, 35), time(10, 5)),
+    dry_at: datetime | None = None,
     now: datetime = NOW,
 ) -> MowingPlannerService:
     luba = MagicMock()
@@ -45,7 +46,9 @@ def _service(
     )
     non_work = MagicMock()
     non_work.effective_hours = effective
-    return MowingPlannerService(luba, forecast_reader, non_work, lambda: now)
+    rain = MagicMock()
+    rain.dry_at = dry_at
+    return MowingPlannerService(luba, forecast_reader, non_work, rain, lambda: now)
 
 
 def test_recompute_produces_decision() -> None:
@@ -139,3 +142,15 @@ def test_daytime_outside_quiet_hours_window_opens_now() -> None:
 
     assert service.decision is not None
     assert service.decision.window_start == NOW
+
+
+def test_dry_at_floor_delays_window_start() -> None:
+    # Dry now per forecast, but grass dry-out (dry_at) is 2h out → window
+    # cannot start before dry_at.
+    dry_at = NOW + timedelta(hours=2)
+    service = _service(dry_at=dry_at)
+
+    service.recompute()
+
+    assert service.decision is not None
+    assert service.decision.window_start == dry_at

@@ -27,6 +27,7 @@ from .domain.battery_schedule import (
     SlotKind,
 )
 from .ems_device import ems_device_info
+from .garden.number_entities import build_numbers
 
 PARALLEL_UPDATES = 1
 
@@ -52,6 +53,7 @@ async def async_setup_entry(
             ],
             OneShotTargetSocNumber(entry, direction=Direction.DISCHARGE),
             OneShotTargetSocNumber(entry, direction=Direction.CHARGE),
+            *build_numbers(entry),
         ]
     )
 

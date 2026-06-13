@@ -25,6 +25,7 @@ from custom_components.smart_rce.garden.application.mowing_planner_service impor
 from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
 )
+from custom_components.smart_rce.garden.application.rain_service import RainService
 from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
     ForecastReader,
 )
@@ -39,6 +40,10 @@ from custom_components.smart_rce.garden.infrastructure.non_work_reader import (
 )
 from custom_components.smart_rce.garden.infrastructure.non_work_repository import (
     NonWorkRepository,
+)
+from custom_components.smart_rce.garden.infrastructure.rain_reader import RainReader
+from custom_components.smart_rce.garden.infrastructure.rain_repository import (
+    RainRepository,
 )
 from custom_components.smart_rce.infrastructure.async_task_runner import AsyncTaskRunner
 from homeassistant.core import CoreState, callback
@@ -55,6 +60,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _PLANNER_TICK = timedelta(minutes=1)
+_RAIN_TICK = timedelta(minutes=5)
 
 
 @dataclass
@@ -62,6 +68,7 @@ class Garden:
     """Garden bounded context — public services exposed to platforms."""
 
     non_work: NonWorkService
+    rain: RainService
     mowing: MowingPlannerService
 
 
@@ -75,11 +82,39 @@ async def create_garden(
     reader = NonWorkReader(hass)
     service = NonWorkService(repo, NonWorkActuator(hass, repo))
     _wire_non_work_cloud_listener(hass, entry, reader, service)
+
+    rain_repo = RainRepository(hass, tasks)
+    await rain_repo.async_restore()
+    rain = RainService(rain_repo)
+    _wire_rain(hass, entry, RainReader(hass), rain)
+
     luba = LubaStateReader(hass)
     forecast_reader = ForecastReader(forecast)
-    mowing = MowingPlannerService(luba, forecast_reader, service, dt_util.now)
-    _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, mowing)
-    return Garden(non_work=service, mowing=mowing)
+    mowing = MowingPlannerService(luba, forecast_reader, service, rain, dt_util.now)
+    _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, rain, mowing)
+    return Garden(non_work=service, rain=rain, mowing=mowing)
+
+
+def _wire_rain(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    reader: RainReader,
+    rain: RainService,
+) -> None:
+    """Observe rain on weather changes + a 5-min tick (wet→dry edge detection)."""
+
+    @callback
+    def _observe() -> None:
+        rain.observe(reader.is_raining_now(), dt_util.now())
+
+    @callback
+    def _tick(_now: datetime) -> None:
+        _observe()
+
+    entry.async_on_unload(reader.subscribe(_observe))
+    entry.async_on_unload(async_track_time_interval(hass, _tick, _RAIN_TICK))
+    if hass.state is CoreState.running:
+        _observe()
 
 
 def _wire_non_work_cloud_listener(
@@ -106,12 +141,14 @@ def _wire_mowing_recompute(
     luba: LubaStateReader,
     forecast: ForecastReader,
     non_work: NonWorkService,
+    rain: RainService,
     mowing: MowingPlannerService,
 ) -> None:
     """Recompute on every input change + a 1-minute tick (time is an input)."""
     entry.async_on_unload(luba.subscribe(mowing.recompute))
     entry.async_on_unload(forecast.subscribe(mowing.recompute))
     entry.async_on_unload(non_work.add_listener(mowing.recompute))
+    entry.async_on_unload(rain.add_listener(mowing.recompute))
 
     @callback
     def _tick(_now: datetime) -> None:

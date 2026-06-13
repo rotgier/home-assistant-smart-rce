@@ -1,10 +1,12 @@
-"""Garden sensors — mowing planner decision (garden 2b).
+"""Garden sensors — mowing planner decision + grass dry-out time.
 
 `sensor.mowing_planner` exposes the latest `PlannerDecision`: state = start
 strategy, attributes = the full decision via `dataclasses.asdict` (descriptive
 field names — the legacy Jinja short keys `sh/btt/dk…` were a single-state-string
-hack and are intentionally not reproduced). Top-level `sensor/__init__.py`
-aggregates these via `build_sensors`, so garden owns its presentation.
+hack and are intentionally not reproduced). `sensor.garden_dry_at` exposes when
+the grass is dry enough to mow (`RainService.dry_at`). Top-level
+`sensor/__init__.py` aggregates these via `build_sensors`, so garden owns its
+presentation.
 """
 
 from __future__ import annotations
@@ -18,12 +20,14 @@ from custom_components.smart_rce.garden.garden_device import luba_device_info
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from custom_components.smart_rce import SmartRceConfigEntry
 
 
 def build_sensors(entry: SmartRceConfigEntry) -> list[SensorEntity]:
     """Garden sensor entities for top-level `sensor` platform to add."""
-    return [MowingPlannerSensor(entry)]
+    return [MowingPlannerSensor(entry), GardenDryAtSensor(entry)]
 
 
 class MowingPlannerSensor(SensorEntity):
@@ -55,3 +59,27 @@ class MowingPlannerSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         decision = self._service.decision
         return asdict(decision) if decision else {}
+
+
+class GardenDryAtSensor(SensorEntity):
+    """When the grass is dry enough to mow (rain end + dry-out hours)."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Garden Dry At"
+    _attr_should_poll = False
+    _attr_icon = "mdi:weather-sunny"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._service = entry.runtime_data.garden.rain
+        self._attr_unique_id = f"{DOMAIN}_garden_dry_at"
+        self.entity_id = "sensor.garden_dry_at"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self._service.dry_at

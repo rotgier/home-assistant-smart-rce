@@ -9,9 +9,10 @@ so the minutely tick is free while nothing moves.
 
 No hass and no entity ids here: telemetry comes from `LubaStateReader`,
 forecast from `ForecastReader` (which owns the ems-published cross-context
-port), quiet hours from `NonWorkService.effective_hours` (target-or-cloud
-source selection is NonWorkService's concern; calendar math lives on the
-`NonWorkHours` domain VO and is derived inside the planner).
+port), quiet hours from `NonWorkService.effective_hours`, and the grass
+dry-out floor from `RainService.dry_at` (= last rain end + dry_hours). The
+planner clamps its window start to the latest of now / active-quiet-end /
+dry_at; calendar + dry-out math live in the domain.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from custom_components.smart_rce.garden.application.non_work_service import (
         NonWorkService,
     )
+    from custom_components.smart_rce.garden.application.rain_service import RainService
     from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
         ForecastReader,
     )
@@ -49,6 +51,7 @@ class MowingPlannerService(Listenable):
         luba: LubaStateReader,
         forecast: ForecastReader,
         non_work: NonWorkService,
+        rain: RainService,
         now_provider: Callable[[], datetime],
     ) -> None:
         super().__init__()
@@ -56,6 +59,7 @@ class MowingPlannerService(Listenable):
         self._luba = luba
         self._forecast = forecast
         self._non_work = non_work
+        self._rain = rain
         self._now = now_provider
         self._decision: PlannerDecision | None = None
 
@@ -76,6 +80,7 @@ class MowingPlannerService(Listenable):
                 now=now,
                 slots=self._forecast.read_forecast_slots(),
                 non_work=self._non_work.effective_hours,
+                dry_at=self._rain.dry_at,
             )
         )
         if decision == self._decision:

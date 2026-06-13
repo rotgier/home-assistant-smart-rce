@@ -29,7 +29,11 @@ if TYPE_CHECKING:
 
 def build_binary_sensors(entry: SmartRceConfigEntry) -> list[BinarySensorEntity]:
     """Garden binary sensors for top-level `binary_sensor.py` to add."""
-    return [LubaNonWorkDriftBinarySensor(entry), MowingShouldStartBinarySensor(entry)]
+    return [
+        LubaNonWorkDriftBinarySensor(entry),
+        MowingShouldStartBinarySensor(entry),
+        GardenGrassWetBinarySensor(entry),
+    ]
 
 
 class LubaNonWorkDriftBinarySensor(BinarySensorEntity):
@@ -96,3 +100,27 @@ class MowingShouldStartBinarySensor(BinarySensorEntity):
     def is_on(self) -> bool:
         decision = self._service.decision
         return decision.should_start if decision else False
+
+
+class GardenGrassWetBinarySensor(BinarySensorEntity):
+    """On while it is currently raining (last observed wet state)."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Garden Grass Wet"
+    _attr_should_poll = False
+    _attr_device_class = BinarySensorDeviceClass.MOISTURE
+    _attr_icon = "mdi:weather-rainy"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._service = entry.runtime_data.garden.rain
+        self._attr_unique_id = f"{DOMAIN}_garden_grass_wet"
+        self.entity_id = "binary_sensor.garden_grass_wet"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def is_on(self) -> bool:
+        return self._service.currently_wet

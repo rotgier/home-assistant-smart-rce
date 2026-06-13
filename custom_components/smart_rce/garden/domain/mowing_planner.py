@@ -36,15 +36,19 @@ class MowingPlanner:
     END_BUFFER: Final = timedelta(minutes=10)  # need >10 min left to start
 
     def decide(self, inp: MowingInput) -> PlannerDecision:
-        # Inside quiet hours the window cannot open before they end. Legacy
-        # Jinja missed this (it only clipped to the NEXT quiet start) and was
-        # patched with a time-of-day condition on the alert automation; the
-        # domain handles it properly instead.
+        # The window cannot open before the latest of: now, the end of an
+        # active quiet window (legacy Jinja missed this — it only clipped to
+        # the NEXT quiet start), and `dry_at` (grass dry-out after the last
+        # rain). All three are floors on when mowing may begin.
         non_work_start = inp.non_work.next_start(inp.now) if inp.non_work else None
         quiet_until = (
             inp.non_work.end_of_active_window(inp.now) if inp.non_work else None
         )
-        from_moment = max(inp.now, quiet_until) if quiet_until else inp.now
+        from_moment = inp.now
+        if quiet_until is not None:
+            from_moment = max(from_moment, quiet_until)
+        if inp.dry_at is not None:
+            from_moment = max(from_moment, inp.dry_at)
         window = ForecastWindow.from_slots(
             inp.slots, from_moment, non_work_start, self.RAIN_PROB
         )
@@ -121,6 +125,7 @@ class MowingInput:
     now: datetime
     slots: list[ForecastSlot]
     non_work: NonWorkHours | None  # planner derives next start / active end
+    dry_at: datetime | None = None  # grass dry-out floor (rain_ended + dry_hours)
 
 
 @dataclass(frozen=True)
