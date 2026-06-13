@@ -71,7 +71,7 @@ async def create_garden(
     repo = NonWorkRepository(hass, tasks)
     await repo.async_restore()
     reader = NonWorkReader(hass)
-    service = NonWorkService(repo, NonWorkActuator(hass, repo, reader))
+    service = NonWorkService(repo, NonWorkActuator(hass, repo))
     _wire_non_work_cloud_listener(hass, entry, reader, service)
     luba = LubaStateReader(hass)
     forecast_reader = ForecastReader(forecast)

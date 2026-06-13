@@ -56,8 +56,8 @@ class NonWorkService(Service[NonWorkRepository]):
     async def push_to_device(self) -> None:
         """User-initiated write of the target to mammotion (dashboard button).
 
-        Delegates to the state-diff actuator: no target or device already in
-        sync → no-op, no cloud send.
+        Always writes (one MQTT send) when a target exists — the button is an
+        explicit action, honored even if the (laggy) cloud sensor claims sync.
         """
         await self._actuator.apply()
 
