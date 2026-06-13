@@ -1,8 +1,9 @@
 """RainService — records rain-end transitions and exposes the dry-out time.
 
 `observe(currently_wet, now)` is fed by the rain reader (weather changes + a
-periodic tick). It detects the wet→dry edge and stamps `rain_ended_at = now`
-(persisted) — the dry-out clock starts when rain ENDS, not while it falls.
+periodic tick) and delegated to `RainState.observe`, which detects the wet→dry
+edge and stamps `rain_ended_at = now` (persisted) — the dry-out clock starts
+when rain ENDS, not while it falls.
 `dry_at` (= rain_ended_at + dry_hours) is consumed by the planner to clamp its
 mowing window. `set_dry_hours` is driven by the `number.garden_dry_out_hours`
 entity (user-tunable policy).
@@ -27,23 +28,16 @@ if TYPE_CHECKING:
 class RainService(Service[RainRepository]):
     """Owns rain-end observation + dry-out policy; notifies entities + planner."""
 
-    def __init__(self, repo: RainRepository) -> None:
-        super().__init__(repo)
-        self._was_wet = False
-
     @callback
     def observe(self, currently_wet: bool, now: datetime) -> None:
-        """Record a wet→dry transition (sync, fire-and-forget persist).
+        """Feed a wetness observation to the aggregate (sync, fire-and-forget).
 
-        `_was_wet` starts False, so the first observation never fires a false
-        transition: a dry first reading is a no-op; a wet first reading only
-        arms `_was_wet` for the eventual dry edge.
+        Delegates the wet→dry edge detection to `RainState.observe`; persists
+        (diff-guarded) and refreshes entities whenever anything observable
+        changed — including a plain dry→wet onset, so the grass-wet sensor
+        turns on immediately, not only on the eventual dry edge.
         """
-        if self._was_wet and not currently_wet:
-            self._save_if_changed_and_notify(
-                self._repo.state.record_dry_transition(now)
-            )
-        self._was_wet = currently_wet
+        self._save_if_changed_and_notify(self._repo.state.observe(currently_wet, now))
 
     async def set_dry_hours(self, hours: float) -> None:
         await self._persist_and_notify(self._repo.state.set_dry_hours(hours))
@@ -60,4 +54,4 @@ class RainService(Service[RainRepository]):
     @property
     def currently_wet(self) -> bool:
         """Last observed wet state (drives the grass-wet binary sensor)."""
-        return self._was_wet
+        return self._repo.state.is_wet

@@ -28,6 +28,38 @@ def test_record_dry_transition_changed_flag() -> None:
     assert state.record_dry_transition(NOW) is False  # same → no change
 
 
+def test_observe_dry_first_reading_no_change() -> None:
+    state = RainState()
+    assert state.observe(currently_wet=False, now=NOW) is False
+    assert state.rain_ended_at is None
+    assert state.is_wet is False
+
+
+def test_observe_onset_flips_wet_changed() -> None:
+    state = RainState()
+    assert state.observe(currently_wet=True, now=NOW) is True  # dry→wet flip
+    assert state.is_wet is True
+    assert state.rain_ended_at is None  # onset does not stamp rain end
+
+
+def test_observe_wet_to_dry_records_rain_end() -> None:
+    state = RainState(is_wet=True)
+    later = NOW + timedelta(minutes=5)
+    assert state.observe(currently_wet=False, now=later) is True
+    assert state.rain_ended_at == later
+    assert state.is_wet is False
+
+
+def test_observe_staying_wet_no_change() -> None:
+    state = RainState(is_wet=True)
+    assert state.observe(currently_wet=True, now=NOW) is False
+
+
+def test_is_wet_is_transient_not_serialized() -> None:
+    assert "is_wet" not in RainState(is_wet=True).to_dict()
+    assert RainState.from_dict({"is_wet": True}).is_wet is False  # ignored on load
+
+
 def test_set_dry_hours_changed_flag() -> None:
     state = RainState()
     assert state.set_dry_hours(6.0) is True
@@ -71,21 +103,35 @@ def test_first_dry_reading_no_transition() -> None:
 def test_wet_then_dry_records_transition() -> None:
     service, repo = _service()
 
-    service.observe(currently_wet=True, now=NOW)  # arms _was_wet
+    service.observe(currently_wet=True, now=NOW)  # onset: flips wet
     service.observe(currently_wet=False, now=NOW + timedelta(minutes=5))
 
     assert repo.state.rain_ended_at == NOW + timedelta(minutes=5)
+    # onset + transition both observable changes → save_if_changed each time
+    # (diff-guarded in the real repo, so the onset is a no-op disk write).
+    assert repo.save_if_changed.call_count == 2
+
+
+def test_onset_notifies_so_grass_wet_sensor_refreshes() -> None:
+    service, repo = _service()
+    notified: list[int] = []
+    service.add_listener(lambda: notified.append(1))
+
+    service.observe(currently_wet=True, now=NOW)  # dry→wet onset
+
+    assert service.currently_wet is True
+    assert notified == [1]  # used to be missed — sensor stayed stale on onset
     repo.save_if_changed.assert_called_once()
 
 
 def test_staying_wet_no_transition() -> None:
     service, repo = _service()
 
-    service.observe(currently_wet=True, now=NOW)
-    service.observe(currently_wet=True, now=NOW + timedelta(minutes=5))
+    service.observe(currently_wet=True, now=NOW)  # onset (1 save)
+    service.observe(currently_wet=True, now=NOW + timedelta(minutes=5))  # no change
 
     assert repo.state.rain_ended_at is None
-    repo.save_if_changed.assert_not_called()
+    repo.save_if_changed.assert_called_once()  # only the onset, not the repeat
     assert service.currently_wet is True
 
 
