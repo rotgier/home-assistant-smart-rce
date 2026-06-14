@@ -352,6 +352,77 @@ def live_reload() -> None:
         )
     )
     reload(import_module("custom_components.smart_rce.pv_forecast_factory"))
+    # --- garden (own bounded context) — reload BEFORE the platform files
+    # (sensor/binary_sensor/button/number/time) which import garden entity
+    # modules. Topological: const + domain → infrastructure → application →
+    # factory → entity modules → package re-exports. Garden was historically
+    # OUT of live_reload, so every garden change forced a Core restart — and a
+    # restart re-logins Aliyun + bursts the 5 Mammotion coordinators (#629),
+    # eating the cloud send budget. Reloadable now → no restart for garden edits.
+    reload(import_module("custom_components.smart_rce.garden.const"))
+    reload(import_module("custom_components.smart_rce.garden.garden_device"))
+    reload(import_module("custom_components.smart_rce.garden.domain.forecast_window"))
+    reload(import_module("custom_components.smart_rce.garden.domain.non_work"))
+    reload(import_module("custom_components.smart_rce.garden.domain.rain"))
+    reload(import_module("custom_components.smart_rce.garden.domain.rain_gate"))
+    reload(import_module("custom_components.smart_rce.garden.domain.mowing_planner"))
+    reload(import_module("custom_components.smart_rce.garden.domain"))
+    reload(
+        import_module("custom_components.smart_rce.garden.infrastructure.rain_reader")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.infrastructure.rain_repository"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.infrastructure.forecast_reader"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.infrastructure.luba_state_reader"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.infrastructure.non_work_actuator"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.infrastructure.non_work_reader"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.infrastructure.non_work_repository"
+        )
+    )
+    reload(import_module("custom_components.smart_rce.garden.infrastructure"))
+    reload(import_module("custom_components.smart_rce.garden.application.rain_service"))
+    reload(
+        import_module("custom_components.smart_rce.garden.application.non_work_service")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.application.mowing_planner_service"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.garden.application.rain_gate_service"
+        )
+    )
+    reload(import_module("custom_components.smart_rce.garden.application"))
+    reload(import_module("custom_components.smart_rce.garden.factory"))
+    reload(import_module("custom_components.smart_rce.garden.sensor_entities"))
+    reload(import_module("custom_components.smart_rce.garden.binary_sensor_entities"))
+    reload(import_module("custom_components.smart_rce.garden.button_entities"))
+    reload(import_module("custom_components.smart_rce.garden.number_entities"))
+    reload(import_module("custom_components.smart_rce.garden.time_entities"))
+    reload(import_module("custom_components.smart_rce.garden"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor._state_writer_mixin"))
     reload(import_module("custom_components.smart_rce.sensor.rce_sensor"))
