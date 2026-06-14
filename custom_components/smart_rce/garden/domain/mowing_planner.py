@@ -9,9 +9,9 @@ Start strategies once a usable window exists:
 - WAIT_BATTERY: window fits the task but the battery would not outlast it by
   BATTERY_RESERVE_MIN → stay docked and charge (flips to GO as it charges; a
   task too big for one charge is left to Luba's own post-charge auto-resume).
-- GO: window fits AND battery finishes the task with reserve → start late
-  enough to finish END_BUFFER before the window closes (buffer against rain
-  earlier than forecast), clamped to the window open so a tight window starts now.
+- GO: window fits AND battery finishes the task with reserve → start at the
+  window open (earliest), finishing in one charge. Earliest start banks the most
+  lawn before the window can shrink (early rain or the non-work boundary).
 """
 
 from __future__ import annotations
@@ -112,13 +112,13 @@ class MowingPlanner:
         # post-charge auto-resume, not forced here).
         if drain < finish + self.BATTERY_RESERVE_MIN:
             return StartStrategy.WAIT_BATTERY, None, win_min
-        # GO: start late enough to finish END_BUFFER before the window closes
-        # (buffer against rain earlier than forecast), but never before the
-        # window opens — a tight window just starts at the open.
-        opt_start = max(
-            window.start, window.end - timedelta(minutes=finish) - self.END_BUFFER
-        )
-        return StartStrategy.GO, opt_start, win_min
+        # GO: window fits the job and the battery outlasts it by the reserve,
+        # so start at the window open and finish in one charge. Earliest start
+        # banks the most lawn before the window can shrink — rain moving in
+        # ahead of forecast, or the non-work boundary. The BATTERY_RESERVE_MIN
+        # gate above already guarantees finishing without a recharge, so there
+        # is no reason to defer toward the window end.
+        return StartStrategy.GO, window.start, win_min
 
     def _should_start(
         self, inp: MowingInput, window: ForecastWindow, opt_start: datetime | None

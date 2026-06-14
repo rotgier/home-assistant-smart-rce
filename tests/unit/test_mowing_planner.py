@@ -73,17 +73,17 @@ def test_long_window_battery_short_waits_to_charge() -> None:
     assert d.should_start is False
 
 
-def test_long_window_battery_enough_go_start_not_yet() -> None:
+def test_long_window_battery_enough_go_starts_at_open() -> None:
     # Battery covers the task + reserve (drain 100 >= finish 50 + 10) and window
-    # fits → GO, start at end-finish-END_BUFFER (finish 10 min before close).
+    # fits → GO starts at the window open (earliest), not deferred to the close.
     d = _decide(battery=70, progress=80)
 
     assert d.strategy is StartStrategy.GO
     assert d.window_bound is WindowBound.NON_WORK
     assert d.time_to_finish_min == 50
     assert d.time_to_drain_min == 100
-    assert d.opt_start == NOW + timedelta(hours=5) - timedelta(minutes=50 + 10)
-    assert d.should_start is False
+    assert d.opt_start == NOW  # earliest: window open, not end-finish-buffer
+    assert d.should_start is True
 
 
 def test_battery_covers_task_but_not_reserve_waits() -> None:
@@ -97,15 +97,15 @@ def test_battery_covers_task_but_not_reserve_waits() -> None:
 
 
 def test_tight_window_go_starts_at_open() -> None:
-    # Battery enough (drain 100 >= finish 50 + 10); window just over finish (55,
-    # no room for the 10-min finish buffer) → GO clamps opt_start to the open.
+    # Battery enough (drain 100 >= finish 50 + 10); window just over finish (55)
+    # → GO starts at the window open (same as any GO now — earliest possible).
     slots = [_slot(0, 0), _slot(15, 0), _slot(30, 0), _slot(45, 0), _slot(55, 60)]
     d = _decide(slots=slots, battery=70, progress=80)
 
     assert d.strategy is StartStrategy.GO
     assert d.time_to_finish_min == 50
     assert d.window_min == 55
-    assert d.opt_start == NOW  # clamped to window open (55 < 50+10)
+    assert d.opt_start == NOW  # window open
     assert d.should_start is True
 
 
