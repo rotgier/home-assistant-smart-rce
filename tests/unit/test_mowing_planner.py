@@ -109,6 +109,40 @@ def test_tight_window_go_starts_at_open() -> None:
     assert d.should_start is True
 
 
+def test_quiet_end_grace_holds_start() -> None:
+    # Window opens at the non-work end (10:00); Luba's firmware auto-resumes
+    # there, so HA holds its start during RESUME_GRACE (10 min) to avoid racing
+    # a duplicate cloud command. Strategy/opt_start unchanged — only the gate.
+    now = datetime(2026, 6, 9, 10, 5, tzinfo=UTC)
+    d = _decide(now=now, battery=70, progress=80)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.opt_start == now  # earliest is still the window open (display)
+    assert d.should_start is False  # but held by grace
+
+
+def test_quiet_end_fallback_starts_after_grace() -> None:
+    # Firmware didn't resume (still docked) past the grace → HA starts as fallback.
+    now = datetime(2026, 6, 9, 10, 11, tzinfo=UTC)
+    d = _decide(now=now, battery=70, progress=80)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.should_start is True
+
+
+def test_no_non_work_has_no_grace() -> None:
+    # Without a non-work target there is no quiet end to race → no grace gate.
+    now = datetime(2026, 6, 9, 10, 5, tzinfo=UTC)
+    slots = [
+        ForecastSlot(now, 0, timedelta(minutes=15)),
+        ForecastSlot(now + timedelta(minutes=120), 60, timedelta(minutes=15)),
+    ]
+    d = _decide(now=now, battery=70, progress=80, slots=slots, non_work=None)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.should_start is True
+
+
 def test_short_window_skipped() -> None:
     # Rain in 20 min → window < WIN_MIN(30) → skip, never start.
     slots = [_slot(0, 0), _slot(20, 60)]

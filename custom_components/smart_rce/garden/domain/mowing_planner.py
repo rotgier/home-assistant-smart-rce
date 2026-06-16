@@ -40,6 +40,7 @@ class MowingPlanner:
     RAIN_PROB: Final = 50  # precipitation probability threshold (%)
     END_BUFFER: Final = timedelta(minutes=10)  # need >10 min left to start
     BATTERY_RESERVE_MIN: Final = 10  # battery must outlast the task by this (min)
+    RESUME_GRACE: Final = timedelta(minutes=10)  # hold HA start after quiet end
 
     def decide(self, inp: MowingInput) -> PlannerDecision:
         # The window cannot open before the latest of: now, the end of an
@@ -124,6 +125,16 @@ class MowingPlanner:
         self, inp: MowingInput, window: ForecastWindow, opt_start: datetime | None
     ) -> bool:
         if opt_start is None or window.end is None:
+            return False
+        # Quiet just ended → Luba's firmware auto-resumes its task on its own.
+        # Hold HA's start for RESUME_GRACE so we don't race that resume with a
+        # duplicate cloud command; if the firmware hasn't resumed by then (still
+        # docked), HA starts as a fallback. The grace only bites in the short
+        # window right after the non-work end — mid-day windows are unaffected.
+        if (
+            inp.non_work is not None
+            and inp.now < inp.non_work.recent_end(inp.now) + self.RESUME_GRACE
+        ):
             return False
         return (
             inp.now >= opt_start

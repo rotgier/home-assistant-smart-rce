@@ -75,6 +75,17 @@ class NonWorkHours:
             return None
         return self._next_occurrence(now, self.end)
 
+    def recent_end(self, now: datetime) -> datetime:
+        """Most recent occurrence of `end` at or before now (today, else yesterday).
+
+        A stable anchor for "the quiet window just ended" that survives leaving
+        the window, unlike `end_of_active_window` (which is None once outside).
+        """
+        candidate = now.replace(
+            hour=self.end.hour, minute=self.end.minute, second=0, microsecond=0
+        )
+        return candidate if candidate <= now else candidate - _ONE_DAY
+
     @staticmethod
     def _next_occurrence(now: datetime, tod: time) -> datetime:
         """Next datetime at wall-clock `tod` that is >= now (today, else tomorrow)."""

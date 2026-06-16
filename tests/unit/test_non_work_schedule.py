@@ -79,3 +79,19 @@ def test_non_crossing_window() -> None:
     inside = NOON.replace(hour=13)
     assert siesta.end_of_active_window(inside) == inside.replace(hour=14, minute=0)
     assert siesta.end_of_active_window(NOON.replace(hour=15)) is None
+
+
+def test_recent_end_today_when_past() -> None:
+    assert HOURS.recent_end(NOON) == NOON.replace(hour=10, minute=5)
+
+
+def test_recent_end_rolls_to_yesterday_when_ahead() -> None:
+    early = NOON.replace(hour=9)  # today's 10:05 is still ahead → yesterday's
+    assert HOURS.recent_end(early) == early.replace(hour=10, minute=5) - timedelta(
+        days=1
+    )
+
+
+def test_recent_end_at_exact_end_is_today() -> None:
+    at_end = NOON.replace(hour=10, minute=5)
+    assert HOURS.recent_end(at_end) == at_end
