@@ -323,6 +323,18 @@ class TestPersistence:
         assert restored.modbus_current_value is None
         assert restored.last_modbus_read_at is None
         assert restored.start_charge_hour_override is None
+        assert restored.charge_hours_override is None
+
+    def test_charge_hours_override_persisted(self):
+        original = BatteryChargePolicy(charge_hours_override=2)
+        restored = BatteryChargePolicy.from_dict(original.to_dict())
+        assert restored.charge_hours_override == 2
+
+    def test_invalid_charge_hours_becomes_none(self):
+        restored = BatteryChargePolicy.from_dict(
+            {"charge_allowed_override": "OFF", "charge_hours_override": "not_int"}
+        )
+        assert restored.charge_hours_override is None
 
     def test_start_charge_hour_override_persisted(self):
         original = BatteryChargePolicy(start_charge_hour_override=time(2, 30))
@@ -351,3 +363,19 @@ class TestSetStartChargeHourOverride:
         policy = BatteryChargePolicy(start_charge_hour_override=time(2, 30))
         assert policy.set_start_charge_hour_override(None) is True
         assert policy.start_charge_hour_override is None
+
+
+class TestSetChargeHoursOverride:
+    def test_changes_returns_true(self):
+        policy = BatteryChargePolicy()
+        assert policy.set_charge_hours_override(2) is True
+        assert policy.charge_hours_override == 2
+
+    def test_same_returns_false(self):
+        policy = BatteryChargePolicy(charge_hours_override=2)
+        assert policy.set_charge_hours_override(2) is False
+
+    def test_set_back_to_auto(self):
+        policy = BatteryChargePolicy(charge_hours_override=2)
+        assert policy.set_charge_hours_override(None) is True
+        assert policy.charge_hours_override is None

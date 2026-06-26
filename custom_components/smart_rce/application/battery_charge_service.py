@@ -106,6 +106,10 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
     def start_charge_hour_override(self) -> time | None:
         return self._repo.policy.start_charge_hour_override
 
+    @property
+    def charge_hours_override(self) -> int | None:
+        return self._repo.policy.charge_hours_override
+
     # ─── User mutators ───
 
     async def set_charge_allowed_override(self, mode: OverrideMode) -> None:
@@ -118,6 +122,17 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         """UI-driven time entity change. Persists + notifies listeners on delta."""
         await self._persist_and_notify(
             self._repo.policy.set_start_charge_hour_override(value)
+        )
+
+    async def set_charge_hours_override(self, value: int | None) -> None:
+        """UI-driven select change for charge-window length (None = Auto).
+
+        Persists + notifies on delta. ChargeSlots recompute is driven by the
+        caller (Ems) — this service owns only the persisted knob, not the
+        ChargeSlots aggregate.
+        """
+        await self._persist_and_notify(
+            self._repo.policy.set_charge_hours_override(value)
         )
 
     @callback

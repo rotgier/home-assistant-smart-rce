@@ -276,8 +276,26 @@ class Ems:
         BatteryChargeService owns the stickiness gate (this method just
         bridges the event from ChargeSlots).
         """
-        event = self.charge_slots.update(rce_data, self._heater_threshold())
+        event = self.charge_slots.update(
+            rce_data,
+            self._heater_threshold(),
+            self.battery_charge_service.charge_hours_override,
+        )
         self.battery_charge_service.handle_start_charge_today_changed(event, now)
+
+    async def set_charge_hours_override(self, value: int | None, now: datetime) -> None:
+        """Cross-aggregate command from `select.ems_battery_charge_hours_override`.
+
+        Persists the knob (BatteryChargePolicy) AND recomputes charge_slots so
+        the new length takes effect immediately — without this, an override set
+        after the ~14:00 RCE tomorrow publication would not reach `tomorrow`
+        until the next RCE refresh. The midnight sticky-gate in
+        `handle_start_charge_today_changed` still protects today's already-armed
+        start; recompute only re-materializes `tomorrow` for the next rotation.
+        """
+        await self.battery_charge_service.set_charge_hours_override(value)
+        self._refresh_charge_slots(now, self.rce_prices.rce_prices)
+        self._async_update_listeners()
 
     def _resolve_ems_operation(
         self, schedule_op: BatteryOperation, grid_op: EmsOperation

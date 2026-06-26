@@ -74,6 +74,13 @@ class BatteryChargePolicy:
     # (legacy input_datetime) for now; future commit migrates ownership to
     # smart_rce time entity + drops state_mapper bridge.
     start_charge_hour_override: time | None = None
+    # User override for the charge-window LENGTH (consecutive hours). None =
+    # Auto (adaptive 3–8 h selection in ChargeSlots). When set (2–8), forces a
+    # fixed-length window of N cheapest-on-average hours. INPUT consumed by
+    # `ChargeSlots.compute` (read cross-aggregate via Ems on recompute); kept
+    # here because this policy already owns a crash-safe Store and groups the
+    # other charge-window override knobs.
+    charge_hours_override: int | None = None
 
     @property
     def modbus_current_value(self) -> float | None:
@@ -146,6 +153,13 @@ class BatteryChargePolicy:
         self.start_charge_hour_override = value
         return True
 
+    def set_charge_hours_override(self, value: int | None) -> bool:
+        """Mutate the charge-window length override. Returns True if changed."""
+        if self.charge_hours_override == value:
+            return False
+        self.charge_hours_override = value
+        return True
+
     def record_modbus_read(self, value: float, at: datetime) -> bool:
         """Update Modbus state cache. Returns True if value changed.
 
@@ -172,6 +186,7 @@ class BatteryChargePolicy:
                 if self.start_charge_hour_override is not None
                 else None
             ),
+            "charge_hours_override": self.charge_hours_override,
         }
 
     @classmethod
@@ -223,9 +238,20 @@ class BatteryChargePolicy:
         else:
             start_charge = None
 
+        charge_hours_raw = data.get("charge_hours_override")
+        charge_hours: int | None
+        if charge_hours_raw is not None:
+            try:
+                charge_hours = int(charge_hours_raw)
+            except (TypeError, ValueError):
+                charge_hours = None
+        else:
+            charge_hours = None
+
         return cls(
             charge_allowed_override=mode,
             _modbus_current_value=modbus_value,
             _last_modbus_read_at=last_read_at,
             start_charge_hour_override=start_charge,
+            charge_hours_override=charge_hours,
         )

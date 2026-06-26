@@ -75,12 +75,16 @@ class ChargeSlots:
         self,
         rce_data: RcePrices | None,
         heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,
+        charge_hours_override: int | None = None,
     ) -> StartChargeTodayChanged | None:
         """Recompute charge windows from RCE — full refresh today/tomorrow.
 
         Returns `StartChargeTodayChanged` event when today's start_datetime
         time-of-day actually changed (Etap B'-2 — drives auto-sync of
         BatteryChargePolicy.start_charge_hour_override).
+
+        `charge_hours_override` (None = Auto) forces a fixed-length charge
+        window — see `compute`. Fed from `BatteryChargePolicy` via Ems.
         """
         previous = self.today.start_datetime.time() if self.today else None
         if rce_data is None:
@@ -88,8 +92,12 @@ class ChargeSlots:
             self.tomorrow = None
             new = None
         else:
-            self.today = self.compute(rce_data.today, heater_threshold)
-            self.tomorrow = self.compute(rce_data.tomorrow, heater_threshold)
+            self.today = self.compute(
+                rce_data.today, heater_threshold, charge_hours_override
+            )
+            self.tomorrow = self.compute(
+                rce_data.tomorrow, heater_threshold, charge_hours_override
+            )
             new = self.today.start_datetime.time() if self.today else None
         if new is not None and new != previous:
             return StartChargeTodayChanged(new_value=new)
@@ -124,11 +132,40 @@ class ChargeSlots:
     def compute(
         day_prices: RceDayPrices | None,
         heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,  # noqa: ARG004
+        charge_hours_override: int | None = None,
     ) -> ChargeWindow | None:
-        """Algorytm: dobór najlepszego okna ładowania dla pojedynczego dnia."""
+        """Algorytm: dobór najlepszego okna ładowania dla pojedynczego dnia.
+
+        `charge_hours_override` (None = Auto): when set, forces a fixed-length
+        window of N consecutive cheapest-on-average hours instead of the
+        adaptive 3–8 h selection. Half-hour shift is skipped (integer start).
+        Start is still searched within the normal `range(6, 16)`.
+        """
         if day_prices is None or not day_prices.hour_price:
             return None
         prices: list[float] = list(day_prices.hour_price)
+        if charge_hours_override is not None:
+            start_hour, end_hour = ChargeSlots._forced_window(
+                prices, charge_hours_override
+            )
+        else:
+            start_hour, end_hour = ChargeSlots._adaptive_window(prices)
+        return ChargeWindow(
+            start_hour=start_hour,
+            start_datetime=_hour_to_datetime(day_prices.day, start_hour),
+            end_hour=end_hour,
+            end_datetime=_hour_to_datetime(day_prices.day, end_hour),
+        )
+
+    @staticmethod
+    def _forced_window(prices: list[float], hours: int) -> tuple[float, float]:
+        """Fixed-length override: N cheapest-on-average consecutive hours."""
+        start = _cheapest_start_for_length(prices, hours)
+        return float(start), float(start + hours)
+
+    @staticmethod
+    def _adaptive_window(prices: list[float]) -> tuple[float, float]:
+        """Auto path: adaptive 3–8 h selection by lowest mean price."""
         start_charge_hours = calculate_start_charge_hours(prices)
         best_n = find_best_consecutive_hours(prices, start_charge_hours)
         # NOTE 2026-05-29: shift_earlier_if_cheap disabled. Anchor-based
@@ -140,20 +177,15 @@ class ChargeSlots:
         # AND weather forecast 1-2h before window start is partly-cloudy
         # or better (most reliable forecast horizon). Function kept (unit
         # tests + CSV diagnostic fixture still exercise it pure).
-        new_n, shifted_start = best_n, start_charge_hours[best_n]
+        shifted_start = start_charge_hours[best_n]
         # Half-hour shift dla N=3: bateria startuje w połowie pierwszej godziny.
         # Dla N>3 (po shift) start_hour to plain integer.
-        if new_n == INITIAL_BEST_CONSECUTIVE_HOURS:
+        if best_n == INITIAL_BEST_CONSECUTIVE_HOURS:
             start_hour = shifted_start - 0.5
         else:
             start_hour = float(shifted_start)
-        end_hour = float(shifted_start + new_n)
-        return ChargeWindow(
-            start_hour=start_hour,
-            start_datetime=_hour_to_datetime(day_prices.day, start_hour),
-            end_hour=end_hour,
-            end_datetime=_hour_to_datetime(day_prices.day, end_hour),
-        )
+        end_hour = float(shifted_start + best_n)
+        return start_hour, end_hour
 
 
 def _hour_to_datetime(day: date, hour: float) -> datetime:
@@ -162,17 +194,22 @@ def _hour_to_datetime(day: date, hour: float) -> datetime:
 
 
 def calculate_start_charge_hours(prices: list[float]) -> dict[int, int]:
-    start_charge_hours: dict[int, int] = {}
-    for consecutive_hours in POSSIBLE_CONSECUTIVE_HOURS:
-        min_avg = float("inf")
-        best_hour = 0
-        for hour in range(6, 16):
-            avg = mean(prices[hour : hour + consecutive_hours])
-            if avg < min_avg:
-                min_avg = avg
-                best_hour = hour
-        start_charge_hours[consecutive_hours] = best_hour
-    return start_charge_hours
+    return {
+        consecutive_hours: _cheapest_start_for_length(prices, consecutive_hours)
+        for consecutive_hours in POSSIBLE_CONSECUTIVE_HOURS
+    }
+
+
+def _cheapest_start_for_length(prices: list[float], consecutive_hours: int) -> int:
+    """Start hour in `range(6, 16)` minimizing the mean of an N-hour window."""
+    min_avg = float("inf")
+    best_hour = 0
+    for hour in range(6, 16):
+        avg = mean(prices[hour : hour + consecutive_hours])
+        if avg < min_avg:
+            min_avg = avg
+            best_hour = hour
+    return best_hour
 
 
 def find_best_consecutive_hours(

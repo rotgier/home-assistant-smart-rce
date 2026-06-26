@@ -1,14 +1,15 @@
-"""Smart RCE select platform — entities for tri-state user choices.
+"""Smart RCE select platform — entities for discrete user choices.
 
-Currently exposes one entity:
+Exposes:
 - `select.ems_battery_charge_allowed_override` — three-state override for
-  `BatteryChargePolicy.charge_allowed_override`:
-    * OFF (passthrough) — schedule + time-gate decides
-    * ALLOWED — force charge on
-    * DISALLOWED — block charge
+  `BatteryChargePolicy.charge_allowed_override` (OFF / ALLOWED / DISALLOWED).
+  Replaces `input_boolean.battery_charge_max_current_toggle` (Etap B).
+- `select.ems_battery_charge_hours_override` — charge-window LENGTH override
+  for `BatteryChargePolicy.charge_hours_override` (Auto / 2 h … 8 h).
+- `select.ems_water_heater_reserved_mode` — AUTO / MANUAL reserved-power mode.
+- `select.ems_schedule_<scope>_<kind>_behavior` — per-slot engagement timing.
 
-Replaces `input_boolean.battery_charge_max_current_toggle` (Etap B migration).
-Persistence owned by `BatteryChargeRepository`.
+Charge-related state persisted by `BatteryChargeRepository` (own Store).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
@@ -46,6 +48,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             EmsBatteryChargeAllowedOverrideSelect(entry),
+            EmsBatteryChargeHoursOverrideSelect(entry),
             EmsWaterHeaterReservedModeSelect(entry),
             *[
                 BatteryScheduleSlotBehaviorSelect(entry, scope=scope, kind=kind)
@@ -92,6 +95,56 @@ class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
     async def async_select_option(self, option: str) -> None:
         # HA platform validates `option` against `_attr_options` before calling us.
         await self._service.set_charge_allowed_override(OverrideMode(option))
+
+
+class EmsBatteryChargeHoursOverrideSelect(SelectEntity):
+    """User override of the charge-window LENGTH (consecutive hours).
+
+    Bridge to `BatteryChargePolicy.charge_hours_override` via Ems. Options:
+    - "Auto" → None: adaptive 3–8 h selection (ChargeSlots default).
+    - "2 h" … "8 h" → N: force a fixed-length window of N cheapest-on-average
+      hours (e.g. holiday: pick the 2 cheapest consecutive hours).
+
+    Writes go through `Ems.set_charge_hours_override` (not the service alone)
+    so charge_slots recompute immediately — see that method's docstring.
+    Persistence handled by `BatteryChargeRepository` (own Store).
+    """
+
+    _AUTO_OPTION = "Auto"
+    _MIN_HOURS = 2
+    _MAX_HOURS = 8
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Battery Charge Hours Override"
+    _attr_should_poll = False
+    _attr_icon = "mdi:battery-clock"
+    _attr_options = [_AUTO_OPTION] + [
+        f"{n} h" for n in range(_MIN_HOURS, _MAX_HOURS + 1)
+    ]
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._ems = entry.runtime_data.ems
+        self._service = self._ems.battery_charge_service
+        self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_hours_override"
+        self.entity_id = "select.ems_battery_charge_hours_override"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def current_option(self) -> str:
+        value = self._service.charge_hours_override
+        return self._AUTO_OPTION if value is None else f"{value} h"
+
+    async def async_select_option(self, option: str) -> None:
+        # HA platform validates `option` against `_attr_options` before calling us.
+        value = (
+            None if option == self._AUTO_OPTION else int(option.split(maxsplit=1)[0])
+        )
+        await self._ems.set_charge_hours_override(value, dt_util.now())
 
 
 class EmsWaterHeaterReservedModeSelect(SelectEntity):
