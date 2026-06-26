@@ -19,7 +19,6 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import dt as dt_util
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
@@ -144,7 +143,7 @@ class EmsBatteryChargeHoursOverrideSelect(SelectEntity):
         value = (
             None if option == self._AUTO_OPTION else int(option.split(maxsplit=1)[0])
         )
-        await self._ems.set_charge_hours_override(value, dt_util.now())
+        await self._ems.set_charge_hours_override(value)
 
 
 class EmsWaterHeaterReservedModeSelect(SelectEntity):

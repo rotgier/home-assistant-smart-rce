@@ -283,18 +283,34 @@ class Ems:
         )
         self.battery_charge_service.handle_start_charge_today_changed(event, now)
 
-    async def set_charge_hours_override(self, value: int | None, now: datetime) -> None:
+    async def set_charge_hours_override(self, value: int | None) -> None:
         """Cross-aggregate command from `select.ems_battery_charge_hours_override`.
 
-        Persists the knob (BatteryChargePolicy) AND recomputes charge_slots so
-        the new length takes effect immediately — without this, an override set
-        after the ~14:00 RCE tomorrow publication would not reach `tomorrow`
-        until the next RCE refresh. The midnight sticky-gate in
-        `handle_start_charge_today_changed` still protects today's already-armed
-        start; recompute only re-materializes `tomorrow` for the next rotation.
+        A user-driven select change is an explicit intent, so it:
+        1. persists the knob (BatteryChargePolicy),
+        2. recomputes charge_slots with the new length, and
+        3. force-syncs `start_charge_hour_override` to the freshly computed
+           today-window start — BYPASSING the midnight sticky-gate.
+
+        Step 3 is what makes the select actually effective: the real charge
+        decisions (charge_allowed time-gate, dod_policy + grid_export positive
+        pre-charge windows) read `start_charge_hour_override`, NOT charge_slots
+        directly. Without the force-sync, changing the select mid-day would
+        only move the sensor and take effect at the next midnight rotation,
+        leaving today's charging on the stale start (confusing + ineffective).
+
+        The sticky-gate stays in `_refresh_charge_slots` (automatic RCE refresh)
+        so a price refresh never clobbers a manually-set start.
         """
         await self.battery_charge_service.set_charge_hours_override(value)
-        self._refresh_charge_slots(now, self.rce_prices.rce_prices)
+        self.charge_slots.update(
+            self.rce_prices.rce_prices, self._heater_threshold(), value
+        )
+        today = self.charge_slots.today
+        if today is not None:
+            await self.battery_charge_service.set_start_charge_hour_override(
+                today.start_datetime.time()
+            )
         self._async_update_listeners()
 
     def _resolve_ems_operation(
