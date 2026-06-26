@@ -4,8 +4,8 @@ Exposes:
 - `select.ems_battery_charge_allowed_override` — three-state override for
   `BatteryChargePolicy.charge_allowed_override` (OFF / ALLOWED / DISALLOWED).
   Replaces `input_boolean.battery_charge_max_current_toggle` (Etap B).
-- `select.ems_battery_charge_hours_override` — charge-window LENGTH override
-  for `BatteryChargePolicy.charge_hours_override` (Auto / 2 h … 8 h).
+- `select.ems_battery_initial_charge_hours` — base charge-window length
+  for `BatteryChargePolicy.initial_charge_hours` (2 h … 8 h, default 3).
 - `select.ems_water_heater_reserved_mode` — AUTO / MANUAL reserved-power mode.
 - `select.ems_schedule_<scope>_<kind>_behavior` — per-slot engagement timing.
 
@@ -47,7 +47,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             EmsBatteryChargeAllowedOverrideSelect(entry),
-            EmsBatteryChargeHoursOverrideSelect(entry),
+            EmsBatteryInitialChargeHoursSelect(entry),
             EmsWaterHeaterReservedModeSelect(entry),
             *[
                 BatteryScheduleSlotBehaviorSelect(entry, scope=scope, kind=kind)
@@ -96,37 +96,34 @@ class EmsBatteryChargeAllowedOverrideSelect(SelectEntity):
         await self._service.set_charge_allowed_override(OverrideMode(option))
 
 
-class EmsBatteryChargeHoursOverrideSelect(SelectEntity):
-    """User override of the charge-window LENGTH (consecutive hours).
+class EmsBatteryInitialChargeHoursSelect(SelectEntity):
+    """Base charge-window length (consecutive hours) — algorithm seed.
 
-    Bridge to `BatteryChargePolicy.charge_hours_override` via Ems. Options:
-    - "Auto" → None: adaptive 3–8 h selection (ChargeSlots default).
-    - "2 h" … "8 h" → N: force a fixed-length window of N cheapest-on-average
-      hours (e.g. holiday: pick the 2 cheapest consecutive hours).
+    Bridge to `BatteryChargePolicy.initial_charge_hours` via Ems. The selected
+    N is the BASE window; the algorithm may still extend earlier/longer when an
+    earlier hour is cheap or only marginally pricier (see ChargeWindowParams).
+    Vacation case: set 2 h. Default 3 h reproduces the historical behaviour.
 
-    Writes go through `Ems.set_charge_hours_override` (not the service alone)
-    so charge_slots recompute immediately — see that method's docstring.
-    Persistence handled by `BatteryChargeRepository` (own Store).
+    Writes go through `Ems.set_initial_charge_hours` (not the service alone) so
+    charge_slots recompute + start force-sync happen immediately — see
+    `Ems._apply_charge_param_change`. Persisted by `BatteryChargeRepository`.
     """
 
-    _AUTO_OPTION = "Auto"
     _MIN_HOURS = 2
     _MAX_HOURS = 8
 
     _attr_has_entity_name = False
-    _attr_name = "EMS Battery Charge Hours Override"
+    _attr_name = "EMS Battery Initial Charge Hours"
     _attr_should_poll = False
     _attr_icon = "mdi:battery-clock"
-    _attr_options = [_AUTO_OPTION] + [
-        f"{n} h" for n in range(_MIN_HOURS, _MAX_HOURS + 1)
-    ]
+    _attr_options = [f"{n} h" for n in range(_MIN_HOURS, _MAX_HOURS + 1)]
 
     def __init__(self, entry: SmartRceConfigEntry) -> None:
         self._entry = entry
         self._ems = entry.runtime_data.ems
         self._service = self._ems.battery_charge_service
-        self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_hours_override"
-        self.entity_id = "select.ems_battery_charge_hours_override"
+        self._attr_unique_id = f"{DOMAIN}_ems_battery_initial_charge_hours"
+        self.entity_id = "select.ems_battery_initial_charge_hours"
         self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
@@ -135,15 +132,11 @@ class EmsBatteryChargeHoursOverrideSelect(SelectEntity):
 
     @property
     def current_option(self) -> str:
-        value = self._service.charge_hours_override
-        return self._AUTO_OPTION if value is None else f"{value} h"
+        return f"{self._service.initial_charge_hours} h"
 
     async def async_select_option(self, option: str) -> None:
         # HA platform validates `option` against `_attr_options` before calling us.
-        value = (
-            None if option == self._AUTO_OPTION else int(option.split(maxsplit=1)[0])
-        )
-        await self._ems.set_charge_hours_override(value)
+        await self._ems.set_initial_charge_hours(int(option.split(maxsplit=1)[0]))
 
 
 class EmsWaterHeaterReservedModeSelect(SelectEntity):

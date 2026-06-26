@@ -1,11 +1,13 @@
 """Smart RCE number platform — entities for user-tunable numeric knobs.
 
-Currently exposes one entity:
-- `number.ems_water_heater_reserved` — manual override for
-  `WaterHeaterReservedPolicy.manual_value` (W). Active when the companion
-  `select.ems_water_heater_reserved_mode` is set to MANUAL.
+Exposes (among others):
+- Charge-window algorithm params (Battery charge): extend threshold, absolute
+  cheap price, base-window shift — `BatteryChargePolicy`, written via Ems
+  (recompute + start force-sync).
+- Water-heater reserved power + bonus gates — `WaterHeaterReservedPolicy`.
+- Battery-schedule per-slot + one-shot target SoC — `BatterySchedule`.
 
-Persistence owned by `WaterHeaterReservedRepository`.
+Persistence owned by the respective repositories.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from homeassistant.components.number import NumberEntity, NumberMode
-from homeassistant.const import UnitOfPower
+from homeassistant.const import UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -43,6 +45,9 @@ async def async_setup_entry(
     scopes: tuple[Scope, ...] = ("today", "tomorrow")
     async_add_entities(
         [
+            EmsBatteryChargeExtendThresholdNumber(entry),
+            EmsBatteryChargeAbsoluteCheapPriceNumber(entry),
+            EmsBatteryChargeBaseWindowShiftNumber(entry),
             EmsWaterHeaterReservedNumber(entry),
             EmsWaterHeaterBonusGateOnNumber(entry),
             EmsWaterHeaterBonusGateOffNumber(entry),
@@ -56,6 +61,122 @@ async def async_setup_entry(
             *build_numbers(entry),
         ]
     )
+
+
+class EmsBatteryChargeExtendThresholdNumber(NumberEntity):
+    """Threshold (zł/MWh) to extend the charge window earlier.
+
+    Take an earlier+longer window when the earlier hour is at most this many
+    zł/MWh above the base-window max price. Higher = more eager to grab earlier
+    hours (safer margin if PV forecast under-delivers). Bridge to
+    `BatteryChargePolicy.charge_extend_threshold` via Ems (recompute +
+    start force-sync on change — see `Ems._apply_charge_param_change`).
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Battery Charge Extend Threshold"
+    _attr_should_poll = False
+    _attr_icon = "mdi:cash-clock"
+    _attr_native_unit_of_measurement = "PLN/MWh"
+    _attr_native_min_value = 0
+    _attr_native_max_value = 300
+    _attr_native_step = 5
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._ems = entry.runtime_data.ems
+        self._service = self._ems.battery_charge_service
+        self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_extend_threshold"
+        self.entity_id = "number.ems_battery_charge_extend_threshold"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return self._service.charge_extend_threshold
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._ems.set_charge_extend_threshold(value)
+
+
+class EmsBatteryChargeAbsoluteCheapPriceNumber(NumberEntity):
+    """Absolute-cheap price (zł/MWh) for extending the charge window earlier.
+
+    An earlier hour cheaper than this is always worth grabbing, regardless of
+    the relative extend threshold. Bridge to
+    `BatteryChargePolicy.charge_absolute_cheap_price` via Ems.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Battery Charge Absolute Cheap Price"
+    _attr_should_poll = False
+    _attr_icon = "mdi:cash-check"
+    _attr_native_unit_of_measurement = "PLN/MWh"
+    _attr_native_min_value = 0
+    _attr_native_max_value = 500
+    _attr_native_step = 5
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._ems = entry.runtime_data.ems
+        self._service = self._ems.battery_charge_service
+        self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_absolute_cheap_price"
+        self.entity_id = "number.ems_battery_charge_absolute_cheap_price"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return self._service.charge_absolute_cheap_price
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._ems.set_charge_absolute_cheap_price(value)
+
+
+class EmsBatteryChargeBaseWindowShiftNumber(NumberEntity):
+    """Base-window start shift (minutes) — earlier start when window == base.
+
+    When the chosen window stays at the base length, the battery starts this
+    many minutes earlier (margin if PV forecast under-delivers). 0 = no shift.
+    Bridge to `BatteryChargePolicy.charge_base_window_shift_minutes` via Ems.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Battery Charge Base Window Shift"
+    _attr_should_poll = False
+    _attr_icon = "mdi:clock-start"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_native_min_value = 0
+    _attr_native_max_value = 120
+    _attr_native_step = 5
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._ems = entry.runtime_data.ems
+        self._service = self._ems.battery_charge_service
+        self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_base_window_shift"
+        self.entity_id = "number.ems_battery_charge_base_window_shift"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return float(self._service.charge_base_window_shift_minutes)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._ems.set_charge_base_window_shift_minutes(int(value))
 
 
 class EmsWaterHeaterReservedNumber(NumberEntity):

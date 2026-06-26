@@ -279,32 +279,47 @@ class Ems:
         event = self.charge_slots.update(
             rce_data,
             self._heater_threshold(),
-            self.battery_charge_service.charge_hours_override,
+            self.battery_charge_service.charge_window_params,
         )
         self.battery_charge_service.handle_start_charge_today_changed(event, now)
 
-    async def set_charge_hours_override(self, value: int | None) -> None:
-        """Cross-aggregate command from `select.ems_battery_charge_hours_override`.
+    async def set_initial_charge_hours(self, value: int) -> None:
+        """Cross-aggregate command from `select.ems_battery_initial_charge_hours`."""
+        await self.battery_charge_service.set_initial_charge_hours(value)
+        await self._apply_charge_param_change()
 
-        A user-driven select change is an explicit intent, so it:
-        1. persists the knob (BatteryChargePolicy),
-        2. recomputes charge_slots with the new length, and
-        3. force-syncs `start_charge_hour_override` to the freshly computed
-           today-window start — BYPASSING the midnight sticky-gate.
+    async def set_charge_extend_threshold(self, value: float) -> None:
+        """Cross-aggregate command from `number.ems_battery_charge_extend_threshold`."""
+        await self.battery_charge_service.set_charge_extend_threshold(value)
+        await self._apply_charge_param_change()
 
-        Step 3 is what makes the select actually effective: the real charge
-        decisions (charge_allowed time-gate, dod_policy + grid_export positive
-        pre-charge windows) read `start_charge_hour_override`, NOT charge_slots
-        directly. Without the force-sync, changing the select mid-day would
-        only move the sensor and take effect at the next midnight rotation,
-        leaving today's charging on the stale start (confusing + ineffective).
+    async def set_charge_absolute_cheap_price(self, value: float) -> None:
+        """Cross-aggregate command from `number.ems_battery_charge_absolute_cheap_price`."""
+        await self.battery_charge_service.set_charge_absolute_cheap_price(value)
+        await self._apply_charge_param_change()
 
-        The sticky-gate stays in `_refresh_charge_slots` (automatic RCE refresh)
-        so a price refresh never clobbers a manually-set start.
+    async def set_charge_base_window_shift_minutes(self, value: int) -> None:
+        """Cross-aggregate command from `number.ems_battery_charge_base_window_shift`."""
+        await self.battery_charge_service.set_charge_base_window_shift_minutes(value)
+        await self._apply_charge_param_change()
+
+    async def _apply_charge_param_change(self) -> None:
+        """Recompute charge_slots + force-sync start after a user param change.
+
+        Force-syncs `start_charge_hour_override` to the fresh today-window start.
+        A user change is explicit intent, so it BYPASSES the midnight
+        sticky-gate. This is what makes the params actually effective today: the
+        real charge decisions (charge_allowed time-gate, dod_policy +
+        grid_export positive pre-charge windows) read start_charge_hour_override,
+        NOT charge_slots directly. Without the force-sync, a mid-day change would
+        only move the sensor and take effect at the next midnight rotation. The
+        sticky-gate stays in `_refresh_charge_slots` (automatic RCE refresh) so a
+        price refresh never clobbers a manually-set start.
         """
-        await self.battery_charge_service.set_charge_hours_override(value)
         self.charge_slots.update(
-            self.rce_prices.rce_prices, self._heater_threshold(), value
+            self.rce_prices.rce_prices,
+            self._heater_threshold(),
+            self.battery_charge_service.charge_window_params,
         )
         today = self.charge_slots.today
         if today is not None:

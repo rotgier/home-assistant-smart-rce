@@ -18,13 +18,15 @@ import csv
 
 from custom_components.smart_rce.domain.charge_slots import (
     DEFAULT_HEATER_RCE_THRESHOLD,
-    INITIAL_BEST_CONSECUTIVE_HOURS,
-    POSSIBLE_CONSECUTIVE_HOURS,
+    DEFAULT_INITIAL_HOURS,
+    MAX_CONSECUTIVE_HOURS,
     calculate_start_charge_hours,
     find_best_consecutive_hours,
     shift_earlier_if_cheap,
 )
 from custom_components.smart_rce.domain.rce import RceDayPrices
+
+_POSSIBLE_CONSECUTIVE_HOURS = range(DEFAULT_INITIAL_HOURS, MAX_CONSECUTIVE_HOURS + 1)
 
 
 class CsvTextBuilder:
@@ -56,14 +58,14 @@ def create_csv(rce_prices: RceDayPrices):
         row.append(hour)
         row.append(str(current_price).replace(".", ","))
 
-        for consecutive_hours in reversed(POSSIBLE_CONSECUTIVE_HOURS):
+        for consecutive_hours in reversed(_POSSIBLE_CONSECUTIVE_HOURS):
             first_hour = start_charge_hours[consecutive_hours]
             last_hour = first_hour + consecutive_hours - 1
             mark = ""
             if first_hour <= hour <= last_hour:
                 mark = f"H{consecutive_hours}"
                 if consecutive_hours == best_consecutive_hours:
-                    if consecutive_hours == INITIAL_BEST_CONSECUTIVE_HOURS:
+                    if consecutive_hours == DEFAULT_INITIAL_HOURS:
                         assert first_hour == shifted_start
                     mark += "*"
             row.append(mark)

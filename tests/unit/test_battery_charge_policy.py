@@ -323,18 +323,48 @@ class TestPersistence:
         assert restored.modbus_current_value is None
         assert restored.last_modbus_read_at is None
         assert restored.start_charge_hour_override is None
-        assert restored.charge_hours_override is None
+        assert restored.initial_charge_hours == 3
+        assert restored.charge_extend_threshold == 45.0
+        assert restored.charge_absolute_cheap_price == 100.0
+        assert restored.charge_base_window_shift_minutes == 30
 
-    def test_charge_hours_override_persisted(self):
-        original = BatteryChargePolicy(charge_hours_override=2)
-        restored = BatteryChargePolicy.from_dict(original.to_dict())
-        assert restored.charge_hours_override == 2
-
-    def test_invalid_charge_hours_becomes_none(self):
-        restored = BatteryChargePolicy.from_dict(
-            {"charge_allowed_override": "OFF", "charge_hours_override": "not_int"}
+    def test_charge_window_params_round_trip(self):
+        original = BatteryChargePolicy(
+            initial_charge_hours=2,
+            charge_extend_threshold=60.0,
+            charge_absolute_cheap_price=120.0,
+            charge_base_window_shift_minutes=45,
         )
-        assert restored.charge_hours_override is None
+        restored = BatteryChargePolicy.from_dict(original.to_dict())
+        assert restored.initial_charge_hours == 2
+        assert restored.charge_extend_threshold == 60.0
+        assert restored.charge_absolute_cheap_price == 120.0
+        assert restored.charge_base_window_shift_minutes == 45
+
+    def test_invalid_params_fall_back_to_defaults(self):
+        restored = BatteryChargePolicy.from_dict(
+            {
+                "charge_allowed_override": "OFF",
+                "initial_charge_hours": "nope",
+                "charge_extend_threshold": None,
+            }
+        )
+        assert restored.initial_charge_hours == 3
+        assert restored.charge_extend_threshold == 45.0
+
+    def test_legacy_charge_hours_override_migrates_to_initial(self):
+        # Old key (int) maps to initial_charge_hours.
+        restored = BatteryChargePolicy.from_dict(
+            {"charge_allowed_override": "OFF", "charge_hours_override": 2}
+        )
+        assert restored.initial_charge_hours == 2
+
+    def test_legacy_charge_hours_override_null_maps_to_default(self):
+        # Old key None (== Auto) maps to the default base length.
+        restored = BatteryChargePolicy.from_dict(
+            {"charge_allowed_override": "OFF", "charge_hours_override": None}
+        )
+        assert restored.initial_charge_hours == 3
 
     def test_start_charge_hour_override_persisted(self):
         original = BatteryChargePolicy(start_charge_hour_override=time(2, 30))
@@ -365,17 +395,33 @@ class TestSetStartChargeHourOverride:
         assert policy.start_charge_hour_override is None
 
 
-class TestSetChargeHoursOverride:
-    def test_changes_returns_true(self):
+class TestSetChargeWindowParams:
+    def test_set_initial_charge_hours(self):
         policy = BatteryChargePolicy()
-        assert policy.set_charge_hours_override(2) is True
-        assert policy.charge_hours_override == 2
+        assert policy.set_initial_charge_hours(2) is True
+        assert policy.initial_charge_hours == 2
+        assert policy.set_initial_charge_hours(2) is False
 
-    def test_same_returns_false(self):
-        policy = BatteryChargePolicy(charge_hours_override=2)
-        assert policy.set_charge_hours_override(2) is False
+    def test_set_extend_threshold(self):
+        policy = BatteryChargePolicy()
+        assert policy.set_charge_extend_threshold(60.0) is True
+        assert policy.charge_extend_threshold == 60.0
+        assert policy.set_charge_extend_threshold(60.0) is False
 
-    def test_set_back_to_auto(self):
-        policy = BatteryChargePolicy(charge_hours_override=2)
-        assert policy.set_charge_hours_override(None) is True
-        assert policy.charge_hours_override is None
+    def test_set_absolute_cheap_price(self):
+        policy = BatteryChargePolicy()
+        assert policy.set_charge_absolute_cheap_price(120.0) is True
+        assert policy.charge_absolute_cheap_price == 120.0
+
+    def test_set_base_window_shift_minutes(self):
+        policy = BatteryChargePolicy()
+        assert policy.set_charge_base_window_shift_minutes(45) is True
+        assert policy.charge_base_window_shift_minutes == 45
+
+    def test_charge_window_params_vo(self):
+        policy = BatteryChargePolicy(
+            initial_charge_hours=2, charge_base_window_shift_minutes=15
+        )
+        params = policy.charge_window_params()
+        assert params.initial_hours == 2
+        assert params.base_window_shift_minutes == 15

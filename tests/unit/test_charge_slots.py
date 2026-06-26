@@ -1,8 +1,11 @@
-"""Unit tests for ChargeSlots.compute — fixed-length override vs auto path."""
+"""Unit tests for ChargeSlots.compute — parametrized base + extend algorithm."""
 
 from datetime import date
 
-from custom_components.smart_rce.domain.charge_slots import ChargeSlots
+from custom_components.smart_rce.domain.charge_slots import (
+    ChargeSlots,
+    ChargeWindowParams,
+)
 from custom_components.smart_rce.domain.rce import RceDayPrices
 
 
@@ -12,57 +15,95 @@ def _day(prices: list[float]) -> RceDayPrices:
     )
 
 
-def _flat_with_valley(valley_start: int, length: int) -> list[float]:
-    """24 hourly prices, all 100 except a cheap `length`-hour valley at 10."""
-    prices = [100.0] * 24
-    for h in range(valley_start, valley_start + length):
-        prices[h] = 10.0
-    return prices
+class TestBaseWindow:
+    def test_stays_at_base_when_earlier_hours_expensive(self):
+        # Cheapest 2h at 12-14; everything earlier is far pricier → no extend.
+        prices = [500.0] * 24
+        prices[12] = prices[13] = 10.0
+        params = ChargeWindowParams(initial_hours=2, base_window_shift_minutes=0)
+        window = ChargeSlots.compute(_day(prices), params=params)
+        assert window is not None
+        assert window.start_hour == 12.0
+        assert window.end_hour == 14.0
+
+    def test_base_window_shift_applies_when_window_equals_base(self):
+        # initial=3, no extend → window == base → start shifted 30 min earlier.
+        prices = [500.0] * 24
+        prices[12] = prices[13] = prices[14] = 10.0
+        params = ChargeWindowParams(initial_hours=3, base_window_shift_minutes=30)
+        window = ChargeSlots.compute(_day(prices), params=params)
+        assert window is not None
+        assert window.start_hour == 11.5  # 12:00 - 30 min
+        assert window.end_hour == 15.0
+
+    def test_shift_zero_gives_integer_start(self):
+        prices = [500.0] * 24
+        prices[12] = prices[13] = prices[14] = 10.0
+        params = ChargeWindowParams(initial_hours=3, base_window_shift_minutes=0)
+        window = ChargeSlots.compute(_day(prices), params=params)
+        assert window is not None
+        assert window.start_hour == 12.0
 
 
-class TestForcedWindow:
-    def test_override_picks_cheapest_two_hour_window(self):
-        # Cheapest consecutive 2h sits at 10:00-12:00.
-        window = ChargeSlots.compute(
-            _day(_flat_with_valley(10, 2)), charge_hours_override=2
+class TestExtendEarlier:
+    def test_extends_earlier_when_prior_hour_marginally_pricier(self):
+        # Base 2h at 12-14 (200). Hour 11 = 240 → 40 above base max (200),
+        # below extend_threshold 45 → take earlier 3h window [11-14).
+        prices = [500.0] * 24
+        prices[12] = prices[13] = 200.0
+        prices[11] = 240.0
+        params = ChargeWindowParams(
+            initial_hours=2,
+            extend_threshold=45,
+            absolute_cheap_price=100,  # 240 not "cheap" → only threshold path
+            base_window_shift_minutes=0,
         )
+        window = ChargeSlots.compute(_day(prices), params=params)
         assert window is not None
-        assert window.start_hour == 10.0
-        assert window.end_hour == 12.0
+        assert window.start_hour == 11.0
+        assert window.end_hour == 14.0
 
-    def test_override_window_length_matches_n(self):
-        for n in (2, 3, 5, 8):
-            window = ChargeSlots.compute(
-                _day(_flat_with_valley(7, n)), charge_hours_override=n
-            )
-            assert window is not None
-            assert window.end_hour - window.start_hour == n
-
-    def test_override_start_is_integer_no_half_hour_shift(self):
-        # Auto path applies a -0.5 shift for N=3; override must NOT.
-        window = ChargeSlots.compute(
-            _day(_flat_with_valley(9, 3)), charge_hours_override=3
+    def test_no_extend_when_above_threshold(self):
+        # Same shape, but threshold 30 < 40 gap → stay at base 2h.
+        prices = [500.0] * 24
+        prices[12] = prices[13] = 200.0
+        prices[11] = 240.0
+        params = ChargeWindowParams(
+            initial_hours=2,
+            extend_threshold=30,
+            absolute_cheap_price=100,
+            base_window_shift_minutes=0,
         )
+        window = ChargeSlots.compute(_day(prices), params=params)
         assert window is not None
-        assert window.start_hour.is_integer()
+        assert window.start_hour == 12.0
+        assert window.end_hour == 14.0
 
-    def test_override_start_searched_within_6_16(self):
-        # A cheaper nighttime valley (02:00) is ignored — start stays in 6..15.
-        prices = [100.0] * 24
-        prices[2] = prices[3] = 1.0  # nighttime, outside search window
-        prices[11] = prices[12] = 10.0  # daytime valley
-        window = ChargeSlots.compute(_day(prices), charge_hours_override=2)
+    def test_extends_earlier_when_prior_hour_absolutely_cheap(self):
+        # Hour 11 = 80 < absolute_cheap 100 → extend even with threshold 0.
+        prices = [500.0] * 24
+        prices[12] = prices[13] = 200.0
+        prices[11] = 80.0
+        params = ChargeWindowParams(
+            initial_hours=2,
+            extend_threshold=0,
+            absolute_cheap_price=100,
+            base_window_shift_minutes=0,
+        )
+        window = ChargeSlots.compute(_day(prices), params=params)
         assert window is not None
-        assert 6 <= window.start_hour <= 15
+        assert window.start_hour == 11.0
 
 
-class TestAutoPathUnchanged:
-    def test_none_equals_default_auto(self):
-        day = _day(_flat_with_valley(10, 4))
-        assert ChargeSlots.compute(
-            day, charge_hours_override=None
-        ) == ChargeSlots.compute(day)
+class TestDefaultsAndGuards:
+    def test_none_params_equals_default_params(self):
+        prices = [500.0] * 24
+        prices[12] = prices[13] = prices[14] = 10.0
+        day = _day(prices)
+        assert ChargeSlots.compute(day) == ChargeSlots.compute(
+            day, params=ChargeWindowParams()
+        )
 
     def test_empty_day_returns_none(self):
-        assert ChargeSlots.compute(None, charge_hours_override=2) is None
-        assert ChargeSlots.compute(_day([]), charge_hours_override=2) is None
+        assert ChargeSlots.compute(None, params=ChargeWindowParams()) is None
+        assert ChargeSlots.compute(_day([]), params=ChargeWindowParams()) is None

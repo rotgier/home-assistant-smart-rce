@@ -33,6 +33,14 @@ from datetime import datetime, time
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from .charge_slots import (
+    DEFAULT_ABSOLUTE_CHEAP_PRICE,
+    DEFAULT_BASE_WINDOW_SHIFT_MIN,
+    DEFAULT_EXTEND_THRESHOLD,
+    DEFAULT_INITIAL_HOURS,
+    ChargeWindowParams,
+)
+
 if TYPE_CHECKING:
     from .battery_schedule import BatteryOperation
 
@@ -74,13 +82,22 @@ class BatteryChargePolicy:
     # (legacy input_datetime) for now; future commit migrates ownership to
     # smart_rce time entity + drops state_mapper bridge.
     start_charge_hour_override: time | None = None
-    # User override for the charge-window LENGTH (consecutive hours). None =
-    # Auto (adaptive 3–8 h selection in ChargeSlots). When set (2–8), forces a
-    # fixed-length window of N cheapest-on-average hours. INPUT consumed by
-    # `ChargeSlots.compute` (read cross-aggregate via Ems on recompute); kept
-    # here because this policy already owns a crash-safe Store and groups the
-    # other charge-window override knobs.
-    charge_hours_override: int | None = None
+    # User-tunable inputs to the charge-window selection algorithm (consumed by
+    # `ChargeSlots.compute` cross-aggregate via Ems on recompute). Kept here
+    # because this policy already owns a crash-safe Store and groups the other
+    # charge-window knobs. Exposed as a VO via `charge_window_params()`.
+    initial_charge_hours: int = DEFAULT_INITIAL_HOURS
+    charge_extend_threshold: float = DEFAULT_EXTEND_THRESHOLD
+    charge_absolute_cheap_price: float = DEFAULT_ABSOLUTE_CHEAP_PRICE
+    charge_base_window_shift_minutes: int = DEFAULT_BASE_WINDOW_SHIFT_MIN
+
+    def charge_window_params(self) -> ChargeWindowParams:
+        return ChargeWindowParams(
+            initial_hours=self.initial_charge_hours,
+            extend_threshold=self.charge_extend_threshold,
+            absolute_cheap_price=self.charge_absolute_cheap_price,
+            base_window_shift_minutes=self.charge_base_window_shift_minutes,
+        )
 
     @property
     def modbus_current_value(self) -> float | None:
@@ -153,11 +170,32 @@ class BatteryChargePolicy:
         self.start_charge_hour_override = value
         return True
 
-    def set_charge_hours_override(self, value: int | None) -> bool:
-        """Mutate the charge-window length override. Returns True if changed."""
-        if self.charge_hours_override == value:
+    def set_initial_charge_hours(self, value: int) -> bool:
+        """Mutate the base charge-window length. Returns True if changed."""
+        if self.initial_charge_hours == value:
             return False
-        self.charge_hours_override = value
+        self.initial_charge_hours = value
+        return True
+
+    def set_charge_extend_threshold(self, value: float) -> bool:
+        """Mutate the earlier-window extend threshold. Returns True if changed."""
+        if self.charge_extend_threshold == value:
+            return False
+        self.charge_extend_threshold = value
+        return True
+
+    def set_charge_absolute_cheap_price(self, value: float) -> bool:
+        """Mutate the absolute-cheap extend price. Returns True if changed."""
+        if self.charge_absolute_cheap_price == value:
+            return False
+        self.charge_absolute_cheap_price = value
+        return True
+
+    def set_charge_base_window_shift_minutes(self, value: int) -> bool:
+        """Mutate the base-window start shift (minutes). Returns True if changed."""
+        if self.charge_base_window_shift_minutes == value:
+            return False
+        self.charge_base_window_shift_minutes = value
         return True
 
     def record_modbus_read(self, value: float, at: datetime) -> bool:
@@ -186,7 +224,10 @@ class BatteryChargePolicy:
                 if self.start_charge_hour_override is not None
                 else None
             ),
-            "charge_hours_override": self.charge_hours_override,
+            "initial_charge_hours": self.initial_charge_hours,
+            "charge_extend_threshold": self.charge_extend_threshold,
+            "charge_absolute_cheap_price": self.charge_absolute_cheap_price,
+            "charge_base_window_shift_minutes": self.charge_base_window_shift_minutes,
         }
 
     @classmethod
@@ -238,20 +279,45 @@ class BatteryChargePolicy:
         else:
             start_charge = None
 
-        charge_hours_raw = data.get("charge_hours_override")
-        charge_hours: int | None
-        if charge_hours_raw is not None:
-            try:
-                charge_hours = int(charge_hours_raw)
-            except (TypeError, ValueError):
-                charge_hours = None
-        else:
-            charge_hours = None
+        # Migration: legacy `charge_hours_override` (int | None, where None=Auto)
+        # maps to `initial_charge_hours` (None → default base 3).
+        legacy_hours = data.get("charge_hours_override")
+        initial_hours = _coerce_int(
+            data.get("initial_charge_hours", legacy_hours), DEFAULT_INITIAL_HOURS
+        )
+        extend_threshold = _coerce_float(
+            data.get("charge_extend_threshold"), DEFAULT_EXTEND_THRESHOLD
+        )
+        absolute_cheap_price = _coerce_float(
+            data.get("charge_absolute_cheap_price"), DEFAULT_ABSOLUTE_CHEAP_PRICE
+        )
+        base_window_shift = _coerce_int(
+            data.get("charge_base_window_shift_minutes"), DEFAULT_BASE_WINDOW_SHIFT_MIN
+        )
 
         return cls(
             charge_allowed_override=mode,
             _modbus_current_value=modbus_value,
             _last_modbus_read_at=last_read_at,
             start_charge_hour_override=start_charge,
-            charge_hours_override=charge_hours,
+            initial_charge_hours=initial_hours,
+            charge_extend_threshold=extend_threshold,
+            charge_absolute_cheap_price=absolute_cheap_price,
+            charge_base_window_shift_minutes=base_window_shift,
         )
+
+
+def _coerce_int(raw: Any, default: int) -> int:
+    """Best-effort int from persisted value; `default` on None/garbage."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(raw: Any, default: float) -> float:
+    """Best-effort float from persisted value; `default` on None/garbage."""
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default

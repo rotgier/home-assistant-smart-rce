@@ -31,7 +31,7 @@ from homeassistant.core import callback
 
 from ..domain.battery_charge_policy import OverrideMode
 from ..domain.battery_schedule import BatteryOperation
-from ..domain.charge_slots import StartChargeTodayChanged
+from ..domain.charge_slots import ChargeWindowParams, StartChargeTodayChanged
 from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 from .service import Service
 
@@ -107,8 +107,24 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         return self._repo.policy.start_charge_hour_override
 
     @property
-    def charge_hours_override(self) -> int | None:
-        return self._repo.policy.charge_hours_override
+    def initial_charge_hours(self) -> int:
+        return self._repo.policy.initial_charge_hours
+
+    @property
+    def charge_extend_threshold(self) -> float:
+        return self._repo.policy.charge_extend_threshold
+
+    @property
+    def charge_absolute_cheap_price(self) -> float:
+        return self._repo.policy.charge_absolute_cheap_price
+
+    @property
+    def charge_base_window_shift_minutes(self) -> int:
+        return self._repo.policy.charge_base_window_shift_minutes
+
+    @property
+    def charge_window_params(self) -> ChargeWindowParams:
+        return self._repo.policy.charge_window_params()
 
     # ─── User mutators ───
 
@@ -124,15 +140,34 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
             self._repo.policy.set_start_charge_hour_override(value)
         )
 
-    async def set_charge_hours_override(self, value: int | None) -> None:
-        """UI-driven select change for charge-window length (None = Auto).
+    async def set_initial_charge_hours(self, value: int) -> None:
+        """UI-driven select change for the base charge-window length.
 
-        Persists + notifies on delta. ChargeSlots recompute is driven by the
-        caller (Ems) — this service owns only the persisted knob, not the
-        ChargeSlots aggregate.
+        Persists + notifies on delta. ChargeSlots recompute + start force-sync
+        are driven by the caller (Ems) — this service owns only the persisted
+        knob, not the ChargeSlots aggregate. Same applies to the three setters
+        below.
         """
         await self._persist_and_notify(
-            self._repo.policy.set_charge_hours_override(value)
+            self._repo.policy.set_initial_charge_hours(value)
+        )
+
+    async def set_charge_extend_threshold(self, value: float) -> None:
+        """UI-driven number change for the earlier-window extend threshold."""
+        await self._persist_and_notify(
+            self._repo.policy.set_charge_extend_threshold(value)
+        )
+
+    async def set_charge_absolute_cheap_price(self, value: float) -> None:
+        """UI-driven number change for the absolute-cheap extend price."""
+        await self._persist_and_notify(
+            self._repo.policy.set_charge_absolute_cheap_price(value)
+        )
+
+    async def set_charge_base_window_shift_minutes(self, value: int) -> None:
+        """UI-driven number change for the base-window start shift (minutes)."""
+        await self._persist_and_notify(
+            self._repo.policy.set_charge_base_window_shift_minutes(value)
         )
 
     @callback
