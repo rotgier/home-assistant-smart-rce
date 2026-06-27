@@ -81,6 +81,7 @@ class MowingPlannerService(Listenable):
                 slots=self._forecast.read_forecast_slots(),
                 non_work=self._non_work.effective_hours,
                 dry_at=self._rain.dry_at,
+                time_left_min=self._luba.read_time_left(),
             )
         )
         if decision == self._decision:

@@ -16,6 +16,7 @@ from custom_components.smart_rce.garden.const import (
     LUBA_CHARGING_SENSOR,
     LUBA_LAWN_MOWER,
     LUBA_PROGRESS_SENSOR,
+    LUBA_TIME_LEFT_SENSOR,
 )
 from homeassistant.components.lawn_mower import LawnMowerActivity
 from homeassistant.const import STATE_ON
@@ -36,6 +37,7 @@ class LubaStateReader:
     _PROGRESS: Final[str] = LUBA_PROGRESS_SENSOR
     _LAWN_MOWER: Final[str] = LUBA_LAWN_MOWER
     _CHARGING: Final[str] = LUBA_CHARGING_SENSOR
+    _TIME_LEFT: Final[str] = LUBA_TIME_LEFT_SENSOR
 
     def __init__(self, hass: HomeAssistant) -> None:
         self._hass = hass
@@ -45,6 +47,15 @@ class LubaStateReader:
 
     def read_progress(self) -> int:
         return self._read_int(LubaStateReader._PROGRESS)
+
+    def read_time_left(self) -> int | None:
+        """Firmware's remaining-minutes estimate for the current task.
+
+        `work.progress >> 16` (same value the Mammotion app shows) — more
+        accurate than the planner's linear progress model. None when the sensor
+        is unavailable so the planner falls back to its linear estimate.
+        """
+        return self._read_int_optional(LubaStateReader._TIME_LEFT)
 
     def read_at_dock(self) -> bool:
         return (
@@ -66,6 +77,7 @@ class LubaStateReader:
                 LubaStateReader._PROGRESS,
                 LubaStateReader._LAWN_MOWER,
                 LubaStateReader._CHARGING,
+                LubaStateReader._TIME_LEFT,
             ],
             _changed,
         )
@@ -75,8 +87,14 @@ class LubaStateReader:
         return state.state if state else None
 
     def _read_int(self, entity_id: str) -> int:
+        value = self._read_int_optional(entity_id)
+        return value if value is not None else 0
+
+    def _read_int_optional(self, entity_id: str) -> int | None:
         raw = self._read_state(entity_id)
+        if raw is None:
+            return None
         try:
-            return int(float(raw)) if raw is not None else 0
+            return int(float(raw))
         except ValueError:
-            return 0
+            return None

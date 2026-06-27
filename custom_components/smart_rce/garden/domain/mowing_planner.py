@@ -33,7 +33,7 @@ class MowingPlanner:
     """Decides start timing. Stateless policy holder (domain constants)."""
 
     MOWING_RATE: Final = 0.55  # battery pp consumed per minute of mowing
-    PROGRESS_RATE: Final = 0.4  # task % gained per minute of mowing
+    PROGRESS_RATE: Final = 0.4  # task %/min — linear finish fallback
     BATT_FLOOR: Final = 15  # min SoC we allow draining to
     BATT_MIN_START: Final = 30  # min SoC to start a session
     WIN_MIN: Final = 30  # shortest worthwhile window (minutes)
@@ -60,7 +60,9 @@ class MowingPlanner:
             inp.slots, from_moment, non_work_start, self.RAIN_PROB
         )
         time_to_drain = self._time_to_drain(inp.battery)
-        time_to_finish = self._time_to_finish(inp.progress, time_to_drain)
+        time_to_finish = self._time_to_finish(
+            inp.progress, time_to_drain, inp.time_left_min
+        )
         needed = min(time_to_drain, time_to_finish)
 
         strategy, opt_start, win_min = self._resolve_start(
@@ -89,9 +91,18 @@ class MowingPlanner:
             return 0
         return round((battery - self.BATT_FLOOR) / self.MOWING_RATE)
 
-    def _time_to_finish(self, progress: int, time_to_drain: int) -> int:
+    def _time_to_finish(
+        self, progress: int, time_to_drain: int, time_left: int | None
+    ) -> int:
+        # No task in progress → no finish estimate; fresh-start logic owns this
+        # case (parity hack: report drain so needed == drain).
         if progress <= 0:
             return time_to_drain
+        # Prefer the firmware's own remaining estimate (accounts for geometry,
+        # speed, blade) — the linear PROGRESS_RATE model is only a fallback when
+        # the sensor is unavailable / not yet reporting.
+        if time_left is not None and time_left > 0:
+            return time_left
         return round((100 - progress) / self.PROGRESS_RATE)
 
     def _resolve_start(
@@ -158,6 +169,7 @@ class MowingInput:
     slots: list[ForecastSlot]
     non_work: NonWorkHours | None  # planner derives next start / active end
     dry_at: datetime | None = None  # grass dry-out floor (rain_ended + dry_hours)
+    time_left_min: int | None = None  # firmware remaining estimate (progress>0)
 
 
 @dataclass(frozen=True)

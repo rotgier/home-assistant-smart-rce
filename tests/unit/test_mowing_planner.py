@@ -230,3 +230,30 @@ def test_decision_serializes_for_ha_attributes() -> None:
     assert "window_end" in payload  # renamed from `deadline`
     text = json.dumps(payload, default=str)
     assert '"strategy": "wait_battery"' in text
+
+
+def test_time_left_overrides_linear_finish_and_flips_to_go() -> None:
+    # Firmware says only 20 min left (vs linear 138 for progress 45). Battery
+    # drain (71) now outlasts finish (20) + reserve (10) → GO, not WAIT_BATTERY.
+    d = _decide(time_left_min=20)  # default fixture: battery 54, progress 45
+
+    assert d.time_to_finish_min == 20
+    assert d.needed_min == 20
+    assert d.strategy is StartStrategy.GO
+    assert d.should_start is True
+
+
+def test_time_left_zero_falls_back_to_linear() -> None:
+    # Sensor reports 0 (not a valid estimate) → linear PROGRESS_RATE fallback.
+    d = _decide(time_left_min=0)
+
+    assert d.time_to_finish_min == 138  # (100-45)/0.4
+    assert d.strategy is StartStrategy.WAIT_BATTERY
+
+
+def test_time_left_ignored_when_no_task() -> None:
+    # progress == 0 → no task; time_left is meaningless, finish mirrors drain
+    # (parity), regardless of any stale firmware value.
+    d = _decide(progress=0, time_left_min=999)
+
+    assert d.time_to_finish_min == d.time_to_drain_min
