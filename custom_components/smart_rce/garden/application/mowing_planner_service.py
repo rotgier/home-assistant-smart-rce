@@ -62,11 +62,21 @@ class MowingPlannerService(Listenable):
         self._rain = rain
         self._now = now_provider
         self._decision: PlannerDecision | None = None
+        self._fresh_start_battery = MowingPlanner.DEFAULT_FRESH_BATTERY
 
     @property
     def decision(self) -> PlannerDecision | None:
         """Latest planner decision (None until the first recompute)."""
         return self._decision
+
+    @property
+    def fresh_start_battery(self) -> int:
+        """SoC threshold above which a fresh program starts (tunable via number)."""
+        return self._fresh_start_battery
+
+    def set_fresh_start_battery(self, value: int) -> None:
+        self._fresh_start_battery = value
+        self.recompute()
 
     @callback
     def recompute(self) -> None:
@@ -82,6 +92,7 @@ class MowingPlannerService(Listenable):
                 non_work=self._non_work.effective_hours,
                 dry_at=self._rain.dry_at,
                 time_left_min=self._luba.read_time_left(),
+                fresh_start_battery=self._fresh_start_battery,
             )
         )
         if decision == self._decision:

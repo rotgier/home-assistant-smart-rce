@@ -1,10 +1,12 @@
-"""Garden number entities — user-tunable dry-out hours.
+"""Garden number entities — user-tunable planner policies.
 
 `number.garden_dry_out_hours` is the dry-out policy: how many hours after rain
-ends the grass is considered dry enough to mow. Backed by `RainService`
-(persisted via `RainRepository`), so it survives restarts and feeds the
-planner's `dry_at` floor. Top-level `number.py` aggregates these via
-`build_numbers`, so garden owns its presentation.
+ends the grass is considered dry enough to mow (backed by `RainService` /
+`RainRepository`, feeds the planner's `dry_at` floor).
+`number.garden_fresh_start_battery` is the SoC threshold above which a fresh
+program is dispatched (backed by `MowingPlannerService`; persisted via HA state
+restore). Top-level `number.py` aggregates these via `build_numbers`, so garden
+owns its presentation.
 """
 
 from __future__ import annotations
@@ -13,7 +15,12 @@ from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.const import DOMAIN
 from custom_components.smart_rce.garden.garden_device import luba_device_info
-from homeassistant.components.number import NumberEntity, NumberMode
+from homeassistant.components.number import (
+    NumberDeviceClass,
+    NumberEntity,
+    NumberMode,
+    RestoreNumber,
+)
 
 if TYPE_CHECKING:
     from custom_components.smart_rce import SmartRceConfigEntry
@@ -21,7 +28,7 @@ if TYPE_CHECKING:
 
 def build_numbers(entry: SmartRceConfigEntry) -> list[NumberEntity]:
     """Garden number entities for top-level `number.py` to add."""
-    return [GardenDryOutHoursNumber(entry)]
+    return [GardenDryOutHoursNumber(entry), GardenFreshStartBatteryNumber(entry)]
 
 
 class GardenDryOutHoursNumber(NumberEntity):
@@ -53,3 +60,45 @@ class GardenDryOutHoursNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self._service.set_dry_hours(value)
+
+
+class GardenFreshStartBatteryNumber(RestoreNumber):
+    """SoC threshold above which a fresh program is dispatched.
+
+    Backed by `MowingPlannerService` (in-memory); the value is persisted across
+    restarts by HA state restore (RestoreNumber), pushed back into the service on
+    startup. Below this SoC a fresh start waits and charges (a wide window); above
+    it the planner GOes at the window open.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "Garden Fresh-Start Battery"
+    _attr_should_poll = False
+    _attr_icon = "mdi:battery-charging-90"
+    _attr_native_min_value = 30
+    _attr_native_max_value = 100
+    _attr_native_step = 5
+    _attr_native_unit_of_measurement = "%"
+    _attr_device_class = NumberDeviceClass.BATTERY
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._service = entry.runtime_data.garden.mowing
+        self._attr_unique_id = f"{DOMAIN}_garden_fresh_start_battery"
+        self.entity_id = "number.garden_fresh_start_battery"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_number_data()
+        if last is not None and last.native_value is not None:
+            self._service.set_fresh_start_battery(int(last.native_value))
+        self.async_on_remove(self._service.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return self._service.fresh_start_battery
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._service.set_fresh_start_battery(int(value))
+        self.async_write_ha_state()

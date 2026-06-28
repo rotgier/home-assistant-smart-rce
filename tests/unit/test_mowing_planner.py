@@ -257,3 +257,49 @@ def test_time_left_ignored_when_no_task() -> None:
     d = _decide(progress=0, time_left_min=999)
 
     assert d.time_to_finish_min == d.time_to_drain_min
+
+
+def test_fresh_wide_window_below_threshold_waits() -> None:
+    # No task (progress 0), wide window, battery below the 90 threshold → charge.
+    d = _decide(progress=0, battery=54)
+
+    assert d.strategy is StartStrategy.WAIT_BATTERY
+    assert d.should_start is False
+
+
+def test_fresh_wide_window_at_threshold_goes() -> None:
+    # Charged to the fresh-start threshold → GO at the window open (earliest).
+    d = _decide(progress=0, battery=95)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.opt_start == NOW
+    assert d.should_start is True
+
+
+def test_fresh_narrow_window_asap() -> None:
+    # Window shorter than battery endurance → ASAP even below the threshold.
+    slots = [_slot(0, 0), _slot(15, 0), _slot(30, 0), _slot(33, 60)]
+    d = _decide(progress=0, battery=54, slots=slots)
+
+    assert d.strategy is StartStrategy.ASAP
+    assert d.should_start is True
+
+
+def test_fresh_start_battery_threshold_tunable() -> None:
+    # Lowering the threshold to 80 lets an 85% battery GO (default 90 would wait).
+    assert _decide(progress=0, battery=85).strategy is StartStrategy.WAIT_BATTERY
+    d = _decide(progress=0, battery=85, fresh_start_battery=80)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.should_start is True
+
+
+def test_fresh_start_not_held_by_quiet_grace() -> None:
+    # A fresh start has no in-progress task to auto-resume, so RESUME_GRACE does
+    # not hold it: it fires right at the quiet end (cf. test_quiet_end_grace which
+    # holds a resume at the same 10:05).
+    now = datetime(2026, 6, 9, 10, 5, tzinfo=UTC)
+    d = _decide(now=now, progress=0, battery=95)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.should_start is True

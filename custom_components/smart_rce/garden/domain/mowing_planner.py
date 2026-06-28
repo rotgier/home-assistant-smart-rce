@@ -12,6 +12,12 @@ Start strategies once a usable window exists:
 - GO: window fits AND battery finishes the task with reserve → start at the
   window open (earliest), finishing in one charge. Earliest start banks the most
   lawn before the window can shrink (early rain or the non-work boundary).
+
+Fresh start (no task in progress, progress == 0) has no finish estimate, so the
+resume reserve logic does not apply: a wide window waits until the battery reaches
+the fresh-start threshold (`fresh_start_battery`, default 90) then GO at the open;
+a window shorter than the battery endurance is ASAP (grab what we can). Whatever a
+single charge cannot finish is left to Luba's own post-charge auto-resume.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ class MowingPlanner:
     END_BUFFER: Final = timedelta(minutes=10)  # need >10 min left to start
     BATTERY_RESERVE_MIN: Final = 10  # battery must outlast the task by this (min)
     RESUME_GRACE: Final = timedelta(minutes=10)  # hold HA start after quiet end
+    DEFAULT_FRESH_BATTERY: Final = 90  # fresh-start SoC threshold (tunable via number)
 
     def decide(self, inp: MowingInput) -> PlannerDecision:
         # The window cannot open before the latest of: now, the end of an
@@ -66,7 +73,7 @@ class MowingPlanner:
         needed = min(time_to_drain, time_to_finish)
 
         strategy, opt_start, win_min = self._resolve_start(
-            window, time_to_finish, time_to_drain
+            inp, window, time_to_finish, time_to_drain
         )
         should = self._should_start(inp, window, opt_start)
 
@@ -106,7 +113,7 @@ class MowingPlanner:
         return round((100 - progress) / self.PROGRESS_RATE)
 
     def _resolve_start(
-        self, window: ForecastWindow, finish: int, drain: int
+        self, inp: MowingInput, window: ForecastWindow, finish: int, drain: int
     ) -> tuple[StartStrategy, datetime | None, int]:
         """Pick the start strategy. Returns (strategy, opt_start, window_min)."""
         if window.start is None or window.end is None or window.end <= window.start:
@@ -117,19 +124,25 @@ class MowingPlanner:
             return StartStrategy.SKIP_SHORT_WINDOW, None, win_min
         if win_min < min(finish, drain):
             return StartStrategy.ASAP, window.start, win_min
-        # Window fits the job. Commit to a finishing run only when the battery
-        # outlasts the remaining task by BATTERY_RESERVE_MIN; otherwise stay on
-        # the dock and charge — `drain` grows as it charges, so this flips to GO
-        # by itself (and a task too big for one charge is left to Luba's own
-        # post-charge auto-resume, not forced here).
+        # Window fits the battery endurance.
+        if inp.progress <= 0:
+            # Fresh start: no task in progress, so the resume reserve logic does
+            # not apply. Wait until the battery reaches the fresh-start threshold
+            # (a full-ish charge banks a long stretch), then GO at the window
+            # open; whatever one charge can't finish is left to Luba's own
+            # post-charge auto-resume. Below the threshold → keep charging.
+            if inp.battery >= inp.fresh_start_battery:
+                return StartStrategy.GO, window.start, win_min
+            return StartStrategy.WAIT_BATTERY, None, win_min
+        # Resume: commit to a finishing run only when the battery outlasts the
+        # remaining task by BATTERY_RESERVE_MIN; otherwise stay docked and charge
+        # — `drain` grows as it charges, so this flips to GO by itself (a task too
+        # big for one charge is left to Luba's own post-charge auto-resume).
         if drain < finish + self.BATTERY_RESERVE_MIN:
             return StartStrategy.WAIT_BATTERY, None, win_min
-        # GO: window fits the job and the battery outlasts it by the reserve,
-        # so start at the window open and finish in one charge. Earliest start
-        # banks the most lawn before the window can shrink — rain moving in
-        # ahead of forecast, or the non-work boundary. The BATTERY_RESERVE_MIN
-        # gate above already guarantees finishing without a recharge, so there
-        # is no reason to defer toward the window end.
+        # GO: start at the window open (earliest) and finish in one charge.
+        # Earliest start banks the most lawn before the window can shrink — rain
+        # moving in ahead of forecast, or the non-work boundary.
         return StartStrategy.GO, window.start, win_min
 
     def _should_start(
@@ -137,13 +150,16 @@ class MowingPlanner:
     ) -> bool:
         if opt_start is None or window.end is None:
             return False
-        # Quiet just ended → Luba's firmware auto-resumes its task on its own.
-        # Hold HA's start for RESUME_GRACE so we don't race that resume with a
-        # duplicate cloud command; if the firmware hasn't resumed by then (still
-        # docked), HA starts as a fallback. The grace only bites in the short
-        # window right after the non-work end — mid-day windows are unaffected.
+        # Quiet just ended → Luba's firmware auto-resumes its IN-PROGRESS task on
+        # its own. Hold HA's start for RESUME_GRACE so we don't race that resume
+        # with a duplicate cloud command; if the firmware hasn't resumed by then
+        # (still docked), HA starts as a fallback. Only relevant to a resume
+        # (progress > 0) — a fresh start has no task to auto-resume, so it fires
+        # right at the quiet end. The grace only bites in the short window right
+        # after the non-work end — mid-day windows are unaffected.
         if (
-            inp.non_work is not None
+            inp.progress > 0
+            and inp.non_work is not None
             and inp.now < inp.non_work.recent_end(inp.now) + self.RESUME_GRACE
         ):
             return False
@@ -170,6 +186,7 @@ class MowingInput:
     non_work: NonWorkHours | None  # planner derives next start / active end
     dry_at: datetime | None = None  # grass dry-out floor (rain_ended + dry_hours)
     time_left_min: int | None = None  # firmware remaining estimate (progress>0)
+    fresh_start_battery: int = 90  # SoC threshold for fresh GO (DEFAULT_FRESH_BATTERY)
 
 
 @dataclass(frozen=True)
