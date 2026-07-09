@@ -32,10 +32,12 @@ class RainState:
     float (Store persists JSON).
 
     `is_wet` is the CONFIRMED wet state (drives the grass-wet sensor and the
-    rain gate) and `wet_since` is when the raw reading first turned wet. Both
-    are TRANSIENT — re-derived from the weather entity on every observation,
-    so they are deliberately excluded from `to_dict` (we persist the derived
-    fact `rain_ended_at`, not the volatile observation).
+    rain gate), `wet_since` is when the raw reading first turned wet, and
+    `last_wet_at` is the latest confirmed-wet moment (anchors `dry_at` WHILE it
+    is raining — `rain_ended_at` still holds the PREVIOUS rain's end mid-shower).
+    All three are TRANSIENT — re-derived from the weather entity on every
+    observation, so they are deliberately excluded from `to_dict` (we persist
+    the derived fact `rain_ended_at`, not the volatile observation).
     """
 
     WET_DWELL: ClassVar[timedelta] = timedelta(minutes=10)  # rain must persist
@@ -44,6 +46,7 @@ class RainState:
     dry_hours: float = DEFAULT_DRY_HOURS
     is_wet: bool = False
     wet_since: datetime | None = None
+    last_wet_at: datetime | None = None
 
     def observe(self, raw_wet: bool, now: datetime) -> bool:
         """Feed a raw wetness reading; confirm wet only after WET_DWELL of rain.
@@ -67,6 +70,8 @@ class RainState:
         if self.is_wet and not confirmed:
             changed |= self.record_dry_transition(now)
         self.is_wet = confirmed
+        if confirmed:
+            self.last_wet_at = now  # anchor dry_at forward while it rains
         return changed
 
     def record_dry_transition(self, now: datetime) -> bool:
@@ -85,13 +90,21 @@ class RainState:
 
     @property
     def dry_at(self) -> datetime | None:
-        """When the grass is considered dry: rain_ended_at + dry_hours.
+        """When the grass is considered dry.
 
-        `None` when no rain end is on record (treat as already dry).
+        While confirmed wet the rain is still falling, so the dry-out clock has
+        not started — anchor on `last_wet_at` (latest wet observation) so
+        `dry_at` stays in the future (`last_wet_at + dry_hours`) and the planner
+        keeps its window closed. `rain_ended_at` alone would be STALE here (it
+        holds the previous rain's end until this shower clears), which let the
+        planner open the window and resume into wet grass (2026-07-09). Once
+        dry, anchor on `rain_ended_at` for a fixed dry-out deadline. `None` when
+        no rain is on record (treat as already dry).
         """
-        if self.rain_ended_at is None:
+        base = self.last_wet_at if self.is_wet else self.rain_ended_at
+        if base is None:
             return None
-        return self.rain_ended_at + timedelta(hours=self.dry_hours)
+        return base + timedelta(hours=self.dry_hours)
 
     def to_dict(self) -> dict[str, Any]:
         return {

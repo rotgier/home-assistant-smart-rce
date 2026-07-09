@@ -21,6 +21,28 @@ def test_dry_at_is_rain_end_plus_dry_hours() -> None:
     assert state.dry_at == NOW + timedelta(hours=4, minutes=30)
 
 
+def test_dry_at_future_while_wet_ignores_stale_rain_end() -> None:
+    # A previous shower ended at NOW (stale rain_ended_at). New rain confirms
+    # 3 h later — dry_at must anchor on the ONGOING rain (last_wet_at), not the
+    # stale end, else the planner reopens its window and resumes into wet grass
+    # (regression 2026-07-09).
+    state = RainState(rain_ended_at=NOW, dry_hours=3.0)
+    state.observe(raw_wet=True, now=_min(180))  # arms wet_since
+    state.observe(raw_wet=True, now=_min(191))  # >dwell → confirmed wet
+    assert state.is_wet is True
+    assert state.dry_at == _min(191) + timedelta(hours=3)  # future, not NOW+3h
+    assert state.dry_at > _min(191)
+
+
+def test_dry_at_uses_rain_end_once_dry() -> None:
+    state = RainState(dry_hours=3.0)
+    state.observe(raw_wet=True, now=NOW)
+    state.observe(raw_wet=True, now=_min(11))  # confirmed wet
+    state.observe(raw_wet=False, now=_min(20))  # wet→dry, stamps rain_ended_at
+    assert state.is_wet is False
+    assert state.dry_at == _min(20) + timedelta(hours=3)
+
+
 def test_record_dry_transition_changed_flag() -> None:
     state = RainState()
     assert state.record_dry_transition(NOW) is True
@@ -81,9 +103,10 @@ def test_observe_staying_confirmed_no_change() -> None:
 
 
 def test_transient_fields_not_serialized() -> None:
-    dumped = RainState(is_wet=True, wet_since=NOW).to_dict()
+    dumped = RainState(is_wet=True, wet_since=NOW, last_wet_at=NOW).to_dict()
     assert "is_wet" not in dumped
     assert "wet_since" not in dumped
+    assert "last_wet_at" not in dumped
     restored = RainState.from_dict({"is_wet": True, "wet_since": NOW.isoformat()})
     assert restored.is_wet is False  # ignored on load
     assert restored.wet_since is None
