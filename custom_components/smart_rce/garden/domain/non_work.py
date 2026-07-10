@@ -58,7 +58,7 @@ class NonWorkHours:
 
     def next_start(self, now: datetime) -> datetime:
         """Upcoming quiet-window start: today at `start`, or tomorrow if past."""
-        return self._next_occurrence(now, self.start)
+        return next_occurrence(now, self.start)
 
     def end_of_active_window(self, now: datetime) -> datetime | None:
         """When the currently-active quiet window ends; None when not inside.
@@ -73,7 +73,7 @@ class NonWorkHours:
             inside = tod >= self.start or tod < self.end
         if not inside:
             return None
-        return self._next_occurrence(now, self.end)
+        return next_occurrence(now, self.end)
 
     def recent_end(self, now: datetime) -> datetime:
         """Most recent occurrence of `end` at or before now (today, else yesterday).
@@ -86,10 +86,8 @@ class NonWorkHours:
         )
         return candidate if candidate <= now else candidate - _ONE_DAY
 
-    @staticmethod
-    def _next_occurrence(now: datetime, tod: time) -> datetime:
-        """Next datetime at wall-clock `tod` that is >= now (today, else tomorrow)."""
-        candidate = now.replace(
-            hour=tod.hour, minute=tod.minute, second=0, microsecond=0
-        )
-        return candidate if candidate >= now else candidate + _ONE_DAY
+
+def next_occurrence(now: datetime, tod: time) -> datetime:
+    """Next datetime at wall-clock `tod` that is >= now (today, else tomorrow)."""
+    candidate = now.replace(hour=tod.hour, minute=tod.minute, second=0, microsecond=0)
+    return candidate if candidate >= now else candidate + _ONE_DAY

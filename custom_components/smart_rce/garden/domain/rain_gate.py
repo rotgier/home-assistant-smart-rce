@@ -34,10 +34,13 @@ restore via the push button.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import ClassVar
 
-from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
+from custom_components.smart_rce.garden.domain.non_work import (
+    NonWorkHours,
+    next_occurrence,
+)
 
 
 @dataclass
@@ -110,8 +113,8 @@ class RainGate:
         # Same start + end within REWRITE_MARGIN → treat as unchanged (anti-churn
         # while dry_at creeps forward during continuous rain).
         if self.override is not None and self.override.start == desired.start:
-            current = _resolve(now, self.override.end)
-            target = _resolve(now, desired.end)
+            current = next_occurrence(now, self.override.end)
+            target = next_occurrence(now, desired.end)
             if abs(target - current) <= self.REWRITE_MARGIN:
                 return False
         if self.override == desired:
@@ -120,16 +123,10 @@ class RainGate:
         return True
 
     def _current_end(self, now: datetime) -> datetime | None:
-        return _resolve(now, self.override.end) if self.override else None
+        return next_occurrence(now, self.override.end) if self.override else None
 
     def _clear(self) -> bool:
         if self.override is None:
             return False
         self.override = None
         return True
-
-
-def _resolve(now: datetime, tod: time) -> datetime:
-    """Next datetime at wall-clock `tod` that is >= now (today, else tomorrow)."""
-    candidate = now.replace(hour=tod.hour, minute=tod.minute, second=0, microsecond=0)
-    return candidate if candidate >= now else candidate + timedelta(days=1)
