@@ -61,7 +61,7 @@ def test_near_boundary_dry_at_within_target_end_does_not_hold() -> None:
 def test_working_hours_docked_with_task_blocks_until_dry_at() -> None:
     gate = RainGate()
     assert gate.evaluate(WORK, TARGET, _dt(19, 31), True) is True
-    assert gate.override == NonWorkHours(time(16, 31), time(19, 31))
+    assert gate.override == NonWorkHours(time(16, 16), time(19, 31))  # start = now-15
 
 
 def test_working_hours_not_docked_does_not_block() -> None:
@@ -70,16 +70,27 @@ def test_working_hours_not_docked_does_not_block() -> None:
     assert gate.override is None
 
 
-def test_block_pins_start_antichurn_then_extends() -> None:
+def test_block_skips_while_ahead_refreshes_near_expiry() -> None:
     gate = RainGate()
-    assert gate.evaluate(WORK, TARGET, _dt(19, 31), True) is True
-    assert gate.override == NonWorkHours(time(16, 31), time(19, 31))
-    # dry_at crept +5 min (< REWRITE_MARGIN) → no rewrite, start pinned
-    assert gate.evaluate(_dt(16, 36), TARGET, _dt(19, 36), True) is False
-    assert gate.override == NonWorkHours(time(16, 31), time(19, 31))
-    # dry_at crept +24 min (> REWRITE_MARGIN) → extend end, start still pinned
-    assert gate.evaluate(_dt(16, 50), TARGET, _dt(19, 55), True) is True
-    assert gate.override == NonWorkHours(time(16, 31), time(19, 55))
+    assert gate.evaluate(_dt(16, 31), TARGET, _dt(19, 31), True) is True
+    assert gate.override == NonWorkHours(time(16, 16), time(19, 31))
+    # end (19:31) still far ahead → skip despite dry_at creep, start pinned
+    assert gate.evaluate(_dt(17, 0), TARGET, _dt(20, 0), True) is False
+    assert gate.override == NonWorkHours(time(16, 16), time(19, 31))
+    # within GATE_WINDOW of the end + still wet → refresh end to current dry_at
+    assert gate.evaluate(_dt(19, 25), TARGET, _dt(22, 25), True) is True
+    assert gate.override == NonWorkHours(time(16, 16), time(22, 25))
+
+
+def test_extension_becomes_block_past_user_end() -> None:
+    # A morning extension is held; the clock passes the user end (10:05) so the
+    # quiet window is over → converts to a working-hours block, still covering
+    # now (no gap — the extension end already covered up to dry_at).
+    gate = RainGate(override=NonWorkHours(time(20, 35), time(10, 30)))
+    assert gate.evaluate(_dt(10, 6), TARGET, _dt(10, 30), True) is True
+    assert gate.override == NonWorkHours(
+        time(9, 51), time(10, 30)
+    )  # block start = now-15
 
 
 def test_release_clears() -> None:
@@ -127,8 +138,8 @@ def test_service_blocks_when_docked_with_task() -> None:
 
     service.evaluate()
 
-    assert service.override == NonWorkHours(time(16, 31), time(19, 31))
-    actuator.apply.assert_called_once_with(NonWorkHours(time(16, 31), time(19, 31)))
+    assert service.override == NonWorkHours(time(16, 16), time(19, 31))  # now-15
+    actuator.apply.assert_called_once_with(NonWorkHours(time(16, 16), time(19, 31)))
     tasks.run_background.assert_called_once()
     assert notified == [1]
 

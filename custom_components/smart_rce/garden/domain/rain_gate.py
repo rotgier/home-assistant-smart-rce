@@ -22,8 +22,12 @@ where `now` falls:
 
 Anti-churn: `dry_at` creeps ~1 min per tick while it keeps raining, so a naive
 "end = dry_at" would re-push the window every tick and burn the 300-sends/24h
-budget. `_apply` pins the block start and ignores end drift within
-`REWRITE_MARGIN` → ~one write per that margin of continuous rain.
+budget. Both branches instead skip re-writes while the current end is still more
+than `GATE_WINDOW` ahead of `now` (the block end is `dry_at`, hours away), and
+only refresh it as it nears expiry — where the refresh re-asserts the current
+`dry_at`, so the mower never reaches the end while still wet. The block start is
+`now − START_BUFFER` (a touch in the past, so a lagging device clock still sees
+`now` inside the window) and is pinned across ticks.
 
 State is in-memory (not persisted): a mid-block HA restart forgets `override`;
 the next `evaluate` re-derives it, and `binary_sensor.luba_non_work_drift`
@@ -48,7 +52,9 @@ class RainGate:
     """Owns the rain override of the device non-work window (mutator-returns-bool)."""
 
     GATE_WINDOW: ClassVar[timedelta] = timedelta(minutes=10)  # boundary closeness
-    REWRITE_MARGIN: ClassVar[timedelta] = timedelta(minutes=15)  # anti-churn on end
+    START_BUFFER: ClassVar[timedelta] = timedelta(
+        minutes=15
+    )  # block start vs clock skew
 
     override: NonWorkHours | None = None
 
@@ -95,28 +101,26 @@ class RainGate:
             return False  # too early — grass may dry before the boundary
         if dry_at <= active_end:
             return self._clear()  # user end already covers the dry-out
-        return self._apply(now, NonWorkHours(user_target.start, dry_at.time()))
+        return self._set_override(NonWorkHours(user_target.start, dry_at.time()))
 
     def _block(
         self, now: datetime, user_target: NonWorkHours, dry_at: datetime
     ) -> bool:
-        # Pin the start across ticks (a moving start would churn writes). Reuse
-        # it only when already blocking — an end-extension override carries the
-        # user start, which must NOT become a working-hours block start.
         if self.override is not None and self.override.start != user_target.start:
-            start = self.override.start  # continuing an existing block
-        else:
-            start = now.time()
-        return self._apply(now, NonWorkHours(start, dry_at.time()))
-
-    def _apply(self, now: datetime, desired: NonWorkHours) -> bool:
-        # Same start + end within REWRITE_MARGIN → treat as unchanged (anti-churn
-        # while dry_at creeps forward during continuous rain).
-        if self.override is not None and self.override.start == desired.start:
-            current = next_occurrence(now, self.override.end)
-            target = next_occurrence(now, desired.end)
-            if abs(target - current) <= self.REWRITE_MARGIN:
+            # Continuing a block. Skip re-writes while its end is comfortably
+            # ahead (dry_at creeps ~1 min/tick while raining); refresh only near
+            # expiry, where it re-asserts the current dry_at — so the mower never
+            # reaches the end while still wet.
+            if next_occurrence(now, self.override.end) - now > self.GATE_WINDOW:
                 return False
+            start = self.override.start  # pinned across ticks
+        else:
+            # Fresh block — start a touch in the past (START_BUFFER) so a lagging
+            # device clock still sees `now` inside the window (no start race).
+            start = (now - self.START_BUFFER).time()
+        return self._set_override(NonWorkHours(start, dry_at.time()))
+
+    def _set_override(self, desired: NonWorkHours) -> bool:
         if self.override == desired:
             return False
         self.override = desired
