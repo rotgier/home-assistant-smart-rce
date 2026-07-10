@@ -140,7 +140,11 @@ class GardenGrassWetBinarySensor(BinarySensorEntity):
 
 
 class LubaResumeIntoWetBinarySensor(BinarySensorEntity):
-    """On while the rain gate holds non-work open past the target (wet grass)."""
+    """On while the rain gate overrides the device non-work window (wet grass).
+
+    Covers both shapes: the morning-boundary end-extension and the working-hours
+    block `[now, dry_at]` that preempts the charge-complete auto-resume.
+    """
 
     _attr_has_entity_name = False
     _attr_name = "Luba Resume Into Wet"
@@ -164,5 +168,8 @@ class LubaResumeIntoWetBinarySensor(BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        hold = self._gate.hold_until
-        return {"effective_end": hold.isoformat() if hold else None}
+        override = self._gate.override
+        return {
+            "effective_start": override.start.isoformat() if override else None,
+            "effective_end": override.end.isoformat() if override else None,
+        }

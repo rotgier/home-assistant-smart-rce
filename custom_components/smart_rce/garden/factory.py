@@ -11,10 +11,11 @@ startup timing. Mowing planner (2b): `MowingPlannerService` pulls telemetry
 (LubaStateReader), forecast (ems-published HourlyForecastProvider — handed in
 by `async_setup_entry`, factory-level integration via an application Protocol)
 and the non-work target; recomputes on input changes plus a 1-minute tick.
-Rain gate (2d): `RainGateService` extends the non-work end past the morning
-boundary while the grass is wet (so the device never auto-resumes into wet
-grass) and restores the target once dry — sharing the single `NonWorkActuator`
-write path with the manual push button.
+Rain gate: `RainGateService` overrides the device non-work window while the
+grass is wet — extends the morning end AND blocks mid-day charge-resume (needs
+the mower state, hence the `LubaStateReader` dependency) so the device never
+auto-resumes into wet grass — and restores the target once dry, sharing the
+single `NonWorkActuator` write path with the manual push button.
 """
 
 from __future__ import annotations
@@ -100,10 +101,10 @@ async def create_garden(
     rain = RainService(rain_repo)
     _wire_rain(hass, entry, RainReader(hass), rain)
 
-    gate = RainGateService(service, rain, actuator, tasks, dt_util.now)
-    _wire_rain_gate(hass, entry, service, rain, gate)
-
     luba = LubaStateReader(hass)
+    gate = RainGateService(service, rain, actuator, luba, tasks, dt_util.now)
+    _wire_rain_gate(hass, entry, service, rain, luba, gate)
+
     forecast_reader = ForecastReader(forecast)
     mowing = MowingPlannerService(luba, forecast_reader, service, rain, dt_util.now)
     _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, rain, mowing)
@@ -137,11 +138,18 @@ def _wire_rain_gate(
     entry: ConfigEntry,
     non_work: NonWorkService,
     rain: RainService,
+    luba: LubaStateReader,
     gate: RainGateService,
 ) -> None:
-    """Evaluate the gate on rain/target changes + a 1-min tick (boundary = now)."""
+    """Evaluate the gate on rain/target/mower changes + a 1-min tick.
+
+    The mower change (`luba.subscribe`) matters for the mid-day block: it fires
+    when Luba docks to charge mid-task, so the block is asserted while it charges
+    — long before the charge-complete auto-resume it must preempt.
+    """
     entry.async_on_unload(rain.add_listener(gate.evaluate))
     entry.async_on_unload(non_work.add_listener(gate.evaluate))
+    entry.async_on_unload(luba.subscribe(gate.evaluate))
 
     @callback
     def _tick(_now: datetime) -> None:
