@@ -15,37 +15,46 @@ and tunable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any
 
 
-@dataclass
 class RainState:
     """Mutable aggregate — last rain-end + dry-out policy, persisted via repo.
+
+    A DDD entity (behaviour + lifecycle + persisted), so a plain class with an
+    explicit `__init__`, not a dataclass — the constructor takes only the
+    reconstitution inputs (`rain_ended_at`, `dry_hours`; the fields `to_dict`
+    round-trips), while the observation state is private and initialised
+    internally.
 
     `rain_ended_at` is `None` until the first confirmed wet→dry transition
     (fresh install, or never rained since). Serialization: `datetime` via
     `isoformat`/`fromisoformat` (tz-aware, HA convention); `dry_hours` is plain
     float (Store persists JSON).
 
-    `is_wet` is the CONFIRMED wet state (drives the grass-wet sensor and the
-    rain gate), `wet_since` is when the raw reading first turned wet, and
-    `last_wet_at` is the latest confirmed-wet moment (anchors `dry_at` WHILE it
-    is raining — `rain_ended_at` still holds the PREVIOUS rain's end mid-shower).
-    All three are TRANSIENT — re-derived from the weather entity on every
-    observation, so they are deliberately excluded from `to_dict` (we persist
-    the derived fact `rain_ended_at`, not the volatile observation).
+    `_is_wet` is the CONFIRMED wet state (drives the grass-wet sensor and the
+    rain gate via `is_wet`), `_wet_since` is when the raw reading first turned
+    wet, and `_last_wet_at` is the latest confirmed-wet moment (anchors `dry_at`
+    WHILE it is raining — `rain_ended_at` still holds the PREVIOUS rain's end
+    mid-shower). All three are TRANSIENT — re-derived from the weather entity on
+    every observation, so they are deliberately excluded from `to_dict` (we
+    persist the derived fact `rain_ended_at`, not the volatile observation).
     """
 
-    WET_DWELL: ClassVar[timedelta] = timedelta(minutes=10)  # rain must persist
-    _DEFAULT_DRY_HOURS: ClassVar[float] = 5.0
+    WET_DWELL = timedelta(minutes=10)  # raw rain must persist this long to confirm
+    _DEFAULT_DRY_HOURS = 5.0
 
-    rain_ended_at: datetime | None = None
-    dry_hours: float = _DEFAULT_DRY_HOURS
-    is_wet: bool = False
-    wet_since: datetime | None = None
-    last_wet_at: datetime | None = None
+    def __init__(
+        self,
+        rain_ended_at: datetime | None = None,
+        dry_hours: float = _DEFAULT_DRY_HOURS,
+    ) -> None:
+        self.rain_ended_at = rain_ended_at
+        self.dry_hours = dry_hours
+        self._is_wet = False
+        self._wet_since: datetime | None = None
+        self._last_wet_at: datetime | None = None
 
     def observe(self, raw_wet: bool, now: datetime) -> bool:
         """Feed a raw wetness reading; confirm wet only after WET_DWELL of rain.
@@ -53,24 +62,24 @@ class RainState:
         A brief shower (a few drops) trips the raw reading but never wets the
         grass, so `is_wet` — the confirmed state consumed by the sensor, gate
         and rain-end stamp — flips True only once raw rain has PERSISTED longer
-        than `WET_DWELL`. `wet_since` tracks the current raw-wet streak (reset
+        than `WET_DWELL`. `_wet_since` tracks the current raw-wet streak (reset
         the moment it reads dry). Returns True if anything observable changed.
         Only a confirmed wet→dry edge advances `rain_ended_at` — the dry-out
         clock starts when real rain ENDS, not while a passing shower clears.
         """
         if raw_wet:
-            if self.wet_since is None:
-                self.wet_since = now
-            confirmed = now - self.wet_since > self.WET_DWELL
+            if self._wet_since is None:
+                self._wet_since = now
+            confirmed = now - self._wet_since > self.WET_DWELL
         else:
-            self.wet_since = None
+            self._wet_since = None
             confirmed = False
-        changed = self.is_wet != confirmed
-        if self.is_wet and not confirmed:
+        changed = self._is_wet != confirmed
+        if self._is_wet and not confirmed:
             changed |= self._record_dry_transition(now)
-        self.is_wet = confirmed
+        self._is_wet = confirmed
         if confirmed:
-            self.last_wet_at = now  # anchor dry_at forward while it rains
+            self._last_wet_at = now  # anchor dry_at forward while it rains
         return changed
 
     def _record_dry_transition(self, now: datetime) -> bool:
@@ -88,19 +97,24 @@ class RainState:
         return True
 
     @property
+    def is_wet(self) -> bool:
+        """Confirmed wet state — raw rain sustained past WET_DWELL."""
+        return self._is_wet
+
+    @property
     def dry_at(self) -> datetime | None:
         """When the grass is considered dry.
 
         While confirmed wet the rain is still falling, so the dry-out clock has
-        not started — anchor on `last_wet_at` (latest wet observation) so
-        `dry_at` stays in the future (`last_wet_at + dry_hours`) and the planner
+        not started — anchor on `_last_wet_at` (latest wet observation) so
+        `dry_at` stays in the future (`_last_wet_at + dry_hours`) and the planner
         keeps its window closed. `rain_ended_at` alone would be STALE here (it
         holds the previous rain's end until this shower clears), which let the
         planner open the window and resume into wet grass (2026-07-09). Once
         dry, anchor on `rain_ended_at` for a fixed dry-out deadline. `None` when
         no rain is on record (treat as already dry).
         """
-        base = self.last_wet_at if self.is_wet else self.rain_ended_at
+        base = self._last_wet_at if self._is_wet else self.rain_ended_at
         if base is None:
             return None
         return base + timedelta(hours=self.dry_hours)

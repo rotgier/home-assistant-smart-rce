@@ -67,7 +67,7 @@ def test_observe_onset_does_not_confirm_within_dwell() -> None:
     state = RainState()
     assert state.observe(raw_wet=True, now=NOW) is False  # arms wet_since only
     assert state.is_wet is False
-    assert state.wet_since == NOW
+    assert state._wet_since == NOW  # noqa: SLF001
     assert state.observe(raw_wet=True, now=_min(5)) is False  # 5 min < dwell
     assert state.is_wet is False
 
@@ -79,7 +79,7 @@ def test_observe_few_drops_under_dwell_never_confirm() -> None:
     assert state.observe(raw_wet=False, now=_min(4)) is False  # cleared, no edge
     assert state.is_wet is False
     assert state.rain_ended_at is None  # never confirmed → no rain end
-    assert state.wet_since is None
+    assert state._wet_since is None  # noqa: SLF001
 
 
 def test_observe_sustained_rain_confirms_after_dwell() -> None:
@@ -100,18 +100,24 @@ def test_observe_confirmed_then_dry_records_rain_end() -> None:
 
 
 def test_observe_staying_confirmed_no_change() -> None:
-    state = RainState(is_wet=True, wet_since=NOW)
+    state = RainState()
+    state._is_wet = True  # noqa: SLF001
+    state._wet_since = NOW  # noqa: SLF001
     assert state.observe(raw_wet=True, now=_min(30)) is False  # already confirmed
 
 
 def test_transient_fields_not_serialized() -> None:
-    dumped = RainState(is_wet=True, wet_since=NOW, last_wet_at=NOW).to_dict()
+    state = RainState()
+    state._is_wet = True  # noqa: SLF001
+    state._wet_since = NOW  # noqa: SLF001
+    state._last_wet_at = NOW  # noqa: SLF001
+    dumped = state.to_dict()
     assert "is_wet" not in dumped
     assert "wet_since" not in dumped
     assert "last_wet_at" not in dumped
     restored = RainState.from_dict({"is_wet": True, "wet_since": NOW.isoformat()})
     assert restored.is_wet is False  # ignored on load
-    assert restored.wet_since is None
+    assert restored._wet_since is None  # noqa: SLF001
 
 
 def test_set_dry_hours_changed_flag() -> None:
