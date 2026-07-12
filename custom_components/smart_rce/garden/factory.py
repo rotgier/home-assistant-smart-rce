@@ -54,7 +54,7 @@ from custom_components.smart_rce.garden.infrastructure.rain_repository import (
     RainRepository,
 )
 from custom_components.smart_rce.infrastructure.async_task_runner import AsyncTaskRunner
-from homeassistant.core import CoreState, callback
+from homeassistant.core import CoreState, Event, callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
@@ -68,10 +68,11 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _PLANNER_TICK = timedelta(minutes=1)
-# 2 min (not 5) so the WET_DWELL crossing is noticed close to its 10-min mark
-# rather than up to a tick late; the reading itself is static between wo-cloud
-# coordinator updates, the tick just advances the dwell clock.
-_RAIN_TICK = timedelta(minutes=2)
+# Contract with home-assistant-wetteronline coordinator: bus events fired once
+# per ~5-min refresh cycle (UPDATED on success, UPDATE_FAILED otherwise). Kept
+# as literals — no import across integrations.
+_WEATHER_UPDATED_EVENT = "wetteronline_weather_updated"
+_WEATHER_UPDATE_FAILED_EVENT = "wetteronline_weather_update_failed"
 
 
 @dataclass
@@ -117,20 +118,32 @@ def _wire_rain(
     reader: RainReader,
     rain: RainService,
 ) -> None:
-    """Observe rain on weather changes + a 5-min tick (wet→dry edge detection)."""
+    """Observe rain on the wetteronline coordinator events (one per ~5-min cycle).
+
+    UPDATED → read the fresh nowcast and observe. UPDATE_FAILED → re-observe the
+    LAST reading: the weather entities go `unavailable` on a failed fetch, so a
+    fresh read would wrongly clear the wet streak — instead we conservatively
+    assume the last-known weather persists (keeps `dry_at` receding while data is
+    stale). One guaranteed signal per cycle replaces the old blind time tick, and
+    a single event source avoids double-handling (no separate state-change sub).
+    """
+    last_raw = [False]  # closure holder for the last successful reading
 
     @callback
-    def _observe() -> None:
-        rain.observe(reader.is_raining_now(), dt_util.now())
+    def _on_updated(_event: Event | None) -> None:
+        last_raw[0] = reader.is_raining_now()
+        rain.observe(last_raw[0], dt_util.now())
 
     @callback
-    def _tick(_now: datetime) -> None:
-        _observe()
+    def _on_failed(_event: Event) -> None:
+        rain.observe(last_raw[0], dt_util.now())
 
-    entry.async_on_unload(reader.subscribe(_observe))
-    entry.async_on_unload(async_track_time_interval(hass, _tick, _RAIN_TICK))
+    entry.async_on_unload(hass.bus.async_listen(_WEATHER_UPDATED_EVENT, _on_updated))
+    entry.async_on_unload(
+        hass.bus.async_listen(_WEATHER_UPDATE_FAILED_EVENT, _on_failed)
+    )
     if hass.state is CoreState.running:
-        _observe()
+        _on_updated(None)
 
 
 def _wire_rain_gate(

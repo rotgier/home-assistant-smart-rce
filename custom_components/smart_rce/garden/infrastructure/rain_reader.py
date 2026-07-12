@@ -11,14 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from homeassistant.core import callback
-from homeassistant.helpers.event import async_track_state_change_event
-
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant
-    from homeassistant.helpers.event import EventStateChangedData
+    from homeassistant.core import HomeAssistant
 
 _WET_TOKENS: Final = ("rain", "pour", "lightning")
 _PRECIP_THRESHOLD: Final = 70.0
@@ -40,17 +34,6 @@ class RainReader:
             return False
         wet = any(token in weather.lower() for token in _WET_TOKENS)
         return wet and self._read_float(RainReader._PRECIP) > _PRECIP_THRESHOLD
-
-    def subscribe(self, on_change: Callable[[], None]) -> CALLBACK_TYPE:
-        """Invoke `on_change` on weather/precip changes; returns unsubscribe."""
-
-        @callback
-        def _changed(_event: Event[EventStateChangedData]) -> None:
-            on_change()
-
-        return async_track_state_change_event(
-            self._hass, [RainReader._WEATHER, RainReader._PRECIP], _changed
-        )
 
     def _read(self, entity_id: str) -> str | None:
         state = self._hass.states.get(entity_id)

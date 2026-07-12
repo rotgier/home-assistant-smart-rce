@@ -43,7 +43,10 @@ class RainState:
     persist the derived fact `rain_ended_at`, not the volatile observation).
     """
 
-    WET_DWELL = timedelta(minutes=10)  # raw rain must persist this long to confirm
+    # Raw rain must persist ≥ this to confirm. 9 min (not 10) so ~3 consecutive
+    # 5-min coordinator ticks reliably cross it despite jitter — the 3rd tick
+    # lands ~10 min in, and a 1-min margin below keeps tick-2 (~5 min) out.
+    WET_DWELL = timedelta(minutes=9)
     _DEFAULT_DRY_HOURS = 5.0
 
     def __init__(
@@ -76,7 +79,7 @@ class RainState:
         if raw_wet:
             if self._wet_since is None:
                 self._wet_since = now
-            confirmed = now - self._wet_since > self.WET_DWELL
+            confirmed = now - self._wet_since >= self.WET_DWELL
         else:
             self._wet_since = None
             confirmed = False

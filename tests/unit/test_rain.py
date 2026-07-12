@@ -99,6 +99,15 @@ def test_observe_confirmed_then_dry_records_rain_end() -> None:
     assert state.is_wet is False
 
 
+def test_observe_confirms_at_dwell_boundary() -> None:
+    # WET_DWELL = 9 min with `>=`: 3rd 5-min tick (~10 min) reliably confirms,
+    # exactly-9 confirms, just-under does not.
+    state = RainState()
+    state.observe(raw_wet=True, now=NOW)  # wet_since = NOW
+    assert state.observe(raw_wet=True, now=_min(8)) is RainEvent.NONE  # 8 < 9
+    assert state.observe(raw_wet=True, now=_min(9)) is RainEvent.RAIN_CONFIRMED  # >= 9
+
+
 def test_observe_staying_confirmed_emits_still_raining() -> None:
     state = RainState()
     state._is_wet = True  # noqa: SLF001
