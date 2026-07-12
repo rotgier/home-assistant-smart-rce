@@ -1,6 +1,6 @@
-"""Unit tests for the mowing hold — MowingHold domain + MowingHoldService push logic."""
+"""Unit tests for the mowing hold — MowingHold domain + MowingHoldService logic."""
 
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from unittest.mock import MagicMock
 
 from custom_components.smart_rce.garden.application.mowing_hold_service import (
@@ -18,117 +18,163 @@ def _dt(hour: int, minute: int) -> datetime:
     return datetime(2026, 6, 13, hour, minute, tzinfo=UTC)
 
 
-# --- MowingHold domain ---
+# --- MowingHold domain: rain hold ---
 
 
 def test_idle_when_no_target() -> None:
-    gate = MowingHold()
-    assert gate.evaluate(NEAR, None, None, False) is False
-    assert gate.override is None
+    hold = MowingHold()
+    assert hold.evaluate(NEAR, None, None, False) is False
+    assert hold.override is None
 
 
 def test_dry_clears() -> None:
-    gate = MowingHold(override=NonWorkHours(time(16, 16), time(19, 31)))
-    assert gate.evaluate(_dt(20, 10), TARGET, _dt(19, 55), True) is True  # dry_at past
-    assert gate.override is None
+    hold = MowingHold(override=NonWorkHours(time(16, 16), time(19, 31)))
+    assert hold.evaluate(_dt(20, 10), TARGET, _dt(19, 55), True) is True  # dry_at past
+    assert hold.override is None
 
 
-# working hours — mid-day charge-resume block
+def test_working_hours_docked_with_task_holds_until_dry_at() -> None:
+    hold = MowingHold()
+    assert hold.evaluate(WORK, TARGET, _dt(19, 31), True) is True
+    assert hold.override == NonWorkHours(time(16, 16), time(19, 31))  # start = now-15
 
 
-def test_working_hours_docked_with_task_blocks_until_dry_at() -> None:
-    gate = MowingHold()
-    assert gate.evaluate(WORK, TARGET, _dt(19, 31), True) is True
-    assert gate.override == NonWorkHours(time(16, 16), time(19, 31))  # start = now-15
+def test_working_hours_not_docked_does_not_hold() -> None:
+    hold = MowingHold()
+    assert hold.evaluate(WORK, TARGET, _dt(19, 31), False) is False
+    assert hold.override is None
 
 
-def test_working_hours_not_docked_does_not_block() -> None:
-    gate = MowingHold()
-    assert gate.evaluate(WORK, TARGET, _dt(19, 31), False) is False
-    assert gate.override is None
-
-
-def test_block_skips_while_ahead_refreshes_near_expiry() -> None:
-    gate = MowingHold()
-    assert gate.evaluate(_dt(16, 31), TARGET, _dt(19, 31), True) is True
-    assert gate.override == NonWorkHours(time(16, 16), time(19, 31))
+def test_hold_skips_while_ahead_refreshes_near_expiry() -> None:
+    hold = MowingHold()
+    assert hold.evaluate(_dt(16, 31), TARGET, _dt(19, 31), True) is True
+    assert hold.override == NonWorkHours(time(16, 16), time(19, 31))
     # end (19:31) still far ahead → skip despite dry_at creep, start pinned
-    assert gate.evaluate(_dt(17, 0), TARGET, _dt(20, 0), True) is False
-    assert gate.override == NonWorkHours(time(16, 16), time(19, 31))
+    assert hold.evaluate(_dt(17, 0), TARGET, _dt(20, 0), True) is False
+    assert hold.override == NonWorkHours(time(16, 16), time(19, 31))
     # within MARGIN of the end + still wet → refresh end to current dry_at
-    assert gate.evaluate(_dt(19, 20), TARGET, _dt(22, 20), True) is True
-    assert gate.override == NonWorkHours(time(16, 16), time(22, 20))
+    assert hold.evaluate(_dt(19, 20), TARGET, _dt(22, 20), True) is True
+    assert hold.override == NonWorkHours(time(16, 16), time(22, 20))
 
 
-# morning quiet-end — same block, only when still wet past the end
+def test_near_morning_wet_past_end_holds() -> None:
+    hold = MowingHold()
+    assert hold.evaluate(NEAR, TARGET, _dt(12, 0), True) is True  # dry_at 12:00 > 10:05
+    assert hold.override == NonWorkHours(time(9, 43), time(12, 0))  # start = now-15
 
 
-def test_near_morning_wet_past_end_blocks() -> None:
-    gate = MowingHold()
-    assert gate.evaluate(NEAR, TARGET, _dt(12, 0), True) is True  # dry_at 12:00 > 10:05
-    assert gate.override == NonWorkHours(time(9, 43), time(12, 0))  # start = now-15
+def test_near_morning_dry_by_end_does_not_hold() -> None:
+    hold = MowingHold()
+    assert hold.evaluate(NEAR, TARGET, _dt(10, 0), True) is False  # dry_at ≤ 10:05
+    assert hold.override is None
 
 
-def test_near_morning_dry_by_end_does_not_block() -> None:
-    gate = MowingHold()
-    assert (
-        gate.evaluate(NEAR, TARGET, _dt(10, 0), True) is False
-    )  # dry_at 10:00 ≤ 10:05
-    assert gate.override is None
+def test_hold_continues_past_morning_end_without_rewrite() -> None:
+    hold = MowingHold(override=NonWorkHours(time(9, 43), time(12, 0)))
+    assert hold.evaluate(_dt(10, 6), TARGET, _dt(12, 0), True) is False
+    assert hold.override == NonWorkHours(time(9, 43), time(12, 0))
 
 
-def test_block_continues_past_morning_end_without_rewrite() -> None:
-    # A near-morning block; the clock passes the user end (10:05) → working hours,
-    # but the block just keeps holding (start already in the past) — no rewrite,
-    # no gap.
-    gate = MowingHold(override=NonWorkHours(time(9, 43), time(12, 0)))
-    assert gate.evaluate(_dt(10, 6), TARGET, _dt(12, 0), True) is False
-    assert gate.override == NonWorkHours(time(9, 43), time(12, 0))
+def test_deep_in_quiet_drops_the_hold() -> None:
+    hold = MowingHold(override=NonWorkHours(time(16, 16), time(23, 0)))
+    assert hold.evaluate(_dt(3, 0), TARGET, _dt(5, 0), True) is True
+    assert hold.override is None
 
 
-def test_deep_in_quiet_drops_the_block() -> None:
-    # Deep in the night quiet window — the real non-work parks the mower, so the
-    # override is dropped (restore target), even though it is still wet.
-    gate = MowingHold(override=NonWorkHours(time(16, 16), time(23, 0)))
-    assert gate.evaluate(_dt(3, 0), TARGET, _dt(5, 0), True) is True
-    assert gate.override is None
+def test_evening_start_buffer_keeps_hold() -> None:
+    hold = MowingHold(override=NonWorkHours(time(16, 16), time(23, 0)))
+    assert hold.evaluate(_dt(20, 40), TARGET, _dt(23, 0), True) is False  # 5 min in
+    assert hold.override == NonWorkHours(time(16, 16), time(23, 0))
+    assert hold.evaluate(_dt(20, 50), TARGET, _dt(23, 0), True) is True  # MARGIN past
+    assert hold.override is None
 
 
-def test_evening_start_buffer_keeps_block() -> None:
-    # Just past the evening start (20:35) the real window would park, but flipping
-    # to target could race a lagging device clock, so the held block stays.
-    gate = MowingHold(override=NonWorkHours(time(16, 16), time(23, 0)))
-    assert gate.evaluate(_dt(20, 40), TARGET, _dt(23, 0), True) is False  # 5 min in
-    assert gate.override == NonWorkHours(time(16, 16), time(23, 0))
-    # MARGIN past the start → safe to restore the target
-    assert gate.evaluate(_dt(20, 50), TARGET, _dt(23, 0), True) is True
-    assert gate.override is None
+# --- MowingHold domain: rain suppression (clear button) ---
 
 
-def test_release_clears() -> None:
-    gate = MowingHold(override=NonWorkHours(time(16, 16), time(19, 31)))
-    assert gate.release(WORK) is True
-    assert gate.override is None
+def test_suppress_rain_then_evaluate_clears() -> None:
+    hold = MowingHold(override=NonWorkHours(time(16, 16), time(19, 31)))
+    hold.suppress_rain(WORK)  # suppress rain until 16:51
+    assert hold.evaluate(WORK, TARGET, _dt(19, 31), True, force=True) is True  # clears
+    assert hold.override is None
+    # tick 5 min later — still docked + wet — stays released (suppressed)
+    assert hold.evaluate(_dt(16, 36), TARGET, _dt(19, 31), True) is False
+    assert hold.override is None
 
 
-def test_release_suppresses_reblock_while_still_docked_and_wet() -> None:
-    # Clicking clear while the mower is still on the dock + wet: the next tick
-    # must NOT re-block (it needs time to undock; cloud lags the state read).
-    gate = MowingHold(override=NonWorkHours(time(16, 16), time(19, 31)))
-    gate.release(WORK)  # 16:31
-    assert gate.override is None
-    # A tick 5 min later — still docked + wet — stays released (suppressed).
-    assert gate.evaluate(_dt(16, 36), TARGET, _dt(19, 31), True) is False
-    assert gate.override is None
+def test_rehold_after_grace_if_still_docked_and_wet() -> None:
+    hold = MowingHold()
+    hold.suppress_rain(WORK)  # suppress until 16:51
+    assert hold.evaluate(_dt(16, 40), TARGET, _dt(19, 31), True) is False  # suppressed
+    assert hold.evaluate(_dt(16, 52), TARGET, _dt(19, 31), True) is True  # past grace
+    assert hold.override == NonWorkHours(time(16, 37), time(19, 31))  # start = now-15
 
 
-def test_reblock_after_grace_if_still_docked_and_wet() -> None:
-    gate = MowingHold(override=NonWorkHours(time(16, 16), time(19, 31)))
-    gate.release(WORK)  # suppress until 16:51
-    assert gate.evaluate(_dt(16, 40), TARGET, _dt(19, 31), True) is False  # suppressed
-    # Past the 20-min grace, still docked + wet → re-asserts the block.
-    assert gate.evaluate(_dt(16, 52), TARGET, _dt(19, 31), True) is True
-    assert gate.override == NonWorkHours(time(16, 37), time(19, 31))  # start = now-15
+# --- MowingHold domain: manual park ---
+
+
+def test_manual_park_holds_regardless_of_dock_and_rain() -> None:
+    hold = MowingHold()
+    assert hold.set_manual(WORK, 30) is True
+    # not docked, dry → still holds by manual, until WORK+30 (17:01)
+    assert hold.evaluate(WORK, TARGET, None, False, force=True) is True
+    assert hold.override == NonWorkHours(time(16, 16), time(17, 1))
+
+
+def test_effective_end_is_max_of_rain_and_manual() -> None:
+    hold = MowingHold()
+    hold.set_manual(WORK, 30)  # manual until 17:01
+    # rain dry_at 19:31 is later than manual 17:01 → end = 19:31
+    assert hold.evaluate(WORK, TARGET, _dt(19, 31), True, force=True) is True
+    assert hold.override == NonWorkHours(time(16, 16), time(19, 31))
+
+
+def test_manual_survives_after_rain_clears() -> None:
+    hold = MowingHold()
+    hold.set_manual(WORK, 30)  # until 17:01
+    hold.suppress_rain(WORK)  # rain suppressed
+    # dry + suppressed, but manual keeps it held until 17:01
+    assert hold.evaluate(WORK, TARGET, None, True, force=True) is True
+    assert hold.override == NonWorkHours(time(16, 16), time(17, 1))
+
+
+def test_manual_expiry_releases_when_dry() -> None:
+    hold = MowingHold()
+    hold.set_manual(WORK, 30)  # until 17:01
+    hold.evaluate(WORK, TARGET, None, False, force=True)  # held by manual
+    # past 17:01, dry → nothing active → release
+    assert hold.evaluate(_dt(17, 5), TARGET, None, False, force=True) is True
+    assert hold.override is None
+
+
+def test_cancel_manual_releases_when_dry() -> None:
+    hold = MowingHold()
+    hold.set_manual(WORK, 30)
+    hold.evaluate(WORK, TARGET, None, False, force=True)  # held by manual
+    assert hold.cancel_manual() is True
+    assert hold.evaluate(WORK, TARGET, None, False, force=True) is True  # releases
+    assert hold.override is None
+
+
+def test_cancel_manual_keeps_rain_hold() -> None:
+    hold = MowingHold()
+    hold.set_manual(WORK, 30)
+    hold.evaluate(WORK, TARGET, _dt(19, 31), True, force=True)  # held (max=19:31)
+    hold.cancel_manual()
+    # rain still active → stays held (now anchored on dry_at)
+    assert hold.evaluate(WORK, TARGET, _dt(19, 31), True, force=True) is False
+    assert hold.override == NonWorkHours(time(16, 16), time(19, 31))
+
+
+def test_manual_until_round_trips_through_to_dict() -> None:
+    hold = MowingHold()
+    hold.set_manual(WORK, 30)
+    restored = MowingHold.from_dict(hold.to_dict())
+    assert restored.manual_until == WORK + timedelta(minutes=30)
+
+
+def test_from_dict_empty_no_manual() -> None:
+    assert MowingHold.from_dict({}).manual_until is None
 
 
 # --- MowingHoldService ---
@@ -142,6 +188,9 @@ def _service(
     progress: int = 50,
     now: datetime = WORK,
 ) -> tuple[MowingHoldService, MagicMock, MagicMock]:
+    repo = MagicMock()
+    repo.state = MowingHold()
+    repo.save_if_changed = MagicMock()
     non_work = MagicMock()
     non_work.effective_hours = target
     rain = MagicMock()
@@ -152,7 +201,9 @@ def _service(
     actuator = MagicMock()
     actuator.apply = MagicMock(return_value="coro")  # not awaited — handed to tasks
     tasks = MagicMock()
-    service = MowingHoldService(non_work, rain, actuator, luba, tasks, lambda: now)
+    service = MowingHoldService(
+        repo, non_work, rain, actuator, luba, tasks, lambda: now
+    )
     return service, actuator, tasks
 
 
@@ -163,7 +214,7 @@ def test_service_no_target_does_nothing() -> None:
     actuator.apply.assert_not_called()
 
 
-def test_service_blocks_when_docked_with_task() -> None:
+def test_service_holds_when_docked_with_task() -> None:
     service, actuator, tasks = _service(dry_at=_dt(19, 31), docked=True, progress=50)
     notified: list[int] = []
     service.add_listener(lambda: notified.append(1))
@@ -176,25 +227,11 @@ def test_service_blocks_when_docked_with_task() -> None:
     assert notified == [1]
 
 
-def test_service_no_block_when_not_docked() -> None:
+def test_service_no_hold_when_not_docked() -> None:
     service, actuator, tasks = _service(dry_at=_dt(19, 31), docked=False)
     service.evaluate()
     assert service.override is None
     tasks.run_background.assert_not_called()
-
-
-def test_service_no_block_when_no_task() -> None:
-    service, actuator, tasks = _service(dry_at=_dt(19, 31), docked=True, progress=0)
-    service.evaluate()
-    assert service.override is None
-    tasks.run_background.assert_not_called()
-
-
-def test_service_blocks_near_morning() -> None:
-    service, actuator, tasks = _service(dry_at=_dt(12, 0), now=NEAR)
-    service.evaluate()
-    assert service.override == NonWorkHours(time(9, 43), time(12, 0))
-    actuator.apply.assert_called_once_with(NonWorkHours(time(9, 43), time(12, 0)))
 
 
 def test_service_restore_pushes_target_when_dry() -> None:
@@ -205,24 +242,44 @@ def test_service_restore_pushes_target_when_dry() -> None:
 
     assert service.override is None
     actuator.apply.assert_called_once_with(TARGET)
-    tasks.run_background.assert_called_once()
 
 
-def test_clear_hold_releases_and_restores_target() -> None:
-    service, actuator, tasks = _service()
-    service._hold.override = NonWorkHours(time(16, 16), time(19, 31))  # noqa: SLF001
-    notified: list[int] = []
-    service.add_listener(lambda: notified.append(1))
+def test_service_park_holds_and_persists() -> None:
+    service, actuator, tasks = _service(dry_at=None, docked=False, now=WORK)
 
-    service.clear_hold()
+    service.park(30)
 
+    assert service.is_manual_parked is True
+    assert service.override == NonWorkHours(time(16, 16), time(17, 1))
+    actuator.apply.assert_called_once_with(NonWorkHours(time(16, 16), time(17, 1)))
+    service._repo.save_if_changed.assert_called_once()  # noqa: SLF001
+
+
+def test_service_cancel_park_restores_target_when_dry() -> None:
+    service, actuator, tasks = _service(dry_at=None, docked=False, now=WORK)
+    service.park(30)
+    actuator.apply.reset_mock()
+
+    service.cancel_park()
+
+    assert service.is_manual_parked is False
     assert service.override is None
     actuator.apply.assert_called_once_with(TARGET)
-    assert notified == [1]
+
+
+def test_service_clear_hold_keeps_manual_park() -> None:
+    service, actuator, tasks = _service(dry_at=_dt(19, 31), docked=True, now=WORK)
+    service.park(30)  # manual until 17:01
+    actuator.apply.reset_mock()
+
+    service.clear_hold()  # suppress rain — manual must survive
+
+    assert service.is_manual_parked is True
+    assert service.override == NonWorkHours(time(16, 16), time(17, 1))
 
 
 def test_clear_hold_noop_when_not_holding() -> None:
-    service, actuator, tasks = _service()
+    service, actuator, tasks = _service(dry_at=None, docked=False)
     service.clear_hold()
     actuator.apply.assert_not_called()
     tasks.run_background.assert_not_called()

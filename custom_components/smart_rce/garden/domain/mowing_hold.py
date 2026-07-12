@@ -1,44 +1,43 @@
-"""Mowing hold — keeps the mower parked (via non-work) while the grass is wet.
+"""Mowing hold — keeps the mower parked (via non-work) for rain OR a manual park.
 
 The mower autonomously resumes a paused task — both when its non-work window
 ends AND when it finishes charging mid-task during working hours (confirmed
 2026-07-09). Neither path consults the planner's `should_start`, so the only
 lever we have over the firmware is the device non-work window. `MowingHold` owns
-a temporary `override` of that window — a hold `[now − MARGIN, dry_at]` — and the
-service pushes it to the device, restoring the user target once it is no longer
-needed.
+a temporary `override` of that window and the service pushes it to the device,
+restoring the user target once no hold is active.
 
-`dry_at` is LIVE (it stays in the future the whole time it rains — see
-`RainState.dry_at`), so it is the single source of "wet until when"; the hold
-needs neither `currently_wet` nor `dry_hours`.
+Two independent hold reasons, OR-combined — the mower stays parked until BOTH
+clear, so the effective override end is the LATEST of the active ends:
 
-The hold is asserted ONLY where the mower would otherwise leave the dock into
-wet grass — and only with a paused task to resume (`docked_with_task`):
-- working hours → the charge-complete auto-resume;
-- within `MARGIN` of the morning quiet-end, IF still wet past it (`dry_at > end`;
-  otherwise the target end already covers the dry-out).
-Everywhere else the real non-work window parks the mower, so we restore the user
-target. One shape: because the hold start (`now − MARGIN`) is in the past it
-survives the morning boundary without a rewrite — it just keeps holding until
-dry. `MARGIN` doubles as a clock-skew buffer: the hold starts a touch early and
-the restore is deferred until `MARGIN` past the evening start, so neither edge
-races a lagging device clock.
+- **rain** — derived live each `evaluate`: docked-with-task AND grass not dry
+  (`dry_at > now`) AND the mower would otherwise leave (`_hold_applies`). Ends at
+  `dry_at` (LIVE; stays in the future while it rains — see `RainState.dry_at`).
+  Not persisted (re-derived). A manual `clear` suppresses it for
+  `MANUAL_RELEASE_GRACE` (grass is actually fine, resume now).
+- **manual** — `manual_until` deadline set by the dashboard park button. Ends at
+  `manual_until`. Independent of `docked_with_task` and of rain (a manual clear
+  does NOT drop it; only expiry or the cancel button). PERSISTED (`to_dict`), so
+  a restart mid-park does not release the mower into the kids' football game.
 
-Anti-churn: `dry_at` creeps ~1 min per tick while it keeps raining. A held window
-is left untouched while its end is still more than `MARGIN` ahead of `now`, and
-refreshed only as it nears expiry — where the refresh re-asserts the current
-`dry_at`, so the mower never reaches the end while wet (≈ one write per
-`dry_hours − MARGIN` of continuous rain, not one per tick).
+The hold shape is `[now − MARGIN, end]`. Because the start (`now − MARGIN`) is in
+the past it survives the morning boundary without a rewrite. `MARGIN` doubles as
+a clock-skew buffer at the start/restore edges. Anti-churn: on tick-driven
+`evaluate` a held window is left untouched while its end is still more than
+`MARGIN` ahead of `now` (`dry_at` creeps ~1 min/tick) — refreshed only near
+expiry, where it re-asserts the current latest end (so it never expires while a
+reason is active, and a rising manual/rain end is picked up before the device
+window is reached). A user action (`park`/`cancel`/`clear`) passes `force=True`
+to apply immediately, bypassing the skip.
 
-State is in-memory (not persisted): a mid-hold HA restart forgets `override`;
-the next `evaluate` re-derives it, and `binary_sensor.luba_non_work_drift`
-(un-muted once not holding) surfaces any lingering device mismatch for a manual
-restore via the push button.
+Only `manual_until` persists; `override` and the rain-suppression window are
+transient (re-derived on the next `evaluate`).
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 
 from custom_components.smart_rce.garden.domain.non_work import (
     NonWorkHours,
@@ -47,38 +46,56 @@ from custom_components.smart_rce.garden.domain.non_work import (
 
 
 class MowingHold:
-    """Owns the rain override of the device non-work window (mutator-returns-bool).
+    """Owns the device non-work override for rain + manual holds (mutator-bool).
 
-    A DDD entity (mutable state + behaviour), so a plain class, not a dataclass.
+    A DDD entity (mutable state + behaviour + persisted), so a plain class.
     """
 
     # Slack kept around every non-work edge: how early before a boundary we act,
     # and the clock-skew buffer at the hold's own start/restore edges.
     MARGIN = timedelta(minutes=15)
-    # After a manual clear we suppress re-holding for this long so the mower has
-    # time to physically leave the dock before the next tick re-reads
+    # After a manual clear we suppress re-holding on RAIN for this long so the
+    # mower has time to physically leave the dock before the next tick re-reads
     # `docked_with_task` — otherwise it would re-hold while still docked + wet,
     # making the clear button a no-op (cloud round-trip lags the undock).
     MANUAL_RELEASE_GRACE = timedelta(minutes=20)
 
-    def __init__(self, override: NonWorkHours | None = None) -> None:
+    def __init__(
+        self,
+        override: NonWorkHours | None = None,
+        manual_until: datetime | None = None,
+    ) -> None:
         self.override = override
-        self._suppress_until: datetime | None = None
+        self.manual_until = manual_until  # persisted manual-park deadline
+        self._suppress_until: datetime | None = None  # transient rain suppression
 
     @property
     def is_holding(self) -> bool:
-        """True while we override the device non-work window (hold active)."""
+        """True while we override the device non-work window (any hold active)."""
         return self.override is not None
 
-    def release(self, now: datetime) -> bool:
-        """Manually drop the override + suppress re-holding for the grace window.
+    def set_manual(self, now: datetime, minutes: int) -> bool:
+        """Arm a manual park until `now + minutes`. Returns True if it changed."""
+        until = now + timedelta(minutes=minutes)
+        if self.manual_until == until:
+            return False
+        self.manual_until = until
+        return True
 
-        The suppression lets the mower undock before the next `evaluate` re-reads
-        `docked_with_task`; once it is off the dock the hold naturally stops
-        applying. After the grace expires (still docked + wet) it re-asserts.
+    def cancel_manual(self) -> bool:
+        """Drop the manual park. Returns True if one was armed."""
+        if self.manual_until is None:
+            return False
+        self.manual_until = None
+        return True
+
+    def suppress_rain(self, now: datetime) -> None:
+        """Suppress the RAIN reason for the grace window (manual clear button).
+
+        Lets the mower undock before the next `evaluate` re-reads
+        `docked_with_task`; does NOT touch the manual park.
         """
         self._suppress_until = now + self.MANUAL_RELEASE_GRACE
-        return self._clear()
 
     def evaluate(
         self,
@@ -86,8 +103,30 @@ class MowingHold:
         user_target: NonWorkHours | None,
         dry_at: datetime | None,
         docked_with_task: bool,
+        *,
+        force: bool = False,
     ) -> bool:
-        """Recompute the override. Returns True if it changed (→ push + notify)."""
+        """Recompute the override. Returns True if it changed (→ push + notify).
+
+        `force` (user action) applies the new window immediately, bypassing the
+        tick-driven anti-churn skip.
+        """
+        end = self._desired_end(now, user_target, dry_at, docked_with_task)
+        if end is None:
+            return self._release_to_target(now, user_target)
+        return self._hold(now, end, force=force)
+
+    def _desired_end(
+        self,
+        now: datetime,
+        user_target: NonWorkHours | None,
+        dry_at: datetime | None,
+        docked_with_task: bool,
+    ) -> datetime | None:
+        """Latest 'keep parked until' across active holds; None if none active."""
+        ends: list[datetime] = []
+        if self.manual_until is not None and now < self.manual_until:
+            ends.append(self.manual_until)
         if (
             not self._is_suppressed(now)
             and docked_with_task
@@ -96,11 +135,11 @@ class MowingHold:
             and dry_at > now
             and self._hold_applies(now, user_target, dry_at)
         ):
-            return self._hold(now, dry_at)
-        return self._release_to_target(now, user_target)
+            ends.append(dry_at)
+        return max(ends) if ends else None
 
     def _is_suppressed(self, now: datetime) -> bool:
-        """Whether a recent manual clear still suppresses re-holding."""
+        """Whether a recent manual clear still suppresses the rain reason."""
         return self._suppress_until is not None and now < self._suppress_until
 
     def _hold_applies(
@@ -114,20 +153,22 @@ class MowingHold:
         # only if the grass is still wet past it (else the target end covers it).
         return active_end - now <= self.MARGIN and dry_at > active_end
 
-    def _hold(self, now: datetime, dry_at: datetime) -> bool:
+    def _hold(self, now: datetime, end: datetime, *, force: bool) -> bool:
         if self.override is not None:
-            # Continuing a hold. Skip while its end is comfortably ahead
-            # (dry_at creeps ~1 min/tick); refresh only near expiry, where it
-            # re-asserts the current dry_at — so the mower never reaches the end
-            # while still wet.
-            if next_occurrence(now, self.override.end) - now > self.MARGIN:
+            # Continuing a hold. On a tick, skip while the end is comfortably
+            # ahead (dry_at creeps ~1 min/tick); refresh only near expiry, where
+            # it re-asserts the current latest end. A user action forces through.
+            if (
+                not force
+                and next_occurrence(now, self.override.end) - now > self.MARGIN
+            ):
                 return False
             start = self.override.start  # pinned across ticks
         else:
             # Fresh hold — start a touch in the past so a lagging device clock
             # still sees `now` inside the window (no start-boundary race).
             start = (now - self.MARGIN).time()
-        return self._set_override(NonWorkHours(start, dry_at.time()))
+        return self._set_override(NonWorkHours(start, end.time()))
 
     def _release_to_target(
         self, now: datetime, user_target: NonWorkHours | None
@@ -156,3 +197,16 @@ class MowingHold:
             return False
         self.override = None
         return True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "manual_until": (
+                self.manual_until.isoformat() if self.manual_until else None
+            )
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MowingHold:
+        raw = data.get("manual_until")
+        until = datetime.fromisoformat(raw) if isinstance(raw, str) else None
+        return cls(manual_until=until)

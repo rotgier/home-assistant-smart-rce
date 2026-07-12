@@ -169,7 +169,10 @@ class MowingHoldBinarySensor(BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         override = self._hold.override
+        manual_until = self._hold.manual_until
         return {
             "effective_start": override.start.isoformat() if override else None,
             "effective_end": override.end.isoformat() if override else None,
+            "manual_parked": self._hold.is_manual_parked,
+            "manual_until": manual_until.isoformat() if manual_until else None,
         }

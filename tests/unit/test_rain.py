@@ -117,17 +117,19 @@ def test_observe_staying_confirmed_emits_still_raining() -> None:
     assert state.observe(raw_wet=True, now=_min(30)) is RainEvent.STILL_RAINING
 
 
-def test_transient_fields_not_serialized() -> None:
+def test_wet_observation_persisted_wet_since_transient() -> None:
     state = RainState()
     state._is_wet = True  # noqa: SLF001
     state._wet_since = NOW  # noqa: SLF001
     state._last_wet_at = NOW  # noqa: SLF001
     dumped = state.to_dict()
-    assert "is_wet" not in dumped
-    assert "wet_since" not in dumped
-    assert "last_wet_at" not in dumped
-    restored = RainState.from_dict({"is_wet": True, "wet_since": NOW.isoformat()})
-    assert restored.is_wet is False  # ignored on load
+    assert dumped["is_wet"] is True
+    assert dumped["last_wet_at"] == NOW.isoformat()
+    assert "wet_since" not in dumped  # transient — re-derived on next observe
+    # Restored so a restart mid-rain keeps dry_at anchored on last_wet_at.
+    restored = RainState.from_dict(dumped)
+    assert restored.is_wet is True
+    assert restored._last_wet_at == NOW  # noqa: SLF001
     assert restored._wet_since is None  # noqa: SLF001
 
 

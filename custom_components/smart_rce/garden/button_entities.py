@@ -1,11 +1,12 @@
-"""Garden buttons — manual non-work push + mowing-hold release.
+"""Garden buttons — non-work push + mowing-hold release + manual park.
 
 `button.luba_non_work_push` triggers `NonWorkService.push_to_device()` — the
-user-initiated write of the HA target to mammotion (the actuator always writes
-when a target exists). `button.mowing_hold_clear` triggers
-`MowingHoldService.clear_hold()` — drops the mowing hold and restores the
-target ("grass is fine, resume now"). Top-level `button.py` aggregates these
-via `build_buttons`, so garden owns its presentation.
+user-initiated write of the HA target to mammotion. `button.mowing_hold_clear`
+triggers `MowingHoldService.clear_hold()` — drops the RAIN hold ("grass is fine,
+resume now"; a manual park survives). `button.mowing_park` parks Luba for
+`number.mowing_park_minutes` (manual hold, independent of rain);
+`button.mowing_park_cancel` drops it. Top-level `button.py` aggregates these via
+`build_buttons`, so garden owns its presentation.
 """
 
 from __future__ import annotations
@@ -22,7 +23,12 @@ if TYPE_CHECKING:
 
 def build_buttons(entry: SmartRceConfigEntry) -> list[ButtonEntity]:
     """Garden button entities for top-level `button.py` to add."""
-    return [LubaNonWorkPushButton(entry), MowingHoldClearButton(entry)]
+    return [
+        LubaNonWorkPushButton(entry),
+        MowingHoldClearButton(entry),
+        MowingParkButton(entry),
+        MowingParkCancelButton(entry),
+    ]
 
 
 class LubaNonWorkPushButton(ButtonEntity):
@@ -59,3 +65,51 @@ class MowingHoldClearButton(ButtonEntity):
 
     async def async_press(self) -> None:
         self._hold.clear_hold()
+
+
+class MowingParkButton(ButtonEntity):
+    """Press to park Luba for `number.mowing_park_minutes` minutes (manual hold)."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Mowing Park"
+    _attr_should_poll = False
+    _attr_icon = "mdi:pause-circle-outline"
+
+    _PARK_MINUTES_ENTITY = "number.mowing_park_minutes"
+    _DEFAULT_MINUTES = 30
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._hold = entry.runtime_data.garden.hold
+        self._attr_unique_id = f"{DOMAIN}_mowing_park"
+        self.entity_id = "button.mowing_park"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_press(self) -> None:
+        self._hold.park(self._park_minutes())
+
+    def _park_minutes(self) -> int:
+        state = self.hass.states.get(self._PARK_MINUTES_ENTITY)
+        if state is None:
+            return self._DEFAULT_MINUTES
+        try:
+            return int(float(state.state))
+        except (ValueError, TypeError):
+            return self._DEFAULT_MINUTES
+
+
+class MowingParkCancelButton(ButtonEntity):
+    """Press to cancel the manual park (rain may still hold)."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Mowing Park Cancel"
+    _attr_should_poll = False
+    _attr_icon = "mdi:play-circle-outline"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._hold = entry.runtime_data.garden.hold
+        self._attr_unique_id = f"{DOMAIN}_mowing_park_cancel"
+        self.entity_id = "button.mowing_park_cancel"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_press(self) -> None:
+        self._hold.cancel_park()

@@ -35,12 +35,12 @@ class RainState:
     float (Store persists JSON).
 
     `_is_wet` is the CONFIRMED wet state (drives the grass-wet sensor and the
-    rain gate via `is_wet`), `_wet_since` is when the raw reading first turned
+    mowing hold via `is_wet`), `_wet_since` is when the raw reading first turned
     wet, and `_last_wet_at` is the latest confirmed-wet moment (anchors `dry_at`
     WHILE it is raining — `rain_ended_at` still holds the PREVIOUS rain's end
-    mid-shower). All three are TRANSIENT — re-derived from the weather entity on
-    every observation, so they are deliberately excluded from `to_dict` (we
-    persist the derived fact `rain_ended_at`, not the volatile observation).
+    mid-shower). `_is_wet` and `_last_wet_at` ARE persisted so a restart mid-rain
+    keeps `dry_at` correct; `_wet_since` stays transient (a not-yet-confirmed
+    dwell is cheap to re-run on the next observation).
     """
 
     # Raw rain must persist ≥ this to confirm. 9 min (not 10) so ~3 consecutive
@@ -139,6 +139,15 @@ class RainState:
                 self.rain_ended_at.isoformat() if self.rain_ended_at else None
             ),
             "dry_hours": self.dry_hours,
+            # Persist the confirmed-wet observation too so a restart mid-rain
+            # keeps `dry_at` anchored on `last_wet_at` (future) instead of
+            # falling back to a stale `rain_ended_at` until the next observe
+            # re-confirms (~1 event + WET_DWELL). `_wet_since` stays transient —
+            # an in-progress, not-yet-confirmed dwell is cheap to re-run.
+            "is_wet": self._is_wet,
+            "last_wet_at": (
+                self._last_wet_at.isoformat() if self._last_wet_at else None
+            ),
         }
 
     @classmethod
@@ -146,7 +155,12 @@ class RainState:
         raw = data.get("rain_ended_at")
         ended = datetime.fromisoformat(raw) if isinstance(raw, str) else None
         hours = data.get("dry_hours", cls._DEFAULT_DRY_HOURS)
-        return cls(rain_ended_at=ended, dry_hours=float(hours))
+        state = cls(rain_ended_at=ended, dry_hours=float(hours))
+        state._is_wet = bool(data.get("is_wet", False))
+        raw_wet_at = data.get("last_wet_at")
+        if isinstance(raw_wet_at, str):
+            state._last_wet_at = datetime.fromisoformat(raw_wet_at)
+        return state
 
 
 class RainEvent(Enum):

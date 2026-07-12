@@ -40,6 +40,9 @@ from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
 from custom_components.smart_rce.garden.infrastructure.luba_state_reader import (
     LubaStateReader,
 )
+from custom_components.smart_rce.garden.infrastructure.mowing_hold_repository import (
+    MowingHoldRepository,
+)
 from custom_components.smart_rce.garden.infrastructure.non_work_actuator import (
     NonWorkActuator,
 )
@@ -103,7 +106,11 @@ async def create_garden(
     _wire_rain(hass, entry, RainReader(hass), rain)
 
     luba = LubaStateReader(hass)
-    hold = MowingHoldService(service, rain, actuator, luba, tasks, dt_util.now)
+    hold_repo = MowingHoldRepository(hass, tasks)
+    await hold_repo.async_restore()
+    hold = MowingHoldService(
+        hold_repo, service, rain, actuator, luba, tasks, dt_util.now
+    )
     _wire_mowing_hold(hass, entry, service, rain, luba, hold)
 
     forecast_reader = ForecastReader(forecast)

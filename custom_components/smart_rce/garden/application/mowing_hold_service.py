@@ -1,26 +1,30 @@
-"""MowingHoldService — overrides device non-work to keep the mower off wet grass.
+"""MowingHoldService — overrides device non-work to keep the mower parked.
 
 Coordinates the slices the hold spans: the user-target window from
 `NonWorkService`, `dry_at` from `RainService`, and the mower state from
-`LubaStateReader` (`docked_with_task` = at dock AND progress > 0, so a mid-day
+`LubaStateReader` (`docked_with_task` = at dock AND progress > 0, so the rain
 hold only preempts a charge-resume, never disturbs an active mow). Runs the
-pure `MowingHold` and, on an override change, pushes the window to the device via
-the shared `NonWorkActuator` — restoring the plain target once dry. Notifies
-listeners so `binary_sensor.mowing_hold` and the drift sensor recompute.
+`MowingHold` aggregate (owned by `MowingHoldRepository`, so the manual-park
+deadline survives restarts) and, on an override change, pushes the window to the
+device via the shared `NonWorkActuator` — restoring the plain target once no hold
+is active. Notifies listeners so `binary_sensor.mowing_hold` and the drift sensor
+recompute.
 
-Wired (factory) to rain changes, non-work target changes, MOWER changes (a
-mid-task dock asserts the hold while charging) and a minute tick. The actuator
-write happens only on an override transition (`MowingHold` anti-churn), so the
-300-sends/24h budget sees few writes per rain spell plus a restore.
+User actions (`park`, `cancel_park`, `clear_hold`) mutate + persist + re-evaluate
+with `force=True` so the device window reflects them immediately (the tick-driven
+`evaluate` keeps anti-churn). The actuator write happens only on an override
+transition, so the 300-sends/24h budget sees few writes per rain spell / park.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from custom_components.smart_rce.application.listenable import Listenable
-from custom_components.smart_rce.garden.domain.mowing_hold import MowingHold
+from custom_components.smart_rce.application.service import Service
 from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
+from custom_components.smart_rce.garden.infrastructure.mowing_hold_repository import (
+    MowingHoldRepository,
+)
 from homeassistant.core import callback
 
 if TYPE_CHECKING:
@@ -31,6 +35,7 @@ if TYPE_CHECKING:
         NonWorkService,
     )
     from custom_components.smart_rce.garden.application.rain_service import RainService
+    from custom_components.smart_rce.garden.domain.mowing_hold import MowingHold
     from custom_components.smart_rce.garden.infrastructure.luba_state_reader import (
         LubaStateReader,
     )
@@ -42,11 +47,12 @@ if TYPE_CHECKING:
     )
 
 
-class MowingHoldService(Listenable):
-    """Evaluates the mowing hold and pushes the overridden non-work window on change."""
+class MowingHoldService(Service[MowingHoldRepository]):
+    """Evaluates the mowing hold and pushes the overridden non-work window."""
 
     def __init__(
         self,
+        repo: MowingHoldRepository,
         non_work: NonWorkService,
         rain: RainService,
         actuator: NonWorkActuator,
@@ -54,8 +60,7 @@ class MowingHoldService(Listenable):
         tasks: AsyncTaskRunner,
         now_provider: Callable[[], datetime],
     ) -> None:
-        super().__init__()
-        self._hold = MowingHold()
+        super().__init__(repo)
         self._non_work = non_work
         self._rain = rain
         self._actuator = actuator
@@ -64,23 +69,24 @@ class MowingHoldService(Listenable):
         self._now = now_provider
 
     @property
+    def _hold(self) -> MowingHold:
+        return self._repo.state
+
+    @property
     def is_holding(self) -> bool:
-        """True while non-work is extended past the user target (hold active)."""
+        """True while the device non-work is overridden (any hold active)."""
         return self._hold.is_holding
 
-    @callback
-    def clear_hold(self) -> None:
-        """User-initiated release (dashboard button) → restore target to device.
+    @property
+    def is_manual_parked(self) -> bool:
+        """True while a manual park is armed and not yet expired."""
+        until = self._hold.manual_until
+        return until is not None and self._now() < until
 
-        For "the grass is actually fine, resume now". Pushes the target back
-        and notifies. If it is still confirmed-wet near the morning boundary
-        the next tick may re-hold; releasing mid-hold (outside the quiet
-        window) sticks. To EXTEND instead, raise `number.garden_dry_out_hours`.
-        """
-        base = self._non_work.effective_hours
-        if base is not None and self._hold.release(self._now()):
-            self._push(base)
-            self._notify_all()
+    @property
+    def manual_until(self) -> datetime | None:
+        """The manual-park deadline, or None."""
+        return self._hold.manual_until
 
     @property
     def override(self) -> NonWorkHours | None:
@@ -88,14 +94,43 @@ class MowingHoldService(Listenable):
         return self._hold.override
 
     @callback
+    def park(self, minutes: int) -> None:
+        """Arm a manual park for `minutes` (dashboard button) → hold + persist."""
+        if self._hold.set_manual(self._now(), minutes):
+            self._repo.save_if_changed()
+        self._reevaluate(force=True)
+
+    @callback
+    def cancel_park(self) -> None:
+        """Drop the manual park (dashboard button). Rain may still hold."""
+        if self._hold.cancel_manual():
+            self._repo.save_if_changed()
+        self._reevaluate(force=True)
+
+    @callback
+    def clear_hold(self) -> None:
+        """User-initiated rain release (dashboard button) → resume unless parked.
+
+        For "the grass is actually fine, resume now". Suppresses the rain reason
+        for the grace window so the mower can undock; a manual park is NOT
+        affected (use `cancel_park` for that). To EXTEND the dry-out instead,
+        raise `number.garden_dry_out_hours`.
+        """
+        self._hold.suppress_rain(self._now())
+        self._reevaluate(force=True)
+
+    @callback
     def evaluate(self) -> None:
-        """Recompute the override; on change, push the window and notify."""
+        """Tick/listener entry — recompute with anti-churn (no force)."""
+        self._reevaluate(force=False)
+
+    def _reevaluate(self, *, force: bool) -> None:
         base = self._non_work.effective_hours
         if base is None:
             return  # no target yet — nothing to override or restore
         docked_with_task = self._luba.read_at_dock() and self._luba.read_progress() > 0
         changed = self._hold.evaluate(
-            self._now(), base, self._rain.dry_at, docked_with_task
+            self._now(), base, self._rain.dry_at, docked_with_task, force=force
         )
         if not changed:
             return
