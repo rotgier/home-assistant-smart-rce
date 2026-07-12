@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.smart_rce.garden.application.rain_service import RainService
-from custom_components.smart_rce.garden.domain.rain import DEFAULT_DRY_HOURS, RainState
+from custom_components.smart_rce.garden.domain.rain import RainState
 
 NOW = datetime(2026, 6, 13, 9, 0, tzinfo=UTC)
 
@@ -45,9 +45,11 @@ def test_dry_at_uses_rain_end_once_dry() -> None:
 
 def test_record_dry_transition_changed_flag() -> None:
     state = RainState()
-    assert state.record_dry_transition(NOW) is True
+    assert state._record_dry_transition(NOW) is True  # noqa: SLF001
     assert state.rain_ended_at == NOW
-    assert state.record_dry_transition(NOW) is False  # same → no change
+    assert (
+        state._record_dry_transition(NOW) is False
+    )  # same → no change  # noqa: SLF001
 
 
 def _min(m: int) -> datetime:
@@ -129,7 +131,7 @@ def test_serialization_roundtrip() -> None:
 def test_from_dict_empty_defaults() -> None:
     restored = RainState.from_dict({})
     assert restored.rain_ended_at is None
-    assert restored.dry_hours == DEFAULT_DRY_HOURS
+    assert restored.dry_hours == RainState._DEFAULT_DRY_HOURS  # noqa: SLF001
 
 
 # --- RainService ---

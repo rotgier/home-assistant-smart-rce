@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
-DEFAULT_DRY_HOURS = 5.0
-
 
 @dataclass
 class RainState:
@@ -41,9 +39,10 @@ class RainState:
     """
 
     WET_DWELL: ClassVar[timedelta] = timedelta(minutes=10)  # rain must persist
+    _DEFAULT_DRY_HOURS: ClassVar[float] = 5.0
 
     rain_ended_at: datetime | None = None
-    dry_hours: float = DEFAULT_DRY_HOURS
+    dry_hours: float = _DEFAULT_DRY_HOURS
     is_wet: bool = False
     wet_since: datetime | None = None
     last_wet_at: datetime | None = None
@@ -68,13 +67,13 @@ class RainState:
             confirmed = False
         changed = self.is_wet != confirmed
         if self.is_wet and not confirmed:
-            changed |= self.record_dry_transition(now)
+            changed |= self._record_dry_transition(now)
         self.is_wet = confirmed
         if confirmed:
             self.last_wet_at = now  # anchor dry_at forward while it rains
         return changed
 
-    def record_dry_transition(self, now: datetime) -> bool:
+    def _record_dry_transition(self, now: datetime) -> bool:
         """Mark that rain just ended (wet→dry). Returns True if it changed."""
         if self.rain_ended_at == now:
             return False
@@ -118,5 +117,5 @@ class RainState:
     def from_dict(cls, data: dict[str, Any]) -> RainState:
         raw = data.get("rain_ended_at")
         ended = datetime.fromisoformat(raw) if isinstance(raw, str) else None
-        hours = data.get("dry_hours", DEFAULT_DRY_HOURS)
+        hours = data.get("dry_hours", cls._DEFAULT_DRY_HOURS)
         return cls(rain_ended_at=ended, dry_hours=float(hours))
