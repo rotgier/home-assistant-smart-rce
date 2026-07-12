@@ -86,6 +86,13 @@ class NonWorkHours:
         )
         return candidate if candidate <= now else candidate - _ONE_DAY
 
+    def recent_start(self, now: datetime) -> datetime:
+        """Most recent occurrence of `start` at or before now (today, else yesterday)."""
+        candidate = now.replace(
+            hour=self.start.hour, minute=self.start.minute, second=0, microsecond=0
+        )
+        return candidate if candidate <= now else candidate - _ONE_DAY
+
 
 def next_occurrence(now: datetime, tod: time) -> datetime:
     """Next datetime at wall-clock `tod` that is >= now (today, else tomorrow)."""

@@ -10,7 +10,7 @@ from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 from custom_components.smart_rce.garden.domain.rain_gate import RainGate
 
 TARGET = NonWorkHours(time(20, 35), time(10, 5))  # quiet 20:35 → 10:05
-NEAR = datetime(2026, 6, 13, 9, 58, tzinfo=UTC)  # inside quiet, ≤10 min to 10:05 end
+NEAR = datetime(2026, 6, 13, 9, 58, tzinfo=UTC)  # inside quiet, ≤MARGIN to 10:05 end
 WORK = datetime(2026, 6, 13, 16, 31, tzinfo=UTC)  # working hours (10:05–20:35)
 
 
@@ -28,30 +28,8 @@ def test_idle_when_no_target() -> None:
 
 
 def test_dry_clears() -> None:
-    gate = RainGate(override=NonWorkHours(time(16, 31), time(19, 31)))
+    gate = RainGate(override=NonWorkHours(time(16, 16), time(19, 31)))
     assert gate.evaluate(_dt(20, 10), TARGET, _dt(19, 55), True) is True  # dry_at past
-    assert gate.override is None
-
-
-# inside the quiet window — morning-boundary end-extension
-
-
-def test_not_near_boundary_leaves_override_untouched() -> None:
-    gate = RainGate()
-    far = _dt(9, 0)  # 65 min before the 10:05 end
-    assert gate.evaluate(far, TARGET, _dt(12, 0), False) is False
-    assert gate.override is None
-
-
-def test_near_boundary_extends_end_to_dry_at() -> None:
-    gate = RainGate()
-    assert gate.evaluate(NEAR, TARGET, _dt(12, 0), False) is True
-    assert gate.override == NonWorkHours(time(20, 35), time(12, 0))
-
-
-def test_near_boundary_dry_at_within_target_end_does_not_hold() -> None:
-    gate = RainGate()
-    assert gate.evaluate(NEAR, TARGET, _dt(10, 0), False) is False  # dry_at ≤ 10:05
     assert gate.override is None
 
 
@@ -77,24 +55,58 @@ def test_block_skips_while_ahead_refreshes_near_expiry() -> None:
     # end (19:31) still far ahead → skip despite dry_at creep, start pinned
     assert gate.evaluate(_dt(17, 0), TARGET, _dt(20, 0), True) is False
     assert gate.override == NonWorkHours(time(16, 16), time(19, 31))
-    # within GATE_WINDOW of the end + still wet → refresh end to current dry_at
-    assert gate.evaluate(_dt(19, 25), TARGET, _dt(22, 25), True) is True
-    assert gate.override == NonWorkHours(time(16, 16), time(22, 25))
+    # within MARGIN of the end + still wet → refresh end to current dry_at
+    assert gate.evaluate(_dt(19, 20), TARGET, _dt(22, 20), True) is True
+    assert gate.override == NonWorkHours(time(16, 16), time(22, 20))
 
 
-def test_extension_becomes_block_past_user_end() -> None:
-    # A morning extension is held; the clock passes the user end (10:05) so the
-    # quiet window is over → converts to a working-hours block, still covering
-    # now (no gap — the extension end already covered up to dry_at).
-    gate = RainGate(override=NonWorkHours(time(20, 35), time(10, 30)))
-    assert gate.evaluate(_dt(10, 6), TARGET, _dt(10, 30), True) is True
-    assert gate.override == NonWorkHours(
-        time(9, 51), time(10, 30)
-    )  # block start = now-15
+# morning quiet-end — same block, only when still wet past the end
+
+
+def test_near_morning_wet_past_end_blocks() -> None:
+    gate = RainGate()
+    assert gate.evaluate(NEAR, TARGET, _dt(12, 0), True) is True  # dry_at 12:00 > 10:05
+    assert gate.override == NonWorkHours(time(9, 43), time(12, 0))  # start = now-15
+
+
+def test_near_morning_dry_by_end_does_not_block() -> None:
+    gate = RainGate()
+    assert (
+        gate.evaluate(NEAR, TARGET, _dt(10, 0), True) is False
+    )  # dry_at 10:00 ≤ 10:05
+    assert gate.override is None
+
+
+def test_block_continues_past_morning_end_without_rewrite() -> None:
+    # A near-morning block; the clock passes the user end (10:05) → working hours,
+    # but the block just keeps holding (start already in the past) — no rewrite,
+    # no gap.
+    gate = RainGate(override=NonWorkHours(time(9, 43), time(12, 0)))
+    assert gate.evaluate(_dt(10, 6), TARGET, _dt(12, 0), True) is False
+    assert gate.override == NonWorkHours(time(9, 43), time(12, 0))
+
+
+def test_deep_in_quiet_drops_the_block() -> None:
+    # Deep in the night quiet window — the real non-work parks the mower, so the
+    # override is dropped (restore target), even though it is still wet.
+    gate = RainGate(override=NonWorkHours(time(16, 16), time(23, 0)))
+    assert gate.evaluate(_dt(3, 0), TARGET, _dt(5, 0), True) is True
+    assert gate.override is None
+
+
+def test_evening_start_buffer_keeps_block() -> None:
+    # Just past the evening start (20:35) the real window would park, but flipping
+    # to target could race a lagging device clock, so the held block stays.
+    gate = RainGate(override=NonWorkHours(time(16, 16), time(23, 0)))
+    assert gate.evaluate(_dt(20, 40), TARGET, _dt(23, 0), True) is False  # 5 min in
+    assert gate.override == NonWorkHours(time(16, 16), time(23, 0))
+    # MARGIN past the start → safe to restore the target
+    assert gate.evaluate(_dt(20, 50), TARGET, _dt(23, 0), True) is True
+    assert gate.override is None
 
 
 def test_release_clears() -> None:
-    gate = RainGate(override=NonWorkHours(time(16, 31), time(19, 31)))
+    gate = RainGate(override=NonWorkHours(time(16, 16), time(19, 31)))
     assert gate.release() is True
     assert gate.override is None
 
@@ -158,16 +170,16 @@ def test_service_no_block_when_no_task() -> None:
     tasks.run_background.assert_not_called()
 
 
-def test_service_extends_at_morning_boundary() -> None:
-    service, actuator, tasks = _service(dry_at=_dt(12, 0), now=NEAR, docked=False)
+def test_service_blocks_near_morning() -> None:
+    service, actuator, tasks = _service(dry_at=_dt(12, 0), now=NEAR)
     service.evaluate()
-    assert service.override == NonWorkHours(time(20, 35), time(12, 0))
-    actuator.apply.assert_called_once_with(NonWorkHours(time(20, 35), time(12, 0)))
+    assert service.override == NonWorkHours(time(9, 43), time(12, 0))
+    actuator.apply.assert_called_once_with(NonWorkHours(time(9, 43), time(12, 0)))
 
 
 def test_service_restore_pushes_target_when_dry() -> None:
     service, actuator, tasks = _service(dry_at=None)
-    service._gate.override = NonWorkHours(time(16, 31), time(19, 31))  # noqa: SLF001
+    service._gate.override = NonWorkHours(time(16, 16), time(19, 31))  # noqa: SLF001
 
     service.evaluate()
 
@@ -178,7 +190,7 @@ def test_service_restore_pushes_target_when_dry() -> None:
 
 def test_clear_hold_releases_and_restores_target() -> None:
     service, actuator, tasks = _service()
-    service._gate.override = NonWorkHours(time(16, 31), time(19, 31))  # noqa: SLF001
+    service._gate.override = NonWorkHours(time(16, 16), time(19, 31))  # noqa: SLF001
     notified: list[int] = []
     service.add_listener(lambda: notified.append(1))
 
