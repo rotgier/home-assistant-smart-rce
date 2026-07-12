@@ -19,11 +19,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from custom_components.smart_rce.application.listenable import Listenable
+from custom_components.smart_rce.application.service import Service
 from custom_components.smart_rce.garden.domain.mowing_planner import (
     MowingInput,
     MowingPlanner,
     PlannerDecision,
+)
+from custom_components.smart_rce.garden.infrastructure.mowing_policy_repository import (
+    MowingPolicyRepository,
 )
 from homeassistant.core import callback
 
@@ -43,18 +46,19 @@ if TYPE_CHECKING:
     )
 
 
-class MowingPlannerService(Listenable):
+class MowingPlannerService(Service[MowingPolicyRepository]):
     """Computes and caches the planner decision; notifies entities on change."""
 
     def __init__(
         self,
+        repo: MowingPolicyRepository,
         luba: LubaStateReader,
         forecast: ForecastReader,
         non_work: NonWorkService,
         rain: RainService,
         now_provider: Callable[[], datetime],
     ) -> None:
-        super().__init__()
+        super().__init__(repo)
         self._planner = MowingPlanner()
         self._luba = luba
         self._forecast = forecast
@@ -62,7 +66,6 @@ class MowingPlannerService(Listenable):
         self._rain = rain
         self._now = now_provider
         self._decision: PlannerDecision | None = None
-        self._fresh_start_battery = MowingPlanner.DEFAULT_FRESH_BATTERY
 
     @property
     def decision(self) -> PlannerDecision | None:
@@ -72,10 +75,11 @@ class MowingPlannerService(Listenable):
     @property
     def fresh_start_battery(self) -> int:
         """SoC threshold above which a fresh program starts (tunable via number)."""
-        return self._fresh_start_battery
+        return self._repo.state.fresh_start_battery
 
     def set_fresh_start_battery(self, value: int) -> None:
-        self._fresh_start_battery = value
+        if self._repo.state.set_fresh_start_battery(value):
+            self._repo.save_if_changed()
         self.recompute()
 
     @callback
@@ -92,7 +96,7 @@ class MowingPlannerService(Listenable):
                 non_work=self._non_work.effective_hours,
                 dry_at=self._rain.dry_at,
                 time_left_min=self._luba.read_time_left(),
-                fresh_start_battery=self._fresh_start_battery,
+                fresh_start_battery=self._repo.state.fresh_start_battery,
             )
         )
         if decision == self._decision:

@@ -7,6 +7,7 @@ from custom_components.smart_rce.garden.application.mowing_planner_service impor
     MowingPlannerService,
 )
 from custom_components.smart_rce.garden.domain.mowing_planner import StartStrategy
+from custom_components.smart_rce.garden.domain.mowing_policy import MowingPolicy
 from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
     parse_forecast_slots,
@@ -48,7 +49,12 @@ def _service(
     non_work.effective_hours = effective
     rain = MagicMock()
     rain.dry_at = dry_at
-    return MowingPlannerService(luba, forecast_reader, non_work, rain, lambda: now)
+    repo = MagicMock()
+    repo.state = MowingPolicy()
+    repo.save_if_changed = MagicMock()
+    return MowingPlannerService(
+        repo, luba, forecast_reader, non_work, rain, lambda: now
+    )
 
 
 def test_recompute_produces_decision() -> None:
