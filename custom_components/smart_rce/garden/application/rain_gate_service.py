@@ -78,7 +78,7 @@ class RainGateService(Listenable):
         window) sticks. To EXTEND instead, raise `number.garden_dry_out_hours`.
         """
         base = self._non_work.effective_hours
-        if base is not None and self._gate.release():
+        if base is not None and self._gate.release(self._now()):
             self._push(base)
             self._notify_all()
 

@@ -107,8 +107,28 @@ def test_evening_start_buffer_keeps_block() -> None:
 
 def test_release_clears() -> None:
     gate = RainGate(override=NonWorkHours(time(16, 16), time(19, 31)))
-    assert gate.release() is True
+    assert gate.release(WORK) is True
     assert gate.override is None
+
+
+def test_release_suppresses_reblock_while_still_docked_and_wet() -> None:
+    # Clicking clear while the mower is still on the dock + wet: the next tick
+    # must NOT re-block (it needs time to undock; cloud lags the state read).
+    gate = RainGate(override=NonWorkHours(time(16, 16), time(19, 31)))
+    gate.release(WORK)  # 16:31
+    assert gate.override is None
+    # A tick 5 min later — still docked + wet — stays released (suppressed).
+    assert gate.evaluate(_dt(16, 36), TARGET, _dt(19, 31), True) is False
+    assert gate.override is None
+
+
+def test_reblock_after_grace_if_still_docked_and_wet() -> None:
+    gate = RainGate(override=NonWorkHours(time(16, 16), time(19, 31)))
+    gate.release(WORK)  # suppress until 16:51
+    assert gate.evaluate(_dt(16, 40), TARGET, _dt(19, 31), True) is False  # suppressed
+    # Past the 20-min grace, still docked + wet → re-asserts the block.
+    assert gate.evaluate(_dt(16, 52), TARGET, _dt(19, 31), True) is True
+    assert gate.override == NonWorkHours(time(16, 37), time(19, 31))  # start = now-15
 
 
 # --- RainGateService ---

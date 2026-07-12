@@ -38,7 +38,7 @@ restore via the push button.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import ClassVar
 
@@ -55,19 +55,28 @@ class RainGate:
     # Slack kept around every non-work edge: how early before a boundary we act,
     # and the clock-skew buffer at the block's own start/restore edges.
     MARGIN: ClassVar[timedelta] = timedelta(minutes=15)
+    # After a manual clear we suppress re-blocking for this long so the mower has
+    # time to physically leave the dock before the next tick re-reads
+    # `docked_with_task` — otherwise it would re-block while still docked + wet,
+    # making the clear button a no-op (cloud round-trip lags the undock).
+    MANUAL_RELEASE_GRACE: ClassVar[timedelta] = timedelta(minutes=20)
 
     override: NonWorkHours | None = None
+    _suppress_until: datetime | None = field(default=None, init=False)
 
     @property
     def is_holding(self) -> bool:
         """True while we override the device non-work window (gate active)."""
         return self.override is not None
 
-    def release(self) -> bool:
-        """Manually drop the override. Returns True if it changed.
+    def release(self, now: datetime) -> bool:
+        """Manually drop the override + suppress re-blocking for the grace window.
 
-        The next `evaluate` re-asserts if conditions still warrant it.
+        The suppression lets the mower undock before the next `evaluate` re-reads
+        `docked_with_task`; once it is off the dock the block naturally stops
+        applying. After the grace expires (still docked + wet) it re-asserts.
         """
+        self._suppress_until = now + self.MANUAL_RELEASE_GRACE
         return self._clear()
 
     def evaluate(
@@ -79,7 +88,8 @@ class RainGate:
     ) -> bool:
         """Recompute the override. Returns True if it changed (→ push + notify)."""
         if (
-            docked_with_task
+            not self._is_suppressed(now)
+            and docked_with_task
             and user_target is not None
             and dry_at is not None
             and dry_at > now
@@ -87,6 +97,10 @@ class RainGate:
         ):
             return self._block(now, dry_at)
         return self._release_to_target(now, user_target)
+
+    def _is_suppressed(self, now: datetime) -> bool:
+        """Whether a recent manual clear still suppresses re-blocking."""
+        return self._suppress_until is not None and now < self._suppress_until
 
     def _block_applies(
         self, now: datetime, user_target: NonWorkHours, dry_at: datetime
