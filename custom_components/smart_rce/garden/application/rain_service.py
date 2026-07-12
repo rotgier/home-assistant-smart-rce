@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.application.service import Service
+from custom_components.smart_rce.garden.domain.rain import RainEvent
 from custom_components.smart_rce.garden.infrastructure.rain_repository import (
     RainRepository,
 )
@@ -34,10 +35,16 @@ class RainService(Service[RainRepository]):
 
         `raw_wet` is the instantaneous weather reading (`RainReader`); the
         aggregate confirms it only after `WET_DWELL` of sustained rain (a few
-        drops never confirm). Persists (diff-guarded) and refreshes entities
-        whenever the confirmed state changes.
+        drops never confirm). We map the returned `RainEvent`: persist only on
+        `RAIN_ENDED` (the sole persisted-field change), notify on anything
+        observable — so `STILL_RAINING` refreshes the live `dry_at` sensor every
+        tick without a Store write.
         """
-        self._save_if_changed_and_notify(self._repo.state.observe(raw_wet, now))
+        event = self._repo.state.observe(raw_wet, now)
+        if event is RainEvent.RAIN_ENDED:
+            self._repo.save_if_changed()
+        if event is not RainEvent.NONE:
+            self._notify_all()
 
     async def set_dry_hours(self, hours: float) -> None:
         await self._persist_and_notify(self._repo.state.set_dry_hours(hours))

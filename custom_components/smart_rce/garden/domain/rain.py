@@ -16,6 +16,7 @@ and tunable.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from enum import Enum, auto
 from typing import Any
 
 
@@ -56,16 +57,21 @@ class RainState:
         self._wet_since: datetime | None = None
         self._last_wet_at: datetime | None = None
 
-    def observe(self, raw_wet: bool, now: datetime) -> bool:
-        """Feed a raw wetness reading; confirm wet only after WET_DWELL of rain.
+    def observe(self, raw_wet: bool, now: datetime) -> RainEvent:
+        """Feed a raw wetness reading; report the resulting domain event.
 
         A brief shower (a few drops) trips the raw reading but never wets the
         grass, so `is_wet` — the confirmed state consumed by the sensor, gate
         and rain-end stamp — flips True only once raw rain has PERSISTED longer
         than `WET_DWELL`. `_wet_since` tracks the current raw-wet streak (reset
-        the moment it reads dry). Returns True if anything observable changed.
-        Only a confirmed wet→dry edge advances `rain_ended_at` — the dry-out
-        clock starts when real rain ENDS, not while a passing shower clears.
+        the moment it reads dry). Only a confirmed wet→dry edge advances
+        `rain_ended_at` — the dry-out clock starts when real rain ENDS, not
+        while a passing shower clears.
+
+        Returns a `RainEvent` describing what happened — the application service
+        decides what each event means (persist / notify); the domain stays out
+        of that. `STILL_RAINING` is observable (it advances `dry_at`) but touches
+        no persisted field, so it notifies without a Store write.
         """
         if raw_wet:
             if self._wet_since is None:
@@ -74,13 +80,18 @@ class RainState:
         else:
             self._wet_since = None
             confirmed = False
-        changed = self._is_wet != confirmed
-        if self._is_wet and not confirmed:
-            changed |= self._record_dry_transition(now)
+        was_wet = self._is_wet
         self._is_wet = confirmed
         if confirmed:
             self._last_wet_at = now  # anchor dry_at forward while it rains
-        return changed
+        if confirmed and not was_wet:
+            return RainEvent.RAIN_CONFIRMED
+        if was_wet and not confirmed:
+            self._record_dry_transition(now)
+            return RainEvent.RAIN_ENDED
+        if confirmed:
+            return RainEvent.STILL_RAINING
+        return RainEvent.NONE
 
     def _record_dry_transition(self, now: datetime) -> bool:
         """Mark that rain just ended (wet→dry). Returns True if it changed."""
@@ -133,3 +144,17 @@ class RainState:
         ended = datetime.fromisoformat(raw) if isinstance(raw, str) else None
         hours = data.get("dry_hours", cls._DEFAULT_DRY_HOURS)
         return cls(rain_ended_at=ended, dry_hours=float(hours))
+
+
+class RainEvent(Enum):
+    """What a single `observe` produced — the application service maps meaning.
+
+    Only `RAIN_ENDED` changes a persisted field (`rain_ended_at`); the rest are
+    transient (`_is_wet`/`_last_wet_at`), so they drive notifications but no
+    Store write.
+    """
+
+    NONE = auto()  # nothing observable changed
+    RAIN_CONFIRMED = auto()  # raw rain crossed WET_DWELL → is_wet False→True
+    STILL_RAINING = auto()  # still confirmed; last_wet_at (and dry_at) advanced
+    RAIN_ENDED = auto()  # is_wet True→False; rain_ended_at stamped (persist)

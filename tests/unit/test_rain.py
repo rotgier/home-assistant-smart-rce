@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.smart_rce.garden.application.rain_service import RainService
-from custom_components.smart_rce.garden.domain.rain import RainState
+from custom_components.smart_rce.garden.domain.rain import RainEvent, RainState
 
 NOW = datetime(2026, 6, 13, 9, 0, tzinfo=UTC)
 
@@ -56,19 +56,19 @@ def _min(m: int) -> datetime:
     return NOW + timedelta(minutes=m)
 
 
-def test_observe_dry_first_reading_no_change() -> None:
+def test_observe_dry_first_reading_no_event() -> None:
     state = RainState()
-    assert state.observe(raw_wet=False, now=NOW) is False
+    assert state.observe(raw_wet=False, now=NOW) is RainEvent.NONE
     assert state.rain_ended_at is None
     assert state.is_wet is False
 
 
 def test_observe_onset_does_not_confirm_within_dwell() -> None:
     state = RainState()
-    assert state.observe(raw_wet=True, now=NOW) is False  # arms wet_since only
+    assert state.observe(raw_wet=True, now=NOW) is RainEvent.NONE  # arms only
     assert state.is_wet is False
     assert state._wet_since == NOW  # noqa: SLF001
-    assert state.observe(raw_wet=True, now=_min(5)) is False  # 5 min < dwell
+    assert state.observe(raw_wet=True, now=_min(5)) is RainEvent.NONE  # 5 < dwell
     assert state.is_wet is False
 
 
@@ -76,7 +76,7 @@ def test_observe_few_drops_under_dwell_never_confirm() -> None:
     state = RainState()
     state.observe(raw_wet=True, now=NOW)
     state.observe(raw_wet=True, now=_min(3))
-    assert state.observe(raw_wet=False, now=_min(4)) is False  # cleared, no edge
+    assert state.observe(raw_wet=False, now=_min(4)) is RainEvent.NONE  # cleared
     assert state.is_wet is False
     assert state.rain_ended_at is None  # never confirmed → no rain end
     assert state._wet_since is None  # noqa: SLF001
@@ -85,7 +85,7 @@ def test_observe_few_drops_under_dwell_never_confirm() -> None:
 def test_observe_sustained_rain_confirms_after_dwell() -> None:
     state = RainState()
     state.observe(raw_wet=True, now=NOW)
-    assert state.observe(raw_wet=True, now=_min(11)) is True  # >10 min → confirm
+    assert state.observe(raw_wet=True, now=_min(11)) is RainEvent.RAIN_CONFIRMED
     assert state.is_wet is True
     assert state.rain_ended_at is None  # confirming wet does not stamp end
 
@@ -94,16 +94,18 @@ def test_observe_confirmed_then_dry_records_rain_end() -> None:
     state = RainState()
     state.observe(raw_wet=True, now=NOW)
     state.observe(raw_wet=True, now=_min(11))  # confirmed wet
-    assert state.observe(raw_wet=False, now=_min(20)) is True
+    assert state.observe(raw_wet=False, now=_min(20)) is RainEvent.RAIN_ENDED
     assert state.rain_ended_at == _min(20)
     assert state.is_wet is False
 
 
-def test_observe_staying_confirmed_no_change() -> None:
+def test_observe_staying_confirmed_emits_still_raining() -> None:
     state = RainState()
     state._is_wet = True  # noqa: SLF001
     state._wet_since = NOW  # noqa: SLF001
-    assert state.observe(raw_wet=True, now=_min(30)) is False  # already confirmed
+    # Still raining past dwell: no edge, but last_wet_at (dry_at) advances, so it
+    # is an observable event that refreshes the live dry_at sensor.
+    assert state.observe(raw_wet=True, now=_min(30)) is RainEvent.STILL_RAINING
 
 
 def test_transient_fields_not_serialized() -> None:
@@ -178,13 +180,30 @@ def test_confirmed_rain_then_dry_records_transition() -> None:
     notified: list[int] = []
     service.add_listener(lambda: notified.append(1))
 
-    service.observe(raw_wet=True, now=NOW)  # arms dwell (no change)
-    service.observe(raw_wet=True, now=_min(11))  # confirm → notify
-    service.observe(raw_wet=False, now=_min(20))  # rain end → notify
+    service.observe(raw_wet=True, now=NOW)  # arms dwell (NONE)
+    service.observe(raw_wet=True, now=_min(11))  # confirm → notify (transient)
+    service.observe(raw_wet=False, now=_min(20))  # rain end → persist + notify
 
     assert repo.state.rain_ended_at == _min(20)
-    assert notified == [1, 1]  # confirm + end (dwell ticks were quiet)
-    assert repo.save_if_changed.call_count == 2
+    assert notified == [1, 1]  # confirm + end both observable
+    # Only the rain-end persists — confirming wet is transient (no Store write).
+    assert repo.save_if_changed.call_count == 1
+
+
+def test_still_raining_notifies_without_persist() -> None:
+    service, repo = _service()
+    notified: list[int] = []
+    service.add_listener(lambda: notified.append(1))
+
+    service.observe(raw_wet=True, now=NOW)  # arm (NONE)
+    service.observe(raw_wet=True, now=_min(11))  # confirm → notify
+    service.observe(raw_wet=True, now=_min(13))  # still raining → notify, no persist
+
+    assert notified == [1, 1]
+    repo.save_if_changed.assert_not_called()  # transient — live dry_at only
+    assert service.dry_at == _min(13) + timedelta(
+        hours=RainState._DEFAULT_DRY_HOURS  # noqa: SLF001
+    )
 
 
 async def test_set_dry_hours_persists() -> None:
