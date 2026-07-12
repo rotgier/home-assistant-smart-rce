@@ -1,16 +1,16 @@
-"""RainGateService — overrides device non-work to keep the mower off wet grass.
+"""MowingHoldService — overrides device non-work to keep the mower off wet grass.
 
-Coordinates the slices the gate spans: the user-target window from
+Coordinates the slices the hold spans: the user-target window from
 `NonWorkService`, `dry_at` from `RainService`, and the mower state from
 `LubaStateReader` (`docked_with_task` = at dock AND progress > 0, so a mid-day
-block only preempts a charge-resume, never disturbs an active mow). Runs the
-pure `RainGate` and, on an override change, pushes the window to the device via
+hold only preempts a charge-resume, never disturbs an active mow). Runs the
+pure `MowingHold` and, on an override change, pushes the window to the device via
 the shared `NonWorkActuator` — restoring the plain target once dry. Notifies
-listeners so `binary_sensor.luba_resume_into_wet` and the drift sensor recompute.
+listeners so `binary_sensor.mowing_hold` and the drift sensor recompute.
 
 Wired (factory) to rain changes, non-work target changes, MOWER changes (a
-mid-task dock asserts the block while charging) and a minute tick. The actuator
-write happens only on an override transition (`RainGate` anti-churn), so the
+mid-task dock asserts the hold while charging) and a minute tick. The actuator
+write happens only on an override transition (`MowingHold` anti-churn), so the
 300-sends/24h budget sees few writes per rain spell plus a restore.
 """
 
@@ -19,8 +19,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from custom_components.smart_rce.application.listenable import Listenable
+from custom_components.smart_rce.garden.domain.mowing_hold import MowingHold
 from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
-from custom_components.smart_rce.garden.domain.rain_gate import RainGate
 from homeassistant.core import callback
 
 if TYPE_CHECKING:
@@ -42,8 +42,8 @@ if TYPE_CHECKING:
     )
 
 
-class RainGateService(Listenable):
-    """Evaluates the rain gate and pushes the overridden non-work window on change."""
+class MowingHoldService(Listenable):
+    """Evaluates the mowing hold and pushes the overridden non-work window on change."""
 
     def __init__(
         self,
@@ -55,7 +55,7 @@ class RainGateService(Listenable):
         now_provider: Callable[[], datetime],
     ) -> None:
         super().__init__()
-        self._gate = RainGate()
+        self._hold = MowingHold()
         self._non_work = non_work
         self._rain = rain
         self._actuator = actuator
@@ -65,8 +65,8 @@ class RainGateService(Listenable):
 
     @property
     def is_holding(self) -> bool:
-        """True while non-work is extended past the user target (gate active)."""
-        return self._gate.is_holding
+        """True while non-work is extended past the user target (hold active)."""
+        return self._hold.is_holding
 
     @callback
     def clear_hold(self) -> None:
@@ -78,14 +78,14 @@ class RainGateService(Listenable):
         window) sticks. To EXTEND instead, raise `number.garden_dry_out_hours`.
         """
         base = self._non_work.effective_hours
-        if base is not None and self._gate.release(self._now()):
+        if base is not None and self._hold.release(self._now()):
             self._push(base)
             self._notify_all()
 
     @property
     def override(self) -> NonWorkHours | None:
         """The non-work window currently overridden onto the device, or None."""
-        return self._gate.override
+        return self._hold.override
 
     @callback
     def evaluate(self) -> None:
@@ -94,7 +94,7 @@ class RainGateService(Listenable):
         if base is None:
             return  # no target yet — nothing to override or restore
         docked_with_task = self._luba.read_at_dock() and self._luba.read_progress() > 0
-        changed = self._gate.evaluate(
+        changed = self._hold.evaluate(
             self._now(), base, self._rain.dry_at, docked_with_task
         )
         if not changed:
@@ -103,7 +103,7 @@ class RainGateService(Listenable):
         self._notify_all()
 
     def _push(self, base: NonWorkHours) -> None:
-        hours = self._gate.override or base
+        hours = self._hold.override or base
         self._tasks.run_background(
-            self._actuator.apply(hours), name="garden_rain_gate_push"
+            self._actuator.apply(hours), name="garden_mowing_hold_push"
         )

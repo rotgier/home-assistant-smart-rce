@@ -11,8 +11,8 @@ startup timing. Mowing planner (2b): `MowingPlannerService` pulls telemetry
 (LubaStateReader), forecast (ems-published HourlyForecastProvider — handed in
 by `async_setup_entry`, factory-level integration via an application Protocol)
 and the non-work target; recomputes on input changes plus a 1-minute tick.
-Rain gate: `RainGateService` overrides the device non-work window while the
-grass is wet — extends the morning end AND blocks mid-day charge-resume (needs
+Mowing hold: `MowingHoldService` overrides the device non-work window while the
+grass is wet — extends the morning end AND holds mid-day charge-resume (needs
 the mower state, hence the `LubaStateReader` dependency) so the device never
 auto-resumes into wet grass — and restores the target once dry, sharing the
 single `NonWorkActuator` write path with the manual push button.
@@ -24,14 +24,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from custom_components.smart_rce.garden.application.mowing_hold_service import (
+    MowingHoldService,
+)
 from custom_components.smart_rce.garden.application.mowing_planner_service import (
     MowingPlannerService,
 )
 from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
-)
-from custom_components.smart_rce.garden.application.rain_gate_service import (
-    RainGateService,
 )
 from custom_components.smart_rce.garden.application.rain_service import RainService
 from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
@@ -81,7 +81,7 @@ class Garden:
 
     non_work: NonWorkService
     rain: RainService
-    gate: RainGateService
+    hold: MowingHoldService
     mowing: MowingPlannerService
 
 
@@ -103,13 +103,13 @@ async def create_garden(
     _wire_rain(hass, entry, RainReader(hass), rain)
 
     luba = LubaStateReader(hass)
-    gate = RainGateService(service, rain, actuator, luba, tasks, dt_util.now)
-    _wire_rain_gate(hass, entry, service, rain, luba, gate)
+    hold = MowingHoldService(service, rain, actuator, luba, tasks, dt_util.now)
+    _wire_mowing_hold(hass, entry, service, rain, luba, hold)
 
     forecast_reader = ForecastReader(forecast)
     mowing = MowingPlannerService(luba, forecast_reader, service, rain, dt_util.now)
     _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, rain, mowing)
-    return Garden(non_work=service, rain=rain, gate=gate, mowing=mowing)
+    return Garden(non_work=service, rain=rain, hold=hold, mowing=mowing)
 
 
 def _wire_rain(
@@ -146,33 +146,33 @@ def _wire_rain(
         _on_updated(None)
 
 
-def _wire_rain_gate(
+def _wire_mowing_hold(
     hass: HomeAssistant,
     entry: ConfigEntry,
     non_work: NonWorkService,
     rain: RainService,
     luba: LubaStateReader,
-    gate: RainGateService,
+    hold: MowingHoldService,
 ) -> None:
-    """Evaluate the gate on rain/target/mower changes + a 1-min tick.
+    """Evaluate the hold on rain/target/mower changes + a 1-min tick.
 
-    The mower change (`luba.subscribe`) matters for the mid-day block: it fires
-    when Luba docks to charge mid-task, so the block is asserted while it charges
+    The mower change (`luba.subscribe`) matters for the mid-day hold: it fires
+    when Luba docks to charge mid-task, so the hold is asserted while it charges
     — long before the charge-complete auto-resume it must preempt.
     """
-    entry.async_on_unload(rain.add_listener(gate.evaluate))
-    entry.async_on_unload(non_work.add_listener(gate.evaluate))
-    entry.async_on_unload(luba.subscribe(gate.evaluate))
+    entry.async_on_unload(rain.add_listener(hold.evaluate))
+    entry.async_on_unload(non_work.add_listener(hold.evaluate))
+    entry.async_on_unload(luba.subscribe(hold.evaluate))
 
     @callback
     def _tick(_now: datetime) -> None:
         # @callback: a plain function is a JobType.Executor (worker thread),
         # where the entity notify in evaluate() would be thread-unsafe.
-        gate.evaluate()
+        hold.evaluate()
 
     entry.async_on_unload(async_track_time_interval(hass, _tick, _PLANNER_TICK))
     if hass.state is CoreState.running:
-        gate.evaluate()
+        hold.evaluate()
 
 
 def _wire_non_work_cloud_listener(

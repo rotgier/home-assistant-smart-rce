@@ -364,7 +364,7 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.garden.domain.forecast_window"))
     reload(import_module("custom_components.smart_rce.garden.domain.non_work"))
     reload(import_module("custom_components.smart_rce.garden.domain.rain"))
-    reload(import_module("custom_components.smart_rce.garden.domain.rain_gate"))
+    reload(import_module("custom_components.smart_rce.garden.domain.mowing_hold"))
     reload(import_module("custom_components.smart_rce.garden.domain.mowing_planner"))
     reload(import_module("custom_components.smart_rce.garden.domain"))
     reload(
@@ -412,7 +412,7 @@ def live_reload() -> None:
     )
     reload(
         import_module(
-            "custom_components.smart_rce.garden.application.rain_gate_service"
+            "custom_components.smart_rce.garden.application.mowing_hold_service"
         )
     )
     reload(import_module("custom_components.smart_rce.garden.application"))

@@ -3,7 +3,7 @@
 Single write path to the device, shared by two callers:
 - the user's dashboard push button (`NonWorkService.push_to_device`) — pushes
   the HA target;
-- the rain gate (`RainGateService`) — pushes the rain-extended end near the
+- the mowing hold (`MowingHoldService`) — pushes the rain-extended end near the
   morning boundary, then the target again to restore (garden 2d).
 
 `apply(hours)` ALWAYS writes the hours it is given. It used to read the target
