@@ -39,6 +39,19 @@ def test_working_hours_docked_with_task_holds_until_dry_at() -> None:
     assert hold.override == NonWorkHours(time(16, 16), time(19, 31))  # start = now-15
 
 
+def test_hold_truncates_override_to_whole_minutes() -> None:
+    # now + dry_at carry seconds/micros; override must be minute-clean so it
+    # equals the device's minute-resolution report (else phantom drift_*).
+    hold = MowingHold()
+    now = datetime(2026, 6, 13, 16, 31, 23, 456789, tzinfo=UTC)
+    dry_at = datetime(2026, 6, 13, 19, 31, 45, 999, tzinfo=UTC)
+    assert hold.evaluate(now, TARGET, dry_at, True, force=True) is True
+    assert hold.override == NonWorkHours(time(16, 16), time(19, 31))
+    assert hold.override is not None
+    assert (hold.override.start.second, hold.override.start.microsecond) == (0, 0)
+    assert (hold.override.end.second, hold.override.end.microsecond) == (0, 0)
+
+
 def test_working_hours_not_docked_does_not_hold() -> None:
     hold = MowingHold()
     assert hold.evaluate(WORK, TARGET, _dt(19, 31), False) is False

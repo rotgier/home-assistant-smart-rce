@@ -36,7 +36,7 @@ transient (re-derived on the next `evaluate`).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from custom_components.smart_rce.garden.domain.non_work import (
@@ -167,12 +167,15 @@ class MowingHold:
                 and next_occurrence(now, self.override.end) - now > self.MARGIN
             ):
                 return False
-            start = self.override.start  # pinned across ticks
+            start = self.override.start  # pinned across ticks (already minute-clean)
         else:
             # Fresh hold — start a touch in the past so a lagging device clock
             # still sees `now` inside the window (no start-boundary race).
-            start = (now - self.MARGIN).time()
-        return self._set_override(NonWorkHours(start, end.time()))
+            start = _to_minute((now - self.MARGIN).time())
+        # Truncate to whole minutes: the device stores/reports non-work at minute
+        # resolution, so sub-minute precision (dry_at/now carry seconds+micros)
+        # would make `device != override` forever — a phantom `drift_*` status.
+        return self._set_override(NonWorkHours(start, _to_minute(end.time())))
 
     def _release_to_target(
         self, now: datetime, user_target: NonWorkHours | None
@@ -221,3 +224,8 @@ class MowingHold:
 
 def _parse_dt(raw: object) -> datetime | None:
     return datetime.fromisoformat(raw) if isinstance(raw, str) else None
+
+
+def _to_minute(t: time) -> time:
+    """Drop seconds+microseconds — the device stores non-work at minute resolution."""
+    return t.replace(second=0, microsecond=0)
