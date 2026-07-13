@@ -34,6 +34,14 @@ if TYPE_CHECKING:
 
     from custom_components.smart_rce import SmartRceConfigEntry
     from custom_components.smart_rce.garden.domain.mowing_planner import PlannerDecision
+    from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
+
+
+def _window(hours: NonWorkHours | None) -> str | None:
+    """Format a non-work window as 'HH:MM - HH:MM' for display, or None."""
+    if hours is None:
+        return None
+    return f"{hours.start:%H:%M} - {hours.end:%H:%M}"
 
 
 def build_sensors(entry: SmartRceConfigEntry) -> list[SensorEntity]:
@@ -52,12 +60,19 @@ class MowingNonWorkStatusSensor(SensorEntity):
 
     Disambiguates the drift alert: when a hold is active the device window
     deliberately differs from the user target (expected), so this names the
-    reason instead of looking like unexplained drift.
-    - `target`      — device matches the user target (normal).
-    - `rain_hold`   — overridden by the rain hold.
-    - `manual_hold` — overridden by a manual park.
-    - `drift`       — device ≠ target with NO hold (unexpected — investigate).
-    - `unknown`     — no target set yet / device state unknown.
+    reason — and, crucially, VERIFIES it against the device-reported window
+    (`cloud`), catching a hold whose push never landed. The single source that
+    replaces the old `luba_non_work_drift` binary (the notify automation triggers
+    on the `drift*` states; the 10-min `for:` there debounces the cloud sensor's
+    lag/ghost, so this stays raw).
+    - `target`            — device matches the user target (normal).
+    - `rain_hold`         — device matches the rain-hold override (confirmed).
+    - `manual_hold`       — device matches the manual-park override (confirmed).
+    - `drift_rain_hold`   — rain hold active but device ≠ override (push not
+                            applied — mower may auto-resume into wet!).
+    - `drift_manual_hold` — manual park active but device ≠ override.
+    - `drift`             — device ≠ target with NO hold (unexpected).
+    - `unknown`           — no target set yet / device state unknown.
     """
 
     _attr_has_entity_name = False
@@ -65,7 +80,15 @@ class MowingNonWorkStatusSensor(SensorEntity):
     _attr_should_poll = False
     _attr_icon = "mdi:clock-check-outline"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["target", "rain_hold", "manual_hold", "drift", "unknown"]
+    _attr_options = [
+        "target",
+        "rain_hold",
+        "manual_hold",
+        "drift",
+        "drift_rain_hold",
+        "drift_manual_hold",
+        "unknown",
+    ]
 
     def __init__(self, entry: SmartRceConfigEntry) -> None:
         self._non_work = entry.runtime_data.garden.non_work
@@ -81,13 +104,29 @@ class MowingNonWorkStatusSensor(SensorEntity):
 
     @property
     def native_value(self) -> str:
-        if self._hold.is_manual_parked:
-            return "manual_hold"
-        if self._hold.is_holding:
-            return "rain_hold"
-        if self._non_work.effective_hours is None:
+        target = self._non_work.effective_hours
+        if target is None:
             return "unknown"
-        return "drift" if self._non_work.drift else "target"
+        device = self._non_work.cloud
+        override = self._hold.override
+        if override is not None:  # a hold is active — device must match the override
+            reason = "manual_hold" if self._hold.is_manual_parked else "rain_hold"
+            if device is not None and device != override:
+                return f"drift_{reason}"  # pushed but not (yet) on the device
+            return reason
+        # No hold → device must match the target.
+        if device is not None and device != target:
+            return "drift"
+        return "target"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        expected = self._hold.override or self._non_work.effective_hours
+        return {
+            "target": _window(self._non_work.effective_hours),
+            "device": _window(self._non_work.cloud),
+            "expected": _window(expected),
+        }
 
 
 class MowingPlannerSensor(SensorEntity):
