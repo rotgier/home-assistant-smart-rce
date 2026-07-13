@@ -192,26 +192,28 @@ def test_confirmed_rain_then_dry_records_transition() -> None:
     service.add_listener(lambda: notified.append(1))
 
     service.observe(raw_wet=True, now=NOW)  # arms dwell (NONE)
-    service.observe(raw_wet=True, now=_min(11))  # confirm → notify (transient)
+    service.observe(raw_wet=True, now=_min(11))  # confirm → persist + notify
     service.observe(raw_wet=False, now=_min(20))  # rain end → persist + notify
 
     assert repo.state.rain_ended_at == _min(20)
     assert notified == [1, 1]  # confirm + end both observable
-    # Only the rain-end persists — confirming wet is transient (no Store write).
-    assert repo.save_if_changed.call_count == 1
+    # Confirm (is_wet/last_wet_at) AND end (rain_ended_at) each persist — the wet
+    # state must survive a restart mid-rain, so it is NOT only the rain-end edge.
+    assert repo.save_if_changed.call_count == 2
 
 
-def test_still_raining_notifies_without_persist() -> None:
+def test_still_raining_persists_advancing_dry_at() -> None:
     service, repo = _service()
     notified: list[int] = []
     service.add_listener(lambda: notified.append(1))
 
     service.observe(raw_wet=True, now=NOW)  # arm (NONE)
-    service.observe(raw_wet=True, now=_min(11))  # confirm → notify
-    service.observe(raw_wet=True, now=_min(13))  # still raining → notify, no persist
+    service.observe(raw_wet=True, now=_min(11))  # confirm → persist + notify
+    service.observe(raw_wet=True, now=_min(13))  # still raining → persist + notify
 
     assert notified == [1, 1]
-    repo.save_if_changed.assert_not_called()  # transient — live dry_at only
+    # last_wet_at advanced → must persist so a restart keeps dry_at in the future.
+    assert repo.save_if_changed.call_count == 2
     assert service.dry_at == _min(13) + timedelta(
         hours=RainState._DEFAULT_DRY_HOURS  # noqa: SLF001
     )

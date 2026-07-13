@@ -35,16 +35,18 @@ class RainService(Service[RainRepository]):
 
         `raw_wet` is the instantaneous weather reading (`RainReader`); the
         aggregate confirms it only after `WET_DWELL` of sustained rain (a few
-        drops never confirm). We map the returned `RainEvent`: persist only on
-        `RAIN_ENDED` (the sole persisted-field change), notify on anything
-        observable — so `STILL_RAINING` refreshes the live `dry_at` sensor every
-        tick without a Store write.
+        drops never confirm). Persist AND notify on any observable `RainEvent`:
+        `is_wet` + `last_wet_at` are persisted too (restart-mid-rain resilience),
+        so we must save on `RAIN_CONFIRMED`/`STILL_RAINING`, not only on
+        `RAIN_ENDED` — else a restart mid-rain restores a stale (dry) snapshot
+        and the mower could resume into wet grass. Store writes are diff-guarded
+        and local (cheap) — this is NOT the 300-sends/24h device budget.
         """
         event = self._repo.state.observe(raw_wet, now)
-        if event is RainEvent.RAIN_ENDED:
-            self._repo.save_if_changed()
-        if event is not RainEvent.NONE:
-            self._notify_all()
+        if event is RainEvent.NONE:
+            return
+        self._repo.save_if_changed()
+        self._notify_all()
 
     async def set_dry_hours(self, hours: float) -> None:
         await self._persist_and_notify(self._repo.state.set_dry_hours(hours))

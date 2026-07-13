@@ -166,9 +166,10 @@ class RainState:
 class RainEvent(Enum):
     """What a single `observe` produced — the application service maps meaning.
 
-    Only `RAIN_ENDED` changes a persisted field (`rain_ended_at`); the rest are
-    transient (`_is_wet`/`_last_wet_at`), so they drive notifications but no
-    Store write.
+    Every non-`NONE` event changes a PERSISTED field (`is_wet`/`last_wet_at` on
+    CONFIRMED/STILL_RAINING, `rain_ended_at` on ENDED — all in `to_dict`), so the
+    service persists + notifies on any of them. Persisting only on `RAIN_ENDED`
+    would lose the wet state across a restart mid-rain.
     """
 
     NONE = auto()  # nothing observable changed
