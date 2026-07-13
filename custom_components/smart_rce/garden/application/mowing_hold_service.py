@@ -89,6 +89,11 @@ class MowingHoldService(Service[MowingHoldRepository]):
         return self._hold.manual_until
 
     @property
+    def manual_since(self) -> datetime | None:
+        """When the manual park was armed, or None."""
+        return self._hold.manual_since
+
+    @property
     def override(self) -> NonWorkHours | None:
         """The non-work window currently overridden onto the device, or None."""
         return self._hold.override

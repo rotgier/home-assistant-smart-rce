@@ -64,9 +64,11 @@ class MowingHold:
         self,
         override: NonWorkHours | None = None,
         manual_until: datetime | None = None,
+        manual_since: datetime | None = None,
     ) -> None:
         self.override = override
         self.manual_until = manual_until  # persisted manual-park deadline
+        self.manual_since = manual_since  # persisted manual-park start (for display)
         self._suppress_until: datetime | None = None  # transient rain suppression
 
     @property
@@ -80,6 +82,7 @@ class MowingHold:
         if self.manual_until == until:
             return False
         self.manual_until = until
+        self.manual_since = now
         return True
 
     def cancel_manual(self) -> bool:
@@ -87,6 +90,7 @@ class MowingHold:
         if self.manual_until is None:
             return False
         self.manual_until = None
+        self.manual_since = None
         return True
 
     def suppress_rain(self, now: datetime) -> None:
@@ -202,11 +206,18 @@ class MowingHold:
         return {
             "manual_until": (
                 self.manual_until.isoformat() if self.manual_until else None
-            )
+            ),
+            "manual_since": (
+                self.manual_since.isoformat() if self.manual_since else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MowingHold:
-        raw = data.get("manual_until")
-        until = datetime.fromisoformat(raw) if isinstance(raw, str) else None
-        return cls(manual_until=until)
+        until = _parse_dt(data.get("manual_until"))
+        since = _parse_dt(data.get("manual_since"))
+        return cls(manual_until=until, manual_since=since)
+
+
+def _parse_dt(raw: object) -> datetime | None:
+    return datetime.fromisoformat(raw) if isinstance(raw, str) else None

@@ -38,9 +38,56 @@ if TYPE_CHECKING:
 
 def build_sensors(entry: SmartRceConfigEntry) -> list[SensorEntity]:
     """Garden sensor entities for top-level `sensor` platform to add."""
-    sensors: list[SensorEntity] = [MowingPlannerSensor(entry), GardenDryAtSensor(entry)]
+    sensors: list[SensorEntity] = [
+        MowingPlannerSensor(entry),
+        GardenDryAtSensor(entry),
+        MowingNonWorkStatusSensor(entry),
+    ]
     sensors.extend(MowingPlannerFieldSensor(entry, field) for field in _PLANNER_FIELDS)
     return sensors
+
+
+class MowingNonWorkStatusSensor(SensorEntity):
+    """What the device non-work window currently reflects.
+
+    Disambiguates the drift alert: when a hold is active the device window
+    deliberately differs from the user target (expected), so this names the
+    reason instead of looking like unexplained drift.
+    - `target`      — device matches the user target (normal).
+    - `rain_hold`   — overridden by the rain hold.
+    - `manual_hold` — overridden by a manual park.
+    - `drift`       — device ≠ target with NO hold (unexpected — investigate).
+    - `unknown`     — no target set yet / device state unknown.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "Mowing Non-Work Status"
+    _attr_should_poll = False
+    _attr_icon = "mdi:clock-check-outline"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["target", "rain_hold", "manual_hold", "drift", "unknown"]
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._non_work = entry.runtime_data.garden.non_work
+        self._hold = entry.runtime_data.garden.hold
+        self._attr_unique_id = f"{DOMAIN}_mowing_non_work_status"
+        self.entity_id = "sensor.mowing_non_work_status"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._non_work.add_listener(self.async_write_ha_state))
+        self.async_on_remove(self._hold.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        if self._hold.is_manual_parked:
+            return "manual_hold"
+        if self._hold.is_holding:
+            return "rain_hold"
+        if self._non_work.effective_hours is None:
+            return "unknown"
+        return "drift" if self._non_work.drift else "target"
 
 
 class MowingPlannerSensor(SensorEntity):

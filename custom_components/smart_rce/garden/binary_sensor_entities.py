@@ -169,10 +169,16 @@ class MowingHoldBinarySensor(BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         override = self._hold.override
-        manual_until = self._hold.manual_until
+        since, until = self._hold.manual_since, self._hold.manual_until
         return {
-            "effective_start": override.start.isoformat() if override else None,
+            # Raw end kept for the notify automation template.
             "effective_end": override.end.isoformat() if override else None,
+            # Ranges for the dashboard (mirror the device "HH:MM - HH:MM" shape).
+            "effective_window": (
+                f"{override.start:%H:%M} - {override.end:%H:%M}" if override else None
+            ),
+            "manual_window": (
+                f"{since:%H:%M} - {until:%H:%M}" if since and until else None
+            ),
             "manual_parked": self._hold.is_manual_parked,
-            "manual_until": manual_until.isoformat() if manual_until else None,
         }

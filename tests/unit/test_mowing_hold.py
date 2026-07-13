@@ -166,11 +166,13 @@ def test_cancel_manual_keeps_rain_hold() -> None:
     assert hold.override == NonWorkHours(time(16, 16), time(19, 31))
 
 
-def test_manual_until_round_trips_through_to_dict() -> None:
+def test_manual_park_round_trips_through_to_dict() -> None:
     hold = MowingHold()
     hold.set_manual(WORK, 30)
+    assert hold.manual_since == WORK  # armed-at stamped
     restored = MowingHold.from_dict(hold.to_dict())
     assert restored.manual_until == WORK + timedelta(minutes=30)
+    assert restored.manual_since == WORK
 
 
 def test_from_dict_empty_no_manual() -> None:
