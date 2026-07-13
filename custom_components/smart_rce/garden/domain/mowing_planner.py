@@ -38,14 +38,14 @@ from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 class MowingPlanner:
     """Decides start timing. Stateless policy holder (domain constants)."""
 
-    MOWING_RATE: Final = 0.55  # battery pp consumed per minute of mowing
+    MOWING_RATE: Final = 0.62  # battery pp consumed per minute of mowing
     PROGRESS_RATE: Final = 0.4  # task %/min — linear finish fallback
     BATT_FLOOR: Final = 15  # min SoC we allow draining to
     BATT_MIN_START: Final = 30  # min SoC to start a session
     WIN_MIN: Final = 30  # shortest worthwhile window (minutes)
     RAIN_PROB: Final = 50  # precipitation probability threshold (%)
     END_BUFFER: Final = timedelta(minutes=10)  # need >10 min left to start
-    BATTERY_RESERVE_MIN: Final = 10  # battery must outlast the task by this (min)
+    BATTERY_RESERVE_MIN: Final = 20  # battery must outlast the task by this (min)
     RESUME_GRACE: Final = timedelta(minutes=10)  # hold HA start after quiet end
     DEFAULT_FRESH_BATTERY: Final = 90  # fresh-start SoC threshold (tunable via number)
 
