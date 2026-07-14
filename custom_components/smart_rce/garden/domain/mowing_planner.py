@@ -7,8 +7,11 @@ Start strategies once a usable window exists:
 - ASAP: window shorter than what we could mow → start now, grab what we can
   before rain (battery- or rain-bound, whichever is shorter).
 - WAIT_BATTERY: window fits the task but the battery would not outlast it by
-  BATTERY_RESERVE_MIN → stay docked and charge (flips to GO as it charges; a
-  task too big for one charge is left to Luba's own post-charge auto-resume).
+  BATTERY_RESERVE_MIN → stay docked and charge (flips to GO as it charges). The
+  firmware auto-resumes a paused task at ~90% on its own, so we normally WAIT and
+  let it — EXCEPT when the battery has climbed past `FIRMWARE_RESUME_SOC` while
+  still docked (firmware stalled after a manual recall): then HA resumes, so a
+  task too big for one charge is not stuck at full battery forever.
 - GO: window fits AND battery finishes the task with reserve → start at the
   window open (earliest), finishing in one charge. Earliest start banks the most
   lawn before the window can shrink (early rain or the non-work boundary).
@@ -47,6 +50,8 @@ class MowingPlanner:
     END_BUFFER: Final = timedelta(minutes=10)  # need >10 min left to start
     BATTERY_RESERVE_MIN: Final = 20  # battery must outlast the task by this (min)
     RESUME_GRACE: Final = timedelta(minutes=10)  # hold HA start after quiet end
+    FIRMWARE_RESUME_SOC: Final = 91  # firmware auto-resumes a paused task ~90%;
+    # above this AND still docked ⇒ firmware stalled (manual recall) → HA resumes
     DEFAULT_FRESH_BATTERY: Final = 90  # fresh-start SoC threshold (tunable via number)
 
     def decide(self, inp: MowingInput) -> PlannerDecision:
@@ -134,16 +139,21 @@ class MowingPlanner:
             if inp.battery >= inp.fresh_start_battery:
                 return StartStrategy.GO, window.start, win_min
             return StartStrategy.WAIT_BATTERY, None, win_min
-        # Resume: commit to a finishing run only when the battery outlasts the
-        # remaining task by BATTERY_RESERVE_MIN; otherwise stay docked and charge
-        # — `drain` grows as it charges, so this flips to GO by itself (a task too
-        # big for one charge is left to Luba's own post-charge auto-resume).
-        if drain < finish + self.BATTERY_RESERVE_MIN:
-            return StartStrategy.WAIT_BATTERY, None, win_min
-        # GO: start at the window open (earliest) and finish in one charge.
-        # Earliest start banks the most lawn before the window can shrink — rain
-        # moving in ahead of forecast, or the non-work boundary.
-        return StartStrategy.GO, window.start, win_min
+        # Resume: GO when the battery outlasts the remaining task by
+        # BATTERY_RESERVE_MIN — start at the window open (earliest), finish in one
+        # charge. Earliest banks the most lawn before the window can shrink.
+        if drain >= finish + self.BATTERY_RESERVE_MIN:
+            return StartStrategy.GO, window.start, win_min
+        # Can't finish this charge. Normally the mower's firmware auto-resumes a
+        # paused task at ~90% on its own, so we WAIT and let it (avoids resuming
+        # at a partial charge → short run → extra dock trips). BUT after a MANUAL
+        # recall the firmware will NOT auto-resume — detected by the battery
+        # climbing past FIRMWARE_RESUME_SOC while still docked (the `at_dock` gate
+        # is in `_should_start`) — so a task too big for one charge would be stuck
+        # at full battery forever. There, HA resumes it.
+        if inp.battery > self.FIRMWARE_RESUME_SOC:
+            return StartStrategy.GO, window.start, win_min
+        return StartStrategy.WAIT_BATTERY, None, win_min
 
     def _should_start(
         self, inp: MowingInput, window: ForecastWindow, opt_start: datetime | None

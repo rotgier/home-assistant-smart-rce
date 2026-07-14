@@ -96,6 +96,26 @@ def test_battery_covers_task_but_not_reserve_waits() -> None:
     assert d.should_start is False
 
 
+def test_resume_big_task_full_battery_docked_goes() -> None:
+    # Task too big for ONE charge (89% left) + battery > 91% still docked →
+    # firmware stalled (manual recall), so HA resumes instead of WAIT forever.
+    d = _decide(battery=100, progress=11)
+
+    assert d.time_to_drain_min < d.time_to_finish_min  # cannot finish in one charge
+    assert d.strategy is StartStrategy.GO
+    assert d.should_start is True
+
+
+def test_resume_big_task_mid_charge_waits_for_firmware() -> None:
+    # Same big task but battery ≤ 91% → WAIT: let the firmware auto-resume at
+    # ~90% (don't resume at a partial charge → short run → extra dock trips).
+    d = _decide(battery=80, progress=11)
+
+    assert d.time_to_drain_min < d.time_to_finish_min
+    assert d.strategy is StartStrategy.WAIT_BATTERY
+    assert d.should_start is False
+
+
 def test_tight_window_go_starts_at_open() -> None:
     # Battery enough (drain 100 >= finish 50 + 10); window just over finish (55)
     # → GO starts at the window open (same as any GO now — earliest possible).
