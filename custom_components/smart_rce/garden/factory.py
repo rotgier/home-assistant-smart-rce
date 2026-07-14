@@ -120,9 +120,11 @@ async def create_garden(
     await policy_repo.async_restore()
     forecast_reader = ForecastReader(forecast)
     mowing = MowingPlannerService(
-        policy_repo, luba, forecast_reader, service, rain, dt_util.now
+        policy_repo, luba, forecast_reader, service, rain, hold, dt_util.now
     )
-    _wire_mowing_recompute(hass, entry, luba, forecast_reader, service, rain, mowing)
+    _wire_mowing_recompute(
+        hass, entry, luba, forecast_reader, service, rain, hold, mowing
+    )
     return Garden(non_work=service, rain=rain, hold=hold, mowing=mowing)
 
 
@@ -214,6 +216,7 @@ def _wire_mowing_recompute(
     forecast: ForecastReader,
     non_work: NonWorkService,
     rain: RainService,
+    hold: MowingHoldService,
     mowing: MowingPlannerService,
 ) -> None:
     """Recompute on every input change + a 1-minute tick (time is an input)."""
@@ -221,6 +224,8 @@ def _wire_mowing_recompute(
     entry.async_on_unload(forecast.subscribe(mowing.recompute))
     entry.async_on_unload(non_work.add_listener(mowing.recompute))
     entry.async_on_unload(rain.add_listener(mowing.recompute))
+    # Manual park is a window floor too → recompute when it arms/cancels.
+    entry.async_on_unload(hold.add_listener(mowing.recompute))
 
     @callback
     def _tick(_now: datetime) -> None:

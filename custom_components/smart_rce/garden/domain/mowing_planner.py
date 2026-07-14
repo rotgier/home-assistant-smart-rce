@@ -81,9 +81,11 @@ class MowingPlanner:
     def _earliest_start(self, inp: MowingInput) -> datetime:
         """Floor on when mowing may begin.
 
-        The latest of: now, the end of an active quiet window, and `dry_at`
-        (grass dry-out after the last rain). The active-quiet-end floor is what
-        the legacy Jinja missed — it clipped only to the NEXT quiet start.
+        The latest of: now, the end of an active quiet window, `dry_at` (grass
+        dry-out after the last rain) and `manual_until` (a manual park). Both
+        holds clamp the window the same way, so the planner never dispatches a
+        start into rain OR a user-requested park. The active-quiet-end floor is
+        what the legacy Jinja missed — it clipped only to the NEXT quiet start.
         """
         floor = inp.now
         if inp.non_work is not None:
@@ -92,6 +94,8 @@ class MowingPlanner:
                 floor = max(floor, quiet_until)
         if inp.dry_at is not None:
             floor = max(floor, inp.dry_at)
+        if inp.manual_until is not None:
+            floor = max(floor, inp.manual_until)
         return floor
 
     def _time_to_drain(self, battery: int) -> int:
@@ -216,6 +220,7 @@ class MowingInput:
     slots: list[ForecastSlot]
     non_work: NonWorkHours | None  # planner derives next start / active end
     dry_at: datetime | None = None  # grass dry-out floor (rain_ended + dry_hours)
+    manual_until: datetime | None = None  # manual-park floor (mowing hold)
     time_left_min: int | None = None  # firmware remaining estimate (progress>0)
     fresh_start_battery: int = 90  # SoC threshold for fresh GO (DEFAULT_FRESH_BATTERY)
 

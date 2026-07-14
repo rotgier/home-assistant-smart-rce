@@ -96,6 +96,18 @@ def test_battery_covers_task_but_not_reserve_waits() -> None:
     assert d.should_start is False
 
 
+def test_manual_park_floors_window_and_blocks_start() -> None:
+    # Small remaining task + full battery → WOULD GO now, but a manual park
+    # floors the window to its end → opt_start in the future → no start.
+    parked_until = NOW + timedelta(hours=2)
+    d = _decide(battery=100, progress=90, manual_until=parked_until)
+
+    assert d.window_start == parked_until
+    assert d.should_start is False
+    # Sanity: identical inputs WITHOUT the park → starts now.
+    assert _decide(battery=100, progress=90).should_start is True
+
+
 def test_resume_big_task_full_battery_docked_goes() -> None:
     # Task too big for ONE charge (89% left) + battery > 91% still docked →
     # firmware stalled (manual recall), so HA resumes instead of WAIT forever.

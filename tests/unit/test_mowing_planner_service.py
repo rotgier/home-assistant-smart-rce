@@ -52,8 +52,10 @@ def _service(
     repo = MagicMock()
     repo.state = MowingPolicy()
     repo.save_if_changed = MagicMock()
+    hold = MagicMock()
+    hold.manual_until = None
     return MowingPlannerService(
-        repo, luba, forecast_reader, non_work, rain, lambda: now
+        repo, luba, forecast_reader, non_work, rain, hold, lambda: now
     )
 
 

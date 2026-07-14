@@ -34,6 +34,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
 
+    from custom_components.smart_rce.garden.application.mowing_hold_service import (
+        MowingHoldService,
+    )
     from custom_components.smart_rce.garden.application.non_work_service import (
         NonWorkService,
     )
@@ -56,6 +59,7 @@ class MowingPlannerService(Service[MowingPolicyRepository]):
         forecast: ForecastReader,
         non_work: NonWorkService,
         rain: RainService,
+        hold: MowingHoldService,
         now_provider: Callable[[], datetime],
     ) -> None:
         super().__init__(repo)
@@ -64,6 +68,7 @@ class MowingPlannerService(Service[MowingPolicyRepository]):
         self._forecast = forecast
         self._non_work = non_work
         self._rain = rain
+        self._hold = hold
         self._now = now_provider
         self._decision: PlannerDecision | None = None
 
@@ -95,6 +100,7 @@ class MowingPlannerService(Service[MowingPolicyRepository]):
                 slots=self._forecast.read_forecast_slots(),
                 non_work=self._non_work.effective_hours,
                 dry_at=self._rain.dry_at,
+                manual_until=self._hold.manual_until,
                 time_left_min=self._luba.read_time_left(),
                 fresh_start_battery=self._repo.state.fresh_start_battery,
             )
