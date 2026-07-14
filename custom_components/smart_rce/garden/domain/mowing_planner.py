@@ -55,48 +55,44 @@ class MowingPlanner:
     DEFAULT_FRESH_BATTERY: Final = 90  # fresh-start SoC threshold (tunable via number)
 
     def decide(self, inp: MowingInput) -> PlannerDecision:
-        # The window cannot open before the latest of: now, the end of an
-        # active quiet window (legacy Jinja missed this — it only clipped to
-        # the NEXT quiet start), and `dry_at` (grass dry-out after the last
-        # rain). All three are floors on when mowing may begin.
         non_work_start = inp.non_work.next_start(inp.now) if inp.non_work else None
-        quiet_until = (
-            inp.non_work.end_of_active_window(inp.now) if inp.non_work else None
-        )
-        from_moment = inp.now
-        if quiet_until is not None:
-            from_moment = max(from_moment, quiet_until)
-        if inp.dry_at is not None:
-            from_moment = max(from_moment, inp.dry_at)
         window = ForecastWindow.from_slots(
-            inp.slots, from_moment, non_work_start, self.RAIN_PROB
+            inp.slots, self._earliest_start(inp), non_work_start, self.RAIN_PROB
         )
-        time_to_drain = self._time_to_drain(inp.battery)
-        time_to_finish = self._time_to_finish(
-            inp.progress, time_to_drain, inp.time_left_min
-        )
-        needed = min(time_to_drain, time_to_finish)
-
-        strategy, opt_start, win_min = self._resolve_start(
-            inp, window, time_to_finish, time_to_drain
-        )
-        should = self._should_start(inp, window, opt_start)
-
+        drain = self._time_to_drain(inp.battery)
+        finish = self._time_to_finish(inp.progress, drain, inp.time_left_min)
+        strategy, opt_start, win_min = self._resolve_start(inp, window, finish, drain)
         return PlannerDecision(
-            should_start=should,
+            should_start=self._should_start(inp, window, opt_start),
             window_start=window.start,
             window_end=window.end,
             opt_start=opt_start,
             window_bound=window.bound,
             strategy=strategy,
-            needed_min=needed,
+            needed_min=min(drain, finish),
             window_min=win_min,
-            time_to_drain_min=time_to_drain,
-            time_to_finish_min=time_to_finish,
+            time_to_drain_min=drain,
+            time_to_finish_min=finish,
             battery=inp.battery,
             progress=inp.progress,
             at_dock=inp.at_dock,
         )
+
+    def _earliest_start(self, inp: MowingInput) -> datetime:
+        """Floor on when mowing may begin.
+
+        The latest of: now, the end of an active quiet window, and `dry_at`
+        (grass dry-out after the last rain). The active-quiet-end floor is what
+        the legacy Jinja missed — it clipped only to the NEXT quiet start.
+        """
+        floor = inp.now
+        if inp.non_work is not None:
+            quiet_until = inp.non_work.end_of_active_window(inp.now)
+            if quiet_until is not None:
+                floor = max(floor, quiet_until)
+        if inp.dry_at is not None:
+            floor = max(floor, inp.dry_at)
+        return floor
 
     def _time_to_drain(self, battery: int) -> int:
         if battery <= self.BATT_FLOOR:
@@ -120,64 +116,89 @@ class MowingPlanner:
     def _resolve_start(
         self, inp: MowingInput, window: ForecastWindow, finish: int, drain: int
     ) -> tuple[StartStrategy, datetime | None, int]:
-        """Pick the start strategy. Returns (strategy, opt_start, window_min)."""
+        """Pick the start strategy + opt_start. Returns (strategy, opt_start, win_min).
+
+        Window viability first (none / too short / shorter-than-we-could-mow →
+        ASAP), then the fresh-start vs resume policy.
+        """
         if window.start is None or window.end is None or window.end <= window.start:
             return StartStrategy.NO_WINDOW, None, 0
-
         win_min = round((window.end - window.start).total_seconds() / 60)
         if win_min < self.WIN_MIN:
             return StartStrategy.SKIP_SHORT_WINDOW, None, win_min
         if win_min < min(finish, drain):
+            # Window shorter than we could mow → grab what we can before it closes.
             return StartStrategy.ASAP, window.start, win_min
-        # Window fits the battery endurance.
         if inp.progress <= 0:
-            # Fresh start: no task in progress, so the resume reserve logic does
-            # not apply. Wait until the battery reaches the fresh-start threshold
-            # (a full-ish charge banks a long stretch), then GO at the window
-            # open; whatever one charge can't finish is left to Luba's own
-            # post-charge auto-resume. Below the threshold → keep charging.
-            if inp.battery >= inp.fresh_start_battery:
-                return StartStrategy.GO, window.start, win_min
-            return StartStrategy.WAIT_BATTERY, None, win_min
-        # Resume: GO when the battery outlasts the remaining task by
-        # BATTERY_RESERVE_MIN — start at the window open (earliest), finish in one
-        # charge. Earliest banks the most lawn before the window can shrink.
+            return self._resolve_fresh(inp, window.start, win_min)
+        return self._resolve_resume(inp, window.start, win_min, finish, drain)
+
+    def _resolve_fresh(
+        self, inp: MowingInput, start: datetime, win_min: int
+    ) -> tuple[StartStrategy, datetime | None, int]:
+        """Fresh start: GO at the fresh-start battery threshold, else charge.
+
+        No task in progress, so a full-ish charge banks a long stretch before
+        the first run; whatever one charge cannot finish is left to the
+        firmware's own post-charge auto-resume.
+        """
+        if inp.battery >= inp.fresh_start_battery:
+            return StartStrategy.GO, start, win_min
+        return StartStrategy.WAIT_BATTERY, None, win_min
+
+    def _resolve_resume(
+        self, inp: MowingInput, start: datetime, win_min: int, finish: int, drain: int
+    ) -> tuple[StartStrategy, datetime | None, int]:
+        """Resume an in-progress task.
+
+        GO when the battery outlasts the remaining task by `BATTERY_RESERVE_MIN`
+        (finish in one charge; earliest start banks the most lawn before the
+        window shrinks). Otherwise the firmware normally auto-resumes at ~90% on
+        its own, so WAIT and let it — resuming at a partial charge means a short
+        run + extra dock trips. EXCEPT after a MANUAL recall the firmware will NOT
+        auto-resume: detected by the battery climbing past `FIRMWARE_RESUME_SOC`
+        while still docked (the `at_dock` gate is in `_should_start`), so a task
+        too big for one charge would be stuck at full battery forever — there HA
+        resumes. (Timing-side half of this firmware-fallback policy:
+        `_firmware_resume_grace`.)
+        """
         if drain >= finish + self.BATTERY_RESERVE_MIN:
-            return StartStrategy.GO, window.start, win_min
-        # Can't finish this charge. Normally the mower's firmware auto-resumes a
-        # paused task at ~90% on its own, so we WAIT and let it (avoids resuming
-        # at a partial charge → short run → extra dock trips). BUT after a MANUAL
-        # recall the firmware will NOT auto-resume — detected by the battery
-        # climbing past FIRMWARE_RESUME_SOC while still docked (the `at_dock` gate
-        # is in `_should_start`) — so a task too big for one charge would be stuck
-        # at full battery forever. There, HA resumes it.
+            return StartStrategy.GO, start, win_min
         if inp.battery > self.FIRMWARE_RESUME_SOC:
-            return StartStrategy.GO, window.start, win_min
+            return StartStrategy.GO, start, win_min
         return StartStrategy.WAIT_BATTERY, None, win_min
 
     def _should_start(
         self, inp: MowingInput, window: ForecastWindow, opt_start: datetime | None
     ) -> bool:
+        """Is NOW the moment to fire — given the resolved strategy's opt_start."""
         if opt_start is None or window.end is None:
             return False
-        # Quiet just ended → Luba's firmware auto-resumes its IN-PROGRESS task on
-        # its own. Hold HA's start for RESUME_GRACE so we don't race that resume
-        # with a duplicate cloud command; if the firmware hasn't resumed by then
-        # (still docked), HA starts as a fallback. Only relevant to a resume
-        # (progress > 0) — a fresh start has no task to auto-resume, so it fires
-        # right at the quiet end. The grace only bites in the short window right
-        # after the non-work end — mid-day windows are unaffected.
-        if (
-            inp.progress > 0
-            and inp.non_work is not None
-            and inp.now < inp.non_work.recent_end(inp.now) + self.RESUME_GRACE
-        ):
+        if self._firmware_resume_grace(inp):
             return False
         return (
             inp.now >= opt_start
             and inp.now < window.end - self.END_BUFFER
             and inp.battery >= self.BATT_MIN_START
             and inp.at_dock
+        )
+
+    def _firmware_resume_grace(self, inp: MowingInput) -> bool:
+        """Whether the post-quiet-end grace is active (hold HA, let firmware win).
+
+        Right after the quiet-end the firmware auto-resumes its IN-PROGRESS task
+        on its own; we hold HA for `RESUME_GRACE` so we don't race it with a
+        duplicate cloud command. If it hasn't resumed by then (still docked),
+        `_should_start` fires HA as the fallback. Only a resume (progress > 0) —
+        a fresh start has no task to auto-resume, so it fires right at the
+        quiet-end. Bites only just after the non-work end; mid-day windows are
+        unaffected. (Strategy-side half of this firmware-fallback policy: the
+        `FIRMWARE_RESUME_SOC` branch in `_resolve_resume`.)
+        """
+        return (
+            inp.progress > 0
+            and inp.non_work is not None
+            and inp.now < inp.non_work.recent_end(inp.now) + self.RESUME_GRACE
         )
 
 
