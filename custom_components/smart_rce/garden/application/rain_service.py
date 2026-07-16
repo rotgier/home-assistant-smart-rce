@@ -48,6 +48,16 @@ class RainService(Service[RainRepository]):
         self._repo.save_if_changed()
         self._notify_all()
 
+    @callback
+    def mark_dry(self) -> None:
+        """User override: declare the grass dry now (clears a false wet reading).
+
+        Resets the aggregate to "no rain on record" so `dry_at` becomes None;
+        the notify wakes the hold + planner, which drop their rain-driven floor.
+        Sync fire-and-forget (a button press) — save is diff-guarded and local.
+        """
+        self._save_if_changed_and_notify(self._repo.state.mark_dry())
+
     async def set_dry_hours(self, hours: float) -> None:
         await self._persist_and_notify(self._repo.state.set_dry_hours(hours))
 

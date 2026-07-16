@@ -140,6 +140,22 @@ def test_set_dry_hours_changed_flag() -> None:
     assert state.set_dry_hours(6.0) is False
 
 
+def test_mark_dry_resets_confirmed_wet_to_dry() -> None:
+    state = RainState(dry_hours=3.0)
+    state.observe(raw_wet=True, now=NOW)
+    state.observe(raw_wet=True, now=_min(11))  # confirmed wet → dry_at future
+    assert state.is_wet is True
+
+    assert state.mark_dry() is True
+    assert state.is_wet is False
+    assert state.dry_at is None  # no rain on record → already dry
+    assert state._wet_since is None  # noqa: SLF001 — fresh dwell must re-accumulate
+
+
+def test_mark_dry_noop_when_already_dry() -> None:
+    assert RainState().mark_dry() is False
+
+
 def test_serialization_roundtrip() -> None:
     state = RainState(rain_ended_at=NOW, dry_hours=3.5)
     restored = RainState.from_dict(state.to_dict())
@@ -217,6 +233,30 @@ def test_still_raining_persists_advancing_dry_at() -> None:
     assert service.dry_at == _min(13) + timedelta(
         hours=RainState._DEFAULT_DRY_HOURS  # noqa: SLF001
     )
+
+
+def test_mark_dry_persists_and_notifies() -> None:
+    service, repo = _service()
+    notified: list[int] = []
+    service.add_listener(lambda: notified.append(1))
+    service.observe(raw_wet=True, now=NOW)  # arm
+    service.observe(raw_wet=True, now=_min(11))  # confirm wet
+    repo.save_if_changed.reset_mock()
+    notified.clear()
+
+    service.mark_dry()
+
+    assert service.dry_at is None  # planner floor + rain hold drop
+    assert notified == [1]  # wakes hold + planner
+    repo.save_if_changed.assert_called_once()
+
+
+def test_mark_dry_when_already_dry_no_persist() -> None:
+    service, repo = _service()
+
+    service.mark_dry()
+
+    repo.save_if_changed.assert_not_called()
 
 
 async def test_set_dry_hours_persists() -> None:

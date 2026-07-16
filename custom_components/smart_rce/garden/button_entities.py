@@ -5,8 +5,10 @@ user-initiated write of the HA target to mammotion. `button.mowing_hold_clear`
 triggers `MowingHoldService.clear_hold()` — drops the RAIN hold ("grass is fine,
 resume now"; a manual park survives). `button.mowing_park` parks Luba for
 `number.mowing_park_minutes` (manual hold, independent of rain);
-`button.mowing_park_cancel` drops it. Top-level `button.py` aggregates these via
-`build_buttons`, so garden owns its presentation.
+`button.mowing_park_cancel` drops it. `button.garden_mark_dry` triggers
+`RainService.mark_dry()` — the user override "the grass is dry now" that wipes a
+false wet reading so the planner + hold stop treating the lawn as wet. Top-level
+`button.py` aggregates these via `build_buttons`, so garden owns its presentation.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ def build_buttons(entry: SmartRceConfigEntry) -> list[ButtonEntity]:
         MowingHoldClearButton(entry),
         MowingParkButton(entry),
         MowingParkCancelButton(entry),
+        GardenMarkDryButton(entry),
     ]
 
 
@@ -113,3 +116,21 @@ class MowingParkCancelButton(ButtonEntity):
 
     async def async_press(self) -> None:
         self._hold.cancel_park()
+
+
+class GardenMarkDryButton(ButtonEntity):
+    """Press to declare the grass dry now (override a false wet reading)."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Garden Mark Dry"
+    _attr_should_poll = False
+    _attr_icon = "mdi:grass"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._rain = entry.runtime_data.garden.rain
+        self._attr_unique_id = f"{DOMAIN}_garden_mark_dry"
+        self.entity_id = "button.garden_mark_dry"
+        self._attr_device_info = luba_device_info(entry)
+
+    async def async_press(self) -> None:
+        self._rain.mark_dry()

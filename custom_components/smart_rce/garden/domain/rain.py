@@ -110,6 +110,29 @@ class RainState:
         self.dry_hours = hours
         return True
 
+    def mark_dry(self) -> bool:
+        """Force the grass dry now — user override of a false wet reading.
+
+        Wipes the rain observation to the "no rain on record" baseline so
+        `dry_at` becomes None (already dry): the planner drops its window floor
+        and the mowing hold releases its rain branch. No re-confirm suppression
+        — if the weather reading still reads wet, a fresh `WET_DWELL` streak
+        must re-accumulate (`_wet_since` reset) before it confirms wet again.
+        Returns True if anything changed.
+        """
+        if (
+            self.rain_ended_at is None
+            and not self._is_wet
+            and self._last_wet_at is None
+            and self._wet_since is None
+        ):
+            return False
+        self.rain_ended_at = None
+        self._is_wet = False
+        self._last_wet_at = None
+        self._wet_since = None
+        return True
+
     @property
     def is_wet(self) -> bool:
         """Confirmed wet state — raw rain sustained past WET_DWELL."""
