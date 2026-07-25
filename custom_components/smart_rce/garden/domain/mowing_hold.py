@@ -36,6 +36,7 @@ transient (re-derived on the next `evaluate`).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import Any
 
@@ -109,16 +110,38 @@ class MowingHold:
         docked_with_task: bool,
         *,
         force: bool = False,
-    ) -> bool:
-        """Recompute the override. Returns True if it changed (→ push + notify).
+    ) -> HoldResult:
+        """Recompute the override + expire a stale manual park.
 
-        `force` (user action) applies the new window immediately, bypassing the
-        tick-driven anti-churn skip.
+        Reports both axes it can change (see `HoldResult`): the device non-work
+        override (→ push to device) and the persisted manual-park deadline
+        (cleared on expiry → save). `force` (user action) applies a new override
+        immediately, bypassing the tick-driven anti-churn skip.
         """
+        manual_cleared = self._expire_manual(now)
         end = self._desired_end(now, user_target, dry_at, docked_with_task)
         if end is None:
-            return self._release_to_target(now, user_target)
-        return self._hold(now, end, force=force)
+            override_changed = self._release_to_target(now, user_target)
+        else:
+            override_changed = self._hold(now, end, force=force)
+        return HoldResult(
+            override_changed=override_changed, manual_cleared=manual_cleared
+        )
+
+    def _expire_manual(self, now: datetime) -> bool:
+        """Clear an elapsed manual park. Returns True if one was cleared.
+
+        Runs on every `evaluate` (tick + listener), so a lapsed deadline resets
+        within a minute — `manual_until`/`manual_since` no longer linger past
+        expiry (which had left a phantom manual window on the dashboard, since
+        `_desired_end` only stopped COUNTING an expired deadline, never cleared
+        it). The application persists + notifies on the returned True.
+        """
+        if self.manual_until is not None and now >= self.manual_until:
+            self.manual_until = None
+            self.manual_since = None
+            return True
+        return False
 
     def _desired_end(
         self,
@@ -220,6 +243,26 @@ class MowingHold:
         until = _parse_dt(data.get("manual_until"))
         since = _parse_dt(data.get("manual_since"))
         return cls(manual_until=until, manual_since=since)
+
+
+@dataclass(frozen=True)
+class HoldResult:
+    """What one `evaluate` produced — two independent axes with distinct effects.
+
+    A value object (compared by value). The two can co-occur (a manual expiry
+    that also drops the override), so this is a flag pair, not a single event:
+
+    - `override_changed` — the device non-work window changed → re-push it.
+    - `manual_cleared` — the persisted manual deadline was reset on expiry →
+      save it.
+
+    Either axis notifies the entities (`binary_sensor.mowing_hold` shows both the
+    override window AND the manual window); only `override_changed` writes to the
+    device, only `manual_cleared` writes to the Store.
+    """
+
+    override_changed: bool
+    manual_cleared: bool
 
 
 def _parse_dt(raw: object) -> datetime | None:

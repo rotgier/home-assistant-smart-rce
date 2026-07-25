@@ -103,6 +103,7 @@ class MowingHoldService(Service[MowingHoldRepository]):
         """Arm a manual park for `minutes` (dashboard button) → hold + persist."""
         if self._hold.set_manual(self._now(), minutes):
             self._repo.save_if_changed()
+            self._notify_all()  # manual window changed → refresh even if override didn't
         self._reevaluate(force=True)
 
     @callback
@@ -110,6 +111,7 @@ class MowingHoldService(Service[MowingHoldRepository]):
         """Drop the manual park (dashboard button). Rain may still hold."""
         if self._hold.cancel_manual():
             self._repo.save_if_changed()
+            self._notify_all()  # manual window cleared → refresh even if override didn't
         self._reevaluate(force=True)
 
     @callback
@@ -134,13 +136,15 @@ class MowingHoldService(Service[MowingHoldRepository]):
         if base is None:
             return  # no target yet — nothing to override or restore
         docked_with_task = self._luba.read_at_dock() and self._luba.read_progress() > 0
-        changed = self._hold.evaluate(
+        result = self._hold.evaluate(
             self._now(), base, self._rain.dry_at, docked_with_task, force=force
         )
-        if not changed:
-            return
-        self._push(base)
-        self._notify_all()
+        if result.manual_cleared:
+            self._repo.save_if_changed()  # expiry reset manual_until → persist
+        if result.override_changed:
+            self._push(base)  # device non-work window changed → write it
+        if result.override_changed or result.manual_cleared:
+            self._notify_all()
 
     def _push(self, base: NonWorkHours) -> None:
         hours = self._hold.override or base

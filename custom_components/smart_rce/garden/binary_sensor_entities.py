@@ -126,7 +126,9 @@ class MowingHoldBinarySensor(BinarySensorEntity):
                 f"{override.start:%H:%M} - {override.end:%H:%M}" if override else None
             ),
             "manual_window": (
-                f"{since:%H:%M} - {until:%H:%M}" if since and until else None
+                f"{since:%H:%M} - {until:%H:%M}"
+                if self._hold.is_manual_parked and since and until
+                else None
             ),
             "manual_parked": self._hold.is_manual_parked,
         }
