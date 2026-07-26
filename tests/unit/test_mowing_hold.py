@@ -217,6 +217,58 @@ def test_cancel_manual_keeps_rain_hold() -> None:
     assert hold.override == NonWorkHours(time(16, 16), time(19, 31))
 
 
+# --- MowingHold domain: evening-buffer bump (TARGET quiet start 20:35) ---
+
+
+def test_evening_buffer_bumps_manual_end_past_the_buffer() -> None:
+    # Manual park ending inside [quiet_start, quiet_start+MARGIN] (20:35-20:50)
+    # must push the override end PAST the buffer — else it expires mid-buffer and
+    # the restore skip keeps the lapsed override, freeing the mower (2026-07-26
+    # park to 20:38 → mowed 20:39).
+    hold = MowingHold()
+    hold.set_manual(_dt(20, 25), 15)  # manual until 20:40 — inside the buffer
+    result = hold.evaluate(_dt(20, 36), TARGET, None, False, force=True)
+    assert result.override_changed is True
+    # end 20:40 → quiet_start 20:35 + MARGIN 15 + BUFFER_CLEAR 5 = 20:55
+    assert hold.override == NonWorkHours(time(20, 21), time(20, 55))  # start = 20:36-15
+
+
+def test_evening_buffer_bumps_rain_end_past_the_buffer() -> None:
+    # Same bump for a RAIN hold — the rule lives on the combined max in
+    # `_desired_end`, so manual and rain are both covered by one place.
+    hold = MowingHold()
+    # work hours 20:20, docked-with-task, rain dry_at 20:44 (inside the buffer)
+    result = hold.evaluate(_dt(20, 20), TARGET, _dt(20, 44), True, force=True)
+    assert result.override_changed is True
+    assert hold.override == NonWorkHours(time(20, 5), time(20, 55))  # 20:44 → 20:55
+
+
+def test_evening_buffer_no_bump_before_quiet_start() -> None:
+    # Park ending BEFORE the quiet start (20:34 < 20:35) is outside the window —
+    # she is legitimately free that last minute; no bump.
+    hold = MowingHold()
+    hold.set_manual(_dt(20, 19), 15)  # manual until 20:34
+    hold.evaluate(_dt(20, 30), TARGET, None, False, force=True)
+    assert hold.override == NonWorkHours(time(20, 15), time(20, 34))  # end NOT bumped
+
+
+def test_evening_buffer_hold_survives_manual_expiry_until_release() -> None:
+    # The point: the bumped override COVERS the buffer window, so after the
+    # manual really lapses the restore skip keeps a still-covering window (mower
+    # stays parked), then hands to the target when the buffer releases — no gap.
+    hold = MowingHold()
+    hold.set_manual(_dt(20, 25), 15)  # until 20:40 → override end bumped to 20:55
+    hold.evaluate(_dt(20, 36), TARGET, None, False, force=True)
+    assert hold.override == NonWorkHours(time(20, 21), time(20, 55))
+    # 20:41: manual lapsed, but inside the buffer AND override still covers now
+    # (20:41 < 20:55) → kept → mower stays parked
+    assert hold.evaluate(_dt(20, 41), TARGET, None, False).override_changed is False
+    assert hold.override == NonWorkHours(time(20, 21), time(20, 55))
+    # 20:51: >MARGIN past quiet start 20:35 → buffer releases → restore target
+    assert hold.evaluate(_dt(20, 51), TARGET, None, False).override_changed is True
+    assert hold.override is None
+
+
 def test_manual_park_round_trips_through_to_dict() -> None:
     hold = MowingHold()
     hold.set_manual(WORK, 30)

@@ -60,6 +60,9 @@ class MowingHold:
     # `docked_with_task` — otherwise it would re-hold while still docked + wet,
     # making the clear button a no-op (cloud round-trip lags the undock).
     MANUAL_RELEASE_GRACE = timedelta(minutes=20)
+    # How far PAST the restore buffer to push a hold end that would otherwise
+    # expire inside [quiet_start, quiet_start+MARGIN] — see `_clear_evening_buffer`.
+    _BUFFER_CLEAR = timedelta(minutes=5)
 
     def __init__(
         self,
@@ -163,7 +166,9 @@ class MowingHold:
             and self._hold_applies(now, user_target, dry_at)
         ):
             ends.append(dry_at)
-        return max(ends) if ends else None
+        if not ends:
+            return None
+        return self._clear_evening_buffer(max(ends), user_target)
 
     def _is_suppressed(self, now: datetime) -> bool:
         """Whether a recent manual clear still suppresses the rain reason."""
@@ -179,6 +184,26 @@ class MowingHold:
         # Inside the quiet window: only the morning end lets the mower out, and
         # only if the grass is still wet past it (else the target end covers it).
         return active_end - now <= self.MARGIN and dry_at > active_end
+
+    def _clear_evening_buffer(
+        self, end: datetime, user_target: NonWorkHours | None
+    ) -> datetime:
+        """Push a hold end out of the [quiet_start, quiet_start+MARGIN] window.
+
+        A hold ending just after the evening quiet starts (2026-07-26: manual
+        park to 20:38, quiet 20:30) would EXPIRE inside the restore anti-churn
+        buffer, whose skip then keeps the now-lapsed override — freeing the mower
+        mid-quiet (she mowed 20:39). Bumping the end past the buffer keeps the
+        override covering `now` throughout the buffer, so the buffer holds a
+        genuinely covering window and hands back to the target at buffer release.
+        Applied to the combined max, so manual AND rain holds are both covered.
+        """
+        if user_target is None:
+            return end
+        quiet_start = user_target.recent_start(end)
+        if quiet_start <= end <= quiet_start + self.MARGIN:
+            return quiet_start + self.MARGIN + self._BUFFER_CLEAR
+        return end
 
     def _hold(self, now: datetime, end: datetime, *, force: bool) -> bool:
         if self.override is not None:
