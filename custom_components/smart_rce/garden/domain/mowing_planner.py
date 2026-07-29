@@ -142,19 +142,24 @@ class MowingPlanner:
         win_min = round((window.end - window.start).total_seconds() / 60)
         if win_min < self.WIN_MIN:
             return StartStrategy.SKIP_SHORT_WINDOW, None, win_min
-        # Regime A — window-limited: the rain / non-work window closes before we
-        # could either finish the task OR drain the battery, so the clock is the
-        # binding constraint. Grab what lawn we can before it shuts — the battery
-        # FINISH_MARGIN does NOT apply here (a partial run still beats none).
-        mowable_min = min(finish, drain)  # longest this session could run
-        if win_min < mowable_min:
+        if self._window_cuts_run_short(win_min, finish, drain):
             return StartStrategy.ASAP, window.start, win_min
-        # Regime B — window has room: decide on battery vs task, not the clock.
         if inp.progress <= 0:
-            return self._resolve_fresh(inp, window.start, win_min)  # no task yet
-        return self._resolve_resume(
-            inp, window.start, win_min, finish, drain
-        )  # finish it
+            return self._resolve_fresh(inp, window.start, win_min)
+        return self._resolve_finish(inp, window.start, win_min, finish, drain)
+
+    def _window_cuts_run_short(self, win_min: int, finish: int, drain: int) -> bool:
+        """Whether the window closes before this run would naturally end.
+
+        A run ends when the task finishes OR the battery drains, whichever comes
+        first — `min(finish, drain)`. If the rain / non-work window is shorter
+        than that, the clock is the binding constraint: start now and grab what
+        lawn we can before it shuts (Regime A). The battery `FINISH_MARGIN_MIN`
+        does NOT apply here — a partial run still beats none. When this is False
+        the window has room and the start is decided on battery vs task
+        (Regime B: `_resolve_fresh` / `_resolve_finish`).
+        """
+        return win_min < min(finish, drain)
 
     def _resolve_fresh(
         self, inp: MowingInput, start: datetime, win_min: int
@@ -169,10 +174,10 @@ class MowingPlanner:
             return StartStrategy.GO, start, win_min
         return StartStrategy.WAIT_BATTERY, None, win_min
 
-    def _resolve_resume(
+    def _resolve_finish(
         self, inp: MowingInput, start: datetime, win_min: int, finish: int, drain: int
     ) -> tuple[StartStrategy, datetime | None, int]:
-        """Resume an in-progress task (window already has room — Regime B).
+        """Finish an in-progress task (window already has room — Regime B).
 
         GO when the battery runtime beats the remaining task by `FINISH_MARGIN_MIN`
         (finish in one charge; earliest start banks the most lawn before the
@@ -216,7 +221,7 @@ class MowingPlanner:
         a fresh start has no task to auto-resume, so it fires right at the
         quiet-end. Bites only just after the non-work end; mid-day windows are
         unaffected. (Strategy-side half of this firmware-fallback policy: the
-        `FIRMWARE_RESUME_SOC` branch in `_resolve_resume`.)
+        `FIRMWARE_RESUME_SOC` branch in `_resolve_finish`.)
         """
         return (
             inp.progress > 0
