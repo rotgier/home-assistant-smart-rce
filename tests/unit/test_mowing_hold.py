@@ -292,6 +292,7 @@ def _service(
     docked: bool = True,
     progress: int = 50,
     now: datetime = WORK,
+    service_mode: bool = False,
 ) -> tuple[MowingHoldService, MagicMock, MagicMock]:
     repo = MagicMock()
     repo.state = MowingHold()
@@ -306,8 +307,10 @@ def _service(
     actuator = MagicMock()
     actuator.apply = MagicMock(return_value="coro")  # not awaited — handed to tasks
     tasks = MagicMock()
+    svc_mode = MagicMock()
+    svc_mode.is_active = service_mode
     service = MowingHoldService(
-        repo, non_work, rain, actuator, luba, tasks, lambda: now
+        repo, non_work, rain, actuator, luba, tasks, svc_mode, lambda: now
     )
     return service, actuator, tasks
 
@@ -423,5 +426,19 @@ def test_service_clear_hold_keeps_manual_park() -> None:
 def test_clear_hold_noop_when_not_holding() -> None:
     service, actuator, tasks = _service(dry_at=None, docked=False)
     service.clear_hold()
+    actuator.apply.assert_not_called()
+    tasks.run_background.assert_not_called()
+
+
+def test_service_mode_skips_push() -> None:
+    # Maintenance mode → hold does not touch the device (no non-work push), even
+    # when a hold would otherwise apply (docked-with-task + wet grass).
+    service, actuator, tasks = _service(
+        dry_at=_dt(19, 31), docked=True, progress=50, service_mode=True
+    )
+
+    service.evaluate()
+
+    assert service.override is None
     actuator.apply.assert_not_called()
     tasks.run_background.assert_not_called()

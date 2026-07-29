@@ -36,6 +36,7 @@ def _service(
     effective: NonWorkHours | None = NonWorkHours(time(20, 35), time(10, 5)),
     dry_at: datetime | None = None,
     now: datetime = NOW,
+    service_mode: bool = False,
 ) -> MowingPlannerService:
     luba = MagicMock()
     luba.read_battery.return_value = battery
@@ -54,8 +55,10 @@ def _service(
     repo.save_if_changed = MagicMock()
     hold = MagicMock()
     hold.manual_until = None
+    svc_mode = MagicMock()
+    svc_mode.is_active = service_mode
     return MowingPlannerService(
-        repo, luba, forecast_reader, non_work, rain, hold, lambda: now
+        repo, luba, forecast_reader, non_work, rain, hold, svc_mode, lambda: now
     )
 
 
@@ -162,3 +165,13 @@ def test_dry_at_floor_delays_window_start() -> None:
 
     assert service.decision is not None
     assert service.decision.window_start == dry_at
+
+
+def test_service_mode_suppresses_should_start() -> None:
+    # Maintenance mode → planner never recommends a start, regardless of window.
+    service = _service(service_mode=True)
+
+    service.recompute()
+
+    assert service.decision is not None
+    assert service.decision.should_start is False

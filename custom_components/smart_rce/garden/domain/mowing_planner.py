@@ -228,6 +228,8 @@ class MowingPlanner:
         self, inp: MowingInput, window: ForecastWindow, opt_start: datetime | None
     ) -> bool:
         """Is NOW the moment to fire — given the resolved strategy's opt_start."""
+        if inp.service_mode:
+            return False  # maintenance — never dispatch while user handles Luba
         if opt_start is None or window.end is None:
             return False
         if self._firmware_resume_grace(inp):
@@ -275,6 +277,7 @@ class MowingInput:
     manual_until: datetime | None = None  # manual-park floor (mowing hold)
     time_left_min: int | None = None  # firmware remaining estimate (progress>0)
     fresh_start_battery: int = 90  # SoC threshold for fresh GO (DEFAULT_FRESH_BATTERY)
+    service_mode: bool = False  # maintenance — suppress should_start entirely
 
 
 @dataclass(frozen=True)

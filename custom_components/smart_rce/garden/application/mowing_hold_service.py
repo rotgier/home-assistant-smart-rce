@@ -35,6 +35,9 @@ if TYPE_CHECKING:
         NonWorkService,
     )
     from custom_components.smart_rce.garden.application.rain_service import RainService
+    from custom_components.smart_rce.garden.application.service_mode_service import (
+        ServiceModeService,
+    )
     from custom_components.smart_rce.garden.domain.mowing_hold import MowingHold
     from custom_components.smart_rce.garden.infrastructure.luba_state_reader import (
         LubaStateReader,
@@ -58,6 +61,7 @@ class MowingHoldService(Service[MowingHoldRepository]):
         actuator: NonWorkActuator,
         luba: LubaStateReader,
         tasks: AsyncTaskRunner,
+        service_mode: ServiceModeService,
         now_provider: Callable[[], datetime],
     ) -> None:
         super().__init__(repo)
@@ -66,6 +70,7 @@ class MowingHoldService(Service[MowingHoldRepository]):
         self._actuator = actuator
         self._luba = luba
         self._tasks = tasks
+        self._service_mode = service_mode
         self._now = now_provider
 
     @property
@@ -132,6 +137,8 @@ class MowingHoldService(Service[MowingHoldRepository]):
         self._reevaluate(force=False)
 
     def _reevaluate(self, *, force: bool) -> None:
+        if self._service_mode.is_active:
+            return  # maintenance — HA must not push non-work while user handles Luba
         base = self._non_work.effective_hours
         if base is None:
             return  # no target yet — nothing to override or restore

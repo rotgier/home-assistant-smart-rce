@@ -34,6 +34,9 @@ from custom_components.smart_rce.garden.application.non_work_service import (
     NonWorkService,
 )
 from custom_components.smart_rce.garden.application.rain_service import RainService
+from custom_components.smart_rce.garden.application.service_mode_service import (
+    ServiceModeService,
+)
 from custom_components.smart_rce.garden.infrastructure.forecast_reader import (
     ForecastReader,
 )
@@ -89,6 +92,7 @@ class Garden:
     rain: RainService
     hold: MowingHoldService
     mowing: MowingPlannerService
+    service_mode: ServiceModeService
 
 
 async def create_garden(
@@ -108,24 +112,39 @@ async def create_garden(
     rain = RainService(rain_repo)
     _wire_rain(hass, entry, RainReader(hass), rain)
 
+    service_mode = ServiceModeService()
+
     luba = LubaStateReader(hass)
     hold_repo = MowingHoldRepository(hass, tasks)
     await hold_repo.async_restore()
     hold = MowingHoldService(
-        hold_repo, service, rain, actuator, luba, tasks, dt_util.now
+        hold_repo, service, rain, actuator, luba, tasks, service_mode, dt_util.now
     )
     _wire_mowing_hold(hass, entry, service, rain, luba, hold)
+    # Flipping service mode OFF must re-reconcile the held window immediately.
+    entry.async_on_unload(service_mode.add_listener(hold.evaluate))
 
     policy_repo = MowingPolicyRepository(hass, tasks)
     await policy_repo.async_restore()
     forecast_reader = ForecastReader(forecast)
     mowing = MowingPlannerService(
-        policy_repo, luba, forecast_reader, service, rain, hold, dt_util.now
+        policy_repo,
+        luba,
+        forecast_reader,
+        service,
+        rain,
+        hold,
+        service_mode,
+        dt_util.now,
     )
     _wire_mowing_recompute(
         hass, entry, luba, forecast_reader, service, rain, hold, mowing
     )
-    return Garden(non_work=service, rain=rain, hold=hold, mowing=mowing)
+    # Service mode gates should_start → recompute when it flips.
+    entry.async_on_unload(service_mode.add_listener(mowing.recompute))
+    return Garden(
+        non_work=service, rain=rain, hold=hold, mowing=mowing, service_mode=service_mode
+    )
 
 
 def _wire_rain(

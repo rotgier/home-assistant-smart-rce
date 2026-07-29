@@ -24,6 +24,7 @@ from . import SmartRceConfigEntry
 from .const import DOMAIN
 from .domain.battery_schedule import Scope, SetSlotEnabledCommand, SlotKind
 from .ems_device import ems_device_info
+from .garden.switch_entities import build_switches
 
 PARALLEL_UPDATES = 1
 
@@ -46,6 +47,7 @@ async def async_setup_entry(
                 for scope in scopes
                 for kind in SlotKind
             ],
+            *build_switches(entry),
         ]
     )
 
