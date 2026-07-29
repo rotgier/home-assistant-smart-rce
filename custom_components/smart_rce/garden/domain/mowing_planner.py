@@ -3,16 +3,22 @@
 Decides from battery, task progress, dock state and the forecast window.
 Pure domain (no hass). Mirrors the legacy Jinja `sensor.luba_mowing_planner`.
 
-Start strategies once a usable window exists:
-- ASAP: window shorter than what we could mow → start now, grab what we can
-  before rain (battery- or rain-bound, whichever is shorter).
-- WAIT_BATTERY: window fits the task but the battery would not outlast it by
-  BATTERY_RESERVE_MIN → stay docked and charge (flips to GO as it charges). The
+Two regimes decide the start, split by whether the WINDOW is the binding
+constraint (see `_resolve_start`):
+
+A) Window-limited — the rain / non-work window closes before we could finish the
+   task OR drain the battery. The clock is the constraint, not the battery, so:
+- ASAP: start now and grab what lawn we can before the window shuts. The battery
+  reserve does NOT apply here — a partial run is still worth it before close.
+
+B) Window has room — the decision is about battery vs task, not the clock:
+- WAIT_BATTERY: the battery would not outlast the remaining task by
+  `FINISH_MARGIN_MIN` → stay docked and charge (flips to GO as it charges). The
   firmware auto-resumes a paused task at ~90% on its own, so we normally WAIT and
   let it — EXCEPT when the battery has climbed past `FIRMWARE_RESUME_SOC` while
   still docked (firmware stalled after a manual recall): then HA resumes, so a
   task too big for one charge is not stuck at full battery forever.
-- GO: window fits AND battery finishes the task with reserve → start at the
+- GO: battery finishes the task with `FINISH_MARGIN_MIN` to spare → start at the
   window open (earliest), finishing in one charge. Earliest start banks the most
   lawn before the window can shrink (early rain or the non-work boundary).
 
@@ -41,14 +47,19 @@ from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
 class MowingPlanner:
     """Decides start timing. Stateless policy holder (domain constants)."""
 
-    MOWING_RATE: Final = 0.62  # battery pp consumed per minute of mowing
+    MOWING_RATE: Final = 0.65  # battery pp consumed per minute of mowing
     PROGRESS_RATE: Final = 0.4  # task %/min — linear finish fallback
     BATT_FLOOR: Final = 15  # min SoC we allow draining to
     BATT_MIN_START: Final = 30  # min SoC to start a session
     WIN_MIN: Final = 30  # shortest worthwhile window (minutes)
     RAIN_PROB: Final = 50  # precipitation probability threshold (%)
     END_BUFFER: Final = timedelta(minutes=10)  # need >10 min left to start
-    BATTERY_RESERVE_MIN: Final = 20  # battery must outlast the task by this (min)
+    # Battery runtime must beat the finish estimate by this margin (min) before we
+    # commit to finishing an in-progress program in ONE charge. The mower's
+    # `time_left` runs optimistic, so the margin absorbs that error — without it
+    # HA resumes on a partial charge and the mower returns a few % short of done,
+    # costing an extra dock trip (2026-07-28: dispatched @55% → 98% → had to redock).
+    FINISH_MARGIN_MIN: Final = 32
     RESUME_GRACE: Final = timedelta(minutes=10)  # hold HA start after quiet end
     FIRMWARE_RESUME_SOC: Final = 91  # firmware auto-resumes a paused task ~90%;
     # above this AND still docked ⇒ firmware stalled (manual recall) → HA resumes
@@ -122,20 +133,28 @@ class MowingPlanner:
     ) -> tuple[StartStrategy, datetime | None, int]:
         """Pick the start strategy + opt_start. Returns (strategy, opt_start, win_min).
 
-        Window viability first (none / too short / shorter-than-we-could-mow →
-        ASAP), then the fresh-start vs resume policy.
+        First reject unusable windows, then split on WHAT binds the start:
+        the window (rain/non-work closing → ASAP) vs the battery/task (fresh vs
+        finish-in-one-charge). Only the latter consults `FINISH_MARGIN_MIN`.
         """
         if window.start is None or window.end is None or window.end <= window.start:
             return StartStrategy.NO_WINDOW, None, 0
         win_min = round((window.end - window.start).total_seconds() / 60)
         if win_min < self.WIN_MIN:
             return StartStrategy.SKIP_SHORT_WINDOW, None, win_min
-        if win_min < min(finish, drain):
-            # Window shorter than we could mow → grab what we can before it closes.
+        # Regime A — window-limited: the rain / non-work window closes before we
+        # could either finish the task OR drain the battery, so the clock is the
+        # binding constraint. Grab what lawn we can before it shuts — the battery
+        # FINISH_MARGIN does NOT apply here (a partial run still beats none).
+        mowable_min = min(finish, drain)  # longest this session could run
+        if win_min < mowable_min:
             return StartStrategy.ASAP, window.start, win_min
+        # Regime B — window has room: decide on battery vs task, not the clock.
         if inp.progress <= 0:
-            return self._resolve_fresh(inp, window.start, win_min)
-        return self._resolve_resume(inp, window.start, win_min, finish, drain)
+            return self._resolve_fresh(inp, window.start, win_min)  # no task yet
+        return self._resolve_resume(
+            inp, window.start, win_min, finish, drain
+        )  # finish it
 
     def _resolve_fresh(
         self, inp: MowingInput, start: datetime, win_min: int
@@ -153,20 +172,20 @@ class MowingPlanner:
     def _resolve_resume(
         self, inp: MowingInput, start: datetime, win_min: int, finish: int, drain: int
     ) -> tuple[StartStrategy, datetime | None, int]:
-        """Resume an in-progress task.
+        """Resume an in-progress task (window already has room — Regime B).
 
-        GO when the battery outlasts the remaining task by `BATTERY_RESERVE_MIN`
+        GO when the battery runtime beats the remaining task by `FINISH_MARGIN_MIN`
         (finish in one charge; earliest start banks the most lawn before the
         window shrinks). Otherwise the firmware normally auto-resumes at ~90% on
         its own, so WAIT and let it — resuming at a partial charge means a short
-        run + extra dock trips. EXCEPT after a MANUAL recall the firmware will NOT
-        auto-resume: detected by the battery climbing past `FIRMWARE_RESUME_SOC`
-        while still docked (the `at_dock` gate is in `_should_start`), so a task
-        too big for one charge would be stuck at full battery forever — there HA
-        resumes. (Timing-side half of this firmware-fallback policy:
-        `_firmware_resume_grace`.)
+        run + an extra dock trip a few % short of done. EXCEPT after a MANUAL
+        recall the firmware will NOT auto-resume: detected by the battery climbing
+        past `FIRMWARE_RESUME_SOC` while still docked (the `at_dock` gate is in
+        `_should_start`), so a task too big for one charge would be stuck at full
+        battery forever — there HA resumes. (Timing-side half of this
+        firmware-fallback policy: `_firmware_resume_grace`.)
         """
-        if drain >= finish + self.BATTERY_RESERVE_MIN:
+        if drain >= finish + self.FINISH_MARGIN_MIN:
             return StartStrategy.GO, start, win_min
         if inp.battery > self.FIRMWARE_RESUME_SOC:
             return StartStrategy.GO, start, win_min

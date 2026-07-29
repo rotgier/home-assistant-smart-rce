@@ -46,51 +46,51 @@ def _decide(**kwargs: object) -> PlannerDecision:
 
 
 def test_rain_window_asap_starts_now() -> None:
-    # Dry now, rain in 33 min: window (33) < needed (63) → start ASAP at start.
+    # Dry now, rain in 33 min: window (33) < needed (60) → start ASAP at start.
     slots = [_slot(0, 0), _slot(15, 0), _slot(30, 0), _slot(33, 60)]
     d = _decide(slots=slots)
 
     assert d.strategy is StartStrategy.ASAP
     assert d.window_bound is WindowBound.RAIN
     assert d.window_min == 33
-    assert d.needed_min == 63
+    assert d.needed_min == 60
     assert d.opt_start == NOW
     assert d.window_end == NOW + timedelta(minutes=33)
     assert d.should_start is True
 
 
 def test_long_window_battery_short_waits_to_charge() -> None:
-    # Dry all day, window fits, but battery (drain 63) can't outlast the task
-    # (finish 138) + reserve → WAIT_BATTERY: stay docked and charge, don't start.
+    # Dry all day, window fits, but battery (drain 60) can't outlast the task
+    # (finish 138) + margin → WAIT_BATTERY: stay docked and charge, don't start.
     d = _decide()  # battery 54, progress 45
 
     assert d.strategy is StartStrategy.WAIT_BATTERY
     assert d.window_bound is WindowBound.NON_WORK
-    assert d.needed_min == 63
-    assert d.time_to_drain_min == 63
+    assert d.needed_min == 60
+    assert d.time_to_drain_min == 60
     assert d.time_to_finish_min == 138
     assert d.opt_start is None
     assert d.should_start is False
 
 
 def test_long_window_battery_enough_go_starts_at_open() -> None:
-    # Battery covers the task + reserve (drain 89 >= finish 50 + 20) and window
+    # Battery covers the task + margin (drain 85 >= finish 50 + 32 = 82) and window
     # fits → GO starts at the window open (earliest), not deferred to the close.
     d = _decide(battery=70, progress=80)
 
     assert d.strategy is StartStrategy.GO
     assert d.window_bound is WindowBound.NON_WORK
     assert d.time_to_finish_min == 50
-    assert d.time_to_drain_min == 89
+    assert d.time_to_drain_min == 85
     assert d.opt_start == NOW  # earliest: window open, not end-finish-buffer
     assert d.should_start is True
 
 
 def test_battery_covers_task_but_not_reserve_waits() -> None:
-    # drain 55 covers finish 50 but not the +20 reserve (55 < 70) → WAIT_BATTERY.
+    # drain 52 covers finish 50 but not the +32 margin (52 < 82) → WAIT_BATTERY.
     d = _decide(battery=49, progress=80)
 
-    assert d.time_to_drain_min == 55
+    assert d.time_to_drain_min == 52
     assert d.time_to_finish_min == 50
     assert d.strategy is StartStrategy.WAIT_BATTERY
     assert d.should_start is False
