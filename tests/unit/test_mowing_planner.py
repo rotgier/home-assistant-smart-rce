@@ -12,6 +12,7 @@ from custom_components.smart_rce.garden.domain.mowing_planner import (
     MowingInput,
     MowingPlanner,
     PlannerDecision,
+    RunStopReason,
     StartStrategy,
 )
 from custom_components.smart_rce.garden.domain.non_work import NonWorkHours
@@ -43,6 +44,37 @@ def _decide(**kwargs: object) -> PlannerDecision:
     }
     defaults.update(kwargs)
     return MowingPlanner().decide(MowingInput(**defaults))  # type: ignore[arg-type]
+
+
+def test_run_stop_reason_window_when_asap() -> None:
+    # Window-limited (ASAP: window shorter than the run) → the run is cut short by
+    # the window; run_stop_reason reads off the ASAP strategy, not a re-test.
+    slots = [_slot(0, 0), _slot(15, 0), _slot(30, 0), _slot(33, 60)]
+    d = _decide(slots=slots)
+
+    assert d.strategy is StartStrategy.ASAP
+    assert d.run_stop_reason is RunStopReason.WINDOW
+
+
+def test_run_stop_reason_finish_when_task_completes_first() -> None:
+    # Resume, battery (drain ~115) far outlasts the tiny remaining task (finish ~5)
+    # → GO and the run finishes the task: needed_min == time_to_finish_min.
+    d = _decide(battery=90, progress=98)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.needed_min == d.time_to_finish_min
+    assert d.run_stop_reason is RunStopReason.FINISH
+
+
+def test_run_stop_reason_battery_when_drain_first() -> None:
+    # Resume that still dispatches (battery > FIRMWARE_RESUME_SOC) but the task
+    # (finish ~200) outlasts the battery (drain ~123) → battery drains first:
+    # needed_min == time_to_drain_min.
+    d = _decide(battery=95, progress=20)
+
+    assert d.strategy is StartStrategy.GO
+    assert d.needed_min == d.time_to_drain_min
+    assert d.run_stop_reason is RunStopReason.BATTERY
 
 
 def test_rain_window_asap_starts_now() -> None:

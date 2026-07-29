@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from custom_components.smart_rce.garden.domain.forecast_window import WindowBound
 from custom_components.smart_rce.garden.domain.mowing_planner import (
     PlannerDecision,
+    RunStopReason,
     StartStrategy,
 )
 from custom_components.smart_rce.garden.sensor_entities import _PLANNER_FIELDS
@@ -25,6 +26,7 @@ DECISION = PlannerDecision(
     opt_start=OPT_START,
     window_bound=WindowBound.RAIN,
     strategy=StartStrategy.GO,
+    run_stop_reason=RunStopReason.FINISH,
     needed_min=120,
     window_min=360,
     time_to_drain_min=116,

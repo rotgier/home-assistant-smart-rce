@@ -73,6 +73,7 @@ class MowingPlanner:
         drain = self._time_to_drain(inp.battery)
         finish = self._time_to_finish(inp.progress, drain, inp.time_left_min)
         strategy, opt_start, win_min = self._resolve_start(inp, window, finish, drain)
+        needed_min = min(drain, finish)
         return PlannerDecision(
             should_start=self._should_start(inp, window, opt_start),
             window_start=window.start,
@@ -80,7 +81,10 @@ class MowingPlanner:
             opt_start=opt_start,
             window_bound=window.bound,
             strategy=strategy,
-            needed_min=min(drain, finish),
+            run_stop_reason=self._run_stop_reason(
+                strategy, inp.progress, needed_min, finish
+            ),
+            needed_min=needed_min,
             window_min=win_min,
             time_to_drain_min=drain,
             time_to_finish_min=finish,
@@ -196,6 +200,30 @@ class MowingPlanner:
             return StartStrategy.GO, start, win_min
         return StartStrategy.WAIT_BATTERY, None, win_min
 
+    @staticmethod
+    def _run_stop_reason(
+        strategy: StartStrategy, progress: int, needed_min: int, finish: int
+    ) -> RunStopReason:
+        """Return what would end the dispatched run: window / task-finish / battery drain.
+
+        Orthogonal to ``window_bound`` (which describes what closes the forecast
+        window even when the run finishes long before it). Window-limited is exactly
+        the ASAP strategy (the ``_window_cuts_run_short`` branch is the only producer
+        of ASAP), so it is read off the already-resolved ``strategy`` instead of
+        re-testing the window. The finish-vs-battery split is the physical argmin of
+        the run's two natural ends: ``needed_min == min(finish, drain)`` picks it —
+        finish wins ⇒ the task completes this run, else the battery drains first
+        (a fresh start, ``progress <= 0``, has no finish estimate → always battery).
+
+        Meaningful only when a run is dispatched (``should_start``); NO_WINDOW /
+        SKIP_SHORT_WINDOW never start, so their reported reason is unused.
+        """
+        if strategy is StartStrategy.ASAP:
+            return RunStopReason.WINDOW
+        if progress > 0 and needed_min == finish:
+            return RunStopReason.FINISH
+        return RunStopReason.BATTERY
+
     def _should_start(
         self, inp: MowingInput, window: ForecastWindow, opt_start: datetime | None
     ) -> bool:
@@ -253,9 +281,10 @@ class MowingInput:
 class PlannerDecision:
     """Planner output (pure domain VO).
 
-    Keeps the two orthogonal dimensions separate: `window_bound` (what ends the
-    window) and `strategy` (what the planner decided). HA serialization is the
-    sensor layer's job (`dataclasses.asdict` over these descriptive fields).
+    Keeps the orthogonal dimensions separate: `window_bound` (what ends the forecast
+    window), `strategy` (what the planner decided to do) and `run_stop_reason` (what
+    would actually end the dispatched run — task-finish / battery / window). HA
+    serialization is the sensor layer's job (`dataclasses.asdict` over these fields).
     """
 
     should_start: bool
@@ -264,6 +293,7 @@ class PlannerDecision:
     opt_start: datetime | None
     window_bound: WindowBound
     strategy: StartStrategy
+    run_stop_reason: RunStopReason
     needed_min: int
     window_min: int
     time_to_drain_min: int
@@ -281,3 +311,15 @@ class StartStrategy(StrEnum):
     ASAP = "asap"
     WAIT_BATTERY = "wait_battery"
     GO = "go"
+
+
+class RunStopReason(StrEnum):
+    """What would end the dispatched run first (orthogonal to WindowBound/StartStrategy).
+
+    Lets a consumer (e.g. the resume notification) say whether this dispatch finishes
+    the task or only makes partial progress before docking/window-close.
+    """
+
+    FINISH = "finish"  # remaining task completes this run
+    BATTERY = "battery"  # battery drains first → dock, firmware/HA resumes after charge
+    WINDOW = "window"  # rain / non-work window closes the run early (ASAP dispatch)
