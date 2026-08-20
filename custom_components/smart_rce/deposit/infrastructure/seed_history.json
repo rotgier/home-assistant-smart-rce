@@ -1,0 +1,337 @@
+{
+  "generated": "2026-08-20",
+  "source": "fotowoltaika/depozyt @ 07783b2",
+  "months": [
+    {
+      "month": "2023-12",
+      "exported_kwh": 68.3,
+      "deposit_earned": 20.84,
+      "import_kwh": {
+        "T1": 555.674,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-01",
+      "exported_kwh": 52.9,
+      "deposit_earned": 23.14,
+      "import_kwh": {
+        "T1": 586.169,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-02",
+      "exported_kwh": 88.2,
+      "deposit_earned": 28.5,
+      "import_kwh": {
+        "T1": 408.999,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-03",
+      "exported_kwh": 427.3,
+      "deposit_earned": 105.9,
+      "import_kwh": {
+        "T1": 276.906,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-04",
+      "exported_kwh": 444.9,
+      "deposit_earned": 112.08,
+      "import_kwh": {
+        "T1": 118.392,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-05",
+      "exported_kwh": 909.2,
+      "deposit_earned": 231.1,
+      "import_kwh": {
+        "T1": 63.189,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-06",
+      "exported_kwh": 841.4,
+      "deposit_earned": 276.66,
+      "import_kwh": {
+        "T1": 20.76,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-07",
+      "exported_kwh": 687.4,
+      "deposit_earned": 285.77,
+      "import_kwh": {
+        "T1": 38.818,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-08",
+      "exported_kwh": 481.5,
+      "deposit_earned": 204.51,
+      "import_kwh": {
+        "T1": 27.424,
+        "T2": 0.0,
+        "T3": 0.0
+      }
+    },
+    {
+      "month": "2024-09",
+      "exported_kwh": 396.5,
+      "deposit_earned": 187.67,
+      "import_kwh": {
+        "T1": 79.853,
+        "T2": 0.081,
+        "T3": 41.629
+      }
+    },
+    {
+      "month": "2024-10",
+      "exported_kwh": 393.0,
+      "deposit_earned": 187.25,
+      "import_kwh": {
+        "T1": 2.626,
+        "T2": 5.77,
+        "T3": 384.108
+      }
+    },
+    {
+      "month": "2024-11",
+      "exported_kwh": 123.8,
+      "deposit_earned": 111.31,
+      "import_kwh": {
+        "T1": 6.394,
+        "T2": 11.361,
+        "T3": 617.939
+      }
+    },
+    {
+      "month": "2024-12",
+      "exported_kwh": 140.2,
+      "deposit_earned": 86.0,
+      "import_kwh": {
+        "T1": 4.305,
+        "T2": 9.043,
+        "T3": 654.991
+      }
+    },
+    {
+      "month": "2025-01",
+      "exported_kwh": 202.0,
+      "deposit_earned": 120.82,
+      "import_kwh": {
+        "T1": 2,
+        "T2": 9,
+        "T3": 508
+      }
+    },
+    {
+      "month": "2025-02",
+      "exported_kwh": 355.2,
+      "deposit_earned": 240.27,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 14,
+        "T3": 399
+      }
+    },
+    {
+      "month": "2025-03",
+      "exported_kwh": 292.8,
+      "deposit_earned": 110.03,
+      "import_kwh": {
+        "T1": 3,
+        "T2": 1,
+        "T3": 323
+      }
+    },
+    {
+      "month": "2025-04",
+      "exported_kwh": 472.6,
+      "deposit_earned": 159.03,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 1,
+        "T3": 228
+      }
+    },
+    {
+      "month": "2025-05",
+      "exported_kwh": 394.2,
+      "deposit_earned": 178.92,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 0,
+        "T3": 160
+      }
+    },
+    {
+      "month": "2025-06",
+      "exported_kwh": 816.8,
+      "deposit_earned": 260.23,
+      "import_kwh": {
+        "T1": 0,
+        "T2": 0,
+        "T3": 71
+      }
+    },
+    {
+      "month": "2025-07",
+      "exported_kwh": 465.3,
+      "deposit_earned": 226.75,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 1,
+        "T3": 112
+      }
+    },
+    {
+      "month": "2025-08",
+      "exported_kwh": 410.7,
+      "deposit_earned": 162.56,
+      "import_kwh": {
+        "T1": 9,
+        "T2": 1,
+        "T3": 114
+      }
+    },
+    {
+      "month": "2025-09",
+      "exported_kwh": 355.5,
+      "deposit_earned": 199.54,
+      "import_kwh": {
+        "T1": 5,
+        "T2": 4,
+        "T3": 220
+      }
+    },
+    {
+      "month": "2025-10",
+      "exported_kwh": 213.9,
+      "deposit_earned": 102.84,
+      "import_kwh": {
+        "T1": 4,
+        "T2": 6,
+        "T3": 576
+      }
+    },
+    {
+      "month": "2025-11",
+      "exported_kwh": 108.2,
+      "deposit_earned": 64.4,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 7,
+        "T3": 638
+      }
+    },
+    {
+      "month": "2025-12",
+      "exported_kwh": 46.2,
+      "deposit_earned": 28.74,
+      "import_kwh": {
+        "T1": 5,
+        "T2": 15,
+        "T3": 778
+      }
+    },
+    {
+      "month": "2026-01",
+      "exported_kwh": 128.8,
+      "deposit_earned": 87.6,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 5,
+        "T3": 526
+      }
+    },
+    {
+      "month": "2026-02",
+      "exported_kwh": 204.6,
+      "deposit_earned": 96.92,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 2,
+        "T3": 368
+      }
+    },
+    {
+      "month": "2026-03",
+      "exported_kwh": 440.7,
+      "deposit_earned": 180.68,
+      "import_kwh": {
+        "T1": 0,
+        "T2": 6,
+        "T3": 203
+      }
+    },
+    {
+      "month": "2026-04",
+      "exported_kwh": 444.4,
+      "deposit_earned": 188.56,
+      "import_kwh": {
+        "T1": 2,
+        "T2": 0,
+        "T3": 253
+      }
+    },
+    {
+      "month": "2026-05",
+      "exported_kwh": 621.1,
+      "deposit_earned": 348.11,
+      "import_kwh": {
+        "T1": 1,
+        "T2": 1,
+        "T3": 288
+      }
+    },
+    {
+      "month": "2026-06",
+      "exported_kwh": 828.9,
+      "deposit_earned": 495.84,
+      "import_kwh": {
+        "T1": 0.363,
+        "T2": 0.035,
+        "T3": 235.148
+      }
+    },
+    {
+      "month": "2026-07",
+      "exported_kwh": 687.3,
+      "deposit_earned": 427.61,
+      "import_kwh": {
+        "T1": 0.682,
+        "T2": 0.061,
+        "T3": 264.358
+      }
+    }
+  ],
+  "partial": {
+    "month": "2026-08",
+    "elapsed_days": 19,
+    "exported_kwh": 495.808,
+    "deposit_earned": 361.62,
+    "import_kwh": {
+      "T1": 1.531,
+      "T2": 0.83,
+      "T3": 142.159
+    }
+  }
+}

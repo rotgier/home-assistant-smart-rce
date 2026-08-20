@@ -16,6 +16,8 @@ from .application.energy_balance_service import EnergyBalanceService
 from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
+from .deposit.application.deposit_service import DepositService
+from .deposit.factory import create_deposit
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .garden.factory import Garden, create_garden
@@ -62,6 +64,7 @@ class SmartRceData:
     weather_table_service: WeatherTableService
     target_soc_matrix_service: TargetSocMatrixService
     garden: Garden
+    deposit: DepositService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -98,6 +101,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     # the application HourlyForecastProvider Protocol consumed by garden.
     garden = await create_garden(hass, entry, weather_listener)
 
+    # Deposit context (ADR-025) — reporting only; no live inputs in phase 1, so
+    # it cannot fail the setup and needs no cross-context wiring yet.
+    deposit = await create_deposit(hass)
+
     await rce_coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = SmartRceData(
@@ -109,6 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         weather_table_service,
         target_soc_matrix_service,
         garden,
+        deposit,
     )
 
     _register_services(hass, weather_table_service, target_soc_matrix_service)
@@ -423,6 +431,30 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.garden.number_entities"))
     reload(import_module("custom_components.smart_rce.garden.time_entities"))
     reload(import_module("custom_components.smart_rce.garden"))
+    # --- deposit (own bounded context, ADR-025) — same rule as garden: reload
+    # BEFORE the platform files that import its entity modules, otherwise a
+    # reload silently keeps stale code.
+    reload(import_module("custom_components.smart_rce.deposit.const"))
+    reload(import_module("custom_components.smart_rce.deposit.deposit_device"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.billing_month"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.tariff"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.deposit_ledger"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.reference_year"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.capacity"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.projection"))
+    reload(import_module("custom_components.smart_rce.deposit.domain"))
+    reload(
+        import_module("custom_components.smart_rce.deposit.infrastructure.resources")
+    )
+    reload(import_module("custom_components.smart_rce.deposit.infrastructure"))
+    reload(import_module("custom_components.smart_rce.deposit.application.report"))
+    reload(
+        import_module("custom_components.smart_rce.deposit.application.deposit_service")
+    )
+    reload(import_module("custom_components.smart_rce.deposit.application"))
+    reload(import_module("custom_components.smart_rce.deposit.factory"))
+    reload(import_module("custom_components.smart_rce.deposit.sensor_entities"))
+    reload(import_module("custom_components.smart_rce.deposit"))
     reload(import_module("custom_components.smart_rce.coordinator"))
     reload(import_module("custom_components.smart_rce.sensor._state_writer_mixin"))
     reload(import_module("custom_components.smart_rce.sensor.rce_sensor"))
