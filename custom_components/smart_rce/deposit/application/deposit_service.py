@@ -10,15 +10,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from ..domain.billing_month import BillingMonth
 from ..domain.deposit_ledger import DepositLedger, MonthSettlement
 from ..domain.projection import DepositProjection
 from ..domain.reference_year import MonthRecord, ReferenceYear
+from ..domain.savings import compute_savings
 from ..domain.settlement_history import SettlementHistory
-from ..domain.tariff import Tariff
+from ..domain.tariff import Tariff, Zone
 from .report import DepositReport
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 _PLN_PER_MWH: Final = 1000.0
 
@@ -38,11 +40,14 @@ class DepositService:
         tariff: Tariff,
         history: SettlementHistory,
         *,
+        legacy_savings_pln: float = 0.0,
         consumption_factor: float = _CONSUMPTION_FACTOR,
         price_factor: float = _PRICE_FACTOR,
     ) -> None:
         self._tariff = tariff
         self._history = history
+        self._legacy_savings_pln = legacy_savings_pln
+        self._self_consumption: dict[BillingMonth, Mapping[Zone, float]] = {}
         self._consumption_factor = consumption_factor
         self._price_factor = price_factor
         self._report = self._build()
@@ -60,6 +65,13 @@ class DepositService:
             self._listeners.remove(listener)
 
         return _unsubscribe
+
+    def update_self_consumption(
+        self, by_month: Mapping[BillingMonth, Mapping[Zone, float]]
+    ) -> None:
+        """Replace the measured self-consumption volumes and rebuild."""
+        self._self_consumption = dict(by_month)
+        self.recalculate()
 
     def recalculate(self) -> None:
         """Rebuild the snapshot and wake the entities reading it."""
@@ -90,6 +102,9 @@ class DepositService:
             history=settled,
             winter=projection.winter(ledger, after=last_settled),
             expiry=projection.expiry(ledger, after=last_settled),
+            savings=compute_savings(
+                settled, self._self_consumption, self._tariff, self._legacy_savings_pln
+            ),
         )
 
     def _reference_partial(self) -> MonthRecord | None:

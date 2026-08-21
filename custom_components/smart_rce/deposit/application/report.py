@@ -15,6 +15,7 @@ from ..domain.billing_month import BillingMonth
 from ..domain.capacity import ConsumptionCapacity
 from ..domain.deposit_ledger import MonthSettlement
 from ..domain.projection import ExpiryOutlook, WinterOutlook
+from ..domain.savings import SavingsReport
 from ..domain.tariff import VAT
 
 
@@ -43,6 +44,7 @@ class DepositReport:
     history: tuple[MonthSettlement, ...]
     winter: WinterOutlook
     expiry: ExpiryOutlook
+    savings: SavingsReport
 
     @property
     def utilization(self) -> float:
@@ -116,6 +118,26 @@ class DepositReport:
                         **_settlement(month.settlement),
                     }
                     for month in self.winter.months
+                ],
+            },
+            "savings": {
+                "total": round(self.savings.total_pln, 2),
+                "self_consumption": round(self.savings.self_consumption_pln, 2),
+                "deposit": round(self.savings.deposit_pln, 2),
+                "legacy": round(self.savings.legacy_pln, 2),
+                "by_year": {
+                    str(year): round(value, 2)
+                    for year, value in self.savings.by_year().items()
+                },
+                "months": [
+                    {
+                        "month": str(month.month),
+                        "self_consumption_kwh": round(month.total_kwh, 1),
+                        "self_consumption": round(month.self_consumption_pln, 2),
+                        "deposit": round(month.deposit_used_pln, 2),
+                        "total": round(month.total_pln, 2),
+                    }
+                    for month in self.savings.months
                 ],
             },
             "peaks": [

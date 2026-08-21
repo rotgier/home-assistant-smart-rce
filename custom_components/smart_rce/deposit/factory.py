@@ -2,9 +2,15 @@
 
 The context is designed to degrade rather than fail. Without TAURON credentials
 it still reports everything derived from the stored history (seeded from the
-invoice-reconciled calculator), just frozen in time; the daily refresh is what
-credentials unlock. And the refresh itself is wrapped so that a scraper outage
-logs and moves on instead of taking the integration down with it.
+invoice-reconciled calculator) and still measures self-consumption, which comes
+from the recorder; only the settlement fetch goes quiet. Every scheduled job is
+wrapped so an outage logs and moves on instead of taking the integration down.
+
+Two sources, deliberately independent:
+- the meter (TAURON eLicznik) — remote, rate-limited, needs credentials;
+- household energy (HA recorder) — local, free, never purged.
+Coupling them would let a TAURON outage block savings that are computable
+offline, so the daily job runs each on its own.
 """
 
 from __future__ import annotations
@@ -22,11 +28,13 @@ from ..infrastructure.async_task_runner import AsyncTaskRunner
 from . import websocket_api
 from .application.deposit_service import DepositService
 from .application.refresh_service import DepositRefreshService
+from .application.savings_service import SavingsService
 from .infrastructure.elicznik_reader import ElicznikReader
 from .infrastructure.history_repository import HistoryRepository
+from .infrastructure.household_energy_reader import HouseholdEnergyReader
 from .infrastructure.rce_price_reader import PriceSource, RcePriceReader
 from .infrastructure.report_writer import async_write_debug_report
-from .infrastructure.resources import load_tariff
+from .infrastructure.resources import load_seed_history, load_tariff
 
 if TYPE_CHECKING:
     from custom_components.smart_rce import SmartRceConfigEntry
@@ -45,6 +53,7 @@ class Deposit:
     """Deposit bounded context — public services exposed to platforms."""
 
     service: DepositService
+    savings: SavingsService
     refresh: DepositRefreshService | None
 
 
@@ -52,16 +61,20 @@ async def create_deposit(
     hass: HomeAssistant, entry: SmartRceConfigEntry, prices: PriceSource
 ) -> Deposit:
     """Wire the deposit context (call from async_setup_entry before runtime_data)."""
-    tasks = AsyncTaskRunner(hass, entry)
-    repository = HistoryRepository(hass, tasks)
+    repository = HistoryRepository(hass, AsyncTaskRunner(hass, entry))
     await repository.async_restore()
     tariff = await hass.async_add_executor_job(load_tariff)
-    service = DepositService(tariff, repository.history)
+    seed = await hass.async_add_executor_job(load_seed_history)
+    service = DepositService(
+        tariff, repository.history, legacy_savings_pln=seed.legacy_savings_pln
+    )
     websocket_api.async_register(hass)
 
-    refresh = _build_refresh(hass, entry, repository, prices, service)
+    savings = SavingsService(HouseholdEnergyReader(hass), service)
+    refresh = _build_refresh(hass, entry, repository, prices)
+    _schedule_daily(hass, entry, service, savings, refresh)
     await _publish(hass, service)
-    return Deposit(service=service, refresh=refresh)
+    return Deposit(service=service, savings=savings, refresh=refresh)
 
 
 def _build_refresh(
@@ -69,9 +82,8 @@ def _build_refresh(
     entry: SmartRceConfigEntry,
     repository: HistoryRepository,
     prices: PriceSource,
-    service: DepositService,
 ) -> DepositRefreshService | None:
-    """Schedule the daily refresh, or return None when credentials are missing."""
+    """Build the meter refresh, or None when credentials are missing."""
     username = entry.options.get(CONF_USERNAME)
     password = entry.options.get(CONF_PASSWORD)
     if not username or not password:
@@ -81,30 +93,45 @@ def _build_refresh(
             repository.history.last_data_day,
         )
         return None
-
-    refresh = DepositRefreshService(
+    return DepositRefreshService(
         repository,
         RcePriceReader(prices),
         ElicznikReader(hass, username, password),
-        on_updated=service.recalculate,
+        on_updated=lambda: None,  # the daily job republishes once both sources ran
     )
 
+
+def _schedule_daily(
+    hass: HomeAssistant,
+    entry: SmartRceConfigEntry,
+    service: DepositService,
+    savings: SavingsService,
+    refresh: DepositRefreshService | None,
+) -> None:
+    """Run both sources once a day, and once now to catch up after a restart."""
+
     async def _run(_now: datetime.datetime | None = None) -> None:
+        today = dt_util.now().date()
+        if refresh is not None:
+            try:
+                await refresh.async_refresh(today)
+            except Exception:  # noqa: BLE001 - a scraper outage must not spread
+                _LOGGER.exception("Deposit: meter refresh failed, retrying next run")
         try:
-            if await refresh.async_refresh(dt_util.now().date()):
-                await _publish(hass, service)
-        except Exception:  # noqa: BLE001 - a scraper outage must not break setup
-            _LOGGER.exception("Deposit refresh failed; will retry on the next run")
+            await savings.async_refresh(today)
+        except Exception:  # noqa: BLE001 - reporting extra, never fatal
+            _LOGGER.exception("Deposit: self-consumption refresh failed")
+        service.recalculate()
+        await _publish(hass, service)
 
     entry.async_on_unload(
         async_track_time_change(
             hass, _run, hour=_REFRESH_HOUR, minute=_REFRESH_MINUTE, second=0
         )
     )
-    # Catch up at startup too: after a restart the watermark is usually a day or
-    # more behind, and waiting until 04:15 would leave the report visibly stale.
-    entry.async_create_background_task(hass, _run(), "smart_rce_deposit_first_refresh")
-    return refresh
+    # After a restart the watermark is usually a day or more behind, and waiting
+    # until 04:15 would leave a visibly stale report on the dashboard.
+    entry.async_create_background_task(hass, _run(), "smart_rce_deposit_refresh")
 
 
 async def _publish(hass: HomeAssistant, service: DepositService) -> None:

@@ -152,6 +152,32 @@ SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
         icon="mdi:calendar-alert",
     ),
     DepositSensorDescription(
+        # What the installation has saved since it was switched on: energy never
+        # bought plus deposit actually spent on the bill.
+        key="savings_total",
+        name="Savings Total",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.TOTAL,
+        value_fn=lambda report: _rounded(report.savings.total_pln),
+        icon="mdi:piggy-bank",
+    ),
+    DepositSensorDescription(
+        key="savings_self_consumption",
+        name="Savings Self Consumption",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.TOTAL,
+        value_fn=lambda report: _rounded(report.savings.self_consumption_pln),
+        icon="mdi:home-lightning-bolt",
+    ),
+    DepositSensorDescription(
+        key="savings_deposit",
+        name="Savings Deposit",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.TOTAL,
+        value_fn=lambda report: _rounded(report.savings.deposit_pln),
+        icon="mdi:cash-refund",
+    ),
+    DepositSensorDescription(
         # Gross, to line up with `input_number.rce_high_price_threshold_gross`
         # and the RCE sensors — the whole system quotes RCE x 1.23.
         key="break_even_rce",
