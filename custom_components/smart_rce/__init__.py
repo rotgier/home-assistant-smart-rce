@@ -459,6 +459,8 @@ def live_reload() -> None:
         import_module("custom_components.smart_rce.deposit.domain.settlement_history")
     )
     reload(import_module("custom_components.smart_rce.deposit.domain.day_valuation"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.self_consumption"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.savings"))
     reload(import_module("custom_components.smart_rce.deposit.domain.projection"))
     reload(import_module("custom_components.smart_rce.deposit.domain"))
     reload(
@@ -469,6 +471,9 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.deposit.application.report"))
     reload(
         import_module("custom_components.smart_rce.deposit.application.refresh_service")
+    )
+    reload(
+        import_module("custom_components.smart_rce.deposit.application.savings_service")
     )
     reload(
         import_module("custom_components.smart_rce.deposit.application.deposit_service")
