@@ -66,7 +66,7 @@ class DepositService:
             balance=ledger.balance,
             capacity=projection.capacity,
             oldest_tranche_age=ledger.oldest_tranche_age(last_settled),
-            break_even_rce=self._tariff.latest.night_marginal_cost * _PLN_PER_MWH,
+            break_even_rce_net=self._tariff.latest.night_marginal_cost * _PLN_PER_MWH,
             history=history,
             winter=projection.winter(ledger, after=last_settled),
             expiry=projection.expiry(ledger, after=last_settled),

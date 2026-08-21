@@ -118,11 +118,13 @@ SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
         icon="mdi:calendar-alert",
     ),
     DepositSensorDescription(
+        # Gross, to line up with `input_number.rce_high_price_threshold_gross`
+        # and the RCE sensors — the whole system quotes RCE x 1.23.
         key="break_even_rce",
         name="Break Even RCE",
         native_unit_of_measurement="PLN/MWh",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda report: _rounded(report.break_even_rce, 0),
+        value_fn=lambda report: _rounded(report.break_even_rce_gross, 0),
         icon="mdi:scale-balance",
     ),
     DepositSensorDescription(

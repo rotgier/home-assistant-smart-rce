@@ -14,6 +14,7 @@ from ..domain.billing_month import BillingMonth
 from ..domain.capacity import ConsumptionCapacity
 from ..domain.deposit_ledger import MonthSettlement
 from ..domain.projection import ExpiryOutlook, WinterOutlook
+from ..domain.tariff import VAT
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,14 @@ class DepositReport:
     balance: float
     capacity: ConsumptionCapacity
     oldest_tranche_age: int | None
-    break_even_rce: float
-    """PLN/MWh above which exporting a stored kWh beats keeping it for the night."""
+    break_even_rce_net: float
+    """Net PLN/MWh above which exporting a stored kWh beats keeping it for the night.
+
+    Net because that is what the tariff is quoted in. Everything the user reads —
+    `input_number.rce_high_price_threshold_gross`, the RCE sensors — is gross, so
+    `break_even_rce_gross` is the headline; this stays for comparing against raw
+    PSE quotes, which are net.
+    """
     history: tuple[MonthSettlement, ...]
     winter: WinterOutlook
     expiry: ExpiryOutlook
@@ -33,6 +40,16 @@ class DepositReport:
     @property
     def utilization(self) -> float:
         return self.capacity.utilization(self.balance)
+
+    @property
+    def break_even_rce_gross(self) -> float:
+        """Gross PLN/MWh — directly comparable with `rce_high_price_threshold_gross`.
+
+        Equals the gross retail cost of the kWh re-bought at night, because the
+        1.23 factor applies to both sides: earn RCE x 1.23 on export, pay
+        (energy + distribution) x 1.23 on import.
+        """
+        return self.break_even_rce_net * VAT
 
     @property
     def peak_utilization(self) -> float | None:
@@ -66,7 +83,8 @@ class DepositReport:
             if self.peak_balance is not None
             else None,
             "oldest_tranche_age_months": self.oldest_tranche_age,
-            "break_even_rce_pln_mwh": round(self.break_even_rce),
+            "break_even_rce_gross_pln_mwh": round(self.break_even_rce_gross),
+            "break_even_rce_net_pln_mwh": round(self.break_even_rce_net),
             "first_forfeit": str(self.expiry.first_forfeit)
             if self.expiry.first_forfeit
             else None,

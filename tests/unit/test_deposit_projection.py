@@ -5,6 +5,9 @@ reproduce the standalone calculator (`fotowoltaika/depozyt`) to the grosz,
 because that history is reconciled against actual TAURON invoices.
 """
 
+from custom_components.smart_rce.deposit.application.deposit_service import (
+    DepositService,
+)
 from custom_components.smart_rce.deposit.domain.billing_month import BillingMonth
 from custom_components.smart_rce.deposit.domain.capacity import ConsumptionCapacity
 from custom_components.smart_rce.deposit.domain.deposit_ledger import DepositLedger
@@ -151,6 +154,28 @@ class TestSeedAcceptance:
         ledger, projection = replayed
         outlook = projection.expiry(ledger, after=self.LAST_SETTLED)
         assert outlook.first_forfeit == BillingMonth(2031, 8)
+
+    def test_break_even_is_reported_gross_and_net(self, replayed):
+        """Gross is the headline — the rest of the system quotes RCE x 1.23.
+
+        Gross must equal the gross retail price of the kWh re-bought at night,
+        which is what makes the rule readable: export whenever you are paid more
+        per kWh than you will pay for it at night.
+        """
+        _, projection = replayed
+        rates = load_tariff().latest
+        report = self._report(replayed)
+        assert report.break_even_rce_net == pytest.approx(
+            rates.night_marginal_cost * 1000
+        )
+        assert report.break_even_rce_gross == pytest.approx(
+            report.break_even_rce_net * 1.23
+        )
+        assert report.to_dict()["break_even_rce_gross_pln_mwh"] == 626
+
+    def _report(self, replayed):
+
+        return DepositService(load_tariff(), load_seed_history()).report
 
     def test_current_utilization_leaves_headroom(self, replayed):
         ledger, projection = replayed
