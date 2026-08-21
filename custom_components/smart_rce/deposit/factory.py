@@ -29,6 +29,7 @@ from . import websocket_api
 from .application.deposit_service import DepositService
 from .application.refresh_service import DepositRefreshService
 from .application.savings_service import SavingsService
+from .domain.savings import LegacyEra
 from .infrastructure.elicznik_reader import ElicznikReader
 from .infrastructure.history_repository import HistoryRepository
 from .infrastructure.household_energy_reader import HouseholdEnergyReader
@@ -66,7 +67,13 @@ async def create_deposit(
     tariff = await hass.async_add_executor_job(load_tariff)
     seed = await hass.async_add_executor_job(load_seed_history)
     service = DepositService(
-        tariff, repository.history, legacy_savings_pln=seed.legacy_savings_pln
+        tariff,
+        repository.history,
+        legacy=LegacyEra(
+            self_consumption_pln=seed.legacy_savings_pln,
+            without_pv_pln=seed.legacy_without_pv_pln,
+            paid_pln=seed.legacy_paid_pln,
+        ),
     )
     websocket_api.async_register(hass)
 

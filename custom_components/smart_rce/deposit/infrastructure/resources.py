@@ -34,6 +34,8 @@ def load_seed_history() -> SeedHistory:
         partial=_record(partial) if partial else None,
         partial_elapsed_days=partial["elapsed_days"] if partial else 0,
         legacy_savings_pln=data.get("legacy_self_consumption_savings_pln", 0.0),
+        legacy_without_pv_pln=data.get("legacy_without_pv_pln", 0.0),
+        legacy_paid_pln=data.get("legacy_paid_pln", 0.0),
     )
 
 
@@ -51,6 +53,10 @@ class SeedHistory:
     partial_elapsed_days: int
     legacy_savings_pln: float
     """Self-consumption savings from before hourly household data existed."""
+    legacy_without_pv_pln: float
+    """Counterfactual bill for that same era — it ran on the flat tariff anyway."""
+    legacy_paid_pln: float
+    """What that era actually cost, variable part, after the deposit."""
 
 
 def _record(row: dict[str, Any]) -> MonthRecord:

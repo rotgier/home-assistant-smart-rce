@@ -334,5 +334,8 @@
       "T3": 142.159
     }
   },
-  "legacy_self_consumption_savings_pln": 6018.46
+  "legacy_self_consumption_savings_pln": 6018.46,
+  "legacy_without_pv_pln": 8241.2,
+  "legacy_paid_pln": 1867.36,
+  "legacy_avoided_pln": 6373.84
 }

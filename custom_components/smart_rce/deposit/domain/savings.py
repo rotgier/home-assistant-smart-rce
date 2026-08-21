@@ -43,13 +43,13 @@ def compute_savings(
     imports: Mapping[BillingMonth, Mapping[Zone, float]],
     self_consumption: Mapping[BillingMonth, Mapping[Zone, float]],
     tariff: Tariff,
-    legacy_pln: float,
+    legacy: LegacyEra,
 ) -> SavingsReport:
     """Value every settled month, then add the pre-measurement lump.
 
-    `legacy_pln` covers the era before hourly household data exists (the G11
-    years): its self-consumption was estimated once by the standalone calculator
-    and is carried as a single figure rather than re-derived from nothing.
+    `legacy` covers the era before hourly household data exists (the G11 years):
+    estimated once by the standalone calculator and carried as fixed figures
+    rather than re-derived from data Home Assistant never had.
     """
     months = [
         _month_savings(
@@ -60,7 +60,7 @@ def compute_savings(
         )
         for settlement in settlements
     ]
-    return SavingsReport(months=tuple(months), legacy_pln=legacy_pln)
+    return SavingsReport(months=tuple(months), legacy=legacy)
 
 
 def _month_savings(
@@ -139,17 +139,38 @@ class MonthlySavings:
 
 
 @dataclass(frozen=True)
+class LegacyEra:
+    """The era before hourly household data, carried as fixed totals.
+
+    That era ran on the flat G11 tariff, so both baselines coincide there and the
+    counterfactual is as solid as the measured months — it simply cannot be
+    recomputed, because the inputs were never recorded.
+    """
+
+    self_consumption_pln: float
+    without_pv_pln: float
+    paid_pln: float
+
+    @property
+    def avoided_pln(self) -> float:
+        return self.without_pv_pln - self.paid_pln
+
+
+@dataclass(frozen=True)
 class SavingsReport:
     """Savings over the whole life of the installation."""
 
     months: tuple[MonthlySavings, ...]
-    legacy_pln: float
-    """Self-consumption before hourly household data existed — estimated once."""
+    legacy: LegacyEra
 
     @property
     def measured_pln(self) -> float:
         """Everything derived from measured months, both components."""
         return sum(month.total_pln for month in self.months)
+
+    @property
+    def legacy_pln(self) -> float:
+        return self.legacy.self_consumption_pln
 
     @property
     def total_pln(self) -> float:
@@ -172,11 +193,14 @@ class SavingsReport:
 
     @property
     def without_pv_pln(self) -> float:
-        return sum(m.without_pv_pln or 0.0 for m in self.counterfactual_months)
+        """Lifetime counterfactual bill: measured months plus the legacy era."""
+        measured = sum(m.without_pv_pln or 0.0 for m in self.counterfactual_months)
+        return measured + self.legacy.without_pv_pln
 
     @property
     def paid_pln(self) -> float:
-        return sum(m.paid_variable_pln for m in self.counterfactual_months)
+        measured = sum(m.paid_variable_pln for m in self.counterfactual_months)
+        return measured + self.legacy.paid_pln
 
     @property
     def avoided_pln(self) -> float:
