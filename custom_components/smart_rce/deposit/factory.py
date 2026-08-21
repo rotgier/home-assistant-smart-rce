@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from . import websocket_api
 from .application.deposit_service import DepositService
+from .infrastructure.report_writer import async_write_debug_report
 from .infrastructure.resources import load_seed_history, load_tariff
 
 if TYPE_CHECKING:
@@ -21,4 +23,7 @@ async def create_deposit(hass: HomeAssistant) -> DepositService:
     """Build the deposit context."""
     tariff = await hass.async_add_executor_job(load_tariff)
     seed = await hass.async_add_executor_job(load_seed_history)
-    return DepositService(tariff, seed)
+    service = DepositService(tariff, seed)
+    websocket_api.async_register(hass)
+    await async_write_debug_report(hass, service.report.to_dict())
+    return service

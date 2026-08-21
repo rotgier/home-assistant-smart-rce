@@ -8,7 +8,7 @@ a 30-row table would bloat the database for no benefit (ADR-025 #7).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from homeassistant.components.sensor import (
@@ -54,13 +54,15 @@ class DepositSensor(SensorEntity):
 
 @dataclass(frozen=True, kw_only=True)
 class DepositSensorDescription(SensorEntityDescription):
-    """Description schema — `value_fn` pulls a scalar out of the report."""
+    """Description schema — `value_fn` pulls a scalar out of the report.
 
-    key: str = field(init=False)
+    `key` is given explicitly rather than derived from `name` (the idiom used by
+    `EmsSensorDescription`): it feeds `unique_id`, so deriving it would turn every
+    label change into a new entity plus an orphan with the history attached to it
+    (ADR-015).
+    """
+
     value_fn: Callable[[DepositReport], str | int | float | None]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "key", str(self.name).lower().replace(" ", "_"))
 
 
 def _rounded(value: float | None, digits: int = 2) -> float | None:
@@ -69,21 +71,24 @@ def _rounded(value: float | None, digits: int = 2) -> float | None:
 
 SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
     DepositSensorDescription(
-        name="Deposit Balance",
+        key="balance",
+        name="Balance",
         native_unit_of_measurement=_PLN,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda report: _rounded(report.balance),
         icon="mdi:cash-multiple",
     ),
     DepositSensorDescription(
-        name="Deposit Capacity",
+        key="capacity",
+        name="Capacity",
         native_unit_of_measurement=_PLN,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda report: _rounded(report.capacity.value),
         icon="mdi:gauge-full",
     ),
     DepositSensorDescription(
-        name="Deposit Utilization",
+        key="utilization",
+        name="Utilization",
         native_unit_of_measurement="%",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda report: _rounded(report.utilization, 1),
@@ -92,32 +97,37 @@ SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
     DepositSensorDescription(
         # The strategy trigger: at 100% the yearly peak outgrows what a year of
         # bills can absorb, and tranches start expiring at a partial refund.
-        name="Deposit Peak Utilization",
+        key="peak_utilization",
+        name="Peak Utilization",
         native_unit_of_measurement="%",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda report: _rounded(report.peak_utilization, 1),
         icon="mdi:chart-bell-curve",
     ),
     DepositSensorDescription(
-        name="Deposit Oldest Tranche Age",
+        key="oldest_tranche_age",
+        name="Oldest Tranche Age",
         native_unit_of_measurement="mies.",
         value_fn=lambda report: report.oldest_tranche_age,
         icon="mdi:timer-sand",
     ),
     DepositSensorDescription(
-        name="Deposit First Forfeit Year",
+        key="first_forfeit_year",
+        name="First Forfeit Year",
         value_fn=lambda report: report.first_forfeit_year,
         icon="mdi:calendar-alert",
     ),
     DepositSensorDescription(
-        name="Deposit Break Even RCE",
+        key="break_even_rce",
+        name="Break Even RCE",
         native_unit_of_measurement="PLN/MWh",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda report: _rounded(report.break_even_rce, 0),
         icon="mdi:scale-balance",
     ),
     DepositSensorDescription(
-        name="Deposit Winter Trough",
+        key="winter_trough",
+        name="Winter Trough",
         native_unit_of_measurement=_PLN,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda report: _rounded(report.winter.trough.settlement.balance),
