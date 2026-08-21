@@ -103,7 +103,11 @@ class DepositService:
             winter=projection.winter(ledger, after=last_settled),
             expiry=projection.expiry(ledger, after=last_settled),
             savings=compute_savings(
-                settled, self._self_consumption, self._tariff, self._legacy_savings_pln
+                settled,
+                {record.month: record.import_kwh for record in self._history.months},
+                self._self_consumption,
+                self._tariff,
+                self._legacy_savings_pln,
             ),
         )
 

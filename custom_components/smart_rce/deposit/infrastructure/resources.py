@@ -18,7 +18,7 @@ from typing import Any, Final
 
 from ..domain.billing_month import BillingMonth
 from ..domain.reference_year import MonthRecord
-from ..domain.tariff import Tariff, Zone, ZoneRates
+from ..domain.tariff import FlatRates, Tariff, Zone, ZoneRates
 
 _RESOURCE_DIR: Final = Path(__file__).parent
 _SEED_HISTORY: Final = _RESOURCE_DIR / "seed_history.json"
@@ -63,14 +63,23 @@ def _record(row: dict[str, Any]) -> MonthRecord:
 
 
 def load_tariff() -> Tariff:
+    rows = _read(_TARIFF_TABLE)["months"]
     return Tariff(
         {
             BillingMonth.parse(row["month"]): ZoneRates(
                 energy={zone: row["energy"][zone.value] for zone in Zone},
                 distribution={zone: row["distribution"][zone.value] for zone in Zone},
             )
-            for row in _read(_TARIFF_TABLE)["months"]
-        }
+            for row in rows
+        },
+        {
+            BillingMonth.parse(row["month"]): FlatRates(
+                energy=row["g11"]["energy"],
+                distribution=row["g11"]["distribution"],
+            )
+            for row in rows
+            if "g11" in row
+        },
     )
 
 

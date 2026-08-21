@@ -9,14 +9,21 @@ from custom_components.smart_rce.deposit.domain.self_consumption import (
     HouseholdHour,
     self_consumption_by_zone,
 )
-from custom_components.smart_rce.deposit.domain.tariff import Tariff, Zone, ZoneRates
+from custom_components.smart_rce.deposit.domain.tariff import (
+    FlatRates,
+    Tariff,
+    Zone,
+    ZoneRates,
+)
 import pytest
 
 _RATES = ZoneRates(
     energy={Zone.T1: 0.50, Zone.T2: 0.80, Zone.T3: 0.40},
     distribution={Zone.T1: 0.25, Zone.T2: 0.45, Zone.T3: 0.08},
 )
-_TARIFF = Tariff({BillingMonth(2026, 1): _RATES})
+_G11 = FlatRates(energy=0.60, distribution=0.30)
+_TARIFF = Tariff({BillingMonth(2026, 1): _RATES}, {BillingMonth(2026, 1): _G11})
+_TARIFF_NO_G11 = Tariff({BillingMonth(2026, 1): _RATES})
 
 
 def _settlement(month: BillingMonth, used: float) -> MonthSettlement:
@@ -66,6 +73,7 @@ def test_self_consumption_is_valued_at_full_retail_of_its_zone():
 
     report = compute_savings(
         [_settlement(month, used=0.0)],
+        {},
         {month: {Zone.T1: 0.0, Zone.T2: 10.0, Zone.T3: 0.0}},
         _TARIFF,
         legacy_pln=0.0,
@@ -80,10 +88,10 @@ def test_a_kwh_in_the_evening_peak_is_worth_more_than_at_night():
     """The whole reason for pricing per zone rather than on a daily average."""
     month = BillingMonth(2026, 1)
     peak = compute_savings(
-        [_settlement(month, 0.0)], {month: {Zone.T2: 1.0}}, _TARIFF, 0.0
+        [_settlement(month, 0.0)], {}, {month: {Zone.T2: 1.0}}, _TARIFF, 0.0
     )
     night = compute_savings(
-        [_settlement(month, 0.0)], {month: {Zone.T3: 1.0}}, _TARIFF, 0.0
+        [_settlement(month, 0.0)], {}, {month: {Zone.T3: 1.0}}, _TARIFF, 0.0
     )
 
     assert peak.total_pln > 2 * night.total_pln
@@ -93,7 +101,7 @@ def test_total_is_self_consumption_plus_deposit_used():
     month = BillingMonth(2026, 1)
 
     report = compute_savings(
-        [_settlement(month, used=100.0)], {month: {Zone.T3: 10.0}}, _TARIFF, 0.0
+        [_settlement(month, used=100.0)], {}, {month: {Zone.T3: 10.0}}, _TARIFF, 0.0
     )
 
     assert report.months[0].deposit_used_pln == pytest.approx(100.0)
@@ -106,7 +114,7 @@ def test_legacy_lump_counts_as_self_consumption_not_deposit():
     month = BillingMonth(2026, 1)
 
     report = compute_savings(
-        [_settlement(month, used=50.0)], {}, _TARIFF, legacy_pln=6018.46
+        [_settlement(month, used=50.0)], {}, {}, _TARIFF, legacy_pln=6018.46
     )
 
     assert report.self_consumption_pln == pytest.approx(6018.46)
@@ -118,7 +126,7 @@ def test_months_without_measured_volumes_still_count_their_deposit():
     """The pre-recorder era has no zonal data but did use deposit."""
     month = BillingMonth(2026, 1)
 
-    report = compute_savings([_settlement(month, used=42.0)], {}, _TARIFF, 0.0)
+    report = compute_savings([_settlement(month, used=42.0)], {}, {}, _TARIFF, 0.0)
 
     assert report.months[0].self_consumption_pln == 0.0
     assert report.months[0].total_pln == pytest.approx(42.0)
@@ -132,8 +140,64 @@ def test_by_year_groups_measured_months():
             _settlement(BillingMonth(2026, 2), used=30.0),
         ],
         {},
+        {},
         _TARIFF,
         0.0,
     )
 
     assert report.by_year() == {2025: pytest.approx(10.0), 2026: pytest.approx(50.0)}
+
+
+class TestCounterfactual:
+    """Baseline B — the bill that would have arrived without the installation."""
+
+    MONTH = BillingMonth(2026, 1)
+
+    def _report(self, tariff=_TARIFF, used=0.0):
+        return compute_savings(
+            [_settlement(self.MONTH, used=used)],
+            {self.MONTH: {Zone.T1: 0.0, Zone.T2: 0.0, Zone.T3: 100.0}},
+            {self.MONTH: {Zone.T1: 0.0, Zone.T2: 0.0, Zone.T3: 200.0}},
+            tariff,
+            legacy_pln=0.0,
+        )
+
+    def test_prices_the_whole_household_consumption_on_the_flat_tariff(self):
+        """300 kWh consumed (200 self + 100 imported) at the G11 rate."""
+        month = self._report().months[0]
+
+        assert month.consumption_kwh == pytest.approx(300.0)
+        assert month.without_pv_pln == pytest.approx(300.0 * (0.60 + 0.30) * 1.23)
+
+    def test_what_was_paid_is_the_import_bill_after_the_deposit(self):
+        month = self._report(used=30.0).months[0]
+
+        assert month.paid_variable_pln == pytest.approx(
+            100.0 * (0.40 + 0.08) * 1.23 - 30.0
+        )
+
+    def test_avoided_is_the_difference_between_the_two_bills(self):
+        month = self._report(used=30.0).months[0]
+
+        assert month.avoided_pln == pytest.approx(
+            month.without_pv_pln - month.paid_variable_pln
+        )
+
+    def test_counterfactual_beats_the_same_tariff_baseline(self):
+        """G11 is dearer than the night zone, so baseline B is the larger figure."""
+        month = self._report(used=30.0).months[0]
+
+        assert month.avoided_pln > month.total_pln
+
+    def test_months_without_measured_self_consumption_have_no_counterfactual(self):
+        """Household total is unknown there — better absent than invented."""
+        report = compute_savings(
+            [_settlement(self.MONTH, used=10.0)], {}, {}, _TARIFF, 0.0
+        )
+
+        assert report.months[0].without_pv_pln is None
+        assert report.months[0].avoided_pln is None
+        assert report.counterfactual_months == ()
+
+    def test_no_flat_tariff_means_no_counterfactual(self):
+        assert self._report(tariff=_TARIFF_NO_G11).months[0].without_pv_pln is None
