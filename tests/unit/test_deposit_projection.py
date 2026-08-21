@@ -5,6 +5,8 @@ reproduce the standalone calculator (`fotowoltaika/depozyt`) to the grosz,
 because that history is reconciled against actual TAURON invoices.
 """
 
+import datetime
+
 from custom_components.smart_rce.deposit.application.deposit_service import (
     DepositService,
 )
@@ -15,6 +17,10 @@ from custom_components.smart_rce.deposit.domain.projection import DepositProject
 from custom_components.smart_rce.deposit.domain.reference_year import (
     MonthRecord,
     ReferenceYear,
+)
+from custom_components.smart_rce.deposit.domain.settlement_history import (
+    DayRecord,
+    SettlementHistory,
 )
 from custom_components.smart_rce.deposit.domain.tariff import Zone, ZoneRates
 from custom_components.smart_rce.deposit.infrastructure.resources import (
@@ -117,17 +123,30 @@ class TestSeedAcceptance:
 
     @pytest.fixture
     def replayed(self):
+        """Rebuild what the integration holds after its first refresh.
+
+        The seed's measured partial month is spread back over its elapsed days,
+        because that is the shape `SettlementHistory` stores — and it is what the
+        projection re-extrapolates. Same inputs as the standalone calculator, so
+        the expected figures below stay comparable.
+        """
         seed, tariff = load_seed_history(), load_tariff()
+        history = SettlementHistory.from_seed(seed.months)
+        history.add_days(_spread_over_days(seed.partial, seed.partial_elapsed_days))
         ledger = DepositLedger()
-        for record in seed.months:
+        for record in history.months:
             ledger.settle(
                 record.month,
                 record.deposit_earned,
                 tariff.for_month(record.month).energy_cost(record.import_kwh),
             )
-        year = ReferenceYear.from_history(seed.months, partial=seed.partial)
         projection = DepositProjection(
-            year, tariff.latest, consumption_factor=self.CONSUMPTION_FACTOR
+            ReferenceYear.from_history(
+                history.months,
+                partial=history.partial.extrapolated(history.elapsed_days),
+            ),
+            tariff.latest,
+            consumption_factor=self.CONSUMPTION_FACTOR,
         )
         return ledger, projection
 
@@ -155,28 +174,39 @@ class TestSeedAcceptance:
         outlook = projection.expiry(ledger, after=self.LAST_SETTLED)
         assert outlook.first_forfeit == BillingMonth(2031, 8)
 
-    def test_break_even_is_reported_gross_and_net(self, replayed):
+    def test_break_even_is_reported_gross_and_net(self):
         """Gross is the headline — the rest of the system quotes RCE x 1.23.
 
-        Gross must equal the gross retail price of the kWh re-bought at night,
-        which is what makes the rule readable: export whenever you are paid more
-        per kWh than you will pay for it at night.
+        Gross must equal the gross retail price of the kWh re-bought at night;
+        that identity is what makes the rule readable — export whenever you are
+        paid more per kWh than you will pay for it that night.
         """
-        _, projection = replayed
-        rates = load_tariff().latest
-        report = self._report(replayed)
+        tariff = load_tariff()
+        report = DepositService(
+            tariff, SettlementHistory.from_seed(load_seed_history().months)
+        ).report
+
         assert report.break_even_rce_net == pytest.approx(
-            rates.night_marginal_cost * 1000
+            tariff.latest.night_marginal_cost * 1000
         )
         assert report.break_even_rce_gross == pytest.approx(
             report.break_even_rce_net * 1.23
         )
         assert report.to_dict()["break_even_rce_gross_pln_mwh"] == 626
 
-    def _report(self, replayed):
-
-        return DepositService(load_tariff(), load_seed_history()).report
-
     def test_current_utilization_leaves_headroom(self, replayed):
         ledger, projection = replayed
         assert projection.capacity.utilization(ledger.balance) < 100
+
+
+def _spread_over_days(record, count: int) -> list[DayRecord]:
+    """Split a measured month evenly across `count` days of that month."""
+    return [
+        DayRecord(
+            day=datetime.date(record.month.year, record.month.month, offset + 1),
+            exported_kwh=record.exported_kwh / count,
+            deposit_earned=record.deposit_earned / count,
+            import_kwh={zone: kwh / count for zone, kwh in record.import_kwh.items()},
+        )
+        for offset in range(count)
+    ]

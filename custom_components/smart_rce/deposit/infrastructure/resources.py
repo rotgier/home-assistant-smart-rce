@@ -26,23 +26,28 @@ _TARIFF_TABLE: Final = _RESOURCE_DIR / "tariff_table.json"
 
 
 def load_seed_history() -> SeedHistory:
-    """Settled months (oldest first) plus the partially elapsed current month."""
+    """Settled months (oldest first) plus the partially elapsed month, as measured."""
     data = _read(_SEED_HISTORY)
     partial = data.get("partial")
     return SeedHistory(
         months=[_record(row) for row in data["months"]],
-        partial=_record(partial).extrapolated(partial["elapsed_days"])
-        if partial
-        else None,
+        partial=_record(partial) if partial else None,
+        partial_elapsed_days=partial["elapsed_days"] if partial else 0,
     )
 
 
 @dataclass(frozen=True)
 class SeedHistory:
-    """What the calculator handed over: settled months + current month, extrapolated."""
+    """What the calculator handed over.
+
+    The partial month stays exactly as measured, not extrapolated — scaling it to
+    a full month is a modelling decision that belongs to the projection, not to a
+    file loader.
+    """
 
     months: list[MonthRecord]
     partial: MonthRecord | None
+    partial_elapsed_days: int
 
 
 def _record(row: dict[str, Any]) -> MonthRecord:

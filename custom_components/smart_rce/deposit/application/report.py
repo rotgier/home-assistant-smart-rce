@@ -8,6 +8,7 @@ one snapshot avoids the sensors and the table disagreeing mid-recalculation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime
 from typing import Any
 
 from ..domain.billing_month import BillingMonth
@@ -23,6 +24,12 @@ class DepositReport:
 
     last_settled: BillingMonth
     balance: float
+    """Balance after the last CLOSED month — the figure that reconciles with the invoice."""
+    balance_running: float
+    """Balance plus what the month in progress has accrued — "how much do I have now"."""
+    last_data_day: datetime.date | None
+    """Last day measured. Stale value here means the daily refresh stopped running."""
+    elapsed_days: int
     capacity: ConsumptionCapacity
     oldest_tranche_age: int | None
     break_even_rce_net: float
@@ -74,6 +81,11 @@ class DepositReport:
         return {
             "last_settled": str(self.last_settled),
             "balance": round(self.balance, 2),
+            "balance_running": round(self.balance_running, 2),
+            "last_data_day": self.last_data_day.isoformat()
+            if self.last_data_day
+            else None,
+            "elapsed_days": self.elapsed_days,
             "capacity": round(self.capacity.value, 2),
             "utilization_pct": round(self.utilization, 1),
             "peak_utilization_pct": round(self.peak_utilization, 1)

@@ -14,7 +14,9 @@
   "loggers": [
     "smart_rce"
   ],
-  "requirements": [],
+  "requirements": [
+    "elicznik==2.4.0"
+  ],
   "single_config_entry": true,
   "version": "1.0.0"
 }

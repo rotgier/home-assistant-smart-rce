@@ -41,4 +41,6 @@ def _handle_report(
     if not entries or not hasattr(entries[0], "runtime_data"):
         connection.send_error(msg["id"], "not_loaded", "smart_rce is not loaded")
         return
-    connection.send_result(msg["id"], entries[0].runtime_data.deposit.report.to_dict())
+    connection.send_result(
+        msg["id"], entries[0].runtime_data.deposit.service.report.to_dict()
+    )

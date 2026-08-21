@@ -9,13 +9,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import datetime
 from typing import TYPE_CHECKING, Final
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.helpers.typing import StateType
 
 from .application.report import DepositReport
 from .const import DEPOSIT_UNIQUE_ID_PREFIX
@@ -47,9 +50,20 @@ class DepositSensor(SensorEntity):
         self._attr_device_info = deposit_device_info(entry)
         self._attr_unique_id = f"{DEPOSIT_UNIQUE_ID_PREFIX}_{description.key}"
 
+    async def async_added_to_hass(self) -> None:
+        """Re-render whenever the daily refresh rebuilds the report."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._entry.runtime_data.deposit.service.add_listener(
+                self.async_write_ha_state
+            )
+        )
+
     @property
-    def native_value(self) -> str | int | float | None:
-        return self.entity_description.value_fn(self._entry.runtime_data.deposit.report)
+    def native_value(self) -> StateType | datetime.date:
+        return self.entity_description.value_fn(
+            self._entry.runtime_data.deposit.service.report
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -62,7 +76,7 @@ class DepositSensorDescription(SensorEntityDescription):
     (ADR-015).
     """
 
-    value_fn: Callable[[DepositReport], str | int | float | None]
+    value_fn: Callable[[DepositReport], StateType | datetime.date]
 
 
 def _rounded(value: float | None, digits: int = 2) -> float | None:
@@ -77,6 +91,26 @@ SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda report: _rounded(report.balance),
         icon="mdi:cash-multiple",
+    ),
+    DepositSensorDescription(
+        # What the settled balance does not show: the month in progress. The
+        # settled figure is the one that reconciles with the invoice, this is the
+        # one that answers "how much do I have right now".
+        key="balance_running",
+        name="Balance Running",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda report: _rounded(report.balance_running),
+        icon="mdi:cash-clock",
+    ),
+    DepositSensorDescription(
+        # Freshness gauge: if this stops advancing, the daily fetch has stopped
+        # and every other number here is quietly frozen with it.
+        key="last_data_day",
+        name="Last Data Day",
+        device_class=SensorDeviceClass.DATE,
+        value_fn=lambda report: report.last_data_day,
+        icon="mdi:calendar-check",
     ),
     DepositSensorDescription(
         key="capacity",

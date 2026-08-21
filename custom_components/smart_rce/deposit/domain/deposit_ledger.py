@@ -21,15 +21,13 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from .billing_month import BillingMonth
+from .settlement_regime import refund_share
 
 
 class DepositLedger:
     """FIFO queue of deposit tranches, one per month earned."""
 
     VALIDITY_MONTHS: Final = 12
-    _HOURLY_SETTLEMENT_FROM: Final = BillingMonth(2025, 2)
-    _REFUND_SHARE_HOURLY: Final = 0.30
-    _REFUND_SHARE_MONTHLY: Final = 0.20
     _EPSILON: Final = 1e-9
 
     def __init__(self, tranches: Iterable[tuple[BillingMonth, float]] = ()) -> None:
@@ -92,22 +90,13 @@ class DepositLedger:
         surviving = []
         for tranche in self._tranches:
             if month.months_since(tranche.created) >= self.VALIDITY_MONTHS:
-                share = self.refund_share(tranche.created)
+                share = refund_share(tranche.created)
                 refunded += share * tranche.remaining
                 forfeited += (1 - share) * tranche.remaining
             else:
                 surviving.append(tranche)
         self._tranches = surviving
         return forfeited, refunded
-
-    @classmethod
-    def refund_share(cls, earned_in: BillingMonth) -> float:
-        """Cash-back share of an expired tranche, by the regime it was earned in."""
-        return (
-            cls._REFUND_SHARE_HOURLY
-            if earned_in >= cls._HOURLY_SETTLEMENT_FROM
-            else cls._REFUND_SHARE_MONTHLY
-        )
 
     def _consume(self, energy_cost: float) -> float:
         """Spend oldest-first against the energy bill. Returns the amount used."""

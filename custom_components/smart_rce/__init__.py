@@ -16,8 +16,7 @@ from .application.energy_balance_service import EnergyBalanceService
 from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
-from .deposit.application.deposit_service import DepositService
-from .deposit.factory import create_deposit
+from .deposit.factory import Deposit, create_deposit
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .garden.factory import Garden, create_garden
@@ -64,7 +63,7 @@ class SmartRceData:
     weather_table_service: WeatherTableService
     target_soc_matrix_service: TargetSocMatrixService
     garden: Garden
-    deposit: DepositService
+    deposit: Deposit
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -101,9 +100,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     # the application HourlyForecastProvider Protocol consumed by garden.
     garden = await create_garden(hass, entry, weather_listener)
 
-    # Deposit context (ADR-025) — reporting only; no live inputs in phase 1, so
-    # it cannot fail the setup and needs no cross-context wiring yet.
-    deposit = await create_deposit(hass)
+    # Deposit context (ADR-025). Cross-context port: the PSE client ems already
+    # owns satisfies the deposit context's HourlyPriceProvider — its endpoint
+    # takes any business_date, so historical days come from the same adapter.
+    deposit = await create_deposit(hass, entry, rceApi)
 
     await rce_coordinator.async_config_entry_first_refresh()
 
@@ -119,11 +119,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         deposit,
     )
 
+    # Credentials for the deposit fetch live in options; picking them up needs a
+    # rebuild of the context, and reloading the entry is the cheap way to get one.
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+
     _register_services(hass, weather_table_service, target_soc_matrix_service)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+async def _async_reload_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> None:
+    """Rebuild the integration after its options changed."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def _cleanup_orphan_system_user(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -441,17 +450,31 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.deposit.domain.deposit_ledger"))
     reload(import_module("custom_components.smart_rce.deposit.domain.reference_year"))
     reload(import_module("custom_components.smart_rce.deposit.domain.capacity"))
+    reload(
+        import_module("custom_components.smart_rce.deposit.domain.settlement_regime")
+    )
+    reload(import_module("custom_components.smart_rce.deposit.domain.tariff_zones"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.meter_reading"))
+    reload(
+        import_module("custom_components.smart_rce.deposit.domain.settlement_history")
+    )
+    reload(import_module("custom_components.smart_rce.deposit.domain.day_valuation"))
     reload(import_module("custom_components.smart_rce.deposit.domain.projection"))
     reload(import_module("custom_components.smart_rce.deposit.domain"))
     reload(
         import_module("custom_components.smart_rce.deposit.infrastructure.resources")
     )
     reload(import_module("custom_components.smart_rce.deposit.infrastructure"))
+    reload(import_module("custom_components.smart_rce.deposit.application.ports"))
     reload(import_module("custom_components.smart_rce.deposit.application.report"))
+    reload(
+        import_module("custom_components.smart_rce.deposit.application.refresh_service")
+    )
     reload(
         import_module("custom_components.smart_rce.deposit.application.deposit_service")
     )
     reload(import_module("custom_components.smart_rce.deposit.application"))
+    reload(import_module("custom_components.smart_rce.deposit.websocket_api"))
     reload(import_module("custom_components.smart_rce.deposit.factory"))
     reload(import_module("custom_components.smart_rce.deposit.sensor_entities"))
     reload(import_module("custom_components.smart_rce.deposit"))
