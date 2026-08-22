@@ -194,6 +194,34 @@ class TestSeedAcceptance:
         )
         assert report.to_dict()["break_even_rce_gross_pln_mwh"] == 626
 
+    def test_shipped_tariff_table_has_g11_rates_for_every_month(self):
+        """Guards a silent data regression, not a code one.
+
+        The G11 block is what the "without PV" comparison prices against. Losing it
+        from the exported table does not break anything — the counterfactual just
+        quietly disappears from the report, which is far easier to miss than a crash.
+        """
+        tariff = load_tariff()
+        seed = load_seed_history()
+
+        for record in seed.months:
+            assert tariff.flat_for_month(record.month) is not None, (
+                f"missing G11 rates for {record.month}"
+            )
+
+    def test_shipped_seed_covers_the_pre_measurement_era(self):
+        """Every month before hourly data must arrive as a carried figure.
+
+        A gap here shows up as 0,00 rows on the dashboard and an understated
+        lifetime total — the exact bug this replaced.
+        """
+        seed = load_seed_history()
+        first_measured = BillingMonth(2024, 10)
+        expected = [r.month for r in seed.months if r.month < first_measured]
+
+        assert sorted(seed.legacy_months) == expected
+        assert all(m.self_consumption_pln > 0 for m in seed.legacy_months.values())
+
     def test_current_utilization_leaves_headroom(self, replayed):
         ledger, projection = replayed
         assert projection.capacity.utilization(ledger.balance) < 100
