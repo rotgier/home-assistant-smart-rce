@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from ..domain.billing_month import BillingMonth
+from ..domain.market_price import MonthlyMarketPrices
 from ..domain.reference_year import MonthRecord
 from ..domain.savings import LegacyMonth
 from ..domain.tariff import FlatRates, Tariff, Zone, ZoneRates
@@ -44,6 +45,10 @@ def load_seed_history() -> SeedHistory:
             )
             for row in data.get("legacy_months", ())
         },
+        production={
+            BillingMonth.parse(month): kwh
+            for month, kwh in data.get("production", {}).items()
+        },
     )
 
 
@@ -61,6 +66,8 @@ class SeedHistory:
     partial_elapsed_days: int
     legacy_months: dict[BillingMonth, LegacyMonth]
     """Months from before hourly household data — carried, not recomputed."""
+    production: dict[BillingMonth, float]
+    """PV generated before the recorder existed, read off the inverter's own history."""
 
 
 def _record(row: dict[str, Any]) -> MonthRecord:
@@ -90,6 +97,21 @@ def load_tariff() -> Tariff:
             for row in rows
             if "g11" in row
         },
+    )
+
+
+def load_monthly_prices() -> MonthlyMarketPrices:
+    """RCEm per month, from the same hand-maintained table as the tariff.
+
+    Its own block rather than a column on the tariff rows: RCEm is a market
+    price, published on its own schedule, and its months do not line up with
+    the months an invoice happens to have set new rates in.
+    """
+    return MonthlyMarketPrices(
+        {
+            BillingMonth.parse(month): price
+            for month, price in _read(_TARIFF_TABLE).get("rcem", {}).items()
+        }
     )
 
 

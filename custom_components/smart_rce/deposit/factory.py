@@ -27,14 +27,20 @@ from homeassistant.util import dt as dt_util
 from ..infrastructure.async_task_runner import AsyncTaskRunner
 from . import websocket_api
 from .application.deposit_service import DepositService
+from .application.production_service import ProductionService
 from .application.refresh_service import DepositRefreshService
 from .application.savings_service import SavingsService
 from .infrastructure.elicznik_reader import ElicznikReader
 from .infrastructure.history_repository import HistoryRepository
 from .infrastructure.household_energy_reader import HouseholdEnergyReader
+from .infrastructure.pv_production_reader import PvProductionReader
 from .infrastructure.rce_price_reader import PriceSource, RcePriceReader
 from .infrastructure.report_writer import async_write_debug_report
-from .infrastructure.resources import load_seed_history, load_tariff
+from .infrastructure.resources import (
+    load_monthly_prices,
+    load_seed_history,
+    load_tariff,
+)
 
 if TYPE_CHECKING:
     from custom_components.smart_rce import SmartRceConfigEntry
@@ -54,6 +60,7 @@ class Deposit:
 
     service: DepositService
     savings: SavingsService
+    production: ProductionService
     refresh: DepositRefreshService | None
 
 
@@ -64,19 +71,25 @@ async def create_deposit(
     repository = HistoryRepository(hass, AsyncTaskRunner(hass, entry))
     await repository.async_restore()
     tariff = await hass.async_add_executor_job(load_tariff)
+    monthly_prices = await hass.async_add_executor_job(load_monthly_prices)
     seed = await hass.async_add_executor_job(load_seed_history)
     service = DepositService(
         tariff,
         repository.history,
         legacy=seed.legacy_months,
+        monthly_prices=monthly_prices,
+        seed_production=seed.production,
     )
     websocket_api.async_register(hass)
 
     savings = SavingsService(HouseholdEnergyReader(hass), service)
+    production = ProductionService(PvProductionReader(hass), service)
     refresh = _build_refresh(hass, entry, repository, prices)
-    _schedule_daily(hass, entry, service, savings, refresh)
+    _schedule_daily(hass, entry, service, savings, production, refresh)
     await _publish(hass, service)
-    return Deposit(service=service, savings=savings, refresh=refresh)
+    return Deposit(
+        service=service, savings=savings, production=production, refresh=refresh
+    )
 
 
 def _build_refresh(
@@ -108,9 +121,10 @@ def _schedule_daily(
     entry: SmartRceConfigEntry,
     service: DepositService,
     savings: SavingsService,
+    production: ProductionService,
     refresh: DepositRefreshService | None,
 ) -> None:
-    """Run both sources once a day, and once now to catch up after a restart."""
+    """Run every source once a day, and once now to catch up after a restart."""
 
     async def _run(_now: datetime.datetime | None = None) -> None:
         today = dt_util.now().date()
@@ -123,6 +137,10 @@ def _schedule_daily(
             await savings.async_refresh(today)
         except Exception:  # noqa: BLE001 - reporting extra, never fatal
             _LOGGER.exception("Deposit: self-consumption refresh failed")
+        try:
+            await production.async_refresh(today)
+        except Exception:  # noqa: BLE001 - reporting extra, never fatal
+            _LOGGER.exception("Deposit: production refresh failed")
         service.recalculate()
         await _publish(hass, service)
 

@@ -12,12 +12,13 @@ from typing import TYPE_CHECKING, Final
 
 from ..domain.billing_month import BillingMonth
 from ..domain.deposit_ledger import DepositLedger, MonthSettlement
+from ..domain.market_price import MonthlyMarketPrices
 from ..domain.projection import DepositProjection
 from ..domain.reference_year import MonthRecord, ReferenceYear
 from ..domain.savings import LegacyMonth, compute_savings
 from ..domain.settlement_history import SettlementHistory
 from ..domain.tariff import Tariff, Zone
-from .report import DepositReport
+from .report import DepositReport, MonthlyVolumes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -41,12 +42,17 @@ class DepositService:
         history: SettlementHistory,
         *,
         legacy: Mapping[BillingMonth, LegacyMonth] | None = None,
+        monthly_prices: MonthlyMarketPrices | None = None,
+        seed_production: Mapping[BillingMonth, float] | None = None,
         consumption_factor: float = _CONSUMPTION_FACTOR,
         price_factor: float = _PRICE_FACTOR,
     ) -> None:
         self._tariff = tariff
         self._history = history
         self._legacy = dict(legacy or {})
+        self._monthly_prices = monthly_prices or MonthlyMarketPrices()
+        self._seed_production = dict(seed_production or {})
+        self._measured_production: dict[BillingMonth, float] = {}
         self._self_consumption: dict[BillingMonth, Mapping[Zone, float]] = {}
         self._consumption_factor = consumption_factor
         self._price_factor = price_factor
@@ -65,6 +71,15 @@ class DepositService:
             self._listeners.remove(listener)
 
         return _unsubscribe
+
+    def update_production(self, by_month: Mapping[BillingMonth, float]) -> None:
+        """Replace the measured PV production and rebuild.
+
+        Measured months win over the seed, which only covers the era before the
+        recorder existed.
+        """
+        self._measured_production = dict(by_month)
+        self.recalculate()
 
     def update_self_consumption(
         self, by_month: Mapping[BillingMonth, Mapping[Zone, float]]
@@ -100,6 +115,7 @@ class DepositService:
             oldest_tranche_age=ledger.oldest_tranche_age(last_settled),
             break_even_rce_net=self._tariff.latest.night_marginal_cost * _PLN_PER_MWH,
             history=settled,
+            volumes=self._volumes(),
             winter=projection.winter(ledger, after=last_settled),
             expiry=projection.expiry(ledger, after=last_settled),
             savings=compute_savings(
@@ -110,6 +126,21 @@ class DepositService:
                 self._legacy,
             ),
         )
+
+    def _volumes(self) -> dict[BillingMonth, MonthlyVolumes]:
+        """Join measured energy with the RCEm counterfactual, month by month."""
+        production = {**self._seed_production, **self._measured_production}
+        return {
+            record.month: MonthlyVolumes(
+                exported_kwh=record.exported_kwh,
+                import_kwh=record.total_import_kwh,
+                production_kwh=production.get(record.month),
+                deposit_at_monthly_price=self._monthly_prices.deposit_for(
+                    record.month, record.exported_kwh
+                ),
+            )
+            for record in self._history.months
+        }
 
     def _reference_partial(self) -> MonthRecord | None:
         """Scale the open month to a full one — the reference year needs whole months.

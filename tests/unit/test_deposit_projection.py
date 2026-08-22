@@ -24,6 +24,7 @@ from custom_components.smart_rce.deposit.domain.settlement_history import (
 )
 from custom_components.smart_rce.deposit.domain.tariff import Zone, ZoneRates
 from custom_components.smart_rce.deposit.infrastructure.resources import (
+    load_monthly_prices,
     load_seed_history,
     load_tariff,
 )
@@ -221,6 +222,37 @@ class TestSeedAcceptance:
 
         assert sorted(seed.legacy_months) == expected
         assert all(m.self_consumption_pln > 0 for m in seed.legacy_months.values())
+
+    def test_shipped_seed_has_production_for_the_pre_recorder_era(self):
+        """Every month before the production sensor existed comes from the inverter.
+
+        A gap here silently truncates the year-on-year production chart, which
+        would then "show" a slump that never happened.
+        """
+        seed = load_seed_history()
+        first_measured = BillingMonth(2024, 10)
+        expected = [r.month for r in seed.months if r.month < first_measured]
+
+        assert sorted(seed.production) == expected
+        assert all(kwh > 0 for kwh in seed.production.values())
+
+    def test_shipped_rcem_covers_every_complete_year(self):
+        """Guards the regime comparison against a lost block, not against staleness.
+
+        The newest months legitimately have no price yet (PSE publishes around
+        the 11th of the following month), so the guard stops at the last complete
+        calendar year — which is what the year-on-year chart compares.
+        """
+        seed = load_seed_history()
+        prices = load_monthly_prices()
+        last_complete_year = seed.months[-1].month.year - 1
+
+        for record in seed.months:
+            if record.month.year > last_complete_year:
+                continue
+            assert prices.deposit_for(record.month, 1.0) is not None, (
+                f"missing RCEm for {record.month}"
+            )
 
     def test_current_utilization_leaves_headroom(self, replayed):
         ledger, projection = replayed

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..domain.billing_month import BillingMonth
 from ..domain.capacity import ConsumptionCapacity
@@ -17,6 +17,9 @@ from ..domain.deposit_ledger import MonthSettlement
 from ..domain.projection import ExpiryOutlook, WinterOutlook
 from ..domain.savings import SavingsReport
 from ..domain.tariff import VAT
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,8 @@ class DepositReport:
     PSE quotes, which are net.
     """
     history: tuple[MonthSettlement, ...]
+    volumes: Mapping[BillingMonth, MonthlyVolumes]
+    """Measured energy behind each settled month — what the ledger was derived from."""
     winter: WinterOutlook
     expiry: ExpiryOutlook
     savings: SavingsReport
@@ -102,7 +107,10 @@ class DepositReport:
             "first_forfeit": str(self.expiry.first_forfeit)
             if self.expiry.first_forfeit
             else None,
-            "history": [_settlement(s) for s in self.history],
+            "history": [
+                {**_settlement(s), **_volumes(self.volumes.get(s.month))}
+                for s in self.history
+            ],
             "winter": {
                 "covered": self.winter.covered,
                 "cash_total": round(self.winter.cash_total, 2),
@@ -167,6 +175,23 @@ class DepositReport:
         }
 
 
+@dataclass(frozen=True)
+class MonthlyVolumes:
+    """The energy behind one settled month, and how the other regime would price it.
+
+    Kept apart from `MonthSettlement`: that one is the ledger's verdict, this is
+    what was measured. Joining them happens only at the serialisation boundary,
+    where the dashboard wants one row per month.
+    """
+
+    exported_kwh: float
+    import_kwh: float
+    production_kwh: float | None
+    """PV generated — measured from the recorder, seeded before it existed."""
+    deposit_at_monthly_price: float | None
+    """What the export would have earned under RCEm. None when no price is published."""
+
+
 def _settlement(settlement: MonthSettlement) -> dict[str, Any]:
     return {
         "month": str(settlement.month),
@@ -177,4 +202,19 @@ def _settlement(settlement: MonthSettlement) -> dict[str, Any]:
         "refunded": round(settlement.refunded, 2),
         "forfeited": round(settlement.forfeited, 2),
         "balance": round(settlement.balance, 2),
+    }
+
+
+def _volumes(volumes: MonthlyVolumes | None) -> dict[str, Any]:
+    if volumes is None:
+        return {}
+    return {
+        "exported_kwh": round(volumes.exported_kwh, 1),
+        "import_kwh": round(volumes.import_kwh, 1),
+        "production_kwh": None
+        if volumes.production_kwh is None
+        else round(volumes.production_kwh, 1),
+        "earned_at_monthly_price": None
+        if volumes.deposit_at_monthly_price is None
+        else round(volumes.deposit_at_monthly_price, 2),
     }
