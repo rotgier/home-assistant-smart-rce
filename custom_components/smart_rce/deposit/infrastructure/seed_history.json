@@ -1,5 +1,5 @@
 {
-  "generated": "2026-08-21",
+  "generated": "2026-08-22",
   "source": "fotowoltaika/depozyt @ b9fb12d",
   "months": [
     {
@@ -334,8 +334,86 @@
       "T3": 142.159
     }
   },
-  "legacy_self_consumption_savings_pln": 6018.46,
-  "legacy_without_pv_pln": 8241.2,
-  "legacy_paid_pln": 1867.36,
-  "legacy_avoided_pln": 6373.84
+  "legacy_months": [
+    {
+      "month": "2023-12",
+      "self_consumption_kwh": 236.54,
+      "self_consumption_pln": 232.72,
+      "import_kwh": 556.0,
+      "without_pv_pln": 779.74,
+      "paid_pln": 547.02
+    },
+    {
+      "month": "2024-01",
+      "self_consumption_kwh": 212.064,
+      "self_consumption_pln": 208.64,
+      "import_kwh": 586.0,
+      "without_pv_pln": 785.18,
+      "paid_pln": 555.7
+    },
+    {
+      "month": "2024-02",
+      "self_consumption_kwh": 303.643,
+      "self_consumption_pln": 298.74,
+      "import_kwh": 409.0,
+      "without_pv_pln": 701.14,
+      "paid_pln": 379.26
+    },
+    {
+      "month": "2024-03",
+      "self_consumption_kwh": 548.558,
+      "self_consumption_pln": 539.7,
+      "import_kwh": 277.0,
+      "without_pv_pln": 812.23,
+      "paid_pln": 244.03
+    },
+    {
+      "month": "2024-04",
+      "self_consumption_kwh": 748.872,
+      "self_consumption_pln": 736.78,
+      "import_kwh": 118.0,
+      "without_pv_pln": 852.87,
+      "paid_pln": 42.55
+    },
+    {
+      "month": "2024-05",
+      "self_consumption_kwh": 998.666,
+      "self_consumption_pln": 982.54,
+      "import_kwh": 63.0,
+      "without_pv_pln": 1044.52,
+      "paid_pln": 22.73
+    },
+    {
+      "month": "2024-06",
+      "self_consumption_kwh": 676.951,
+      "self_consumption_pln": 666.02,
+      "import_kwh": 21.0,
+      "without_pv_pln": 686.68,
+      "paid_pln": 7.76
+    },
+    {
+      "month": "2024-07",
+      "self_consumption_kwh": 798.29,
+      "self_consumption_pln": 785.4,
+      "import_kwh": 39.0,
+      "without_pv_pln": 823.77,
+      "paid_pln": 14.26
+    },
+    {
+      "month": "2024-08",
+      "self_consumption_kwh": 921.5,
+      "self_consumption_pln": 906.62,
+      "import_kwh": 27.0,
+      "without_pv_pln": 933.18,
+      "paid_pln": 9.53
+    },
+    {
+      "month": "2024-09",
+      "self_consumption_kwh": 672.154,
+      "self_consumption_pln": 661.3,
+      "import_kwh": 122.0,
+      "without_pv_pln": 781.33,
+      "paid_pln": 44.52
+    }
+  ]
 }

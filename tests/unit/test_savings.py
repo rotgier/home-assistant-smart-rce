@@ -5,7 +5,7 @@ import datetime
 from custom_components.smart_rce.deposit.domain.billing_month import BillingMonth
 from custom_components.smart_rce.deposit.domain.deposit_ledger import MonthSettlement
 from custom_components.smart_rce.deposit.domain.savings import (
-    LegacyEra,
+    LegacyMonth,
     compute_savings,
 )
 from custom_components.smart_rce.deposit.domain.self_consumption import (
@@ -27,7 +27,7 @@ _RATES = ZoneRates(
 _G11 = FlatRates(energy=0.60, distribution=0.30)
 _TARIFF = Tariff({BillingMonth(2026, 1): _RATES}, {BillingMonth(2026, 1): _G11})
 _TARIFF_NO_G11 = Tariff({BillingMonth(2026, 1): _RATES})
-_NO_LEGACY = LegacyEra(self_consumption_pln=0.0, without_pv_pln=0.0, paid_pln=0.0)
+_NO_LEGACY: dict = {}
 
 
 def _settlement(month: BillingMonth, used: float) -> MonthSettlement:
@@ -118,20 +118,56 @@ def test_total_is_self_consumption_plus_deposit_used():
     )
 
 
-def test_legacy_lump_counts_as_self_consumption_not_deposit():
-    month = BillingMonth(2026, 1)
-
-    report = compute_savings(
-        [_settlement(month, used=50.0)],
-        {},
-        {},
-        _TARIFF,
-        legacy=LegacyEra(6018.46, 0.0, 0.0),
+def test_a_legacy_month_is_carried_verbatim_not_recomputed():
+    """Its inputs were never recorded in HA, so the figures come from the seed."""
+    month = BillingMonth(2024, 5)
+    legacy = LegacyMonth(
+        self_consumption_kwh=999.0,
+        self_consumption_pln=982.54,
+        import_kwh=63.0,
+        without_pv_pln=1044.52,
+        paid_pln=22.73,
     )
 
-    assert report.self_consumption_pln == pytest.approx(6018.46)
-    assert report.deposit_pln == pytest.approx(50.0)
-    assert report.total_pln == pytest.approx(6068.46)
+    report = compute_savings(
+        [_settlement(month, used=39.25)], {}, {}, _TARIFF, {month: legacy}
+    )
+
+    row = report.months[0]
+    assert row.self_consumption_pln == pytest.approx(982.54)
+    assert row.without_pv_pln == pytest.approx(1044.52)
+    assert row.paid_variable_pln == pytest.approx(22.73)
+    assert row.consumption_kwh == pytest.approx(1062.0)
+
+
+def test_in_the_flat_tariff_era_w2_equals_w3():
+    """Both are self-consumption at the same flat G11 rate — there are no zones."""
+    month = BillingMonth(2024, 5)
+    legacy = LegacyMonth(999.0, 982.54, 63.0, 1044.52, 22.73)
+
+    row = compute_savings(
+        [_settlement(month, used=0.0)], {}, {}, _TARIFF, {month: legacy}
+    ).months[0]
+
+    assert row.self_consumption_g11_pln == pytest.approx(row.self_consumption_pln)
+
+
+def test_legacy_months_count_towards_the_lifetime_counterfactual():
+    """Otherwise the dashboard silently starts the installation's life too late."""
+    legacy_month, measured_month = BillingMonth(2024, 5), BillingMonth(2026, 1)
+    legacy = LegacyMonth(999.0, 982.54, 63.0, 1044.52, 22.73)
+
+    report = compute_savings(
+        [_settlement(legacy_month, 0.0), _settlement(measured_month, 0.0)],
+        {measured_month: {Zone.T3: 100.0}},
+        {measured_month: {Zone.T3: 200.0}},
+        _TARIFF,
+        {legacy_month: legacy},
+    )
+
+    assert len(report.counterfactual_months) == 2
+    assert report.avoided_pln == pytest.approx(report.without_pv_pln - report.paid_pln)
+    assert report.without_pv_pln > 1044.52
 
 
 def test_months_without_measured_volumes_still_count_their_deposit():
@@ -206,7 +242,7 @@ class TestCounterfactual:
     def test_months_without_measured_self_consumption_have_no_counterfactual(self):
         """Household total is unknown there — better absent than invented."""
         report = compute_savings(
-            [_settlement(self.MONTH, used=10.0)], {}, {}, _TARIFF, 0.0
+            [_settlement(self.MONTH, used=10.0)], {}, {}, _TARIFF, _NO_LEGACY
         )
 
         assert report.months[0].without_pv_pln is None
@@ -215,45 +251,3 @@ class TestCounterfactual:
 
     def test_no_flat_tariff_means_no_counterfactual(self):
         assert self._report(tariff=_TARIFF_NO_G11).months[0].without_pv_pln is None
-
-
-def test_legacy_era_is_part_of_the_lifetime_counterfactual():
-    """Otherwise the dashboard silently understates the installation's whole life.
-
-    That era ran on the flat tariff anyway, so its counterfactual is as solid as a
-    measured month — it just cannot be recomputed from data HA never had.
-    """
-    month = BillingMonth(2026, 1)
-    legacy = LegacyEra(
-        self_consumption_pln=6018.46, without_pv_pln=8241.20, paid_pln=1867.36
-    )
-
-    report = compute_savings(
-        [_settlement(month, used=0.0)],
-        {month: {Zone.T3: 100.0}},
-        {month: {Zone.T3: 200.0}},
-        _TARIFF,
-        legacy,
-    )
-
-    measured = report.months[0]
-    assert report.without_pv_pln == pytest.approx(measured.without_pv_pln + 8241.20)
-    assert report.paid_pln == pytest.approx(measured.paid_variable_pln + 1867.36)
-    assert report.avoided_pln == pytest.approx(
-        measured.avoided_pln + legacy.avoided_pln
-    )
-
-
-def test_the_three_lifetime_figures_stay_consistent():
-    """The card shows all three side by side; they must subtract to each other."""
-    month = BillingMonth(2026, 1)
-
-    report = compute_savings(
-        [_settlement(month, used=15.0)],
-        {month: {Zone.T3: 100.0}},
-        {month: {Zone.T3: 200.0}},
-        _TARIFF,
-        LegacyEra(6018.46, 8241.20, 1867.36),
-    )
-
-    assert report.avoided_pln == pytest.approx(report.without_pv_pln - report.paid_pln)

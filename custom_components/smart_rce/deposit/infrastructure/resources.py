@@ -18,6 +18,7 @@ from typing import Any, Final
 
 from ..domain.billing_month import BillingMonth
 from ..domain.reference_year import MonthRecord
+from ..domain.savings import LegacyMonth
 from ..domain.tariff import FlatRates, Tariff, Zone, ZoneRates
 
 _RESOURCE_DIR: Final = Path(__file__).parent
@@ -33,9 +34,16 @@ def load_seed_history() -> SeedHistory:
         months=[_record(row) for row in data["months"]],
         partial=_record(partial) if partial else None,
         partial_elapsed_days=partial["elapsed_days"] if partial else 0,
-        legacy_savings_pln=data.get("legacy_self_consumption_savings_pln", 0.0),
-        legacy_without_pv_pln=data.get("legacy_without_pv_pln", 0.0),
-        legacy_paid_pln=data.get("legacy_paid_pln", 0.0),
+        legacy_months={
+            BillingMonth.parse(row["month"]): LegacyMonth(
+                self_consumption_kwh=row["self_consumption_kwh"],
+                self_consumption_pln=row["self_consumption_pln"],
+                import_kwh=row.get("import_kwh", 0.0),
+                without_pv_pln=row["without_pv_pln"],
+                paid_pln=row["paid_pln"],
+            )
+            for row in data.get("legacy_months", ())
+        },
     )
 
 
@@ -51,12 +59,8 @@ class SeedHistory:
     months: list[MonthRecord]
     partial: MonthRecord | None
     partial_elapsed_days: int
-    legacy_savings_pln: float
-    """Self-consumption savings from before hourly household data existed."""
-    legacy_without_pv_pln: float
-    """Counterfactual bill for that same era — it ran on the flat tariff anyway."""
-    legacy_paid_pln: float
-    """What that era actually cost, variable part, after the deposit."""
+    legacy_months: dict[BillingMonth, LegacyMonth]
+    """Months from before hourly household data — carried, not recomputed."""
 
 
 def _record(row: dict[str, Any]) -> MonthRecord:

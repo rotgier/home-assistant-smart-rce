@@ -14,7 +14,7 @@ from ..domain.billing_month import BillingMonth
 from ..domain.deposit_ledger import DepositLedger, MonthSettlement
 from ..domain.projection import DepositProjection
 from ..domain.reference_year import MonthRecord, ReferenceYear
-from ..domain.savings import LegacyEra, compute_savings
+from ..domain.savings import LegacyMonth, compute_savings
 from ..domain.settlement_history import SettlementHistory
 from ..domain.tariff import Tariff, Zone
 from .report import DepositReport
@@ -40,13 +40,13 @@ class DepositService:
         tariff: Tariff,
         history: SettlementHistory,
         *,
-        legacy: LegacyEra | None = None,
+        legacy: Mapping[BillingMonth, LegacyMonth] | None = None,
         consumption_factor: float = _CONSUMPTION_FACTOR,
         price_factor: float = _PRICE_FACTOR,
     ) -> None:
         self._tariff = tariff
         self._history = history
-        self._legacy = legacy or LegacyEra(0.0, 0.0, 0.0)
+        self._legacy = dict(legacy or {})
         self._self_consumption: dict[BillingMonth, Mapping[Zone, float]] = {}
         self._consumption_factor = consumption_factor
         self._price_factor = price_factor

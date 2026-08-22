@@ -124,7 +124,7 @@ class DepositReport:
                 "total": round(self.savings.total_pln, 2),
                 "self_consumption": round(self.savings.self_consumption_pln, 2),
                 "deposit": round(self.savings.deposit_pln, 2),
-                "legacy": round(self.savings.legacy_pln, 2),
+                "self_consumption_g11": round(self.savings.self_consumption_g11_pln, 2),
                 "without_pv": round(self.savings.without_pv_pln, 2),
                 "paid": round(self.savings.paid_pln, 2),
                 "avoided": round(self.savings.avoided_pln, 2),
@@ -135,8 +135,11 @@ class DepositReport:
                 "months": [
                     {
                         "month": str(month.month),
-                        "self_consumption_kwh": round(month.total_kwh, 1),
+                        "self_consumption_kwh": round(month.self_consumption_kwh, 1),
                         "self_consumption": round(month.self_consumption_pln, 2),
+                        "self_consumption_g11": None
+                        if month.self_consumption_g11_pln is None
+                        else round(month.self_consumption_g11_pln, 2),
                         "deposit": round(month.deposit_used_pln, 2),
                         "total": round(month.total_pln, 2),
                         "consumption_kwh": round(month.consumption_kwh, 1),
