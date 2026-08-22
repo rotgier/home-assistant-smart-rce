@@ -22,6 +22,9 @@ from custom_components.smart_rce.deposit.domain.settlement_history import (
     DayRecord,
     SettlementHistory,
 )
+from custom_components.smart_rce.deposit.domain.settlement_regime import (
+    HOURLY_PRICING_FROM,
+)
 from custom_components.smart_rce.deposit.domain.tariff import Zone, ZoneRates
 from custom_components.smart_rce.deposit.infrastructure.resources import (
     load_monthly_prices,
@@ -241,14 +244,17 @@ class TestSeedAcceptance:
 
         The newest months legitimately have no price yet (PSE publishes around
         the 11th of the following month), so the guard stops at the last complete
-        calendar year — which is what the year-on-year chart compares.
+        calendar year — which is what the year-on-year chart compares. Months
+        before hourly pricing have nothing to compare and are skipped.
         """
         seed = load_seed_history()
         prices = load_monthly_prices()
         last_complete_year = seed.months[-1].month.year - 1
 
         for record in seed.months:
-            if record.month.year > last_complete_year:
+            if record.month < HOURLY_PRICING_FROM or (
+                record.month.year > last_complete_year
+            ):
                 continue
             assert prices.deposit_for(record.month, 1.0) is not None, (
                 f"missing RCEm for {record.month}"

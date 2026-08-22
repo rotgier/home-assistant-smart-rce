@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from .settlement_regime import deposit_coefficient
+from .settlement_regime import HOURLY_PRICING_FROM, deposit_coefficient
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -34,9 +34,13 @@ class MonthlyMarketPrices:
     def deposit_for(self, month: BillingMonth, exported_kwh: float) -> float | None:
         """Value `exported_kwh` the way the monthly-price regime would have.
 
-        None when the month has no published price — the newest month always
-        lacks one (PSE publishes around the 11th of the following month).
+        None when there is nothing to compare: either the month predates hourly
+        pricing (the monthly price was the settlement, so the two regimes are the
+        same number) or no price is published yet — which is always true of the
+        newest month, since PSE publishes around the 11th of the next one.
         """
+        if month < HOURLY_PRICING_FROM:
+            return None
         price = self._prices.get(month)
         if price is None:
             return None

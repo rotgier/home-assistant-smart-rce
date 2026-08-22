@@ -13,6 +13,14 @@ from typing import Final
 from .billing_month import BillingMonth
 
 HOURLY_RCE_FROM: Final = BillingMonth(2025, 2)
+HOURLY_PRICING_FROM: Final = BillingMonth(2024, 7)
+"""When export started being valued at the price of its own hour.
+
+A different date from `HOURLY_RCE_FROM`, and easy to conflate: pricing went
+hourly in July 2024, the 1.23 coefficient arrived seven months later. Before this
+month the monthly price *was* the settlement, so comparing the two regimes there
+compares a number with itself.
+"""
 
 _COEFFICIENT_HOURLY: Final = 1.23
 _COEFFICIENT_EARLIER: Final = 1.0

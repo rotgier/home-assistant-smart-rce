@@ -68,6 +68,12 @@ class TestMonthlyMarketPrices:
 
         assert prices.deposit_for(month, 1000.0) == pytest.approx(300.0 * 1.23)
 
+    def test_the_pre_hourly_era_has_nothing_to_compare(self):
+        """Then the monthly price *was* the settlement — the bars would be equal."""
+        month = BillingMonth(2024, 6)
+
+        assert MonthlyMarketPrices({month: 300.0}).deposit_for(month, 1000.0) is None
+
     def test_a_month_without_a_published_price_drops_out(self):
         """PSE publishes around the 11th — the newest month never has one yet."""
         assert MonthlyMarketPrices().deposit_for(BillingMonth(2026, 7), 1000.0) is None
