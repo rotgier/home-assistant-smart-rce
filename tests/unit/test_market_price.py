@@ -158,3 +158,41 @@ class TestProductionService:
         assert reader.asked[0] == datetime.date(
             FIRST_MEASURED_MONTH.year, FIRST_MEASURED_MONTH.month, 1
         )
+
+
+class TestPublishedPrices:
+    """Prices scraped from PSE layer over the shipped table, never replace it."""
+
+    MONTH = BillingMonth(2026, 1)
+
+    def _service(self) -> DepositService:
+        return DepositService(
+            _TARIFF,
+            _history(self.MONTH),
+            monthly_prices=MonthlyMarketPrices({self.MONTH: 200.0}),
+        )
+
+    def _earned_at_monthly_price(self, service: DepositService) -> float | None:
+        rows = service.report.to_dict()["history"]
+        return next(r for r in rows if r["month"] == str(self.MONTH))[
+            "earned_at_monthly_price"
+        ]
+
+    def test_a_published_correction_wins_over_the_shipped_price(self):
+        service = self._service()
+
+        service.update_market_prices({self.MONTH: 250.0})
+
+        assert self._earned_at_monthly_price(service) == pytest.approx(
+            100.0 * 0.25 * 1.23
+        )
+
+    def test_the_shipped_table_survives_a_refresh_that_missed_a_month(self):
+        """A scraped page is allowed to rot; what it omits must not disappear."""
+        service = self._service()
+
+        service.update_market_prices({BillingMonth(2025, 12): 300.0})
+
+        assert self._earned_at_monthly_price(service) == pytest.approx(
+            100.0 * 0.2 * 1.23
+        )

@@ -7,8 +7,10 @@ at RCEm isolates what the hourly regime is worth on its own — the premium for
 choosing *when* to export, with production held constant.
 
 RCEm cannot be derived from the hourly series we already fetch (PSE weights it
-by balancing-market volumes), so it is a shipped table refreshed by hand along
-with the tariff. A month without a price simply drops out of the comparison.
+by balancing-market volumes) and PSE publishes no API for it, so it arrives two
+ways: a shipped table that works offline, and whatever the OIRE page currently
+says layered on top. A month without a price either way simply drops out of the
+comparison.
 """
 
 from __future__ import annotations
@@ -30,6 +32,10 @@ class MonthlyMarketPrices:
 
     def __init__(self, prices: Mapping[BillingMonth, float] | None = None) -> None:
         self._prices = dict(prices or {})
+
+    def merged_with(self, prices: Mapping[BillingMonth, float]) -> MonthlyMarketPrices:
+        """Layer published prices over these. Newer wins — PSE corrects up to a year back."""
+        return MonthlyMarketPrices({**self._prices, **prices})
 
     def deposit_for(self, month: BillingMonth, exported_kwh: float) -> float | None:
         """Value `exported_kwh` the way the monthly-price regime would have.

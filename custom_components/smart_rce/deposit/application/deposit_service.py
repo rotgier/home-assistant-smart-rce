@@ -50,7 +50,8 @@ class DepositService:
         self._tariff = tariff
         self._history = history
         self._legacy = dict(legacy or {})
-        self._monthly_prices = monthly_prices or MonthlyMarketPrices()
+        self._shipped_prices = monthly_prices or MonthlyMarketPrices()
+        self._monthly_prices = self._shipped_prices
         self._seed_production = dict(seed_production or {})
         self._measured_production: dict[BillingMonth, float] = {}
         self._self_consumption: dict[BillingMonth, Mapping[Zone, float]] = {}
@@ -71,6 +72,11 @@ class DepositService:
             self._listeners.remove(listener)
 
         return _unsubscribe
+
+    def update_market_prices(self, prices: Mapping[BillingMonth, float]) -> None:
+        """Layer prices published since the table was shipped, and rebuild."""
+        self._monthly_prices = self._shipped_prices.merged_with(prices)
+        self.recalculate()
 
     def update_production(self, by_month: Mapping[BillingMonth, float]) -> None:
         """Replace the measured PV production and rebuild.

@@ -472,6 +472,9 @@ def live_reload() -> None:
             "custom_components.smart_rce.deposit.infrastructure.pv_production_reader"
         )
     )
+    reload(
+        import_module("custom_components.smart_rce.deposit.infrastructure.rcem_reader")
+    )
     reload(import_module("custom_components.smart_rce.deposit.infrastructure"))
     reload(import_module("custom_components.smart_rce.deposit.application.ports"))
     reload(import_module("custom_components.smart_rce.deposit.application.report"))
@@ -484,6 +487,11 @@ def live_reload() -> None:
     reload(
         import_module(
             "custom_components.smart_rce.deposit.application.production_service"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.application.market_price_service"
         )
     )
     reload(

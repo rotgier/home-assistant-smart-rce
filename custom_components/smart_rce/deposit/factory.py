@@ -27,6 +27,7 @@ from homeassistant.util import dt as dt_util
 from ..infrastructure.async_task_runner import AsyncTaskRunner
 from . import websocket_api
 from .application.deposit_service import DepositService
+from .application.market_price_service import MarketPriceService
 from .application.production_service import ProductionService
 from .application.refresh_service import DepositRefreshService
 from .application.savings_service import SavingsService
@@ -35,6 +36,7 @@ from .infrastructure.history_repository import HistoryRepository
 from .infrastructure.household_energy_reader import HouseholdEnergyReader
 from .infrastructure.pv_production_reader import PvProductionReader
 from .infrastructure.rce_price_reader import PriceSource, RcePriceReader
+from .infrastructure.rcem_reader import PseRcemReader
 from .infrastructure.report_writer import async_write_debug_report
 from .infrastructure.resources import (
     load_monthly_prices,
@@ -61,6 +63,7 @@ class Deposit:
     service: DepositService
     savings: SavingsService
     production: ProductionService
+    market_prices: MarketPriceService
     refresh: DepositRefreshService | None
 
 
@@ -84,11 +87,16 @@ async def create_deposit(
 
     savings = SavingsService(HouseholdEnergyReader(hass), service)
     production = ProductionService(PvProductionReader(hass), service)
+    market_prices = MarketPriceService(PseRcemReader(hass), service)
     refresh = _build_refresh(hass, entry, repository, prices)
-    _schedule_daily(hass, entry, service, savings, production, refresh)
+    _schedule_daily(hass, entry, service, savings, production, market_prices, refresh)
     await _publish(hass, service)
     return Deposit(
-        service=service, savings=savings, production=production, refresh=refresh
+        service=service,
+        savings=savings,
+        production=production,
+        market_prices=market_prices,
+        refresh=refresh,
     )
 
 
@@ -122,6 +130,7 @@ def _schedule_daily(
     service: DepositService,
     savings: SavingsService,
     production: ProductionService,
+    market_prices: MarketPriceService,
     refresh: DepositRefreshService | None,
 ) -> None:
     """Run every source once a day, and once now to catch up after a restart."""
@@ -141,6 +150,10 @@ def _schedule_daily(
             await production.async_refresh(today)
         except Exception:  # noqa: BLE001 - reporting extra, never fatal
             _LOGGER.exception("Deposit: production refresh failed")
+        try:
+            await market_prices.async_refresh()
+        except Exception as err:  # noqa: BLE001 - a scraped page, expected to rot
+            _LOGGER.debug("Deposit: RCEm refresh failed (%s), using shipped table", err)
         service.recalculate()
         await _publish(hass, service)
 
