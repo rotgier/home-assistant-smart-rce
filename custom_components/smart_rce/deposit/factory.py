@@ -51,9 +51,11 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Early morning: the previous day is closed at the meter and PSE has published
-# its prices, while nothing else is competing for the network.
-_REFRESH_HOUR = 4
+# Midday, not the early morning it used to be: measured on 2026-08-27, TAURON had
+# nothing for the previous day at 04:15 and a complete day by the evening. It
+# publishes at an hour it does not state, so there is a second attempt in the
+# afternoon — the service ignores it when yesterday is already in.
+_REFRESH_HOURS = (12, 17)
 _REFRESH_MINUTE = 15
 
 
@@ -142,10 +144,11 @@ def _schedule_daily(
     """Run every source once a day, and once now to catch up after a restart."""
 
     async def _run(_now: datetime.datetime | None = None) -> None:
-        today = dt_util.now().date()
+        now = dt_util.now()
+        today = now.date()
         if refresh is not None:
             try:
-                await refresh.async_refresh(today)
+                await refresh.async_refresh(now)
             except Exception:  # noqa: BLE001 - a scraper outage must not spread
                 _LOGGER.exception("Deposit: meter refresh failed, retrying next run")
         try:
@@ -165,11 +168,11 @@ def _schedule_daily(
 
     entry.async_on_unload(
         async_track_time_change(
-            hass, _run, hour=_REFRESH_HOUR, minute=_REFRESH_MINUTE, second=0
+            hass, _run, hour=_REFRESH_HOURS, minute=_REFRESH_MINUTE, second=0
         )
     )
     # After a restart the watermark is usually a day or more behind, and waiting
-    # until 04:15 would leave a visibly stale report on the dashboard.
+    # until midday would leave a visibly stale report on the dashboard.
     entry.async_create_background_task(hass, _run(), "smart_rce_deposit_refresh")
 
 

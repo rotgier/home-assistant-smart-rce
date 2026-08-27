@@ -117,6 +117,7 @@ class DepositService:
             balance_running=self._running_balance(ledger.balance),
             last_data_day=self._history.last_data_day,
             elapsed_days=self._history.elapsed_days,
+            unsettled_days=len(self._history.unsettled_days),
             capacity=projection.capacity,
             oldest_tranche_age=ledger.oldest_tranche_age(last_settled),
             break_even_rce_net=self._tariff.latest.night_marginal_cost * _PLN_PER_MWH,

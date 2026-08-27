@@ -19,6 +19,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.helpers.typing import StateType
+from homeassistant.util import dt as dt_util
 
 from .application.report import DepositReport
 from .const import DEPOSIT_UNIQUE_ID_PREFIX
@@ -32,7 +33,10 @@ _PLN: Final = "PLN"
 
 def build_sensors(entry: SmartRceConfigEntry) -> list[SensorEntity]:
     """Deposit sensor entities for the top-level `sensor` platform to add."""
-    return [DepositSensor(entry, description) for description in SENSOR_DESCRIPTIONS]
+    return [
+        *(DepositSensor(entry, description) for description in SENSOR_DESCRIPTIONS),
+        DepositLagSensor(entry),
+    ]
 
 
 class DepositSensor(SensorEntity):
@@ -64,6 +68,36 @@ class DepositSensor(SensorEntity):
         return self.entity_description.value_fn(
             self._entry.runtime_data.deposit.service.report
         )
+
+
+class DepositLagSensor(SensorEntity):
+    """How many days behind the meter data is — zero means yesterday is in.
+
+    Its own class because it is the one figure derived from the clock rather than
+    from the report, and therefore the one that must keep updating when nothing
+    else does. A value_fn over the report would freeze at its last value exactly
+    when the fetch dies, which is the moment it exists to report on — so this one
+    polls instead.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Data Lag"
+    _attr_native_unit_of_measurement = "dni"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:calendar-remove"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._attr_device_info = deposit_device_info(entry)
+        self._attr_unique_id = f"{DEPOSIT_UNIQUE_ID_PREFIX}_data_lag"
+
+    @property
+    def native_value(self) -> StateType:
+        last = self._entry.runtime_data.deposit.service.report.last_data_day
+        if last is None:
+            return None
+        yesterday = dt_util.now().date() - datetime.timedelta(days=1)
+        return max(0, (yesterday - last).days)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -111,6 +145,19 @@ SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
         device_class=SensorDeviceClass.DATE,
         value_fn=lambda report: report.last_data_day,
         icon="mdi:calendar-check",
+    ),
+    DepositSensorDescription(
+        # Completeness, next to freshness — and the pair is the point. On
+        # 2026-08-27 `last_data_day` was bang up to date while four of the six
+        # days behind it were zeros: a fetch that ran on time and brought back
+        # nothing. Anything but 0 here means the store holds a day the meter had
+        # not finished, which used to be permanent.
+        key="unsettled_days",
+        name="Unsettled Days",
+        native_unit_of_measurement="dni",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda report: report.unsettled_days,
+        icon="mdi:calendar-question",
     ),
     DepositSensorDescription(
         key="capacity",

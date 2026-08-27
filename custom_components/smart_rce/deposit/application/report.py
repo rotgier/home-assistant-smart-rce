@@ -34,6 +34,8 @@ class DepositReport:
     last_data_day: datetime.date | None
     """Last day measured. Stale value here means the daily refresh stopped running."""
     elapsed_days: int
+    unsettled_days: int
+    """Stored days that look unbalanced. Anything but zero means the store is wrong."""
     capacity: ConsumptionCapacity
     oldest_tranche_age: int | None
     break_even_rce_net: float
@@ -93,6 +95,7 @@ class DepositReport:
             if self.last_data_day
             else None,
             "elapsed_days": self.elapsed_days,
+            "unsettled_days": self.unsettled_days,
             "capacity": round(self.capacity.value, 2),
             "utilization_pct": round(self.utilization, 1),
             "peak_utilization_pct": round(self.peak_utilization, 1)

@@ -15,9 +15,10 @@ Three guards worth knowing about:
   watermark. TAURON fills a day in over the following days, so the first answer
   is not the final one; re-valuing the recent past lets a late correction land
   by itself. It is the same single login, a slightly wider date range — but it
-  does mean there is always something to fetch, so the run is **rationed to one
-  successful meter call a day**; otherwise a debugging session with a few
-  reloads would be a few logins, which is how you earn a ban.
+  does mean there is always something to fetch, so the run **rations itself**:
+  once a day when yesterday is already in, and no more than every few hours while
+  it is still missing. Otherwise a debugging session with a few reloads would be
+  a few logins, which is how you earn a ban.
 
 The last two exist because of what the store looked like on 2026-08-27: four of
 the previous six days sat there as zeros, each one fetched the morning after,
@@ -53,6 +54,10 @@ class DepositRefreshService:
     # How far back to re-read every run. A week covers the observed fill-in lag
     # several times over and still fits in the same request.
     _TRAILING_DAYS: Final = 7
+    # While yesterday is still missing the run may try again later the same day —
+    # the meter fills a day in at an hour nobody publishes. Spaced out enough that
+    # even a run every hour could not turn into a burst of logins.
+    _RETRY_AFTER: Final = datetime.timedelta(hours=4)
 
     def __init__(
         self,
@@ -66,12 +71,13 @@ class DepositRefreshService:
         self._meter = meter
         self._on_updated = on_updated
 
-    async def async_refresh(self, today: datetime.date) -> int:
+    async def async_refresh(self, now: datetime.datetime) -> int:
         """Fetch and value the missing days plus the trailing week. Returns days added."""
         history = self._repository.history
-        if history.last_meter_call == today:
-            _LOGGER.debug("Deposit refresh: meter already read today")
+        if not self._may_read_meter(now):
+            _LOGGER.debug("Deposit refresh: meter read recently enough")
             return 0
+        today = now.date()
         window = self._window(today)
         if window is None:
             _LOGGER.debug("Deposit refresh: nothing to fetch")
@@ -79,7 +85,7 @@ class DepositRefreshService:
         start, end = window
         watermark = history.last_data_day
         readings = await self._meter.async_readings_for(start, end)
-        history.mark_meter_called(today)
+        history.mark_meter_called(now)
         records = await self._value(readings, watermark)
         if not records:
             _LOGGER.warning(
@@ -98,6 +104,24 @@ class DepositRefreshService:
             history.last_data_day,
         )
         return len(records)
+
+    def _may_read_meter(self, now: datetime.datetime) -> bool:
+        """Say whether another meter call is due.
+
+        Once a day is plenty when yesterday is already settled — the extra reads
+        only pick up late corrections. While yesterday is missing the answer is
+        worth chasing sooner, because the meter publishes it at an hour nobody
+        states and waiting a full day doubles the lag.
+        """
+        history = self._repository.history
+        last = history.last_meter_call
+        if last is None:
+            return True
+        yesterday = now.date() - datetime.timedelta(days=1)
+        settled = history.last_data_day
+        if settled is not None and settled >= yesterday:
+            return last.date() != now.date()
+        return now - last >= self._RETRY_AFTER
 
     def _window(
         self, today: datetime.date

@@ -78,6 +78,11 @@ def _history() -> SettlementHistory:
     )
 
 
+def _at(year: int, month: int, day: int, hour: int = 12) -> datetime.datetime:
+    """Return a moment on that day — rationing looks at time, not just date."""
+    return datetime.datetime(year, month, day, hour, tzinfo=datetime.UTC)
+
+
 def _service(repo, meter, prices, updates: list[int]):
     return DepositRefreshService(
         repo, prices, meter, on_updated=lambda: updates.append(1)
@@ -89,9 +94,7 @@ async def test_fetches_everything_between_the_watermark_and_yesterday():
     days = [datetime.date(2026, 8, d) for d in (1, 2, 3)]
     meter, prices, updates = _FakeMeter(days), _FakePrices(), []
 
-    added = await _service(repo, meter, prices, updates).async_refresh(
-        datetime.date(2026, 8, 4)
-    )
+    added = await _service(repo, meter, prices, updates).async_refresh(_at(2026, 8, 4))
 
     assert added == 3
     assert meter.calls[0][1] == datetime.date(2026, 8, 3)
@@ -106,9 +109,7 @@ async def test_asks_the_meter_once_for_the_whole_range():
     days = [datetime.date(2026, 8, d) for d in range(1, 11)]
     meter = _FakeMeter(days)
 
-    await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 11)
-    )
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 11))
 
     assert len(meter.calls) == 1
 
@@ -120,8 +121,8 @@ async def test_the_meter_is_read_once_a_day_however_often_the_run_fires():
     meter = _FakeMeter(days)
     service = _service(repo, meter, _FakePrices(), [])
 
-    await service.async_refresh(datetime.date(2026, 8, 4))
-    added = await service.async_refresh(datetime.date(2026, 8, 4))
+    await service.async_refresh(_at(2026, 8, 4))
+    added = await service.async_refresh(_at(2026, 8, 4))
 
     assert added == 0
     assert len(meter.calls) == 1
@@ -132,11 +133,9 @@ async def test_a_failed_call_does_not_burn_the_day_s_attempt():
     repo = _FakeRepository(_history())
     meter = _FakeMeter([])
 
-    await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 4)
-    )
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 4))
 
-    assert repo.history.last_meter_call == datetime.date(2026, 8, 4)
+    assert repo.history.last_meter_call == _at(2026, 8, 4)
 
 
 async def test_a_day_the_meter_has_not_balanced_yet_is_not_settled():
@@ -151,7 +150,7 @@ async def test_a_day_the_meter_has_not_balanced_yet_is_not_settled():
     meter = _FakeMeter(days, unbalanced={datetime.date(2026, 8, 2)})
 
     added = await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 3)
+        _at(2026, 8, 3)
     )
 
     assert added == 1
@@ -164,13 +163,9 @@ async def test_the_trailing_week_is_re_read_so_late_data_can_land():
     days = [datetime.date(2026, 8, d) for d in range(1, 9)]
     meter = _FakeMeter(days)
 
-    await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 9)
-    )
-    repo.history.mark_meter_called(datetime.date(2026, 8, 1))  # allow a second run
-    await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 9)
-    )
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 9))
+    repo.history.mark_meter_called(_at(2026, 8, 1))  # allow a second run
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 9))
 
     start, end = meter.calls[-1]
     assert (end - start).days + 1 == DepositRefreshService._TRAILING_DAYS
@@ -182,14 +177,12 @@ async def test_a_re_read_that_is_still_unbalanced_leaves_the_stored_day_alone():
     settled = datetime.date(2026, 8, 1)
     meter = _FakeMeter([settled])
 
-    await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 2)
-    )
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 2))
     before = repo.history.partial
-    repo.history.mark_meter_called(datetime.date(2026, 7, 1))
+    repo.history.mark_meter_called(_at(2026, 7, 1))
     meter = _FakeMeter([settled], unbalanced={settled})
     added = await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 2)
+        _at(2026, 8, 2)
     )
 
     assert added == 0
@@ -204,9 +197,7 @@ async def test_stops_at_the_first_day_without_prices_instead_of_skipping_it():
     meter = _FakeMeter(days)
     prices = _FakePrices(missing={datetime.date(2026, 8, 2)})
 
-    added = await _service(repo, meter, prices, []).async_refresh(
-        datetime.date(2026, 8, 4)
-    )
+    added = await _service(repo, meter, prices, []).async_refresh(_at(2026, 8, 4))
 
     assert added == 1
     assert repo.history.last_data_day == datetime.date(2026, 8, 1)
@@ -218,9 +209,7 @@ async def test_a_long_outage_is_caught_up_in_chunks():
     days = [datetime.date(2026, 8, 1) + datetime.timedelta(d) for d in range(120)]
     meter = _FakeMeter(days)
 
-    await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 12, 1)
-    )
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 12, 1))
 
     start, end = meter.calls[0]
     assert start == datetime.date(2026, 8, 1)
@@ -231,10 +220,49 @@ async def test_reported_days_are_valued_with_their_own_prices():
     repo = _FakeRepository(_history())
     meter = _FakeMeter([datetime.date(2026, 8, 1)])
 
-    await _service(repo, meter, _FakePrices(), []).async_refresh(
-        datetime.date(2026, 8, 2)
-    )
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 2))
 
     partial = repo.history.partial
     assert partial is not None
     assert partial.deposit_earned == pytest.approx(500.0 / 1000 * 1.23)
+
+
+async def test_a_second_attempt_is_allowed_while_yesterday_is_still_missing():
+    """The meter publishes the day at an hour nobody states — worth chasing."""
+    repo = _FakeRepository(_history())
+    day = datetime.date(2026, 8, 1)
+    unready = _FakeMeter([day], unbalanced={day})
+    service = _service(repo, unready, _FakePrices(), [])
+
+    await service.async_refresh(_at(2026, 8, 2, hour=12))
+    ready = _FakeMeter([day])
+    added = await _service(repo, ready, _FakePrices(), []).async_refresh(
+        _at(2026, 8, 2, hour=17)
+    )
+
+    assert added == 1
+    assert repo.history.last_data_day == day
+
+
+async def test_a_retry_too_soon_is_refused():
+    """Reloads must not turn a missing day into a burst of logins."""
+    repo = _FakeRepository(_history())
+    day = datetime.date(2026, 8, 1)
+    meter = _FakeMeter([day], unbalanced={day})
+    service = _service(repo, meter, _FakePrices(), [])
+
+    await service.async_refresh(_at(2026, 8, 2, hour=12))
+    await service.async_refresh(_at(2026, 8, 2, hour=13))
+
+    assert len(meter.calls) == 1
+
+
+async def test_a_stored_day_of_nothing_but_zeros_is_flagged():
+    """The alarm that was missing: `last_data_day` alone said all was well."""
+    repo = _FakeRepository(_history())
+    day = datetime.date(2026, 8, 1)
+    meter = _FakeMeter([day])
+
+    await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 2))
+
+    assert repo.history.unsettled_days == ()

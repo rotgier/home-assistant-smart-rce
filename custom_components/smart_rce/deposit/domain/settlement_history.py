@@ -8,10 +8,11 @@ run self-healing — nothing is lost, it just rolls up later.
 `last_data_day` is the fetch watermark: the refresh asks the meter for everything
 after it, so a run that fails simply leaves more to do next time.
 
-`last_meter_call` is a different thing and worth keeping apart: the day we last
-got an answer out of the meter. The refresh re-reads the recent past on every
-run, so without it a burst of reloads would be a burst of logins — and TAURON
-bans on those for half a day.
+`last_meter_call` is a different thing and worth keeping apart: when the meter
+last answered. The refresh re-reads the recent past on every run, so without it a
+burst of reloads would be a burst of logins — and TAURON bans on those for half a
+day. It is a moment rather than a date because the run may legitimately try again
+later the same day, when yesterday was not ready at the first attempt.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ class SettlementHistory:
         months: Iterable[MonthRecord],
         days: Iterable[DayRecord] = (),
         last_data_day: datetime.date | None = None,
-        last_meter_call: datetime.date | None = None,
+        last_meter_call: datetime.datetime | None = None,
     ) -> None:
         self._months = sorted(months, key=lambda record: record.month)
         self._days = sorted(days, key=lambda record: record.day)
@@ -65,7 +66,7 @@ class SettlementHistory:
             months=[_month_from_dict(row) for row in data.get("months", ())],
             days=[_day_from_dict(row) for row in data.get("days", ())],
             last_data_day=datetime.date.fromisoformat(watermark) if watermark else None,
-            last_meter_call=datetime.date.fromisoformat(called) if called else None,
+            last_meter_call=_parse_moment(called),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,22 +91,37 @@ class SettlementHistory:
         return self._last_data_day
 
     @property
-    def last_meter_call(self) -> datetime.date | None:
-        """Day the meter last answered — the refresh rations itself on this."""
+    def last_meter_call(self) -> datetime.datetime | None:
+        """When the meter last answered — the refresh rations itself on this."""
         return self._last_meter_call
 
-    def mark_meter_called(self, day: datetime.date) -> None:
+    def mark_meter_called(self, moment: datetime.datetime) -> None:
         """Record a successful meter call.
 
         Only successful ones: a failed fetch must stay retryable, or a single
-        outage at 04:15 would cost a whole day of data.
+        outage would cost a whole day of data.
         """
-        self._last_meter_call = day
+        self._last_meter_call = moment
 
     @property
     def elapsed_days(self) -> int:
         """Days measured in the month in progress."""
         return len(self._days)
+
+    @property
+    def unsettled_days(self) -> tuple[datetime.date, ...]:
+        """Stored days that look like the meter had not finished them.
+
+        A day of zero import across all twenty-four hours is not a quiet day, it
+        is a day TAURON listed before it balanced it. Nothing should be able to
+        store one any more (`is_balanced` refuses), so this is a watch on the
+        store itself — and the alarm that was missing when four such days sat
+        here unnoticed for a week.
+
+        Only the month in progress: once a month rolls up, its days are gone and
+        the figure is settled anyway.
+        """
+        return tuple(day.day for day in self._days if day.total_import_kwh <= 0)
 
     @property
     def partial(self) -> MonthRecord | None:
@@ -159,6 +175,10 @@ class DayRecord:
     deposit_earned: float
     import_kwh: Mapping[Zone, float]
 
+    @property
+    def total_import_kwh(self) -> float:
+        return sum(self.import_kwh.values())
+
 
 def _sum_days(month: BillingMonth, records: list[DayRecord]) -> MonthRecord:
     imports: dict[Zone, float] = dict.fromkeys(Zone, 0.0)
@@ -171,6 +191,16 @@ def _sum_days(month: BillingMonth, records: list[DayRecord]) -> MonthRecord:
         deposit_earned=sum(record.deposit_earned for record in records),
         import_kwh=imports,
     )
+
+
+def _parse_moment(text: str | None) -> datetime.datetime | None:
+    """Read the mark, tolerating the plain date an older version wrote."""
+    if not text:
+        return None
+    parsed = datetime.datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed
 
 
 def _last_day_of(month: BillingMonth) -> datetime.date:
