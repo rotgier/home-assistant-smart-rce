@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import re
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
+
+
+_DST_MARKER = re.compile(r"(\d{2})[ab](:)")
 
 
 @dataclass
@@ -40,7 +44,7 @@ class RceDayPrices:
 
         for record in data["value"]:
             published_at = record["publication_ts"]
-            dtime = datetime.fromisoformat(record["dtime"])
+            dtime = _parse_dtime(record["dtime"])
             dtime = dtime.replace(tzinfo=TIMEZONE)
             interval_start = dtime - timedelta(minutes=15)
             hour_key = interval_start.replace(minute=0, second=0)
@@ -82,3 +86,18 @@ class RcePrices:
     fetched_at: datetime
     today: RceDayPrices | None = None
     tomorrow: RceDayPrices | None = None
+
+
+def _parse_dtime(text: str) -> datetime:
+    """Parse a PSE timestamp, including the one day a year that is not ISO.
+
+    On the autumn clock change the repeated hour is marked `02a:15:00`, which
+    `fromisoformat` refuses outright — so without this the price fetch raises on
+    that day. For RCE it would leave EMS without prices; for the deposit it is
+    worse, because the day can never be valued and the fetch watermark would
+    stop there for good.
+
+    Both copies of the hour fold into the same hourly average, which is the same
+    approximation `RcePriceReader` already documents: a few groszy, twice a year.
+    """
+    return datetime.fromisoformat(_DST_MARKER.sub(r"\1\2", text))
