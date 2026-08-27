@@ -43,6 +43,10 @@ class MarketPriceRepository(Repository[MonthlyMarketPrices]):
         """Load what was published as of the last successful scrape."""
         data: dict[str, Any] | None = await self._store.async_load()
         self._prices = MonthlyMarketPrices.from_dict(data or {})
+        # Remember what disk already holds: the scrape returns the same table
+        # every day, and without this each run would rewrite it and log the whole
+        # thing as a change.
+        self._last_saved = self._prices.to_dict() if data else None
 
     async def async_merge(self, prices: Mapping[BillingMonth, float]) -> None:
         """Fold freshly scraped prices in and persist."""
