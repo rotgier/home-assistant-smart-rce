@@ -83,9 +83,23 @@ def _at(year: int, month: int, day: int, hour: int = 12) -> datetime.datetime:
     return datetime.datetime(year, month, day, hour, tzinfo=datetime.UTC)
 
 
-def _service(repo, meter, prices, updates: list[int]):
+class _FakeArchive:
+    """Collects what was handed over, so tests can assert the hours were kept."""
+
+    def __init__(self) -> None:
+        self.days: dict = {}
+
+    async def async_record(self, days) -> None:
+        self.days.update(days)
+
+
+def _service(repo, meter, prices, updates: list[int], archive=None):
     return DepositRefreshService(
-        repo, prices, meter, on_updated=lambda: updates.append(1)
+        repo,
+        prices,
+        meter,
+        archive or _FakeArchive(),
+        on_updated=lambda: updates.append(1),
     )
 
 
@@ -266,3 +280,30 @@ async def test_a_stored_day_of_nothing_but_zeros_is_flagged():
     await _service(repo, meter, _FakePrices(), []).async_refresh(_at(2026, 8, 2))
 
     assert repo.history.unsettled_days == ()
+
+
+async def test_the_hours_behind_a_settled_day_are_archived():
+    """Same pass as the valuation — asking for them again would mean another login."""
+    repo = _FakeRepository(_history())
+    day = datetime.date(2026, 8, 1)
+    archive = _FakeArchive()
+
+    await _service(repo, _FakeMeter([day]), _FakePrices(), [], archive).async_refresh(
+        _at(2026, 8, 2)
+    )
+
+    assert archive.days[day][12].exported_kwh == pytest.approx(1.0)
+    assert archive.days[day][12].price_pln_mwh == pytest.approx(500.0)
+
+
+async def test_a_day_that_was_not_settled_is_not_archived_either():
+    """The archive must not fill up with placeholder days the ledger refused."""
+    repo = _FakeRepository(_history())
+    day = datetime.date(2026, 8, 1)
+    archive = _FakeArchive()
+
+    await _service(
+        repo, _FakeMeter([day], unbalanced={day}), _FakePrices(), [], archive
+    ).async_refresh(_at(2026, 8, 2))
+
+    assert archive.days == {}

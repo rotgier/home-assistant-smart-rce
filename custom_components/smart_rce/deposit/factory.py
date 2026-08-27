@@ -33,6 +33,7 @@ from .application.refresh_service import DepositRefreshService
 from .application.savings_service import SavingsService
 from .infrastructure.elicznik_reader import ElicznikReader
 from .infrastructure.history_repository import HistoryRepository
+from .infrastructure.hour_archive import HourArchive
 from .infrastructure.household_energy_reader import HouseholdEnergyReader
 from .infrastructure.market_price_repository import MarketPriceRepository
 from .infrastructure.pv_production_reader import PvProductionReader
@@ -128,6 +129,7 @@ def _build_refresh(
         repository,
         RcePriceReader(prices),
         ElicznikReader(hass, username, password),
+        HourArchive(hass),
         on_updated=lambda: None,  # the daily job republishes once both sources ran
     )
 

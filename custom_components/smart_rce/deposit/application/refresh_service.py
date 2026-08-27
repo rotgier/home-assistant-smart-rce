@@ -32,6 +32,7 @@ import logging
 from typing import TYPE_CHECKING, Final
 
 from ..domain.day_valuation import value_day
+from ..domain.hourly_history import PricedHour
 from ..domain.meter_reading import is_balanced
 from ..domain.settlement_history import DayRecord
 
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
 
     from ..domain.meter_reading import HourReading
     from ..infrastructure.history_repository import HistoryRepository
-    from .ports import HourlyPriceProvider, MeterReadingsProvider
+    from .ports import HourArchive, HourlyPriceProvider, MeterReadingsProvider
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,11 +65,13 @@ class DepositRefreshService:
         repository: HistoryRepository,
         prices: HourlyPriceProvider,
         meter: MeterReadingsProvider,
+        archive: HourArchive,
         on_updated: Callable[[], None],
     ) -> None:
         self._repository = repository
         self._prices = prices
         self._meter = meter
+        self._archive = archive
         self._on_updated = on_updated
 
     async def async_refresh(self, now: datetime.datetime) -> int:
@@ -86,7 +89,8 @@ class DepositRefreshService:
         watermark = history.last_data_day
         readings = await self._meter.async_readings_for(start, end)
         history.mark_meter_called(now)
-        records = await self._value(readings, watermark)
+        records, hours = await self._value(readings, watermark)
+        await self._archive.async_record(hours)
         if not records:
             _LOGGER.warning(
                 "Deposit refresh: %s..%s returned no usable days", start, end
@@ -142,9 +146,15 @@ class DepositRefreshService:
         self,
         readings: Mapping[datetime.date, Mapping[int, HourReading]],
         watermark: datetime.date | None,
-    ) -> list[DayRecord]:
-        """Value days in order, refusing to settle one that is not ready yet."""
+    ) -> tuple[list[DayRecord], dict[datetime.date, dict[int, PricedHour]]]:
+        """Value days in order, refusing to settle one that is not ready yet.
+
+        Returns the settled days and the hourly detail behind them — the same
+        pass, because the hours are in hand here and asking for them again would
+        mean another login.
+        """
         records: list[DayRecord] = []
+        detail: dict[datetime.date, dict[int, PricedHour]] = {}
         for day in sorted(readings):
             hours = readings[day]
             if not is_balanced(hours):
@@ -157,7 +167,15 @@ class DepositRefreshService:
                     continue
                 break
             records.append(value_day(day, hours, prices))
-        return records
+            detail[day] = {
+                hour: PricedHour(
+                    exported_kwh=reading.exported_kwh,
+                    imported_kwh=reading.imported_kwh,
+                    price_pln_mwh=prices.get(hour),
+                )
+                for hour, reading in hours.items()
+            }
+        return records, detail
 
     def _may_wait(
         self, day: datetime.date, watermark: datetime.date | None, reason: str

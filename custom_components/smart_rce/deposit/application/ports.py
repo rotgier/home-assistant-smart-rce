@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     import datetime
 
+    from ..domain.hourly_history import PricedHour
     from ..domain.meter_reading import HourReading
 
 
@@ -30,3 +31,11 @@ class MeterReadingsProvider(Protocol):
     async def async_readings_for(
         self, start: datetime.date, end: datetime.date
     ) -> Mapping[datetime.date, Mapping[int, HourReading]]: ...
+
+
+class HourArchive(Protocol):
+    """Somewhere to keep the hourly detail of days that have been settled."""
+
+    async def async_record(
+        self, days: Mapping[datetime.date, Mapping[int, PricedHour]]
+    ) -> None: ...
