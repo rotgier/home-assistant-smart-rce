@@ -469,6 +469,36 @@ def live_reload() -> None:
     )
     reload(
         import_module(
+            "custom_components.smart_rce.deposit.infrastructure.history_repository"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.infrastructure.market_price_repository"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.infrastructure.household_energy_reader"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.infrastructure.elicznik_reader"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.infrastructure.rce_price_reader"
+        )
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.infrastructure.report_writer"
+        )
+    )
+    reload(
+        import_module(
             "custom_components.smart_rce.deposit.infrastructure.pv_production_reader"
         )
     )
