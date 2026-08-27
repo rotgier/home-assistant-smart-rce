@@ -1,4 +1,4 @@
-"""DepositRefreshService — watermark handling and the two safety guards."""
+"""DepositRefreshService — watermark handling and the guards around it."""
 
 import datetime
 
@@ -24,17 +24,32 @@ class _FakeRepository:
         self.persisted += 1
 
 
+# A settled day always shows some import: a house draws something overnight even
+# when the sun paid for the afternoon. Zero across the board means TAURON has not
+# balanced the day yet — see `is_balanced`.
+_SETTLED_DAY = {
+    12: HourReading(exported_kwh=1.0, imported_kwh=0.0),
+    3: HourReading(exported_kwh=0.0, imported_kwh=0.5),
+}
+_UNBALANCED_DAY = {hour: HourReading(0.0, 0.0) for hour in range(24)}
+
+
 class _FakeMeter:
     """Records its calls — one login per run is the whole point of the contract."""
 
-    def __init__(self, days: list[datetime.date]) -> None:
+    def __init__(
+        self,
+        days: list[datetime.date],
+        unbalanced: set[datetime.date] | None = None,
+    ) -> None:
         self._days = days
+        self._unbalanced = unbalanced or set()
         self.calls: list[tuple[datetime.date, datetime.date]] = []
 
     async def async_readings_for(self, start, end):
         self.calls.append((start, end))
         return {
-            day: {12: HourReading(exported_kwh=1.0, imported_kwh=0.0)}
+            day: _UNBALANCED_DAY if day in self._unbalanced else _SETTLED_DAY
             for day in self._days
             if start <= day <= end
         }
@@ -79,7 +94,7 @@ async def test_fetches_everything_between_the_watermark_and_yesterday():
     )
 
     assert added == 3
-    assert meter.calls == [(datetime.date(2026, 8, 1), datetime.date(2026, 8, 3))]
+    assert meter.calls[0][1] == datetime.date(2026, 8, 3)
     assert repo.history.last_data_day == datetime.date(2026, 8, 3)
     assert repo.persisted == 1
     assert updates == [1]
@@ -98,18 +113,88 @@ async def test_asks_the_meter_once_for_the_whole_range():
     assert len(meter.calls) == 1
 
 
-async def test_does_nothing_when_the_watermark_is_current():
+async def test_the_meter_is_read_once_a_day_however_often_the_run_fires():
+    """The run also fires on every reload, and TAURON bans on a burst of logins."""
     repo = _FakeRepository(_history())
-    meter, updates = _FakeMeter([]), []
+    days = [datetime.date(2026, 8, d) for d in (1, 2, 3)]
+    meter = _FakeMeter(days)
+    service = _service(repo, meter, _FakePrices(), [])
 
-    added = await _service(repo, meter, _FakePrices(), updates).async_refresh(
-        datetime.date(2026, 8, 1)
+    await service.async_refresh(datetime.date(2026, 8, 4))
+    added = await service.async_refresh(datetime.date(2026, 8, 4))
+
+    assert added == 0
+    assert len(meter.calls) == 1
+
+
+async def test_a_failed_call_does_not_burn_the_day_s_attempt():
+    """Otherwise one outage at 04:15 would cost a whole day of data."""
+    repo = _FakeRepository(_history())
+    meter = _FakeMeter([])
+
+    await _service(repo, meter, _FakePrices(), []).async_refresh(
+        datetime.date(2026, 8, 4)
+    )
+
+    assert repo.history.last_meter_call == datetime.date(2026, 8, 4)
+
+
+async def test_a_day_the_meter_has_not_balanced_yet_is_not_settled():
+    """The bug this exists for: TAURON serves 24 empty hours for a fresh day.
+
+    Stored as-is they are indistinguishable from a real day of doing nothing, and
+    permanent — the watermark moves past and nothing fetches that day again. Four
+    of six days sat in the store like that on 2026-08-27.
+    """
+    repo = _FakeRepository(_history())
+    days = [datetime.date(2026, 8, d) for d in (1, 2)]
+    meter = _FakeMeter(days, unbalanced={datetime.date(2026, 8, 2)})
+
+    added = await _service(repo, meter, _FakePrices(), []).async_refresh(
+        datetime.date(2026, 8, 3)
+    )
+
+    assert added == 1
+    assert repo.history.last_data_day == datetime.date(2026, 8, 1)
+
+
+async def test_the_trailing_week_is_re_read_so_late_data_can_land():
+    """TAURON fills a day in over the following days; the first answer is not final."""
+    repo = _FakeRepository(_history())
+    days = [datetime.date(2026, 8, d) for d in range(1, 9)]
+    meter = _FakeMeter(days)
+
+    await _service(repo, meter, _FakePrices(), []).async_refresh(
+        datetime.date(2026, 8, 9)
+    )
+    repo.history.mark_meter_called(datetime.date(2026, 8, 1))  # allow a second run
+    await _service(repo, meter, _FakePrices(), []).async_refresh(
+        datetime.date(2026, 8, 9)
+    )
+
+    start, end = meter.calls[-1]
+    assert (end - start).days + 1 == DepositRefreshService._TRAILING_DAYS
+
+
+async def test_a_re_read_that_is_still_unbalanced_leaves_the_stored_day_alone():
+    """A day already past the watermark must never be replaced by a placeholder."""
+    repo = _FakeRepository(_history())
+    settled = datetime.date(2026, 8, 1)
+    meter = _FakeMeter([settled])
+
+    await _service(repo, meter, _FakePrices(), []).async_refresh(
+        datetime.date(2026, 8, 2)
+    )
+    before = repo.history.partial
+    repo.history.mark_meter_called(datetime.date(2026, 7, 1))
+    meter = _FakeMeter([settled], unbalanced={settled})
+    added = await _service(repo, meter, _FakePrices(), []).async_refresh(
+        datetime.date(2026, 8, 2)
     )
 
     assert added == 0
-    assert meter.calls == []
-    assert repo.persisted == 0
-    assert updates == []
+    assert before is not None
+    assert repo.history.partial == before
 
 
 async def test_stops_at_the_first_day_without_prices_instead_of_skipping_it():

@@ -17,12 +17,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from .billing_month import BillingMonth
 from .settlement_regime import HOURLY_PRICING_FROM, deposit_coefficient
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-
-    from .billing_month import BillingMonth
 
 _PLN_PER_MWH: Final = 1000.0
 
@@ -32,6 +31,18 @@ class MonthlyMarketPrices:
 
     def __init__(self, prices: Mapping[BillingMonth, float] | None = None) -> None:
         self._prices = dict(prices or {})
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, float]) -> MonthlyMarketPrices:
+        return cls({BillingMonth.parse(month): price for month, price in data.items()})
+
+    @property
+    def by_month(self) -> dict[BillingMonth, float]:
+        """The prices themselves, for layering onto another table."""
+        return dict(self._prices)
+
+    def to_dict(self) -> dict[str, float]:
+        return {str(month): price for month, price in sorted(self._prices.items())}
 
     def merged_with(self, prices: Mapping[BillingMonth, float]) -> MonthlyMarketPrices:
         """Layer published prices over these. Newer wins — PSE corrects up to a year back."""

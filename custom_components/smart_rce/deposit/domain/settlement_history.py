@@ -7,6 +7,11 @@ run self-healing — nothing is lost, it just rolls up later.
 
 `last_data_day` is the fetch watermark: the refresh asks the meter for everything
 after it, so a run that fails simply leaves more to do next time.
+
+`last_meter_call` is a different thing and worth keeping apart: the day we last
+got an answer out of the meter. The refresh re-reads the recent past on every
+run, so without it a burst of reloads would be a burst of logins — and TAURON
+bans on those for half a day.
 """
 
 from __future__ import annotations
@@ -32,10 +37,12 @@ class SettlementHistory:
         months: Iterable[MonthRecord],
         days: Iterable[DayRecord] = (),
         last_data_day: datetime.date | None = None,
+        last_meter_call: datetime.date | None = None,
     ) -> None:
         self._months = sorted(months, key=lambda record: record.month)
         self._days = sorted(days, key=lambda record: record.day)
         self._last_data_day = last_data_day
+        self._last_meter_call = last_meter_call
 
     @classmethod
     def from_seed(cls, months: Iterable[MonthRecord]) -> SettlementHistory:
@@ -53,10 +60,12 @@ class SettlementHistory:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SettlementHistory:
         watermark = data.get("last_data_day")
+        called = data.get("last_meter_call")
         return cls(
             months=[_month_from_dict(row) for row in data.get("months", ())],
             days=[_day_from_dict(row) for row in data.get("days", ())],
             last_data_day=datetime.date.fromisoformat(watermark) if watermark else None,
+            last_meter_call=datetime.date.fromisoformat(called) if called else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,6 +74,9 @@ class SettlementHistory:
             "days": [_day_to_dict(record) for record in self._days],
             "last_data_day": self._last_data_day.isoformat()
             if self._last_data_day
+            else None,
+            "last_meter_call": self._last_meter_call.isoformat()
+            if self._last_meter_call
             else None,
         }
 
@@ -76,6 +88,19 @@ class SettlementHistory:
     @property
     def last_data_day(self) -> datetime.date | None:
         return self._last_data_day
+
+    @property
+    def last_meter_call(self) -> datetime.date | None:
+        """Day the meter last answered — the refresh rations itself on this."""
+        return self._last_meter_call
+
+    def mark_meter_called(self, day: datetime.date) -> None:
+        """Record a successful meter call.
+
+        Only successful ones: a failed fetch must stay retryable, or a single
+        outage at 04:15 would cost a whole day of data.
+        """
+        self._last_meter_call = day
 
     @property
     def elapsed_days(self) -> int:

@@ -34,6 +34,7 @@ from .application.savings_service import SavingsService
 from .infrastructure.elicznik_reader import ElicznikReader
 from .infrastructure.history_repository import HistoryRepository
 from .infrastructure.household_energy_reader import HouseholdEnergyReader
+from .infrastructure.market_price_repository import MarketPriceRepository
 from .infrastructure.pv_production_reader import PvProductionReader
 from .infrastructure.rce_price_reader import PriceSource, RcePriceReader
 from .infrastructure.rcem_reader import PseRcemReader
@@ -71,8 +72,11 @@ async def create_deposit(
     hass: HomeAssistant, entry: SmartRceConfigEntry, prices: PriceSource
 ) -> Deposit:
     """Wire the deposit context (call from async_setup_entry before runtime_data)."""
-    repository = HistoryRepository(hass, AsyncTaskRunner(hass, entry))
+    tasks = AsyncTaskRunner(hass, entry)
+    repository = HistoryRepository(hass, tasks)
     await repository.async_restore()
+    prices_repository = MarketPriceRepository(hass, tasks)
+    await prices_repository.async_restore()
     tariff = await hass.async_add_executor_job(load_tariff)
     monthly_prices = await hass.async_add_executor_job(load_monthly_prices)
     seed = await hass.async_add_executor_job(load_seed_history)
@@ -83,11 +87,13 @@ async def create_deposit(
         monthly_prices=monthly_prices,
         seed_production=seed.production,
     )
+    # Everything scraped since the release was cut, layered over the shipped table.
+    service.update_market_prices(prices_repository.prices.by_month)
     websocket_api.async_register(hass)
 
     savings = SavingsService(HouseholdEnergyReader(hass), service)
     production = ProductionService(PvProductionReader(hass), service)
-    market_prices = MarketPriceService(PseRcemReader(hass), service)
+    market_prices = MarketPriceService(PseRcemReader(hass), service, prices_repository)
     refresh = _build_refresh(hass, entry, repository, prices)
     _schedule_daily(hass, entry, service, savings, production, market_prices, refresh)
     await _publish(hass, service)
