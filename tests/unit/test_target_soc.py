@@ -194,3 +194,29 @@ def test_to_profile_missing_buckets_filled_with_zero() -> None:
     assert profile.get(7, 0) == 0.0
     assert profile.get(8, 0) == 0.5
     assert profile.get(12, 30) == 0.0
+
+
+def _result_for(day: date) -> PvForecastResult:
+    return PvForecastResult(
+        forecast=[
+            AdjustedPeriod(
+                period_start=f"{day.isoformat()}T{hour:02d}:00:00+02:00",
+                pv_estimate_adjusted=2.0,
+            )
+            for hour in (7, 8, 9)
+        ],
+        total_kwh=3.0,
+    )
+
+
+def test_a_forecast_that_ends_yesterday_is_treated_as_no_forecast():
+    """Setup recalculates on restored state, and after midnight that state is stale.
+
+    `to_profile` treats a missing day as a programming error and raises, which on
+    2026-08-28 at 00:02 took the whole integration down on a reload: no EMS, no
+    prices, no deposit. Absent data must clear the figures, never raise.
+    """
+    result = _result_for(date(2026, 8, 27))
+
+    assert result.covers(date(2026, 8, 27))
+    assert not result.covers(date(2026, 8, 28))

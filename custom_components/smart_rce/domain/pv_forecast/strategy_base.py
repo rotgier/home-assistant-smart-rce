@@ -287,6 +287,20 @@ class PvForecastResult:
             now, pv_power_w_5min
         )
 
+    def covers(self, target_date: date) -> bool:
+        """Say whether the forecast contains that day at all.
+
+        After midnight the answer is legitimately no: the state restored at setup
+        holds yesterday's forecast until the first fetch of the new day. Callers
+        need to ask, because `to_profile` treats a missing day as a programming
+        error and raises — which took the whole integration down on a reload at
+        00:02.
+        """
+        return any(
+            datetime.fromisoformat(period.period_start).date() == target_date
+            for period in self.forecast
+        )
+
     def with_now_aware_in_progress(
         self,
         now: datetime,

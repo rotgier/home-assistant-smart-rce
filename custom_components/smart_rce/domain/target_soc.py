@@ -77,12 +77,12 @@ class TargetSoc:
         those profiles. Matrix service then reads these without recomputing.
         """
         result = self.variant.result
-        if result is None:
-            self.flat = None
-            self.prev_days = [None] * len(prev_cons)
-            self.pv_profile = None
-            self.cons_view_flat = None
-            self.cons_views_prev = [None] * len(prev_cons)
+        # A forecast that does not reach the target day is, for this purpose, no
+        # forecast: after midnight the restored one still ends yesterday.
+        if result is None or (
+            ctx.target_date is not None and not result.covers(ctx.target_date)
+        ):
+            self._clear(prev_cons)
             return
 
         # Time-shift only when today AND now is inside the PV window (7-13).
@@ -92,11 +92,7 @@ class TargetSoc:
         if apply_now:
             if ctx.live_consumption_w is None or ctx.signals.pv_power_w is None:
                 # Fail-hard: today inside window needs both live signals.
-                self.flat = None
-                self.prev_days = [None] * len(prev_cons)
-                self.pv_profile = None
-                self.cons_view_flat = None
-                self.cons_views_prev = [None] * len(prev_cons)
+                self._clear(prev_cons)
                 return
             self.pv_profile = result.to_profile(
                 ctx.target_date,
@@ -116,6 +112,14 @@ class TargetSoc:
             self._compute(cv, ctx) if cv is not None else None
             for cv in self.cons_views_prev
         ]
+
+    def _clear(self, prev_cons: list[ConsumptionProfile | None]) -> None:
+        """Drop every derived figure — there is nothing to compute from."""
+        self.flat = None
+        self.prev_days = [None] * len(prev_cons)
+        self.pv_profile = None
+        self.cons_view_flat = None
+        self.cons_views_prev = [None] * len(prev_cons)
 
     def _cons_view(
         self, cons: ConsumptionProfile, ctx: TargetSocContext, apply_now: bool
