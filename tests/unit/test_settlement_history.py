@@ -80,17 +80,47 @@ def test_refetching_a_day_replaces_it_instead_of_doubling():
     assert history.partial.deposit_earned == pytest.approx(42.0)
 
 
-def test_month_rolls_up_once_a_later_day_arrives():
+def test_a_month_stays_open_while_its_days_can_still_be_re_read():
+    """The refresh re-reads the past week, so a month is not final on the 1st.
+
+    Closing it immediately is what produced a duplicate August on 2026-09-04: the
+    month was settled in full on the 2nd, and the re-reads that followed arrived
+    as a second record covering its last five days — counted twice, in the ledger
+    and in the balance.
+    """
     history = SettlementHistory.from_seed([_month("2026-07")])
     history.add_days([_day("2026-08-30", earned=5), _day("2026-08-31", earned=6)])
 
     history.add_days([_day("2026-09-01", earned=1)])
 
-    assert [str(m.month) for m in history.months] == ["2026-07", "2026-08"]
-    august = history.months[-1]
-    assert august.deposit_earned == pytest.approx(11.0)
-    assert history.elapsed_days == 1  # only September remains open
+    assert [str(m.month) for m in history.months] == ["2026-07"]
     assert history.partial.month == BillingMonth(2026, 9)
+    assert history.elapsed_days == 1  # September's day, not August's two
+
+
+def test_a_month_rolls_up_once_the_re_read_window_has_passed():
+    history = SettlementHistory.from_seed([_month("2026-07")])
+    history.add_days([_day("2026-08-30", earned=5), _day("2026-08-31", earned=6)])
+
+    history.add_days([_day(f"2026-09-{day:02d}", earned=1) for day in range(1, 9)])
+
+    assert [str(m.month) for m in history.months] == ["2026-07", "2026-08"]
+    assert history.months[-1].deposit_earned == pytest.approx(11.0)
+    assert history.partial.month == BillingMonth(2026, 9)
+
+
+def test_re_reading_a_settled_month_does_not_settle_it_twice():
+    """Exactly the 2026-09-04 bug: August appeared twice and the balance jumped."""
+    history = SettlementHistory.from_seed([_month("2026-07")])
+    history.add_days([_day("2026-08-31", earned=6)])
+    history.add_days([_day(f"2026-09-{day:02d}", earned=1) for day in range(1, 9)])
+    settled = [str(m.month) for m in history.months]
+    earned_before = sum(m.deposit_earned for m in history.months)
+
+    history.add_days([_day("2026-08-31", earned=6)])  # a late re-read of August
+
+    assert [str(m.month) for m in history.months] == settled
+    assert sum(m.deposit_earned for m in history.months) == pytest.approx(earned_before)
 
 
 def test_a_missed_run_still_rolls_up_correctly():
@@ -105,8 +135,9 @@ def test_a_missed_run_still_rolls_up_correctly():
         ]
     )
 
-    assert [str(m.month) for m in history.months] == ["2026-07", "2026-08", "2026-09"]
+    assert [str(m.month) for m in history.months] == ["2026-07", "2026-08"]
     assert history.partial.month == BillingMonth(2026, 10)
+    assert history.elapsed_days == 1  # September's day is still open, not counted
     assert history.last_data_day == datetime.date(2026, 10, 1)
 
 

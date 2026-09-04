@@ -1,9 +1,13 @@
 """SettlementHistory — closed months plus the days of the month in progress.
 
 The ledger settles whole months, but data arrives daily, so this aggregate holds
-both: `months` for what is finished and `days` for what is accumulating. A month
-rolls up as soon as a day from a later month arrives, which also makes a missed
-run self-healing — nothing is lost, it just rolls up later.
+both: `months` for what is finished and `days` for what is accumulating.
+
+A month rolls up only once **no day of it can still be re-read** — a week after it
+ends, matching the window the refresh re-reads. Rolling up the moment the next
+month started, which is what this did until 2026-09-04, made the following week's
+re-reads land as a *second* record for a month that was already closed: August was
+counted once in full and once again for its last five days.
 
 `last_data_day` is the fetch watermark: the refresh asks the meter for everything
 after it, so a run that fails simply leaves more to do next time.
@@ -28,6 +32,11 @@ from .tariff import Zone
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
+
+# A month stays open to correction for as long as the refresh still re-reads its
+# days. Must not be shorter than `DepositRefreshService._TRAILING_DAYS`, or a
+# re-read would arrive for a month that has already been settled.
+_FINALISED_AFTER = datetime.timedelta(days=7)
 
 
 class SettlementHistory:
@@ -106,7 +115,7 @@ class SettlementHistory:
     @property
     def elapsed_days(self) -> int:
         """Days measured in the month in progress."""
-        return len(self._days)
+        return len(self._current_month_days())
 
     @property
     def unsettled_days(self) -> tuple[datetime.date, ...]:
@@ -125,11 +134,25 @@ class SettlementHistory:
 
     @property
     def partial(self) -> MonthRecord | None:
-        """The month in progress, summed over measured days (not extrapolated)."""
-        if not self._days:
+        """The month in progress, summed over measured days (not extrapolated).
+
+        Only the newest month: `days` also holds the tail of the previous one
+        until it finalises, and summing both would invent a monster month.
+        """
+        days = self._current_month_days()
+        if not days:
             return None
-        first = self._days[0].day
-        return _sum_days(BillingMonth(first.year, first.month), self._days)
+        return _sum_days(BillingMonth(days[0].day.year, days[0].day.month), days)
+
+    def _current_month_days(self) -> list[DayRecord]:
+        if not self._days:
+            return []
+        newest = self._days[-1].day
+        return [
+            record
+            for record in self._days
+            if (record.day.year, record.day.month) == (newest.year, newest.month)
+        ]
 
     def next_day_to_fetch(self) -> datetime.date | None:
         """First day not yet measured, or None when nothing was ever fetched."""
@@ -148,20 +171,22 @@ class SettlementHistory:
         self._roll_up_finished_months()
 
     def _roll_up_finished_months(self) -> None:
-        """Move days of any month older than the newest day's month into `months`."""
+        """Settle every month that can no longer change, and drop its days."""
         if not self._days:
             return
         newest = self._days[-1].day
-        current = BillingMonth(newest.year, newest.month)
+        settled = {record.month for record in self._months}
         grouped: dict[BillingMonth, list[DayRecord]] = defaultdict(list)
         for record in self._days:
             grouped[BillingMonth(record.day.year, record.day.month)].append(record)
         keep: list[DayRecord] = []
         for month, records in sorted(grouped.items()):
-            if month < current:
-                self._months.append(_sum_days(month, records))
-            else:
+            if month in settled:
+                continue  # already a closed record; its days cannot improve it
+            if _last_day_of(month) > newest - _FINALISED_AFTER:
                 keep.extend(records)
+            else:
+                self._months.append(_sum_days(month, records))
         self._months.sort(key=lambda record: record.month)
         self._days = keep
 
