@@ -11,6 +11,7 @@ Answers the two decision questions, both of which the raw yearly balance hides:
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Final
 
@@ -69,13 +70,22 @@ class DepositProjection:
         projected = self._run(
             ledger, after=after, months=(years or self._EXPIRY_YEARS) * 12
         )
+        # Forfeiting is per tranche, twelve months after it was earned, so it
+        # lands wherever the summer's deposit turns a year old — September, as a
+        # rule, right after the peak. Reporting only the peak month's own figure
+        # showed a column of zeros next to a headline saying the opposite.
+        forfeited: dict[int, float] = defaultdict(float)
+        refunded: dict[int, float] = defaultdict(float)
+        for month in projected:
+            forfeited[month.month.year] += month.settlement.forfeited
+            refunded[month.month.year] += month.settlement.refunded
         peaks = tuple(
             YearPeak(
                 year=month.month.year,
                 balance=month.settlement.balance,
                 utilization=capacity.utilization(month.settlement.balance),
-                forfeited=month.settlement.forfeited,
-                refunded=month.settlement.refunded,
+                forfeited=forfeited[month.month.year],
+                refunded=refunded[month.month.year],
             )
             for month in projected
             if month.month.month == self._PEAK_MONTH
@@ -153,10 +163,13 @@ class ProjectedMonth:
 
 @dataclass(frozen=True)
 class YearPeak:
-    """Balance at the yearly maximum (end of August) against capacity."""
+    """One year: its balance at the maximum, and what it lost over the whole year."""
 
     year: int
     balance: float
+    """End of August — the yearly maximum, which is what decides forfeiting."""
     utilization: float
     forfeited: float
+    """Whole year, not just August: a tranche expires wherever it turns twelve
+    months old, which is normally September."""
     refunded: float

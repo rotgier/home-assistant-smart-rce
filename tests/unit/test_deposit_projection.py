@@ -276,3 +276,22 @@ def _spread_over_days(record, count: int) -> list[DayRecord]:
         )
         for offset in range(count)
     ]
+
+
+def test_a_year_reports_what_it_forfeited_whenever_that_happened():
+    """A tranche expires twelve months after it was earned — rarely in August.
+
+    The peaks table lists one row per year, keyed on the August maximum, and used
+    to report only August's own forfeiture. That is almost always zero, so the
+    table showed a column of zeros beside a headline saying the deposit starts
+    expiring in 2028-09.
+    """
+    year = _flat_year(import_kwh=1.0, earned=1000.0)  # earns far more than it spends
+    projection = DepositProjection(year, _FLAT_RATES)
+
+    outlook = projection.expiry(DepositLedger(), after=BillingMonth(2026, 12), years=3)
+
+    assert outlook.first_forfeit is not None
+    forfeiting_year = outlook.first_forfeit.year
+    peak = next(p for p in outlook.peaks if p.year == forfeiting_year)
+    assert peak.forfeited > 0, "the year that forfeits must show it"
