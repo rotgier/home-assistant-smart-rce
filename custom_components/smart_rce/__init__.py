@@ -83,7 +83,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
 
     weather_forecast_history = WeatherForecastHistory()
     pv_forecast = await create_energy_balance_service(
-        hass, entry, weather_listener, weather_forecast_history, ems, rce_coordinator
+        hass,
+        entry,
+        weather_listener=weather_listener,
+        weather_forecast_history=weather_forecast_history,
+        ems=ems,
+        rce_coordinator=rce_coordinator,
     )
 
     weather_history_loader = WeatherHistoryLoader(hass)

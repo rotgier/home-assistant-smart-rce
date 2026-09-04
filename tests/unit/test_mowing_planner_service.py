@@ -58,7 +58,14 @@ def _service(
     svc_mode = MagicMock()
     svc_mode.is_active = service_mode
     return MowingPlannerService(
-        repo, luba, forecast_reader, non_work, rain, hold, svc_mode, lambda: now
+        repo,
+        luba=luba,
+        forecast=forecast_reader,
+        non_work=non_work,
+        rain=rain,
+        hold=hold,
+        service_mode=svc_mode,
+        now_provider=lambda: now,
     )
 
 

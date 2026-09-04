@@ -118,9 +118,16 @@ async def create_garden(
     hold_repo = MowingHoldRepository(hass, tasks)
     await hold_repo.async_restore()
     hold = MowingHoldService(
-        hold_repo, service, rain, actuator, luba, tasks, service_mode, dt_util.now
+        hold_repo,
+        non_work=service,
+        rain=rain,
+        actuator=actuator,
+        luba=luba,
+        tasks=tasks,
+        service_mode=service_mode,
+        now_provider=dt_util.now,
     )
-    _wire_mowing_hold(hass, entry, service, rain, luba, hold)
+    _wire_mowing_hold(hass, entry, non_work=service, rain=rain, luba=luba, hold=hold)
     # Flipping service mode OFF must re-reconcile the held window immediately.
     entry.async_on_unload(service_mode.add_listener(hold.evaluate))
 
@@ -129,16 +136,23 @@ async def create_garden(
     forecast_reader = ForecastReader(forecast)
     mowing = MowingPlannerService(
         policy_repo,
-        luba,
-        forecast_reader,
-        service,
-        rain,
-        hold,
-        service_mode,
-        dt_util.now,
+        luba=luba,
+        forecast=forecast_reader,
+        non_work=service,
+        rain=rain,
+        hold=hold,
+        service_mode=service_mode,
+        now_provider=dt_util.now,
     )
     _wire_mowing_recompute(
-        hass, entry, luba, forecast_reader, service, rain, hold, mowing
+        hass,
+        entry,
+        luba=luba,
+        forecast=forecast_reader,
+        non_work=service,
+        rain=rain,
+        hold=hold,
+        mowing=mowing,
     )
     # Service mode gates should_start → recompute when it flips.
     entry.async_on_unload(service_mode.add_listener(mowing.recompute))
@@ -184,6 +198,7 @@ def _wire_rain(
 def _wire_mowing_hold(
     hass: HomeAssistant,
     entry: ConfigEntry,
+    *,
     non_work: NonWorkService,
     rain: RainService,
     luba: LubaStateReader,
@@ -231,6 +246,7 @@ def _wire_non_work_cloud_listener(
 def _wire_mowing_recompute(
     hass: HomeAssistant,
     entry: ConfigEntry,
+    *,
     luba: LubaStateReader,
     forecast: ForecastReader,
     non_work: NonWorkService,

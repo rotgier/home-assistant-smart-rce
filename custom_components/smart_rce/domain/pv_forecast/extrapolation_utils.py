@@ -70,6 +70,7 @@ def index_solcast_by_bucket(
 def weighted_score_over_buckets(
     solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
     now: datetime,
+    *,
     realized_pv_today: dict[tuple[int, int], float],
     pv_bucket_so_far_kwh: float,
     pv_power_w_5min: float,

@@ -120,6 +120,7 @@ class StateSnapshot(NamedTuple):
 def assemble_rows(
     history_per_sensor: Mapping[str, list[StateSnapshot]],
     target_date: date,
+    *,
     now: datetime,
     current_obs: Mapping[str, Any] | None,
     forecast_hours: list[dict[str, Any]],

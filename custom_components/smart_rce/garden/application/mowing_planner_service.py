@@ -58,6 +58,7 @@ class MowingPlannerService(Service[MowingPolicyRepository]):
     def __init__(
         self,
         repo: MowingPolicyRepository,
+        *,
         luba: LubaStateReader,
         forecast: ForecastReader,
         non_work: NonWorkService,

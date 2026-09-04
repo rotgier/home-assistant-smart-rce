@@ -57,6 +57,7 @@ _LOGGER = logging.getLogger(__name__)
 async def create_energy_balance_service(
     hass: HomeAssistant,
     entry: ConfigEntry,
+    *,
     weather_listener: WeatherForecastListener,
     weather_forecast_history: WeatherForecastHistory,
     ems: Ems,

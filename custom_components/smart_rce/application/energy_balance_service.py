@@ -77,6 +77,7 @@ class EnergyBalanceService:
     def __init__(
         self,
         hass: HomeAssistant,
+        *,
         forecasts: PvForecasts,
         target_socs: TargetSocCatalog,
         solcast: SolcastReader,

@@ -56,6 +56,7 @@ class MowingHoldService(Service[MowingHoldRepository]):
     def __init__(
         self,
         repo: MowingHoldRepository,
+        *,
         non_work: NonWorkService,
         rain: RainService,
         actuator: NonWorkActuator,

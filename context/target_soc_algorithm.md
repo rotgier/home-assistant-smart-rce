@@ -38,7 +38,7 @@ Po 13:00 zaczyna się tania taryfa → można doładować baterię.
 
 ```python
 # Per 30-min okres 7:00-13:00:
-balance = pv_30min - cons_30min   # cons = profile[bucket] lub CONSUMPTION_PER_30MIN
+balance = pv_30min - cons_30min  # cons = profile[bucket] lub CONSUMPTION_PER_30MIN
 cumulative_balance += balance
 min_balance = min(min_balance, cumulative_balance)
 

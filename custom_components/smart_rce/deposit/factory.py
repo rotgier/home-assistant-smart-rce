@@ -96,17 +96,18 @@ async def create_deposit(
 
     savings = SavingsService(HouseholdEnergyReader(hass), service)
     production = ProductionService(PvProductionReader(hass), service)
-    market_prices = MarketPriceService(PseRcemReader(hass), service, prices_repository)
-    refresh = _build_refresh(hass, entry, repository, prices)
-    _schedule_daily(hass, entry, service, savings, production, market_prices, refresh)
-    await _publish(hass, service)
-    return Deposit(
+    deposit = Deposit(
         service=service,
         savings=savings,
         production=production,
-        market_prices=market_prices,
-        refresh=refresh,
+        market_prices=MarketPriceService(
+            PseRcemReader(hass), service, prices_repository
+        ),
+        refresh=_build_refresh(hass, entry, repository, prices),
     )
+    _schedule_daily(hass, entry, deposit)
+    await _publish(hass, service)
+    return deposit
 
 
 def _build_refresh(
@@ -135,38 +136,37 @@ def _build_refresh(
 
 
 def _schedule_daily(
-    hass: HomeAssistant,
-    entry: SmartRceConfigEntry,
-    service: DepositService,
-    savings: SavingsService,
-    production: ProductionService,
-    market_prices: MarketPriceService,
-    refresh: DepositRefreshService | None,
+    hass: HomeAssistant, entry: SmartRceConfigEntry, deposit: Deposit
 ) -> None:
-    """Run every source once a day, and once now to catch up after a restart."""
+    """Run every source once a day, and once now to catch up after a restart.
+
+    Takes the whole context rather than its five services one by one: they are
+    exactly the fields of `Deposit`, and passing them separately is how the
+    signature grew to seven arguments as sources were added.
+    """
 
     async def _run(_now: datetime.datetime | None = None) -> None:
         now = dt_util.now()
         today = now.date()
-        if refresh is not None:
+        if deposit.refresh is not None:
             try:
-                await refresh.async_refresh(now)
+                await deposit.refresh.async_refresh(now)
             except Exception:  # noqa: BLE001 - a scraper outage must not spread
                 _LOGGER.exception("Deposit: meter refresh failed, retrying next run")
         try:
-            await savings.async_refresh(today)
+            await deposit.savings.async_refresh(today)
         except Exception:  # noqa: BLE001 - reporting extra, never fatal
             _LOGGER.exception("Deposit: self-consumption refresh failed")
         try:
-            await production.async_refresh(today)
+            await deposit.production.async_refresh(today)
         except Exception:  # noqa: BLE001 - reporting extra, never fatal
             _LOGGER.exception("Deposit: production refresh failed")
         try:
-            await market_prices.async_refresh()
+            await deposit.market_prices.async_refresh()
         except Exception as err:  # noqa: BLE001 - a scraped page, expected to rot
             _LOGGER.debug("Deposit: RCEm refresh failed (%s), using shipped table", err)
-        service.recalculate()
-        await _publish(hass, service)
+        deposit.service.recalculate()
+        await _publish(hass, deposit.service)
 
     entry.async_on_unload(
         async_track_time_change(
