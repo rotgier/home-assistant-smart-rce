@@ -13,6 +13,7 @@ from custom_components.smart_rce.deposit.domain.billing_month import BillingMont
 from custom_components.smart_rce.deposit.domain.market_price import MonthlyMarketPrices
 from custom_components.smart_rce.deposit.domain.reference_year import MonthRecord
 from custom_components.smart_rce.deposit.domain.settlement_history import (
+    DayRecord,
     SettlementHistory,
 )
 from custom_components.smart_rce.deposit.domain.tariff import (
@@ -195,4 +196,61 @@ class TestPublishedPrices:
 
         assert self._earned_at_monthly_price(service) == pytest.approx(
             100.0 * 0.2 * 1.23
+        )
+
+
+class TestOpenMonth:
+    """The month being measured — visible before it is settled, but never as settled."""
+
+    MONTH = BillingMonth(2026, 1)
+
+    def _report(self):
+        return DepositService(_TARIFF, _history(self.MONTH)).report
+
+    def test_the_month_in_progress_is_reported_separately(self):
+        """A month settles a week after it ends, so the newest settled row is old.
+
+        Without this the dashboard looked stale for the first week of every month:
+        newest row dated the month before, and nothing showing that the current one
+        was accruing.
+        """
+        history = _history(self.MONTH)
+        history.add_days(
+            [
+                DayRecord(
+                    day=datetime.date(2026, 2, 1),
+                    exported_kwh=20.0,
+                    deposit_earned=15.0,
+                    import_kwh=dict.fromkeys(Zone, 1.0),
+                )
+            ]
+        )
+        report = DepositService(_TARIFF, history).report
+
+        assert report.current is not None
+        assert report.current.month == BillingMonth(2026, 2)
+        assert report.current.elapsed_days == 1
+        assert report.current.earned == pytest.approx(15.0)
+
+    def test_the_open_month_is_not_in_the_settled_history(self):
+        history = _history(self.MONTH)
+        history.add_days(
+            [
+                DayRecord(
+                    day=datetime.date(2026, 2, 1),
+                    exported_kwh=20.0,
+                    deposit_earned=15.0,
+                    import_kwh=dict.fromkeys(Zone, 1.0),
+                )
+            ]
+        )
+        report = DepositService(_TARIFF, history).report
+
+        assert "2026-02" not in [row["month"] for row in report.to_dict()["history"]]
+
+    def test_its_balance_is_the_running_one(self):
+        report = self._report()
+
+        assert report.current is None or report.current.balance == pytest.approx(
+            report.balance_running
         )

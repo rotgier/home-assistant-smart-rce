@@ -47,6 +47,8 @@ class DepositReport:
     PSE quotes, which are net.
     """
     history: tuple[MonthSettlement, ...]
+    current: OpenMonth | None
+    """The month being measured right now — no row in `history` until it settles."""
     volumes: Mapping[BillingMonth, MonthlyVolumes]
     """Measured energy behind each settled month — what the ledger was derived from."""
     winter: WinterOutlook
@@ -110,6 +112,7 @@ class DepositReport:
             "first_forfeit": str(self.expiry.first_forfeit)
             if self.expiry.first_forfeit
             else None,
+            "current": None if self.current is None else self.current.to_dict(),
             "history": [
                 {**_settlement(s), **_volumes(self.volumes.get(s.month))}
                 for s in self.history
@@ -175,6 +178,37 @@ class DepositReport:
                 }
                 for peak in self.expiry.peaks
             ],
+        }
+
+
+@dataclass(frozen=True)
+class OpenMonth:
+    """The month in progress: measured so far, settled by nobody yet.
+
+    It has no place in `history`, which holds what the ledger has closed — but
+    leaving it out of the report entirely made the dashboard look a fortnight
+    stale in the first week of a month, with the newest row dated the month
+    before and no sign that anything was still accruing.
+    """
+
+    month: BillingMonth
+    elapsed_days: int
+    exported_kwh: float
+    earned: float
+    """Deposit earned so far this month."""
+    energy_cost: float
+    """What this month's imports have cost so far — what the deposit will pay for."""
+    balance: float
+    """Settled balance plus what this month has accrued: the "how much now" figure."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "month": str(self.month),
+            "elapsed_days": self.elapsed_days,
+            "exported_kwh": round(self.exported_kwh, 1),
+            "earned": round(self.earned, 2),
+            "energy_cost": round(self.energy_cost, 2),
+            "balance": round(self.balance, 2),
         }
 
 

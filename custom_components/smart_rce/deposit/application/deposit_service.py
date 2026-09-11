@@ -18,7 +18,7 @@ from ..domain.reference_year import MonthRecord, ReferenceYear
 from ..domain.savings import LegacyMonth, compute_savings
 from ..domain.settlement_history import SettlementHistory
 from ..domain.tariff import Tariff, Zone
-from .report import DepositReport, MonthlyVolumes
+from .report import DepositReport, MonthlyVolumes, OpenMonth
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -122,6 +122,7 @@ class DepositService:
             oldest_tranche_age=ledger.oldest_tranche_age(last_settled),
             break_even_rce_net=self._tariff.latest.night_marginal_cost * _PLN_PER_MWH,
             history=settled,
+            current=self._open_month(ledger.balance),
             volumes=self._volumes(),
             winter=projection.winter(ledger, after=last_settled),
             expiry=projection.expiry(ledger, after=last_settled),
@@ -132,6 +133,23 @@ class DepositService:
                 self._tariff,
                 self._legacy,
             ),
+        )
+
+    def _open_month(self, settled_balance: float) -> OpenMonth | None:
+        """Describe the month being measured, or None between roll-up and first day."""
+        partial = self._history.partial
+        if partial is None:
+            return None
+        energy_cost = self._tariff.for_month(partial.month).energy_cost(
+            partial.import_kwh
+        )
+        return OpenMonth(
+            month=partial.month,
+            elapsed_days=self._history.elapsed_days,
+            exported_kwh=partial.exported_kwh,
+            earned=partial.deposit_earned,
+            energy_cost=energy_cost,
+            balance=settled_balance + partial.deposit_earned - energy_cost,
         )
 
     def _volumes(self) -> dict[BillingMonth, MonthlyVolumes]:
