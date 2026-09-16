@@ -9,7 +9,7 @@ they are siblings, no circular dependency.
 state every ~5s and the value must hit disk before the next refresh tick
 (ADR-018 ~1s crash safety promise).
 
-User-facing mutators (`set_charge_allowed_override`, `set_start_charge_hour_override`)
+User-facing mutators (`set_charge_allowed_override`, `set_start_charge_hour_manual`)
 were dropped — the service mutates `policy.set_X(...)` directly and awaits
 `repo.persist()` via the inherited `Service._persist_and_notify` helper.
 

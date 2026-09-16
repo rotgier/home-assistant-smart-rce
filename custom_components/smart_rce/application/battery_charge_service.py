@@ -5,11 +5,11 @@ Public API consumed by HA entities (select, time, sensors) and Ems:
   `BatteryOperation` so derived properties (`charge_allowed`,
   `target_modbus_value`) can be queried lazily by sensors/actuator.
   Returns `BatteryChargeUpdateResult` (atomic snapshot for Ems).
-- `set_charge_allowed_override(mode)` / `set_start_charge_hour_override(value)`
+- `set_charge_allowed_override(mode)` / `set_start_charge_hour_manual(value)`
   — UI mutators (async; persist + notify).
-- `handle_start_charge_today_changed(event, now)` — sync event handler
-  from `Ems.update_hourly` carrying a `ChargeSlots` rotation event;
-  sticky-gates the auto-sync to bootstrap or `[00:00, 06:00)` window.
+- `refresh_start_charge(computed_today, now)` — single sync entry point
+  called after every `ChargeSlots` recompute: promotes a due tomorrow-plan,
+  then auto-syncs the override unless it was hand-set for today.
 - `add_listener(cb)` — single-registry refresh hook (inherited from `Service`).
 
 Repository is the internal collaborator (owns + persists policy). Service
@@ -23,15 +23,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 
-from ..domain.battery_charge_policy import OverrideMode
+from ..domain.battery_charge_policy import ChargeStartPlan, OverrideMode
 from ..domain.battery_schedule import BatteryOperation
-from ..domain.charge_slots import ChargeWindowParams, StartChargeTodayChanged
+from ..domain.charge_slots import ChargeWindowParams
 from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 from .service import Service
 
@@ -107,6 +107,14 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         return self._repo.policy.start_charge_hour_override
 
     @property
+    def start_charge_manual_day(self) -> date | None:
+        return self._repo.policy.start_charge_manual_day
+
+    @property
+    def tomorrow_plan(self) -> ChargeStartPlan | None:
+        return self._repo.policy.tomorrow_plan
+
+    @property
     def initial_charge_hours(self) -> int:
         return self._repo.policy.initial_charge_hours
 
@@ -134,11 +142,39 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
             self._repo.policy.set_charge_allowed_override(mode)
         )
 
-    async def set_start_charge_hour_override(self, value: time | None) -> None:
-        """UI-driven time entity change. Persists + notifies listeners on delta."""
+    async def set_start_charge_hour_manual(self, value: time) -> None:
+        """UI-driven change of TODAY's start — marks the value as hand-set.
+
+        The mark is what stops the automatic sync from reverting it on the
+        next price refresh or after a restart; it expires by itself once the
+        date rolls over.
+        """
         await self._persist_and_notify(
-            self._repo.policy.set_start_charge_hour_override(value)
+            self._repo.policy.set_start_charge_hour_manual(value, self._clock().date())
         )
+
+    async def set_tomorrow_plan(self, value: time) -> None:
+        """UI-driven change of TOMORROW's start — pins a plan to tomorrow's date.
+
+        Today's override is left alone; the plan is promoted by
+        `refresh_start_charge` on the day it names.
+        """
+        await self._persist_and_notify(
+            self._repo.policy.set_tomorrow_plan(
+                value, self._clock().date() + timedelta(days=1)
+            )
+        )
+
+    async def force_sync_start_charge(self, value: time) -> None:
+        """Align today's start with a freshly recomputed window, dropping manual.
+
+        Called by `Ems` after a user changes a charge-window param: that is an
+        explicit "recompute this for me", so any hand-set mark is cleared and
+        the value goes back to following RCE.
+        """
+        changed = self._repo.policy.set_start_charge_hour_override(value)
+        changed |= self._repo.policy.clear_start_charge_manual()
+        await self._persist_and_notify(changed)
 
     async def set_initial_charge_hours(self, value: int) -> None:
         """UI-driven select change for the base charge-window length.
@@ -171,24 +207,42 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         )
 
     @callback
-    def handle_start_charge_today_changed(
-        self, event: StartChargeTodayChanged | None, now: datetime
-    ) -> None:
-        """React to ChargeSlots emitting a today-start change event.
+    def refresh_start_charge(self, computed_today: time | None, now: datetime) -> None:
+        """Single entry point after a `ChargeSlots` recompute — promote, then sync.
 
-        Sticky override gate — sync the new value into the policy only when:
-        1. Bootstrap — policy.start_charge_hour_override is None (fresh install)
-        2. Midnight window — `0 <= now.hour < 6`
-
-        Outside these, user manual override on the time entity persists.
-        Mirrors legacy YAML automation `copy-rce-start-charge-override-midnight`
-        (gated by `condition: time after 00:00 before 06:00`).
+        Order matters and is enforced here rather than left to callers: a plan
+        due today must land BEFORE the auto-sync runs, otherwise the computed
+        value would briefly occupy the override and the actuator could act on
+        it. Both steps compare against persisted state only, so the outcome is
+        the same whether this runs at midnight, after a restart, or on the
+        first tick of a day HA slept through.
         """
-        if event is None:
+        self._promote_due_plan(now.date())
+        if computed_today is None:
             return
-        previous = self._repo.policy.start_charge_hour_override
-        if previous is not None and not (0 <= now.hour < 6):
-            return  # sticky — user override survives outside midnight window
+        if self._repo.policy.start_charge_manual_day == now.date():
+            return  # hand-set for today — automation keeps its hands off
         self._save_if_changed_and_notify(
-            self._repo.policy.set_start_charge_hour_override(event.new_value)
+            self._repo.policy.set_start_charge_hour_override(computed_today)
         )
+
+    @callback
+    def _promote_due_plan(self, today: date) -> None:
+        """Move a plan naming today into the override; drop it once it is past."""
+        plan = self._repo.policy.tomorrow_plan
+        if plan is None or not (plan.is_due(today) or plan.is_stale(today)):
+            return
+        changed = self._repo.policy.clear_tomorrow_plan()
+        if plan.is_due(today):
+            changed |= self._repo.policy.set_start_charge_hour_manual(
+                plan.value, plan.day
+            )
+            _LOGGER.info("Promoted manual charge start %s for %s", plan.value, plan.day)
+        else:
+            _LOGGER.info(
+                "Dropping stale charge start plan %s for %s (today is %s)",
+                plan.value,
+                plan.day,
+                today,
+            )
+        self._save_if_changed_and_notify(changed)

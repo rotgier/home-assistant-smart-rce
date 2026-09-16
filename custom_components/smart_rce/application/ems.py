@@ -27,7 +27,7 @@ its associated driven adapters immediately after):
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, time
 import logging
 from typing import TYPE_CHECKING
 
@@ -242,9 +242,9 @@ class Ems:
 
     def update_hourly(self, now: datetime) -> None:
         self.rce_prices.update_hourly(now)
-        rotation_event = self.charge_slots.rotate_if_day_changed(now)
-        self.battery_charge_service.handle_start_charge_today_changed(
-            rotation_event, now
+        self.charge_slots.rotate_if_day_changed(now)
+        self.battery_charge_service.refresh_start_charge(
+            self.charge_slots.today_start, now
         )
         self.discharge_slots.update(self.rce_prices.rce_prices, now)
         if self.rce_prices.current_price is not None:
@@ -259,29 +259,51 @@ class Ems:
     def restore_rce_tomorrow(self, prices_attr: list[dict], now: datetime) -> None:
         """Restore tomorrow's RCE prices from sensor attributes.
 
-        `now` is required (caller passes `dt_util.now()`) so the auto-sync
-        gate in BatteryChargeService.handle_start_charge_today_changed
-        evaluates the midnight window against HA-aware local time. Ems
-        stays HASS-unaware — caller injects the time source.
+        `now` is required (caller passes `dt_util.now()`) so
+        `BatteryChargeService.refresh_start_charge` compares plan dates
+        against HA-aware local time. Ems stays HASS-unaware — caller
+        injects the time source.
         """
         self.rce_prices.restore_tomorrow(prices_attr, now)
         self._refresh_charge_slots(now, self.rce_prices.rce_prices)
 
     def _refresh_charge_slots(self, now: datetime, rce_data: RcePrices | None) -> None:
-        """Recompute charge_slots from RCE + propagate today_start change event.
+        """Recompute charge_slots from RCE, then reconcile the charge-start override.
 
         Etap B'-2: replaces legacy YAML automation
-        `copy-rce-start-charge-override-midnight` — sync RCE-computed
-        today_start into BatteryChargePolicy.start_charge_hour_override.
-        BatteryChargeService owns the stickiness gate (this method just
-        bridges the event from ChargeSlots).
+        `copy-rce-start-charge-override-midnight`. The recompute itself is
+        consequence-free; `refresh_start_charge` decides what reaches the
+        policy — promoting a due tomorrow-plan first, then syncing unless the
+        override was hand-set for today.
         """
-        event = self.charge_slots.update(
+        self.charge_slots.update(
             rce_data,
             self._heater_threshold(),
             self.battery_charge_service.charge_window_params,
         )
-        self.battery_charge_service.handle_start_charge_today_changed(event, now)
+        self.battery_charge_service.refresh_start_charge(
+            self.charge_slots.today_start, now
+        )
+
+    @property
+    def charge_start_tomorrow(self) -> time | None:
+        """Effective charge start for tomorrow — manual plan wins over the computed window.
+
+        Joins the two aggregates the way the dashboard reads them: a plan the
+        user pinned, or the window computed from tomorrow's RCE prices (None
+        until those are published, around 14:00). A plan is always in the
+        future here — `refresh_start_charge` promotes or drops it as soon as
+        its day arrives.
+        """
+        plan = self.battery_charge_service.tomorrow_plan
+        if plan is not None:
+            return plan.value
+        return self.charge_slots.tomorrow_start
+
+    async def set_charge_start_tomorrow(self, value: time) -> None:
+        """Cross-aggregate command from `time.ems_battery_charge_start_hour_tomorrow`."""
+        await self.battery_charge_service.set_tomorrow_plan(value)
+        self._async_update_listeners()
 
     async def set_initial_charge_hours(self, value: int) -> None:
         """Cross-aggregate command from `select.ems_battery_initial_charge_hours`."""
@@ -306,26 +328,22 @@ class Ems:
     async def _apply_charge_param_change(self) -> None:
         """Recompute charge_slots + force-sync start after a user param change.
 
-        Force-syncs `start_charge_hour_override` to the fresh today-window start.
-        A user change is explicit intent, so it BYPASSES the midnight
-        sticky-gate. This is what makes the params actually effective today: the
-        real charge decisions (charge_allowed time-gate, dod_policy +
+        Force-syncs `start_charge_hour_override` to the fresh today-window start
+        AND clears the hand-set mark — turning a knob is an explicit "recompute
+        this for me". This is what makes the params actually effective today:
+        the real charge decisions (charge_allowed time-gate, dod_policy +
         grid_export positive pre-charge windows) read start_charge_hour_override,
-        NOT charge_slots directly. Without the force-sync, a mid-day change would
-        only move the sensor and take effect at the next midnight rotation. The
-        sticky-gate stays in `_refresh_charge_slots` (automatic RCE refresh) so a
-        price refresh never clobbers a manually-set start.
+        NOT charge_slots directly. The automatic path (`_refresh_charge_slots`)
+        stays deferential — it never clobbers a value the user set by hand.
         """
         self.charge_slots.update(
             self.rce_prices.rce_prices,
             self._heater_threshold(),
             self.battery_charge_service.charge_window_params,
         )
-        today = self.charge_slots.today
-        if today is not None:
-            await self.battery_charge_service.set_start_charge_hour_override(
-                today.start_datetime.time()
-            )
+        today_start = self.charge_slots.today_start
+        if today_start is not None:
+            await self.battery_charge_service.force_sync_start_charge(today_start)
         self._async_update_listeners()
 
     def _resolve_ems_operation(

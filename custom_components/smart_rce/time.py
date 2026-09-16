@@ -5,6 +5,11 @@ Currently exposes one entity:
   `BatteryChargePolicy.start_charge_hour_override`. Drives the morning
   block window `[06:00, start_charge_hour_override)` in
   `BatteryChargePolicy.charge_allowed`.
+- `time.ems_battery_charge_start_hour_tomorrow` — tomorrow's start: the
+  manual plan when set, otherwise the window computed from tomorrow's RCE
+  prices. Lets the evening question "is tomorrow set up sensibly?" be both
+  answered and acted on; the plan is promoted into the entity above on the
+  day it names.
 
 Replaces legacy `input_datetime.rce_start_charge_hour_today_override`
 (Etap B'-2 migration). Persistence owned by `BatteryChargeRepository`.
@@ -51,6 +56,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             EmsBatteryChargeStartHourOverrideTime(entry),
+            EmsBatteryChargeStartHourTomorrowTime(entry),
             *[
                 BatteryScheduleSlotTime(
                     entry,
@@ -99,7 +105,44 @@ class EmsBatteryChargeStartHourOverrideTime(TimeEntity):
         return self._service.start_charge_hour_override
 
     async def async_set_value(self, value: time) -> None:
-        await self._service.set_start_charge_hour_override(value)
+        await self._service.set_start_charge_hour_manual(value)
+
+
+class EmsBatteryChargeStartHourTomorrowTime(TimeEntity):
+    """Tomorrow's charge-window start — computed by default, overridable.
+
+    Reads through `Ems`, which joins the manual plan held by
+    `BatteryChargePolicy` with the window computed from tomorrow's RCE
+    prices. `unknown` until those prices are published (~14:00).
+
+    Setting a value pins it to tomorrow's date; `refresh_start_charge`
+    promotes it into `start_charge_hour_override` when that day arrives —
+    by comparing dates, so it survives a restart or an HA outage across
+    midnight.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Battery Charge Start Hour Tomorrow"
+    _attr_should_poll = False
+    _attr_icon = "mdi:clock-start"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._ems = entry.runtime_data.ems
+        self._attr_unique_id = f"{DOMAIN}_ems_battery_charge_start_hour_tomorrow"
+        self.entity_id = "time.ems_battery_charge_start_hour_tomorrow"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._ems.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> time | None:
+        return self._ems.charge_start_tomorrow
+
+    async def async_set_value(self, value: time) -> None:
+        await self._ems.set_charge_start_tomorrow(value)
 
 
 class BatteryScheduleSlotTime(TimeEntity):

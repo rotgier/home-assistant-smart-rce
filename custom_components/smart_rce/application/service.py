@@ -53,9 +53,9 @@ class Service[TRepo: _RepoProto](Listenable):
     def _save_if_changed_and_notify(self, changed: bool) -> None:
         """Sync: fire-and-forget save + notify on True.
 
-        Use from sync event-driven handlers (e.g. handle_start_charge_today_changed
-        called from Ems.update_hourly which is sync). save_if_changed dispatches
-        the persist via AsyncTaskRunner.run — caller does not block.
+        Use from sync event-driven handlers (e.g. refresh_start_charge called
+        from Ems.update_hourly which is sync). save_if_changed dispatches the
+        persist via AsyncTaskRunner.run — caller does not block.
         """
         if changed:
             self._repo.save_if_changed()

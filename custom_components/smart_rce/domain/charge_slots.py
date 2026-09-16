@@ -81,20 +81,6 @@ class ChargeWindowParams:
     base_window_shift_minutes: int = DEFAULT_BASE_WINDOW_SHIFT_MIN
 
 
-@dataclass(frozen=True)
-class StartChargeTodayChanged:
-    """Event emitted by ChargeSlots when today's start time-of-day changes.
-
-    Emitted from:
-    - `update` — only when the newly-computed today_start differs from the
-      previous value (RCE refresh that genuinely changed the slot).
-    - `rotate_if_day_changed` — on every rotation regardless of equality
-      (semantic: 'new day = fresh value, downstream can decide stickiness').
-    """
-
-    new_value: time
-
-
 class ChargeSlots:
     """Cached today/tomorrow ChargeWindow + algorytm doboru godzin."""
 
@@ -102,42 +88,50 @@ class ChargeSlots:
         self.today: ChargeWindow | None = None
         self.tomorrow: ChargeWindow | None = None
 
+    @property
+    def today_start(self) -> time | None:
+        """Time-of-day of today's charge-window start (None when no window)."""
+        return self.today.start_datetime.time() if self.today else None
+
+    @property
+    def tomorrow_start(self) -> time | None:
+        """Time-of-day of tomorrow's charge-window start (None until RCE publishes)."""
+        return self.tomorrow.start_datetime.time() if self.tomorrow else None
+
     def update(
         self,
         rce_data: RcePrices | None,
         heater_threshold: float = DEFAULT_HEATER_RCE_THRESHOLD,
         params: ChargeWindowParams | None = None,
-    ) -> StartChargeTodayChanged | None:
+    ) -> None:
         """Recompute charge windows from RCE — full refresh today/tomorrow.
 
-        Returns `StartChargeTodayChanged` event when today's start_datetime
-        time-of-day actually changed (Etap B'-2 — drives auto-sync of
-        BatteryChargePolicy.start_charge_hour_override).
+        Pure recompute: the windows derive entirely from prices, so this is as
+        safe to call on restore as on a fresh fetch. Propagating the result
+        into `BatteryChargePolicy` is the caller's job
+        (`BatteryChargeService.refresh_start_charge`), which compares against
+        PERSISTED state rather than the in-memory previous value — the latter
+        is always None right after a restart and so cannot tell "unchanged"
+        apart from "unknown".
 
         `params` (ChargeWindowParams) carries the user-tunable knobs from
         BatteryChargePolicy via Ems. None = library defaults.
         """
         params = params or ChargeWindowParams()
-        previous = self.today.start_datetime.time() if self.today else None
         if rce_data is None:
             self.today = None
             self.tomorrow = None
-            new = None
-        else:
-            self.today = self.compute(rce_data.today, heater_threshold, params)
-            self.tomorrow = self.compute(rce_data.tomorrow, heater_threshold, params)
-            new = self.today.start_datetime.time() if self.today else None
-        if new is not None and new != previous:
-            return StartChargeTodayChanged(new_value=new)
-        return None
+            return
+        self.today = self.compute(rce_data.today, heater_threshold, params)
+        self.tomorrow = self.compute(rce_data.tomorrow, heater_threshold, params)
 
-    def rotate_if_day_changed(self, now: datetime) -> StartChargeTodayChanged | None:
-        """Move tomorrow → today when date rolled. Returns event on rotation.
+    def rotate_if_day_changed(self, now: datetime) -> None:
+        """Move tomorrow → today when the date rolled over.
 
-        Event is emitted on EVERY rotation (not gated on value equality with
-        previous today) — semantic: 'new day, fresh value'. Downstream
-        consumer (BatteryChargeService.auto_sync_start_charge_hour_override)
-        handles idempotent no-op when value matches the current override.
+        Keeps the cached windows aligned with the calendar between price
+        fetches. Carries no policy consequence of its own — the charge-start
+        override follows from dates held in `BatteryChargePolicy`, not from
+        having observed this rotation (HA may well have been down for it).
         """
         if (
             self.today is not None
@@ -151,10 +145,6 @@ class ChargeSlots:
             )
             self.today = self.tomorrow
             self.tomorrow = None
-            new = self.today.start_datetime.time() if self.today else None
-            if new is not None:
-                return StartChargeTodayChanged(new_value=new)
-        return None
 
     @staticmethod
     def compute(

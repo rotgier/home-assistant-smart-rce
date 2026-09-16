@@ -29,7 +29,7 @@ field migration.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -82,6 +82,19 @@ class BatteryChargePolicy:
     # (legacy input_datetime) for now; future commit migrates ownership to
     # smart_rce time entity + drops state_mapper bridge.
     start_charge_hour_override: time | None = None
+    # Provenance of `start_charge_hour_override`: the day for which the value
+    # was set BY HAND. Auto-sync refuses to touch the override while this
+    # equals today, so a manual value survives price refreshes AND restarts
+    # (the flag is persisted; `ChargeSlots` is not). Storing a date rather
+    # than a bool makes the manual mark expire on its own at midnight — no
+    # clearing event to miss when HA is down over the rollover.
+    start_charge_manual_day: date | None = None
+    # Manual plan for TOMORROW's charge start, pinned to the day it applies
+    # to. Unlike the today override this is NOT the effective value consumed
+    # by the time-gate — it only exists while the user has overridden the
+    # computed window, and is promoted into `start_charge_hour_override` on
+    # the day it names. Absent (None) means "show the computed window".
+    tomorrow_plan: ChargeStartPlan | None = None
     # User-tunable inputs to the charge-window selection algorithm (consumed by
     # `ChargeSlots.compute` cross-aggregate via Ems on recompute). Kept here
     # because this policy already owns a crash-safe Store and groups the other
@@ -164,10 +177,49 @@ class BatteryChargePolicy:
         return True
 
     def set_start_charge_hour_override(self, value: time | None) -> bool:
-        """Mutate morning charge window start. Returns True if value changed."""
+        """Mutate morning charge window start. Returns True if value changed.
+
+        Provenance-neutral — used by the automatic sync and by the
+        param-change force-sync. To mark the value as hand-set use
+        `set_start_charge_hour_manual`.
+        """
         if self.start_charge_hour_override == value:
             return False
         self.start_charge_hour_override = value
+        return True
+
+    def set_start_charge_hour_manual(self, value: time, day: date) -> bool:
+        """Set today's start AND mark it as hand-set for `day`.
+
+        While `start_charge_manual_day` equals the current date the automatic
+        sync leaves the override alone, so the value survives price refreshes
+        and restarts alike. Returns True if anything changed.
+        """
+        changed = self.set_start_charge_hour_override(value)
+        changed |= self.start_charge_manual_day != day
+        self.start_charge_manual_day = day
+        return changed
+
+    def clear_start_charge_manual(self) -> bool:
+        """Drop the hand-set mark — the override goes back to following RCE."""
+        if self.start_charge_manual_day is None:
+            return False
+        self.start_charge_manual_day = None
+        return True
+
+    def set_tomorrow_plan(self, value: time, day: date) -> bool:
+        """Pin a manual charge start for `day` (tomorrow at the time of setting)."""
+        plan = ChargeStartPlan(day=day, value=value)
+        if self.tomorrow_plan == plan:
+            return False
+        self.tomorrow_plan = plan
+        return True
+
+    def clear_tomorrow_plan(self) -> bool:
+        """Drop the manual plan — the tomorrow view falls back to the computed window."""
+        if self.tomorrow_plan is None:
+            return False
+        self.tomorrow_plan = None
         return True
 
     def set_initial_charge_hours(self, value: int) -> bool:
@@ -224,6 +276,14 @@ class BatteryChargePolicy:
                 if self.start_charge_hour_override is not None
                 else None
             ),
+            "start_charge_manual_day": (
+                self.start_charge_manual_day.isoformat()
+                if self.start_charge_manual_day is not None
+                else None
+            ),
+            "tomorrow_plan": (
+                self.tomorrow_plan.to_dict() if self.tomorrow_plan is not None else None
+            ),
             "initial_charge_hours": self.initial_charge_hours,
             "charge_extend_threshold": self.charge_extend_threshold,
             "charge_absolute_cheap_price": self.charge_absolute_cheap_price,
@@ -269,15 +329,9 @@ class BatteryChargePolicy:
         else:
             modbus_value = None
 
-        start_charge_raw = data.get("start_charge_hour_override")
-        start_charge: time | None
-        if start_charge_raw is not None:
-            try:
-                start_charge = time.fromisoformat(start_charge_raw)
-            except (TypeError, ValueError):
-                start_charge = None
-        else:
-            start_charge = None
+        start_charge = _coerce_time(data.get("start_charge_hour_override"))
+        manual_day = _coerce_date(data.get("start_charge_manual_day"))
+        tomorrow_plan = ChargeStartPlan.from_dict(data.get("tomorrow_plan"))
 
         # Migration: legacy `charge_hours_override` (int | None, where None=Auto)
         # maps to `initial_charge_hours` (None → default base 3).
@@ -300,11 +354,48 @@ class BatteryChargePolicy:
             _modbus_current_value=modbus_value,
             _last_modbus_read_at=last_read_at,
             start_charge_hour_override=start_charge,
+            start_charge_manual_day=manual_day,
+            tomorrow_plan=tomorrow_plan,
             initial_charge_hours=initial_hours,
             charge_extend_threshold=extend_threshold,
             charge_absolute_cheap_price=absolute_cheap_price,
             charge_base_window_shift_minutes=base_window_shift,
         )
+
+
+@dataclass(frozen=True)
+class ChargeStartPlan:
+    """A hand-set charge start pinned to the day it applies to.
+
+    Value object — the day is part of the identity, which is what makes the
+    plan safe across a restart or a missed midnight: whether it should take
+    effect is answered by comparing dates, never by having caught an event.
+    """
+
+    day: date
+    value: time
+
+    def is_due(self, today: date) -> bool:
+        """Tell whether the plan names today and should become the active override."""
+        return self.day == today
+
+    def is_stale(self, today: date) -> bool:
+        """Tell whether the day has passed — such a plan can only be dropped."""
+        return self.day < today
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"day": self.day.isoformat(), "value": self.value.isoformat()}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> ChargeStartPlan | None:
+        """Restore from persisted dict; None on missing / unparsable input."""
+        if not isinstance(data, dict):
+            return None
+        day = _coerce_date(data.get("day"))
+        value = _coerce_time(data.get("value"))
+        if day is None or value is None:
+            return None
+        return cls(day=day, value=value)
 
 
 def _coerce_int(raw: Any, default: int) -> int:
@@ -321,3 +412,19 @@ def _coerce_float(raw: Any, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_time(raw: Any) -> time | None:
+    """Best-effort `time` from a persisted ISO string; None on missing/garbage."""
+    try:
+        return time.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_date(raw: Any) -> date | None:
+    """Best-effort `date` from a persisted ISO string; None on missing/garbage."""
+    try:
+        return date.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
