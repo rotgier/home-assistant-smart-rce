@@ -65,7 +65,7 @@ class TestChargeAllowed:
             BatteryScheduleEntry,
         )
 
-        entry = BatteryScheduleEntry.default_for(SlotKind.DISCHARGE_EVENING)
+        entry = BatteryScheduleEntry.default_for(SlotKind.DISCHARGE_EVENING_EARLY)
         return entry.to_battery_operation()
 
     def test_default_off_no_engagement(self):

@@ -49,7 +49,7 @@ class OneShotOperation:
     started_at: datetime
     # Always NORMAL — deliberate user action, voice escalation at arbitrary
     # hours is disruptive. Not configurable in UI. If EMERGENCY semantics
-    # needed for evening peak, use scheduled slot DISCHARGE_EVENING (where
+    # needed for evening peak, use scheduled slot DISCHARGE_EVENING_EARLY (where
     # SlotProfile carries notification_level=EMERGENCY).
     notification_level: NotificationLevel = NotificationLevel.NORMAL
 

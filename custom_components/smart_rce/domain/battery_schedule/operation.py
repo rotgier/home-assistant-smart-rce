@@ -37,7 +37,7 @@ class BatteryOperation:
     pure inverter target.
 
     `ems_op.source="schedule"` for both slot-driven and one-shot ops;
-    `ems_op.reason` carries identity: `"slot=DISCHARGE_EVENING"` /
+    `ems_op.reason` carries identity: `"slot=DISCHARGE_EVENING_EARLY"` /
     `"oneshot=DISCHARGE"` / None when idle. Diagnostic-only — no
     programmatic parsing required.
 

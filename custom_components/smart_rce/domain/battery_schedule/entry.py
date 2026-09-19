@@ -294,11 +294,23 @@ class SlotKind(Enum):
         # 80% leaves headroom for late-afternoon PV surplus.
     )
 
-    DISCHARGE_EVENING = SlotProfile(
+    DISCHARGE_EVENING_EARLY = SlotProfile(
         direction=Direction.DISCHARGE,
         notification_level=NotificationLevel.EMERGENCY,
         # Voice call OK — user is awake during evening peak.
-        default_window=(time(20, 0), time(22, 0)),
+        default_window=(time(19, 0), time(21, 0)),
+        default_target_soc=10.0,
+    )
+
+    DISCHARGE_EVENING_LATE = SlotProfile(
+        direction=Direction.DISCHARGE,
+        notification_level=NotificationLevel.EMERGENCY,
+        # Second evening window. Nights where the RCE peak is followed by
+        # another expensive hour need two discharges with a hold in between
+        # (drain to ~33% in the peak, keep the rest for the later hour).
+        # Before this slot existed that second window was improvised by
+        # repointing DISCHARGE_MORNING at 21:00-22:00.
+        default_window=(time(21, 0), time(22, 0)),
         default_target_soc=10.0,
     )
 
@@ -323,5 +335,6 @@ class SlotKind(Enum):
             cls.CHARGE_MORNING,
             cls.CHARGE_AFTERNOON,
             cls.DISCHARGE_MORNING,
-            cls.DISCHARGE_EVENING,
+            cls.DISCHARGE_EVENING_EARLY,
+            cls.DISCHARGE_EVENING_LATE,
         ]

@@ -9,7 +9,9 @@ Eight named slots — four per day (today / tomorrow):
 - CHARGE_AFTERNOON    (cheap afternoon RCE — pre-fill battery before evening
                        peak if PV is insufficient. April-September: 13-19;
                        other months: 13-16. User sets window manually per season.)
-- DISCHARGE_EVENING   (primary RCE peak; voice-call notification OK)
+- DISCHARGE_EVENING_EARLY  (primary RCE peak; voice-call notification OK)
+- DISCHARGE_EVENING_LATE   (second evening window — a later expensive hour
+                            after a hold, e.g. peak at 19 then 21-22)
 """
 
 from __future__ import annotations
@@ -31,6 +33,9 @@ from .events import (
 )
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
+
+# Store key of the single evening slot that predates the EARLY/LATE split.
+_LEGACY_EVENING_KEY = "DISCHARGE_EVENING"
 
 
 @dataclass
@@ -256,7 +261,7 @@ class BatterySchedule:
         flicker when SoC change rate diverges from the rate estimate.
 
         Precedence (when no current engagement, multiple slots in window):
-        DISCHARGE_EVENING > DISCHARGE_MORNING > CHARGE_AFTERNOON > CHARGE_MORNING
+        DISCHARGE_EVENING_EARLY > DISCHARGE_MORNING > CHARGE_AFTERNOON > CHARGE_MORNING
         (see `SlotKind.by_precedence()` — last wins as strongest).
         """
         events: list[BatteryScheduleEvent] = []
@@ -371,7 +376,13 @@ class BatterySchedule:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatterySchedule:
         def _entry(scope: str, kind: SlotKind) -> BatteryScheduleEntry:
-            payload = (data.get(scope) or {}).get(kind.name)
+            stored = data.get(scope) or {}
+            payload = stored.get(kind.name)
+            if payload is None and kind is SlotKind.DISCHARGE_EVENING_EARLY:
+                # Migration: the single evening slot was split into EARLY +
+                # LATE. Its saved window is the one the user actually tuned,
+                # so it becomes EARLY; LATE starts from defaults.
+                payload = stored.get(_LEGACY_EVENING_KEY)
             if payload is None:
                 return BatteryScheduleEntry.default_for(kind)
             return BatteryScheduleEntry.from_dict(payload, kind=kind)
@@ -385,6 +396,8 @@ class BatterySchedule:
 
         currently_engaging: SlotKind | None = None
         if engaging_name := data.get("currently_engaging"):
+            if engaging_name == _LEGACY_EVENING_KEY:
+                engaging_name = SlotKind.DISCHARGE_EVENING_EARLY.name
             try:
                 currently_engaging = SlotKind[engaging_name]
             except KeyError:

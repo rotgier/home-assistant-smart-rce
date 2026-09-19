@@ -241,6 +241,27 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
     reload(import_module("custom_components.smart_rce.domain.dod_policy"))
     # battery_schedule: domain BEFORE application service (service imports domain).
+    # Submodules first, in dependency order — reloading only the package would
+    # re-run its __init__ while `from .entry import ...` hands back the modules
+    # already in sys.modules, so edits inside the package would silently not
+    # take effect (the same trap garden hit before it was itemised here).
+    # Order: direction -> operation -> entry -> oneshot -> commands -> events
+    # -> schedule -> package re-exports.
+    reload(
+        import_module("custom_components.smart_rce.domain.battery_schedule.direction")
+    )
+    reload(
+        import_module("custom_components.smart_rce.domain.battery_schedule.operation")
+    )
+    reload(import_module("custom_components.smart_rce.domain.battery_schedule.entry"))
+    reload(import_module("custom_components.smart_rce.domain.battery_schedule.oneshot"))
+    reload(
+        import_module("custom_components.smart_rce.domain.battery_schedule.commands")
+    )
+    reload(import_module("custom_components.smart_rce.domain.battery_schedule.events"))
+    reload(
+        import_module("custom_components.smart_rce.domain.battery_schedule.schedule")
+    )
     reload(import_module("custom_components.smart_rce.domain.battery_schedule"))
     # battery_charge_policy imports BatteryOperation from battery_schedule —
     # reload AFTER battery_schedule.

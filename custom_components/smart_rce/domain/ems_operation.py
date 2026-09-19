@@ -14,7 +14,7 @@ Consumed by `GoodweEmsActuator.apply_if_changed(target)` which writes
 
 `source` is diagnostic (drives sensor labels; resolution precedence
 between competing sources is handled in `Ems._resolve_ems_operation`).
-`reason` is a free-form diagnostic string — e.g. "slot=DISCHARGE_EVENING"
+`reason` is a free-form diagnostic string — e.g. "slot=DISCHARGE_EVENING_EARLY"
 or "oneshot=DISCHARGE" for schedule-produced ops, intervention-specific
 strings for grid_export — surfaced in logbook/ApplyGuard messages, NOT
 parsed programmatically.

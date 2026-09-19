@@ -156,7 +156,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
     ),
     EmsSensorDescription(
         name="Battery Schedule Currently Engaging",
-        # Slot kind name (e.g. "DISCHARGE_EVENING") or "IDLE" when no slot
+        # Slot kind name (e.g. "DISCHARGE_EVENING_EARLY") or "IDLE" when no slot
         # active. Diagnostic — UI shows which schedule slot is driving the
         # inverter right now. Updates on engage/disengage events emitted by
         # BatterySchedule.compute_operation (per-tick fan-out via service
