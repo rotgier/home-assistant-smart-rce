@@ -334,8 +334,10 @@ class Ems:
         """Recompute charge_slots + force-sync start after a user param change.
 
         Force-syncs `start_charge_hour_override` to the fresh today-window start
-        AND clears the hand-set mark — turning a knob is an explicit "recompute
-        this for me". This is what makes the params actually effective today:
+        AND clears every manual mark — today's, plus any plan pinned for
+        tomorrow — because turning a knob is an explicit "recompute this for
+        me" and a surviving plan would mask the result. This is also what
+        makes the params actually effective today:
         the real charge decisions (charge_allowed time-gate, dod_policy +
         grid_export positive pre-charge windows) read start_charge_hour_override,
         NOT charge_slots directly. The automatic path (`_refresh_charge_slots`)
@@ -346,9 +348,9 @@ class Ems:
             self._heater_threshold(),
             self.battery_charge_service.charge_window_params,
         )
-        today_start = self.charge_slots.today_start
-        if today_start is not None:
-            await self.battery_charge_service.force_sync_start_charge(today_start)
+        await self.battery_charge_service.force_sync_start_charge(
+            self.charge_slots.today_start
+        )
         self._async_update_listeners()
 
     def _resolve_ems_operation(

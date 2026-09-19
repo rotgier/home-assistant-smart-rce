@@ -409,3 +409,30 @@ def test_service_resolves_the_source_against_its_own_clock():
     assert _service(_at(TOMORROW, 9), policy).start_charge_source is (
         ChargeStartSource.AUTO
     )
+
+
+async def test_a_param_change_releases_tomorrow_back_to_automatic():
+    # Turning a knob is how the user asks for a recompute; a plan surviving it
+    # would keep showing the old choice and hide the effect of the change.
+    policy = BatteryChargePolicy(
+        start_charge_manual_day=TODAY,
+        tomorrow_plan=ChargeStartPlan(day=TOMORROW, value=BY_HAND),
+    )
+    service = _service(_at(TODAY, 15), policy)
+
+    await service.force_sync_start_charge(COMPUTED)
+
+    assert service.start_charge_source is ChargeStartSource.AUTO
+    assert service.tomorrow_plan is None
+
+
+async def test_marks_are_released_even_without_prices_for_today():
+    policy = BatteryChargePolicy(
+        start_charge_manual_day=TODAY,
+        tomorrow_plan=ChargeStartPlan(day=TOMORROW, value=BY_HAND),
+    )
+    service = _service(_at(TODAY, 15), policy)
+
+    await service.force_sync_start_charge(None)
+
+    assert service.start_charge_source is ChargeStartSource.AUTO

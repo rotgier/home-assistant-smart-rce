@@ -178,15 +178,20 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
             )
         )
 
-    async def force_sync_start_charge(self, value: time) -> None:
-        """Align today's start with a freshly recomputed window, dropping manual.
+    async def force_sync_start_charge(self, value: time | None) -> None:
+        """Realign both days with the recomputed windows, dropping every manual mark.
 
-        Called by `Ems` after a user changes a charge-window param: that is an
-        explicit "recompute this for me", so any hand-set mark is cleared and
-        the value goes back to following RCE.
+        Called by `Ems` after a user changes a charge-window param. That is an
+        explicit "recompute this for me", so BOTH days go back to following
+        RCE: today's hand-set mark is cleared and a pinned plan for tomorrow
+        is dropped — keeping the plan would hide the very effect the user is
+        trying to see. Clearing happens even when `value` is None (no prices
+        for today), so the marks never outlive the request.
         """
-        changed = self._repo.policy.set_start_charge_hour_override(value)
-        changed |= self._repo.policy.clear_start_charge_manual()
+        changed = self._repo.policy.clear_start_charge_manual()
+        changed |= self._repo.policy.clear_tomorrow_plan()
+        if value is not None:
+            changed |= self._repo.policy.set_start_charge_hour_override(value)
         await self._persist_and_notify(changed)
 
     async def set_initial_charge_hours(self, value: int) -> None:
