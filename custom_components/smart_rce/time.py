@@ -39,6 +39,11 @@ from .garden.time_entities import build_times
 
 PARALLEL_UPDATES = 1
 
+# Charge-start entities swap their icon by provenance, so a glance at the card
+# tells a hand-set time from one the RCE window produced.
+ICON_START_AUTO = "mdi:clock-start"
+ICON_START_MANUAL = "mdi:clock-edit"
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -87,7 +92,6 @@ class EmsBatteryChargeStartHourOverrideTime(TimeEntity):
     _attr_has_entity_name = False
     _attr_name = "EMS Battery Charge Start Hour Override"
     _attr_should_poll = False
-    _attr_icon = "mdi:clock-start"
 
     def __init__(self, entry: SmartRceConfigEntry) -> None:
         self._entry = entry
@@ -103,6 +107,10 @@ class EmsBatteryChargeStartHourOverrideTime(TimeEntity):
     @property
     def native_value(self) -> time | None:
         return self._service.start_charge_hour_override
+
+    @property
+    def icon(self) -> str:
+        return _start_icon(self._service.start_charge_is_manual_today)
 
     async def async_set_value(self, value: time) -> None:
         await self._service.set_start_charge_hour_manual(value)
@@ -124,7 +132,6 @@ class EmsBatteryChargeStartHourTomorrowTime(TimeEntity):
     _attr_has_entity_name = False
     _attr_name = "EMS Battery Charge Start Hour Tomorrow"
     _attr_should_poll = False
-    _attr_icon = "mdi:clock-start"
 
     def __init__(self, entry: SmartRceConfigEntry) -> None:
         self._entry = entry
@@ -141,8 +148,17 @@ class EmsBatteryChargeStartHourTomorrowTime(TimeEntity):
     def native_value(self) -> time | None:
         return self._ems.charge_start_tomorrow
 
+    @property
+    def icon(self) -> str:
+        return _start_icon(self._ems.charge_start_tomorrow_is_manual)
+
     async def async_set_value(self, value: time) -> None:
         await self._ems.set_charge_start_tomorrow(value)
+
+
+def _start_icon(is_manual: bool) -> str:
+    """Icon for a charge-start entity — shared by the today and tomorrow views."""
+    return ICON_START_MANUAL if is_manual else ICON_START_AUTO
 
 
 class BatteryScheduleSlotTime(TimeEntity):

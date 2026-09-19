@@ -29,7 +29,11 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 
-from ..domain.battery_charge_policy import ChargeStartPlan, OverrideMode
+from ..domain.battery_charge_policy import (
+    ChargeStartPlan,
+    ChargeStartSource,
+    OverrideMode,
+)
 from ..domain.battery_schedule import BatteryOperation
 from ..domain.charge_slots import ChargeWindowParams
 from ..infrastructure.battery_charge_repository import BatteryChargeRepository
@@ -113,6 +117,15 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
     @property
     def tomorrow_plan(self) -> ChargeStartPlan | None:
         return self._repo.policy.tomorrow_plan
+
+    @property
+    def start_charge_source(self) -> ChargeStartSource:
+        """Whether today's / tomorrow's start is hand-set — resolved against today."""
+        return self._repo.policy.start_charge_source(self._clock().date())
+
+    @property
+    def start_charge_is_manual_today(self) -> bool:
+        return self._repo.policy.start_charge_manual_day == self._clock().date()
 
     @property
     def initial_charge_hours(self) -> int:

@@ -17,6 +17,7 @@ from homeassistant.const import UnitOfPower
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from ..application.ems import Ems
+from ..domain.battery_charge_policy import ChargeStartSource
 from ..domain.battery_schedule import OneShotOperation
 from ._state_writer_mixin import StateWriterMixin
 
@@ -104,6 +105,13 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: ems.water_heater.heater_export_bonus,
         icon="mdi:transmission-tower-export",
+    ),
+    EmsSensorDescription(
+        name="Battery Charge Start Source",
+        device_class=SensorDeviceClass.ENUM,
+        options=[source.value for source in ChargeStartSource],
+        value_fn=lambda ems: ems.battery_charge_service.start_charge_source.value,
+        icon="mdi:source-branch",
     ),
     EmsSensorDescription(
         name="Grid Export Recommended Xset",

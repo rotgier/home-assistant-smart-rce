@@ -300,6 +300,11 @@ class Ems:
             return plan.value
         return self.charge_slots.tomorrow_start
 
+    @property
+    def charge_start_tomorrow_is_manual(self) -> bool:
+        """True when tomorrow's start comes from a pinned plan, not from RCE."""
+        return self.battery_charge_service.tomorrow_plan is not None
+
     async def set_charge_start_tomorrow(self, value: time) -> None:
         """Cross-aggregate command from `time.ems_battery_charge_start_hour_tomorrow`."""
         await self.battery_charge_service.set_tomorrow_plan(value)

@@ -53,6 +53,20 @@ class OverrideMode(StrEnum):
     DISALLOWED = "DISALLOWED"
 
 
+class ChargeStartSource(StrEnum):
+    """Where the charge-start values currently in force came from.
+
+    Diagnostic view over `start_charge_manual_day` + `tomorrow_plan`, which
+    on their own require knowing today's date to interpret: a manual mark
+    dated yesterday means "automatic" and reads as a leftover otherwise.
+    """
+
+    AUTO = "auto"
+    MANUAL_TODAY = "manual_today"
+    MANUAL_TOMORROW = "manual_tomorrow"
+    MANUAL_BOTH = "manual_both"
+
+
 CHARGE_CURRENT_MAX_AMPS: float = 18.5
 CHARGE_CURRENT_OFF_AMPS: float = 0.0
 
@@ -160,6 +174,22 @@ class BatteryChargePolicy:
         else:
             in_block_window = now_t >= BLOCK_WINDOW_START or now_t < start
         return not in_block_window
+
+    def start_charge_source(self, today: date) -> ChargeStartSource:
+        """Classify today's and tomorrow's start as automatic or hand-set.
+
+        Pure — `today` is injected, mirroring `charge_allowed(now, ...)`. A
+        manual mark for any other day is spent and counts as automatic.
+        """
+        manual_today = self.start_charge_manual_day == today
+        manual_tomorrow = self.tomorrow_plan is not None
+        if manual_today and manual_tomorrow:
+            return ChargeStartSource.MANUAL_BOTH
+        if manual_today:
+            return ChargeStartSource.MANUAL_TODAY
+        if manual_tomorrow:
+            return ChargeStartSource.MANUAL_TOMORROW
+        return ChargeStartSource.AUTO
 
     def target_modbus_value(
         self, now: datetime, schedule_op: BatteryOperation

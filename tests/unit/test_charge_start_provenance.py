@@ -19,6 +19,7 @@ from custom_components.smart_rce.application.ems import Ems
 from custom_components.smart_rce.domain.battery_charge_policy import (
     BatteryChargePolicy,
     ChargeStartPlan,
+    ChargeStartSource,
 )
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.rce import RceDayPrices, RcePrices
@@ -360,3 +361,51 @@ async def test_a_pinned_plan_wins_over_the_computed_window():
 
     assert computed != BY_HAND
     assert ems.charge_start_tomorrow == BY_HAND
+
+
+# ─── provenance readout ───
+
+
+def test_source_reads_auto_when_nothing_is_pinned():
+    assert BatteryChargePolicy().start_charge_source(TODAY) is ChargeStartSource.AUTO
+
+
+def test_source_reads_manual_today():
+    policy = BatteryChargePolicy(start_charge_manual_day=TODAY)
+
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL_TODAY
+
+
+def test_source_reads_manual_tomorrow():
+    policy = BatteryChargePolicy(
+        tomorrow_plan=ChargeStartPlan(day=TOMORROW, value=BY_HAND)
+    )
+
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL_TOMORROW
+
+
+def test_source_reads_manual_both():
+    policy = BatteryChargePolicy(
+        start_charge_manual_day=TODAY,
+        tomorrow_plan=ChargeStartPlan(day=TOMORROW, value=BY_HAND),
+    )
+
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL_BOTH
+
+
+def test_a_spent_manual_mark_reads_as_auto():
+    # The mark is never cleared, only outdated — it must not read as manual.
+    policy = BatteryChargePolicy(start_charge_manual_day=YESTERDAY)
+
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.AUTO
+
+
+def test_service_resolves_the_source_against_its_own_clock():
+    policy = BatteryChargePolicy(start_charge_manual_day=TODAY)
+
+    assert _service(_at(TODAY, 9), policy).start_charge_source is (
+        ChargeStartSource.MANUAL_TODAY
+    )
+    assert _service(_at(TOMORROW, 9), policy).start_charge_source is (
+        ChargeStartSource.AUTO
+    )
