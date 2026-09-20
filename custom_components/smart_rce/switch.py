@@ -28,6 +28,14 @@ from .garden.switch_entities import build_switches
 
 PARALLEL_UPDATES = 1
 
+# Evening slots are the ones the planner owns, so their icon reports who set
+# them last: the plan, or a hand edit that the planner will not undo today.
+ICON_SLOT_PROPOSED = "mdi:robot-outline"
+ICON_SLOT_HAND_SET = "mdi:hand-back-right"
+_PROPOSED_KINDS = frozenset(
+    {SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE}
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -187,6 +195,15 @@ class BatteryScheduleSlotEnabledSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool:
         return self._service.slot(self._scope, self._kind).enabled
+
+    @property
+    def icon(self) -> str:
+        """Evening slots show whether the plan or the user last set them."""
+        if self._kind not in _PROPOSED_KINDS or self._scope != "today":
+            return self._attr_icon
+        if self._service.evening_is_hand_set_today:
+            return ICON_SLOT_HAND_SET
+        return ICON_SLOT_PROPOSED
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self._service.handle_slot_command(

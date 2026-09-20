@@ -239,6 +239,11 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         )
 
     @property
+    def evening_is_hand_set_today(self) -> bool:
+        """Tell whether the user has overridden an evening slot today."""
+        return self._repo.schedule.evening_is_hand_set_on(self._clock().date())
+
+    @property
     def is_discharging_now(self) -> bool:
         """Tell whether a discharge slot is engaged right now.
 

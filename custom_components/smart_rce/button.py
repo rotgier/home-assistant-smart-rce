@@ -4,6 +4,8 @@ Etap 2F — 4 buttons per direction (charge / discharge):
 - `button.smart_rce_oneshot_<dir>_execute` — starts one-shot using stored
   params (target_soc + end_time from number/time entities)
 - `button.smart_rce_oneshot_<dir>_cancel` — cancels active one-shot
+- `button.ems_evening_plan_recalculate` — recomputes the evening discharge
+  plan on demand, for whichever evening comes next
 
 Persistence owned by `BatteryScheduleRepository`.
 """
@@ -15,6 +17,7 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util.dt import now as now_local
 
 from . import SmartRceConfigEntry
 from .const import DOMAIN
@@ -35,6 +38,7 @@ async def async_setup_entry(
     """Add smart_rce button entities."""
     async_add_entities(
         [
+            EveningPlanRecalculateButton(entry),
             OneShotExecuteButton(entry, direction=Direction.DISCHARGE),
             OneShotCancelButton(entry, direction=Direction.DISCHARGE),
             OneShotExecuteButton(entry, direction=Direction.CHARGE),
@@ -95,3 +99,31 @@ class OneShotCancelButton(ButtonEntity):
         # Cancel applies regardless of which button is pressed — direction is
         # only used for entity identity. Aggregate stores only one active op.
         await self._service.handle_cancel_oneshot()
+
+
+class EveningPlanRecalculateButton(ButtonEntity):
+    """Recompute the evening discharge plan now, instead of waiting for a run.
+
+    Targets whichever evening comes next — tonight before 22:00, tomorrow
+    after — so pressing it mid-evening cannot drop tomorrow's windows into
+    hours that are still open today.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Evening Plan Recalculate"
+    _attr_should_poll = False
+    _attr_icon = "mdi:calculator-variant-outline"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._entry = entry
+        self._ems = entry.runtime_data.ems
+        self._attr_unique_id = f"{DOMAIN}_ems_evening_plan_recalculate"
+        self.entity_id = "button.ems_evening_plan_recalculate"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_press(self) -> None:
+        plan = await self._ems.replan_nearest_evening(now_local())
+        if plan is None:
+            _LOGGER.warning("Evening plan not recomputed — prices or calendar missing")
+            return
+        _LOGGER.info("Evening plan recomputed on demand: %s", plan.reason)

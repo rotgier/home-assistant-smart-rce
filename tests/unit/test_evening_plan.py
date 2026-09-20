@@ -6,7 +6,7 @@ that loses to the next morning. Prices in these tests are NET (as RCE
 publishes them); the proposer converts to gross before comparing.
 """
 
-from datetime import date, time
+from datetime import date, datetime, time
 
 from custom_components.smart_rce.domain.battery_schedule import SlotBehavior, SlotKind
 from custom_components.smart_rce.domain.evening_plan import EveningPlan, EveningWindow
@@ -281,3 +281,21 @@ def test_a_window_knows_whether_it_runs_to_a_given_hour():
     assert window.reaches(21)
     assert not window.reaches(22)
     assert not window.is_single_hour
+
+
+# ─── which evening a run targets ───
+
+
+def test_before_ten_at_night_a_run_plans_tonight():
+    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 19, 35))
+    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 21, 59))
+
+
+def test_from_ten_at_night_a_run_plans_tomorrow():
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 22, 5))
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 23, 5))
+
+
+def test_after_midnight_a_run_is_back_to_planning_tonight():
+    # The 00:05 retry sits inside the evening it is planning for.
+    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 21, 0, 5))

@@ -317,6 +317,22 @@ class Ems:
             tomorrow=None if for_tomorrow else prices.tomorrow,
         )
 
+    async def replan_nearest_evening(self, now: datetime) -> EveningPlan | None:
+        """Recompute and apply the plan for whichever evening comes next.
+
+        Entry point for the dashboard button. Which evening that is follows
+        `EveningPlan.plans_tomorrow_at`, the same rule the scheduled runs use
+        — pressing the button mid-evening must not write tomorrow's windows
+        into hours that are open right now.
+        """
+        for_tomorrow = EveningPlan.plans_tomorrow_at(now)
+        plan = self.build_evening_plan(for_tomorrow=for_tomorrow)
+        if plan is None:
+            return None
+        await self.battery_schedule_service.adopt_evening_plan(plan, now)
+        self._async_update_listeners()
+        return plan
+
     def _is_workday(self, *, for_tomorrow: bool) -> bool | None:
         """Workday flag for the planned day, None when the calendar is missing."""
         state = self.last_input_state

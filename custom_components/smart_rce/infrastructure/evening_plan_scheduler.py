@@ -22,9 +22,10 @@ from typing import TYPE_CHECKING, Final
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
+from ..domain.evening_plan import EveningPlan
+
 if TYPE_CHECKING:
     from ..application.ems import Ems
-    from ..domain.evening_plan import EveningPlan
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,7 +89,9 @@ class EveningPlanScheduler:
             return
         # Past midnight the target evening is already today, so the plan must
         # be read off today's prices rather than tomorrow's.
-        if await self._plan_and_apply(now, for_tomorrow=target > now.date()):
+        if await self._plan_and_apply(
+            now, for_tomorrow=EveningPlan.plans_tomorrow_at(now)
+        ):
             self._planned_evening_on = target
 
     async def _run_afternoon(self, now: datetime) -> None:

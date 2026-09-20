@@ -13,7 +13,7 @@ previous evening's run does not.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import ClassVar, Final
 
 from .battery_schedule import (
@@ -29,6 +29,10 @@ from .battery_schedule import (
 )
 from .rce import RceDayPrices
 from .tariff import G13Zone
+
+# From this hour a planning run targets tomorrow evening: today's windows are
+# behind us, and writing them again would re-open a window already past.
+_PLANNING_LOOKS_AHEAD_FROM_HOUR: Final[int] = 22
 
 
 class EveningPlan:
@@ -85,6 +89,16 @@ class EveningPlan:
         self._windows = windows
         self._max_morning_price = max_morning_price
         self._overruled_by_morning = overruled_by_morning
+
+    @staticmethod
+    def plans_tomorrow_at(now: datetime) -> bool:
+        """Tell whether a run at `now` is planning tomorrow evening.
+
+        Tonight's windows have passed by this hour, so a later run looks ahead
+        instead. Writing tomorrow's plan before that point would drop windows
+        into hours still open today and start a discharge on the spot.
+        """
+        return now.hour >= _PLANNING_LOOKS_AHEAD_FROM_HOUR
 
     @classmethod
     def for_day(
