@@ -106,9 +106,11 @@ class EveningPlanScheduler:
         if plan is None:
             _LOGGER.debug("Evening plan unavailable (prices or calendar missing)")
             return False
-        outcome = await self._ems.battery_schedule_service.adopt_evening_plan(plan, now)
+        application = await self._ems.battery_schedule_service.adopt_evening_plan(
+            plan, now
+        )
         await notify_evening_plan(
-            self._hass, plan, outcome=outcome, for_tomorrow=for_tomorrow
+            self._hass, plan, application=application, for_tomorrow=for_tomorrow
         )
         return True
 

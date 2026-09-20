@@ -21,7 +21,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, ICON_AUTOMATIC, ICON_HAND_SET
 from .domain.battery_schedule import Scope, SetSlotEnabledCommand, SlotKind
 from .ems_device import ems_device_info
 from .garden.switch_entities import build_switches
@@ -30,8 +30,8 @@ PARALLEL_UPDATES = 1
 
 # Evening slots are the ones the planner owns, so their icon reports who set
 # them last: the plan, or a hand edit that the planner will not undo today.
-ICON_SLOT_PROPOSED = "mdi:robot-outline"
-ICON_SLOT_HAND_SET = "mdi:hand-back-right"
+ICON_SLOT_PROPOSED = ICON_AUTOMATIC
+ICON_SLOT_HAND_SET = ICON_HAND_SET
 _PROPOSED_KINDS = frozenset(
     {SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE}
 )

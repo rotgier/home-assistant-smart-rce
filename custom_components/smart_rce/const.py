@@ -26,3 +26,8 @@ GROSS_MULTIPLIER: Final[float] = 1.23
 # prev-workday consumption profiles + target SOC matrix walk back N
 # entries from this set, not from a "skip weekends" heuristic.
 WORKDAY_CALENDAR_ENTITY: Final = "calendar.workday_calendar"
+
+# Provenance icons — shared by every entity that can be either computed or
+# hand-set, so one visual code means the same thing across the dashboard.
+ICON_AUTOMATIC = "mdi:robot-outline"
+ICON_HAND_SET = "mdi:hand-back-right"

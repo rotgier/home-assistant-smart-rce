@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Final
 
 from homeassistant.core import HomeAssistant
 
-from ..application.plan_outcome import PlanOutcome
+from ..application.plan_application import PlanApplication, PlanOutcome, SlotChange
+from ..domain.battery_schedule import BatteryScheduleEntry, SlotKind
 
 if TYPE_CHECKING:
     from ..domain.evening_plan import EveningPlan
@@ -28,12 +29,22 @@ async def notify_evening_plan(
     hass: HomeAssistant,
     plan: EveningPlan,
     *,
-    outcome: PlanOutcome,
+    application: PlanApplication,
     for_tomorrow: bool,
 ) -> None:
-    """Send the outcome to Telegram. Never raises — the plan outranks the report."""
+    """Send the outcome to Telegram. Never raises — the plan outranks the report.
+
+    Silent when nothing moved: a restart between 15:00 and 21:00 re-runs the
+    afternoon sweep, and repeating "already current" on every restart would
+    train the reader to ignore the channel.
+    """
+    if application.outcome is PlanOutcome.ALREADY_CURRENT:
+        _LOGGER.debug("Evening plan unchanged — no notification sent")
+        return
     when = "jutro" if for_tomorrow else "dziś"
-    message = f"{when}: {_OUTCOME_TEXT[outcome]} — {_describe(plan)}"
+    message = f"{when}: {_OUTCOME_TEXT[application.outcome]} — {_describe(plan)}"
+    if application.changes:
+        message += "\n" + "\n".join(_describe_change(c) for c in application.changes)
     try:
         await hass.services.async_call(
             NOTIFY_DOMAIN,
@@ -43,6 +54,24 @@ async def notify_evening_plan(
         )
     except Exception:  # noqa: BLE001 - reporting must never break planning
         _LOGGER.exception("Evening plan notification failed")
+
+
+def _describe_change(change: SlotChange) -> str:
+    """One slot, before and after — so the reader sees what the plan moved."""
+    label = (
+        "wcześniejszy"
+        if change.kind is SlotKind.DISCHARGE_EVENING_EARLY
+        else "późniejszy"
+    )
+    if change.was_disabled:
+        return f"• {label}: wyłączony (był {_window(change.before)})"
+    if change.was_enabled:
+        return f"• {label}: włączony {_window(change.after)}"
+    return f"• {label}: {_window(change.before)} → {_window(change.after)}"
+
+
+def _window(entry: BatteryScheduleEntry) -> str:
+    return f"{entry.start:%H:%M}-{entry.end:%H:%M} do {entry.target_soc:.0f}%"
 
 
 def _describe(plan: EveningPlan) -> str:

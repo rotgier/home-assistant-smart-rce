@@ -46,7 +46,7 @@ from ..domain.battery_schedule import (
 )
 from ..domain.evening_plan import EveningPlan
 from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
-from .plan_outcome import PlanOutcome
+from .plan_application import PlanApplication, PlanOutcome, SlotChange
 from .service import Service
 
 
@@ -72,6 +72,9 @@ if TYPE_CHECKING:
     from ..infrastructure.battery_schedule_notifier import BatteryScheduleNotifier
 
 _LOGGER = logging.getLogger(__name__)
+
+# Slots the evening planner owns — the ones worth diffing and reporting.
+_EVENING = (SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE)
 
 
 class BatteryScheduleService(Service[BatteryScheduleRepository]):
@@ -254,31 +257,58 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         kind = self._repo.schedule.currently_engaging
         return kind is not None and kind.direction.is_discharge
 
-    async def adopt_evening_plan(self, plan: EveningPlan, now: datetime) -> PlanOutcome:
+    async def adopt_evening_plan(
+        self, plan: EveningPlan, now: datetime, *, force: bool = False
+    ) -> PlanApplication:
         """Write the evening plan into the slots and say what came of it.
 
         Stands down while the user has edited an evening slot by hand today —
-        a deliberate change outranks the schedule. The one exception is a plan
-        emptied by tomorrow morning's prices: that is information the user did
-        not have when they edited, so it takes precedence and hands the
-        evening back to automatic control.
+        a deliberate change outranks a scheduled run. Two things override it:
 
-        Three outcomes rather than a bool, because "nothing changed" and "I
-        kept my hands off your settings" mean different things to whoever
-        reads the report.
+        - `force`, used by the dashboard button, because pressing
+          "recalculate" is an explicit request and would otherwise do nothing
+          exactly when there is most reason to press it;
+        - a plan emptied by tomorrow morning's prices, which is information
+          the user did not have when they edited.
+
+        Both hand the evening back to automatic control afterwards.
+
+        Returns the outcome plus a slot-by-slot diff rather than a bool:
+        "nothing changed", "I kept my hands off your settings" and "I moved
+        these two windows" are three different messages to whoever reads them.
         """
         schedule = self._repo.schedule
         today = now.date()
-        if schedule.evening_is_hand_set_on(today) and not plan.overruled_by_morning:
+        may_override = force or plan.overruled_by_morning
+        if schedule.evening_is_hand_set_on(today) and not may_override:
             _LOGGER.debug("Evening plan skipped — hand-set on %s", today)
-            return PlanOutcome.DEFERRED_TO_MANUAL
+            return PlanApplication(outcome=PlanOutcome.DEFERRED_TO_MANUAL)
+        before = self._evening_snapshot()
         changed = False
         for cmd in plan.slot_commands():
             changed |= schedule.apply_slot_command(cmd)
-        if plan.overruled_by_morning:
+        if may_override:
             changed |= schedule.release_evening_to_proposer()
         await self._persist_and_notify(changed)
-        return PlanOutcome.APPLIED if changed else PlanOutcome.ALREADY_CURRENT
+        changes = self._diff_against(before)
+        return PlanApplication(
+            outcome=PlanOutcome.APPLIED if changes else PlanOutcome.ALREADY_CURRENT,
+            changes=changes,
+        )
+
+    def _evening_snapshot(self) -> dict[SlotKind, BatteryScheduleEntry]:
+        """Capture the evening entries, for diffing once the plan lands."""
+        return {kind: self._repo.schedule.today_entry_for(kind) for kind in _EVENING}
+
+    def _diff_against(
+        self, before: dict[SlotKind, BatteryScheduleEntry]
+    ) -> tuple[SlotChange, ...]:
+        """Evening slots whose settings the plan actually moved."""
+        return tuple(
+            SlotChange(kind=kind, before=was, after=now_entry)
+            for kind, was in before.items()
+            if (now_entry := self._repo.schedule.today_entry_for(kind)) != was
+        )
 
     # ─── One-shot (Etap 2F) ───
 

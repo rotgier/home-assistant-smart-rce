@@ -25,7 +25,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import SmartRceConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, ICON_AUTOMATIC, ICON_HAND_SET
 from .domain.battery_schedule import (
     Direction,
     Scope,
@@ -41,8 +41,8 @@ PARALLEL_UPDATES = 1
 
 # Charge-start entities swap their icon by provenance, so a glance at the card
 # tells a hand-set time from one the RCE window produced.
-ICON_START_AUTO = "mdi:clock-start"
-ICON_START_MANUAL = "mdi:clock-edit"
+ICON_START_AUTO = ICON_AUTOMATIC
+ICON_START_MANUAL = ICON_HAND_SET
 
 _LOGGER = logging.getLogger(__name__)
 

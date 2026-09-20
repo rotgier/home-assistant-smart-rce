@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 from custom_components.smart_rce.application.battery_schedule_service import (
     BatteryScheduleService,
 )
-from custom_components.smart_rce.application.plan_outcome import PlanOutcome
+from custom_components.smart_rce.application.plan_application import PlanOutcome
 from custom_components.smart_rce.domain.battery_schedule import (
     BatterySchedule,
     SetSlotEnabledCommand,
@@ -73,9 +73,9 @@ async def test_a_plan_lands_in_the_slots_when_nobody_touched_them():
     schedule = BatterySchedule()
     service = _service(schedule)
 
-    outcome = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+    result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
 
-    assert outcome is PlanOutcome.APPLIED
+    assert result.outcome is PlanOutcome.APPLIED
     entry = schedule.today_entry_for(EARLY)
     assert entry.enabled
     assert (entry.start, entry.end) == (time(19, 0), time(21, 0))
@@ -88,9 +88,9 @@ async def test_a_hand_edited_evening_is_left_alone():
         SetSlotStartCommand(scope="today", kind=EARLY, value=time(18, 0))
     )
 
-    outcome = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+    result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
 
-    assert outcome is PlanOutcome.DEFERRED_TO_MANUAL
+    assert result.outcome is PlanOutcome.DEFERRED_TO_MANUAL
     assert schedule.today_entry_for(EARLY).start == time(18, 0)
 
 
@@ -104,7 +104,7 @@ async def test_a_plan_vetoed_by_the_morning_overrides_a_hand_edit():
     plan = _plan(_prices(h19=RICH, h20=RICH), _morning(RICH + 100))
 
     assert plan.overruled_by_morning
-    assert await service.adopt_evening_plan(plan, NOW) is PlanOutcome.APPLIED
+    assert (await service.adopt_evening_plan(plan, NOW)).outcome is PlanOutcome.APPLIED
     assert not schedule.today_entry_for(EARLY).enabled
 
 
@@ -128,10 +128,8 @@ async def test_editing_a_non_evening_slot_does_not_lock_the_evening():
         SetSlotEnabledCommand(scope="today", kind=SlotKind.CHARGE_MORNING, value=True)
     )
 
-    assert (
-        await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
-        is PlanOutcome.APPLIED
-    )
+    result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+    assert result.outcome is PlanOutcome.APPLIED
 
 
 async def test_the_lock_expires_with_the_day():
@@ -175,4 +173,47 @@ async def test_re_applying_the_same_plan_reports_no_change():
     plan = _plan(_prices(h19=RICH, h20=RICH))
     await service.adopt_evening_plan(plan, NOW)
 
-    assert await service.adopt_evening_plan(plan, NOW) is PlanOutcome.ALREADY_CURRENT
+    assert (
+        await service.adopt_evening_plan(plan, NOW)
+    ).outcome is PlanOutcome.ALREADY_CURRENT
+
+
+async def test_the_button_overrides_a_hand_edit():
+    # Pressing "recalculate" is an explicit request; deferring to the very
+    # setting the user is asking to replace would make the button useless.
+    schedule = BatterySchedule()
+    service = _service(schedule)
+    await service.handle_slot_command(
+        SetSlotStartCommand(scope="today", kind=EARLY, value=time(18, 0))
+    )
+
+    result = await service.adopt_evening_plan(
+        _plan(_prices(h19=RICH, h20=RICH)), NOW, force=True
+    )
+
+    assert result.outcome is PlanOutcome.APPLIED
+    assert schedule.today_entry_for(EARLY).start == time(19, 0)
+    assert not schedule.evening_is_hand_set_on(TODAY)
+
+
+async def test_the_report_names_what_moved():
+    schedule = BatterySchedule()
+    service = _service(schedule)
+
+    result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+
+    assert [c.kind for c in result.changes] == [EARLY]
+    change = result.changes[0]
+    assert change.was_enabled
+    assert (change.after.start, change.after.end) == (time(19, 0), time(21, 0))
+
+
+async def test_no_diff_when_the_slots_already_agree():
+    schedule = BatterySchedule()
+    service = _service(schedule)
+    plan = _plan(_prices(h19=RICH, h20=RICH))
+    await service.adopt_evening_plan(plan, NOW)
+
+    result = await service.adopt_evening_plan(plan, NOW)
+
+    assert not result.changed_anything
