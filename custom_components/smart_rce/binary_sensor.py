@@ -16,9 +16,11 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util.dt import now as now_local
 
 from . import SmartRceConfigEntry
 from .application.ems import Ems
+from .domain.evening_plan import EveningPlan
 from .ems_device import ems_device_info
 from .garden.binary_sensor_entities import build_binary_sensors
 
@@ -43,6 +45,14 @@ class EmsBinarySensorDescription(BinarySensorEntityDescription):
 
 
 SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
+    EmsBinarySensorDescription(
+        name="Evening Plan Targets Tomorrow",
+        # Which day the evening slots currently describe. The rule lives in
+        # EveningPlan; only the clock comes from here, so the dashboard can
+        # chart the right day without restating the 22:00 switchover in JS.
+        value_fn=lambda _: EveningPlan.plans_tomorrow_at(now_local()),
+        icon="mdi:calendar-arrow-right",
+    ),
     EmsBinarySensorDescription(
         name="Water Heater Turn On",
         value_fn=lambda ems: ems.water_heater.should_turn_on,
