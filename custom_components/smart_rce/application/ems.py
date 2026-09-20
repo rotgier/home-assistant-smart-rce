@@ -53,6 +53,7 @@ from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
 from custom_components.smart_rce.domain.dod_policy import DodPolicy
 from custom_components.smart_rce.domain.ems_operation import EmsOperation
 from custom_components.smart_rce.domain.ems_rce_prices import EmsRcePrices
+from custom_components.smart_rce.domain.evening_plan import EveningPlan
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
 from custom_components.smart_rce.domain.rce import RcePrices
@@ -284,6 +285,44 @@ class Ems:
         self.battery_charge_service.refresh_start_charge(
             self.charge_slots.today_start, now
         )
+
+    def build_evening_plan(self, *, for_tomorrow: bool) -> EveningPlan | None:
+        """Plan an evening's discharge, or None when the inputs are not there.
+
+        The two runs of the day plan the SAME evening from different vantage
+        points, so they read different days:
+
+        - the 22:05 run plans tomorrow evening, whose prices are today's
+          `tomorrow`; the morning after it is unpublished, so no veto applies;
+        - the afternoon run replans this evening from `today`, and now has
+          tomorrow's morning available to veto it.
+
+        Slots carry over midnight untouched (`roll_day` is disabled), which is
+        what lets the earlier run write into the same `today` slots.
+        """
+        prices = self.rce_prices.rce_prices
+        if prices is None:
+            return None
+        day_prices = prices.tomorrow if for_tomorrow else prices.today
+        if day_prices is None:
+            return None
+        is_workday = self._is_workday(for_tomorrow=for_tomorrow)
+        if is_workday is None:
+            _LOGGER.warning("Evening plan skipped — workday calendar unavailable")
+            return None
+        return EveningPlan.for_day(
+            day_prices.day,
+            day_prices,
+            is_workday=is_workday,
+            tomorrow=None if for_tomorrow else prices.tomorrow,
+        )
+
+    def _is_workday(self, *, for_tomorrow: bool) -> bool | None:
+        """Workday flag for the planned day, None when the calendar is missing."""
+        state = self.last_input_state
+        if state is None:
+            return None
+        return state.is_workday_tomorrow if for_tomorrow else state.is_workday
 
     @property
     def charge_start_tomorrow(self) -> time | None:

@@ -22,6 +22,11 @@ class EmsRcePrices:
         self.rce_prices: RcePrices | None = None
         self.current_price: float | None = None
 
+    @property
+    def has_tomorrow(self) -> bool:
+        """Tell whether tomorrow's prices have been published yet."""
+        return self.rce_prices is not None and self.rce_prices.tomorrow is not None
+
     def update(self, now: datetime, rce_prices: RcePrices) -> None:
         self.rce_prices = rce_prices
         self._refresh_current_price(now)

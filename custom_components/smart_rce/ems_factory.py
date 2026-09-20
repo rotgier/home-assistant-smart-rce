@@ -44,6 +44,7 @@ from .infrastructure.battery_schedule_repository import BatteryScheduleRepositor
 from .infrastructure.dod_policy_actuator import DodPolicyActuator
 from .infrastructure.dod_policy_logger import DodPolicyLogger
 from .infrastructure.dod_policy_repository import DodPolicyRepository
+from .infrastructure.evening_plan_scheduler import EveningPlanScheduler
 from .infrastructure.goodwe_ems_actuator import GoodweEmsActuator
 from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
 from .infrastructure.water_heater_reserved_repository import (
@@ -154,6 +155,9 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
         async_track_time_change(hass, update_hourly, minute=0, second=0)
     )
     update_hourly(now_local())
+
+    # Evening discharge planner — 22:05 for tomorrow, afternoon sweep for today.
+    entry.async_on_unload(EveningPlanScheduler(hass, ems).start())
 
     # Driving adapter: HA state_changed event listener.
     listen_for_state_changes(hass, entry, ems)

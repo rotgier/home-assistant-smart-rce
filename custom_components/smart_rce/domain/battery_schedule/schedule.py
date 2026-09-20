@@ -37,6 +37,11 @@ from .operation import BatteryOperation
 # Store key of the single evening slot that predates the EARLY/LATE split.
 _LEGACY_EVENING_KEY = "DISCHARGE_EVENING"
 
+# Slots the evening proposer owns — edits to these are what "hand-set" means.
+_EVENING_KINDS = frozenset(
+    {SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE}
+)
+
 
 @dataclass
 class BatterySchedule:
@@ -76,6 +81,11 @@ class BatterySchedule:
     _oneshot_params: dict[Direction, OneShotParams] = field(
         default_factory=lambda: OneShotParams.defaults_by_direction()
     )
+    # Day on which the user last edited an evening slot by hand. The proposer
+    # stands down while this equals today, so an automatic run never quietly
+    # undoes a deliberate change. A date rather than a flag: it expires on its
+    # own at midnight, with no clearing step that a restart could miss.
+    _evening_hand_set_day: date | None = None
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -168,6 +178,29 @@ class BatterySchedule:
 
     def tomorrow_entry_for(self, kind: SlotKind) -> BatteryScheduleEntry:
         return self._tomorrow[kind]
+
+    def apply_manual_slot_command(self, cmd: SlotCommand, *, today: date) -> bool:
+        """Apply a command the USER issued, marking evening slots as hand-set.
+
+        Separate entry point from `apply_slot_command` so provenance follows
+        from which method was called, rather than from a flag that a caller
+        could forget to pass.
+        """
+        changed = self.apply_slot_command(cmd)
+        if changed and cmd.scope == "today" and cmd.kind in _EVENING_KINDS:
+            self._evening_hand_set_day = today
+        return changed
+
+    def evening_is_hand_set_on(self, day: date) -> bool:
+        """Tell whether the user edited an evening slot by hand on `day`."""
+        return self._evening_hand_set_day == day
+
+    def release_evening_to_proposer(self) -> bool:
+        """Drop the hand-set mark so automatic runs own the evening again."""
+        if self._evening_hand_set_day is None:
+            return False
+        self._evening_hand_set_day = None
+        return True
 
     def apply_slot_command(self, cmd: SlotCommand) -> bool:
         """Apply a slot Command to the targeted entry. True if entry changed.
@@ -367,6 +400,11 @@ class BatterySchedule:
                 if self._last_disengaged_at is not None
                 else None
             ),
+            "evening_hand_set_day": (
+                self._evening_hand_set_day.isoformat()
+                if self._evening_hand_set_day is not None
+                else None
+            ),
             "oneshot": self._oneshot.to_dict() if self._oneshot is not None else None,
             "oneshot_params": {
                 d.name: p.to_dict() for d, p in self._oneshot_params.items()
@@ -410,6 +448,13 @@ class BatterySchedule:
             except (TypeError, ValueError):
                 last_disengaged_at = None
 
+        evening_hand_set_day: date | None = None
+        if raw := data.get("evening_hand_set_day"):
+            try:
+                evening_hand_set_day = date.fromisoformat(raw)
+            except (TypeError, ValueError):
+                evening_hand_set_day = None
+
         oneshot: OneShotOperation | None = None
         if raw_oneshot := data.get("oneshot"):
             oneshot = OneShotOperation.from_dict(raw_oneshot)
@@ -418,6 +463,7 @@ class BatterySchedule:
             _today={k: _entry("today", k) for k in SlotKind},
             _tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
             last_seen_date=last_seen_date,
+            _evening_hand_set_day=evening_hand_set_day,
             _currently_engaging=currently_engaging,
             _interventions_blocked_override=bool(
                 data.get("interventions_blocked_override", False)

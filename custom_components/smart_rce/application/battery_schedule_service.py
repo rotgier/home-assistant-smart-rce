@@ -44,6 +44,7 @@ from ..domain.battery_schedule import (
     SlotCommand,
     SlotKind,
 )
+from ..domain.evening_plan import EveningPlan
 from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
 from .service import Service
 
@@ -231,7 +232,43 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         ValueError on bad input — propagates to the entity callback (HA
         renders as service call failure; UI restricts ranges, defense in depth).
         """
-        await self._persist_and_notify(self._repo.schedule.apply_slot_command(cmd))
+        await self._persist_and_notify(
+            self._repo.schedule.apply_manual_slot_command(
+                cmd, today=self._clock().date()
+            )
+        )
+
+    @property
+    def is_discharging_now(self) -> bool:
+        """Tell whether a discharge slot is engaged right now.
+
+        The evening run waits for this to clear: rewriting a slot mid-discharge
+        would cut it short.
+        """
+        kind = self._repo.schedule.currently_engaging
+        return kind is not None and kind.direction.is_discharge
+
+    async def adopt_evening_plan(self, plan: EveningPlan, now: datetime) -> bool:
+        """Write the evening plan into the slots. True when anything changed.
+
+        Stands down while the user has edited an evening slot by hand today —
+        a deliberate change outranks the schedule. The one exception is a plan
+        emptied by tomorrow morning's prices: that is information the user did
+        not have when they edited, so it takes precedence and hands the
+        evening back to automatic control.
+        """
+        schedule = self._repo.schedule
+        today = now.date()
+        if schedule.evening_is_hand_set_on(today) and not plan.overruled_by_morning:
+            _LOGGER.debug("Evening plan skipped — hand-set on %s", today)
+            return False
+        changed = False
+        for cmd in plan.slot_commands():
+            changed |= schedule.apply_slot_command(cmd)
+        if plan.overruled_by_morning:
+            changed |= schedule.release_evening_to_proposer()
+        await self._persist_and_notify(changed)
+        return changed
 
     # ─── One-shot (Etap 2F) ───
 
