@@ -25,6 +25,7 @@ Hexagonal pattern: **driven adapter (outbound)** — domain dictates
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import asyncio
 import logging
 import traceback
 from typing import Any, ClassVar, Protocol
@@ -55,6 +56,9 @@ class Repository[T: _ToDictAggregate](ABC):
         )
         self._tasks = tasks
         self._last_saved: dict[str, Any] | None = None
+        # Serializes persist() so concurrent callers cannot all clear the
+        # equality guard before any of them records what was written.
+        self._save_lock = asyncio.Lock()
 
     @abstractmethod
     def _get_aggregate(self) -> T:
@@ -74,20 +78,27 @@ class Repository[T: _ToDictAggregate](ABC):
         Logs INFO when a save actually happens — including the per-field diff
         and the calling frame, so we can trace why a save was triggered if
         storage state ever drifts unexpectedly from entity state.
+
+        Held under a lock because the guard alone is not enough: awaiting the
+        store yields to the event loop, so without it several queued persists
+        all compare against a `_last_saved` that none of them has updated yet
+        and each writes the same payload again. Observed as four identical
+        saves in 20 ms when the evening planner touched ten slot fields.
         """
-        current = self._get_aggregate().to_dict()
-        if current == self._last_saved:
-            return
-        diff = _dict_diff(self._last_saved, current)
-        caller = _format_caller_frames(skip=2, depth=3)
-        _LOGGER.info(
-            "Repository[%s]: saving — diff=%s, caller=%s",
-            self.STORAGE_KEY,
-            diff,
-            caller,
-        )
-        await self._store.async_save(current)
-        self._last_saved = current
+        async with self._save_lock:
+            current = self._get_aggregate().to_dict()
+            if current == self._last_saved:
+                return
+            diff = _dict_diff(self._last_saved, current)
+            caller = _format_caller_frames(skip=2, depth=3)
+            _LOGGER.info(
+                "Repository[%s]: saving — diff=%s, caller=%s",
+                self.STORAGE_KEY,
+                diff,
+                caller,
+            )
+            await self._store.async_save(current)
+            self._last_saved = current
 
 
 def _dict_diff(before: dict[str, Any] | None, after: dict[str, Any]) -> dict[str, Any]:
