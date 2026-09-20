@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 import re
 from typing import Any, Final
 from zoneinfo import ZoneInfo
+
+from ..const import GROSS_MULTIPLIER
 
 TIMEZONE: Final = ZoneInfo("Europe/Warsaw")
 
@@ -31,6 +34,35 @@ class RceDayPrices:
 
     def datetime_at_hour(self, hour: int) -> datetime:
         return datetime.combine(self.day, time(hour, 0), TIMEZONE)
+
+    def gross_at(self, hour: int) -> float:
+        """Gross PLN/MWh for `hour`; 0.0 when the day is that short.
+
+        Gross is what the user reasons in and what compares directly with the
+        grid purchase costs in `tariff`, so decisions are made in this unit
+        rather than converting at each call site.
+        """
+        if hour >= len(self.hour_price):
+            return 0.0
+        return self.hour_price[hour] * GROSS_MULTIPLIER
+
+    def max_gross_in(self, hours: Iterable[int]) -> float:
+        """Best gross price among `hours`; 0.0 when none of them exist."""
+        return max((self.gross_at(hour) for hour in hours), default=0.0)
+
+    def hours_clearing(
+        self, hours: Iterable[int], *, at_least: float, above: float = 0.0
+    ) -> list[int]:
+        """Hours priced at or over `at_least` AND strictly over `above`.
+
+        Two bars rather than one: `at_least` is an absolute floor, `above` a
+        rival price that must be beaten outright (a tie is no reason to act).
+        """
+        return [
+            hour
+            for hour in hours
+            if (price := self.gross_at(hour)) >= at_least and price > above
+        ]
 
     @classmethod
     def create_from_json(cls, data: dict[str, Any]) -> RceDayPrices | None:
