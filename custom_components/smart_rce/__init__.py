@@ -343,6 +343,11 @@ def live_reload() -> None:
     )
     reload(
         import_module(
+            "custom_components.smart_rce.infrastructure.evening_plan_notifier"
+        )
+    )
+    reload(
+        import_module(
             "custom_components.smart_rce.infrastructure.evening_plan_scheduler"
         )
     )

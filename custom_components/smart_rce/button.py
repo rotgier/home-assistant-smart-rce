@@ -24,6 +24,7 @@ from .const import DOMAIN
 from .domain.battery_schedule import Direction
 from .ems_device import ems_device_info
 from .garden.button_entities import build_buttons
+from .infrastructure.evening_plan_notifier import notify_evening_plan
 
 PARALLEL_UPDATES = 1
 
@@ -122,8 +123,14 @@ class EveningPlanRecalculateButton(ButtonEntity):
         self._attr_device_info = ems_device_info(entry)
 
     async def async_press(self) -> None:
-        plan = await self._ems.replan_nearest_evening(now_local())
-        if plan is None:
+        result = await self._ems.replan_nearest_evening(now_local())
+        if result is None:
             _LOGGER.warning("Evening plan not recomputed — prices or calendar missing")
             return
-        _LOGGER.info("Evening plan recomputed on demand: %s", plan.reason)
+        _LOGGER.info("Evening plan recomputed on demand: %s", result.plan.reason)
+        await notify_evening_plan(
+            self.hass,
+            result.plan,
+            applied=result.applied,
+            for_tomorrow=result.for_tomorrow,
+        )

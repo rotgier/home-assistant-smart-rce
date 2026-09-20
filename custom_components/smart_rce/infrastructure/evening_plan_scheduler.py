@@ -23,15 +23,12 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
 from ..domain.evening_plan import EveningPlan
+from .evening_plan_notifier import notify_evening_plan
 
 if TYPE_CHECKING:
     from ..application.ems import Ems
 
 _LOGGER = logging.getLogger(__name__)
-
-NOTIFY_DOMAIN: Final = "script"
-NOTIFY_SERVICE: Final = "notify_text"
-NOTIFY_TITLE: Final = "EMS — plan wieczorny"
 
 # 22:05 first; the later hours are retries for an evening still discharging.
 _EVENING_RUN_HOURS: Final[tuple[int, ...]] = (22, 23, 0)
@@ -110,25 +107,10 @@ class EveningPlanScheduler:
             _LOGGER.debug("Evening plan unavailable (prices or calendar missing)")
             return False
         applied = await self._ems.battery_schedule_service.adopt_evening_plan(plan, now)
-        await self._notify(plan, applied=applied, for_tomorrow=for_tomorrow)
+        await notify_evening_plan(
+            self._hass, plan, applied=applied, for_tomorrow=for_tomorrow
+        )
         return True
-
-    async def _notify(
-        self, plan: EveningPlan, *, applied: bool, for_tomorrow: bool
-    ) -> None:
-        """Send the outcome to Telegram via the existing notify_text script."""
-        when = "jutro" if for_tomorrow else "dziś"
-        verb = "ustawiono" if applied else "bez zmian (ustawienie ręczne)"
-        message = f"{when}: {verb} — {plan.reason}"
-        try:
-            await self._hass.services.async_call(
-                NOTIFY_DOMAIN,
-                NOTIFY_SERVICE,
-                {"title": NOTIFY_TITLE, "message": message},
-                blocking=False,
-            )
-        except Exception:  # noqa: BLE001 - reporting must never break planning
-            _LOGGER.exception("Evening plan notification failed")
 
     @staticmethod
     def _evening_target(now: datetime) -> date:

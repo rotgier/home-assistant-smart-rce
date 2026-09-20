@@ -27,6 +27,7 @@ its associated driven adapters immediately after):
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, time
 import logging
 from typing import TYPE_CHECKING
@@ -317,7 +318,7 @@ class Ems:
             tomorrow=None if for_tomorrow else prices.tomorrow,
         )
 
-    async def replan_nearest_evening(self, now: datetime) -> EveningPlan | None:
+    async def replan_nearest_evening(self, now: datetime) -> EveningReplan | None:
         """Recompute and apply the plan for whichever evening comes next.
 
         Entry point for the dashboard button. Which evening that is follows
@@ -329,9 +330,9 @@ class Ems:
         plan = self.build_evening_plan(for_tomorrow=for_tomorrow)
         if plan is None:
             return None
-        await self.battery_schedule_service.adopt_evening_plan(plan, now)
+        applied = await self.battery_schedule_service.adopt_evening_plan(plan, now)
         self._async_update_listeners()
-        return plan
+        return EveningReplan(plan=plan, applied=applied, for_tomorrow=for_tomorrow)
 
     def _is_workday(self, *, for_tomorrow: bool) -> bool | None:
         """Workday flag for the planned day, None when the calendar is missing."""
@@ -475,3 +476,16 @@ class Ems:
     def _async_update_listeners(self) -> None:
         for update_callback in self._listeners.values():
             update_callback()
+
+
+@dataclass(frozen=True)
+class EveningReplan:
+    """Outcome of an on-demand replan — what was decided and whether it landed.
+
+    `applied` is False when the user had hand-set the evening and the plan
+    stood down, which the report needs in order to say so.
+    """
+
+    plan: EveningPlan
+    applied: bool
+    for_tomorrow: bool
