@@ -31,14 +31,18 @@ async def notify_evening_plan(
     *,
     application: PlanApplication,
     for_tomorrow: bool,
+    answer_always: bool = False,
 ) -> None:
     """Send the outcome to Telegram. Never raises — the plan outranks the report.
 
-    Silent when nothing moved: a restart between 15:00 and 21:00 re-runs the
-    afternoon sweep, and repeating "already current" on every restart would
-    train the reader to ignore the channel.
+    A scheduled run stays silent when nothing moved: restarts between 15:00
+    and 21:00 re-trigger the afternoon sweep, and repeating "already current"
+    each time would train the reader to ignore the channel.
+
+    A button press always answers (`answer_always`), because someone is
+    waiting to learn whether it did anything.
     """
-    if application.outcome is PlanOutcome.ALREADY_CURRENT:
+    if application.outcome is PlanOutcome.ALREADY_CURRENT and not answer_always:
         _LOGGER.debug("Evening plan unchanged — no notification sent")
         return
     when = "jutro" if for_tomorrow else "dziś"

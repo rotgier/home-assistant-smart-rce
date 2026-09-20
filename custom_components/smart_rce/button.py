@@ -133,4 +133,5 @@ class EveningPlanRecalculateButton(ButtonEntity):
             result.plan,
             application=result.application,
             for_tomorrow=result.for_tomorrow,
+            answer_always=True,
         )
