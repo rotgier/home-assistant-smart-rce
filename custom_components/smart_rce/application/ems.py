@@ -38,6 +38,7 @@ from custom_components.smart_rce.application.battery_charge_service import (
 from custom_components.smart_rce.application.battery_schedule_service import (
     BatteryScheduleService,
 )
+from custom_components.smart_rce.application.plan_outcome import PlanOutcome
 from custom_components.smart_rce.application.water_heater_reserved_service import (
     WaterHeaterReservedService,
 )
@@ -330,9 +331,9 @@ class Ems:
         plan = self.build_evening_plan(for_tomorrow=for_tomorrow)
         if plan is None:
             return None
-        applied = await self.battery_schedule_service.adopt_evening_plan(plan, now)
+        outcome = await self.battery_schedule_service.adopt_evening_plan(plan, now)
         self._async_update_listeners()
-        return EveningReplan(plan=plan, applied=applied, for_tomorrow=for_tomorrow)
+        return EveningReplan(plan=plan, outcome=outcome, for_tomorrow=for_tomorrow)
 
     def _is_workday(self, *, for_tomorrow: bool) -> bool | None:
         """Workday flag for the planned day, None when the calendar is missing."""
@@ -482,10 +483,11 @@ class Ems:
 class EveningReplan:
     """Outcome of an on-demand replan — what was decided and whether it landed.
 
-    `applied` is False when the user had hand-set the evening and the plan
-    stood down, which the report needs in order to say so.
+    `outcome` distinguishes a plan that changed the slots from one that
+    matched them already, and from one that stood down before a hand edit —
+    the report says something different in each case.
     """
 
     plan: EveningPlan
-    applied: bool
+    outcome: PlanOutcome
     for_tomorrow: bool

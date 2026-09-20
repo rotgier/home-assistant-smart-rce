@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 from custom_components.smart_rce.application.battery_schedule_service import (
     BatteryScheduleService,
 )
+from custom_components.smart_rce.application.plan_outcome import PlanOutcome
 from custom_components.smart_rce.domain.battery_schedule import (
     BatterySchedule,
     SetSlotEnabledCommand,
@@ -72,9 +73,9 @@ async def test_a_plan_lands_in_the_slots_when_nobody_touched_them():
     schedule = BatterySchedule()
     service = _service(schedule)
 
-    applied = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+    outcome = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
 
-    assert applied
+    assert outcome is PlanOutcome.APPLIED
     entry = schedule.today_entry_for(EARLY)
     assert entry.enabled
     assert (entry.start, entry.end) == (time(19, 0), time(21, 0))
@@ -87,9 +88,9 @@ async def test_a_hand_edited_evening_is_left_alone():
         SetSlotStartCommand(scope="today", kind=EARLY, value=time(18, 0))
     )
 
-    applied = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+    outcome = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
 
-    assert not applied
+    assert outcome is PlanOutcome.DEFERRED_TO_MANUAL
     assert schedule.today_entry_for(EARLY).start == time(18, 0)
 
 
@@ -103,7 +104,7 @@ async def test_a_plan_vetoed_by_the_morning_overrides_a_hand_edit():
     plan = _plan(_prices(h19=RICH, h20=RICH), _morning(RICH + 100))
 
     assert plan.overruled_by_morning
-    assert await service.adopt_evening_plan(plan, NOW)
+    assert await service.adopt_evening_plan(plan, NOW) is PlanOutcome.APPLIED
     assert not schedule.today_entry_for(EARLY).enabled
 
 
@@ -127,7 +128,10 @@ async def test_editing_a_non_evening_slot_does_not_lock_the_evening():
         SetSlotEnabledCommand(scope="today", kind=SlotKind.CHARGE_MORNING, value=True)
     )
 
-    assert await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+    assert (
+        await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+        is PlanOutcome.APPLIED
+    )
 
 
 async def test_the_lock_expires_with_the_day():
@@ -162,3 +166,13 @@ def test_the_lock_survives_a_store_round_trip():
     restored = BatterySchedule.from_dict(schedule.to_dict())
 
     assert restored.evening_is_hand_set_on(TODAY)
+
+
+async def test_re_applying_the_same_plan_reports_no_change():
+    # Distinct from standing down: the plan DID run, the slots already agreed.
+    schedule = BatterySchedule()
+    service = _service(schedule)
+    plan = _plan(_prices(h19=RICH, h20=RICH))
+    await service.adopt_evening_plan(plan, NOW)
+
+    assert await service.adopt_evening_plan(plan, NOW) is PlanOutcome.ALREADY_CURRENT

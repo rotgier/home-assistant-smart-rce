@@ -46,6 +46,7 @@ from ..domain.battery_schedule import (
 )
 from ..domain.evening_plan import EveningPlan
 from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
+from .plan_outcome import PlanOutcome
 from .service import Service
 
 
@@ -253,27 +254,31 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         kind = self._repo.schedule.currently_engaging
         return kind is not None and kind.direction.is_discharge
 
-    async def adopt_evening_plan(self, plan: EveningPlan, now: datetime) -> bool:
-        """Write the evening plan into the slots. True when anything changed.
+    async def adopt_evening_plan(self, plan: EveningPlan, now: datetime) -> PlanOutcome:
+        """Write the evening plan into the slots and say what came of it.
 
         Stands down while the user has edited an evening slot by hand today —
         a deliberate change outranks the schedule. The one exception is a plan
         emptied by tomorrow morning's prices: that is information the user did
         not have when they edited, so it takes precedence and hands the
         evening back to automatic control.
+
+        Three outcomes rather than a bool, because "nothing changed" and "I
+        kept my hands off your settings" mean different things to whoever
+        reads the report.
         """
         schedule = self._repo.schedule
         today = now.date()
         if schedule.evening_is_hand_set_on(today) and not plan.overruled_by_morning:
             _LOGGER.debug("Evening plan skipped — hand-set on %s", today)
-            return False
+            return PlanOutcome.DEFERRED_TO_MANUAL
         changed = False
         for cmd in plan.slot_commands():
             changed |= schedule.apply_slot_command(cmd)
         if plan.overruled_by_morning:
             changed |= schedule.release_evening_to_proposer()
         await self._persist_and_notify(changed)
-        return changed
+        return PlanOutcome.APPLIED if changed else PlanOutcome.ALREADY_CURRENT
 
     # ─── One-shot (Etap 2F) ───
 

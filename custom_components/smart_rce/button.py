@@ -131,6 +131,6 @@ class EveningPlanRecalculateButton(ButtonEntity):
         await notify_evening_plan(
             self.hass,
             result.plan,
-            applied=result.applied,
+            outcome=result.outcome,
             for_tomorrow=result.for_tomorrow,
         )

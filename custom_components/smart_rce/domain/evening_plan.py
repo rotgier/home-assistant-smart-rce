@@ -148,6 +148,11 @@ class EveningPlan:
         return self._overruled_by_morning
 
     @property
+    def max_morning_price(self) -> float:
+        """Best gross price tomorrow morning that this plan had to beat; 0 when unknown."""
+        return self._max_morning_price
+
+    @property
     def reason(self) -> str:
         """One line for the Telegram summary."""
         if self._windows:
