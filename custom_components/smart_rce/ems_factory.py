@@ -47,6 +47,7 @@ from .infrastructure.dod_policy_repository import DodPolicyRepository
 from .infrastructure.evening_plan_scheduler import EveningPlanScheduler
 from .infrastructure.goodwe_ems_actuator import GoodweEmsActuator
 from .infrastructure.state_mapper import listen_for_state_changes, update_input_state
+from .infrastructure.tariff_reminder import TariffReminder
 from .infrastructure.water_heater_reserved_repository import (
     WaterHeaterReservedRepository,
 )
@@ -158,6 +159,9 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
 
     # Evening discharge planner — 22:05 for tomorrow, afternoon sweep for today.
     entry.async_on_unload(EveningPlanScheduler(hass, ems).start())
+
+    # Nags in December until next year's tariff rates are in the table.
+    entry.async_on_unload(TariffReminder(hass).start())
 
     # Driving adapter: HA state_changed event listener.
     listen_for_state_changes(hass, entry, ems)
