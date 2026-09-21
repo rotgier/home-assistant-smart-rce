@@ -25,12 +25,12 @@ from custom_components.smart_rce.deposit.domain.settlement_history import (
 from custom_components.smart_rce.deposit.domain.settlement_regime import (
     HOURLY_PRICING_FROM,
 )
-from custom_components.smart_rce.deposit.domain.tariff import Zone, ZoneRates
 from custom_components.smart_rce.deposit.infrastructure.resources import (
     load_monthly_prices,
     load_seed_history,
     load_tariff,
 )
+from custom_components.smart_rce.tariff import Zone, ZoneRates
 import pytest
 
 _FLAT_RATES = ZoneRates(

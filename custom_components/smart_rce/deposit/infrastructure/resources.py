@@ -16,15 +16,19 @@ import json
 from pathlib import Path
 from typing import Any, Final
 
+from ...tariff import Zone, ZoneRates
 from ..domain.billing_month import BillingMonth
 from ..domain.market_price import MonthlyMarketPrices
 from ..domain.reference_year import MonthRecord
 from ..domain.savings import LegacyMonth
-from ..domain.tariff import FlatRates, Tariff, Zone, ZoneRates
+from ..domain.tariff import FlatRates, Tariff
 
 _RESOURCE_DIR: Final = Path(__file__).parent
 _SEED_HISTORY: Final = _RESOURCE_DIR / "seed_history.json"
-_TARIFF_TABLE: Final = _RESOURCE_DIR / "tariff_table.json"
+# Tariff table moved to the shared `tariff` package — it is not deposit's to own.
+_TARIFF_TABLE: Final = (
+    Path(__file__).parent.parent.parent / "tariff" / "tariff_table.json"
+)
 
 
 def load_seed_history() -> SeedHistory:

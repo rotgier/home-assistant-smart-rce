@@ -11,12 +11,12 @@ from dataclasses import dataclass
 import datetime
 from typing import TYPE_CHECKING, Any
 
+from ...tariff import VAT
 from ..domain.billing_month import BillingMonth
 from ..domain.capacity import ConsumptionCapacity
 from ..domain.deposit_ledger import MonthSettlement
 from ..domain.projection import ExpiryOutlook, WinterOutlook
 from ..domain.savings import SavingsReport
-from ..domain.tariff import VAT
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

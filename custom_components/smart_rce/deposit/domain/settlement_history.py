@@ -26,9 +26,9 @@ from dataclasses import dataclass
 import datetime
 from typing import TYPE_CHECKING, Any
 
+from ...tariff import Zone
 from .billing_month import BillingMonth
 from .reference_year import MonthRecord
-from .tariff import Zone
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping

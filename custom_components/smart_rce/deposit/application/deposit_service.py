@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from ...tariff import Zone
 from ..domain.billing_month import BillingMonth
 from ..domain.deposit_ledger import DepositLedger, MonthSettlement
 from ..domain.market_price import MonthlyMarketPrices
@@ -17,7 +18,7 @@ from ..domain.projection import DepositProjection
 from ..domain.reference_year import MonthRecord, ReferenceYear
 from ..domain.savings import LegacyMonth, compute_savings
 from ..domain.settlement_history import SettlementHistory
-from ..domain.tariff import Tariff, Zone
+from ..domain.tariff import Tariff
 from .report import DepositReport, MonthlyVolumes, OpenMonth
 
 if TYPE_CHECKING:

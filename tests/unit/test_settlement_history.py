@@ -8,7 +8,7 @@ from custom_components.smart_rce.deposit.domain.settlement_history import (
     DayRecord,
     SettlementHistory,
 )
-from custom_components.smart_rce.deposit.domain.tariff import Zone
+from custom_components.smart_rce.tariff import Zone
 import pytest
 
 

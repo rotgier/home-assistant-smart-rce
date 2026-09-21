@@ -12,11 +12,10 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING, Final
 
+from ...tariff import Zone, zone_for
 from .billing_month import BillingMonth
 from .settlement_history import DayRecord
 from .settlement_regime import deposit_coefficient
-from .tariff import Zone
-from .tariff_zones import zone_for
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

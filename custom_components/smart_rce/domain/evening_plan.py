@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import ClassVar, Final
 
+from ..tariff import evening_peak
 from .battery_schedule import (
     Scope,
     SetSlotBehaviorCommand,
@@ -28,7 +29,6 @@ from .battery_schedule import (
     SlotKind,
 )
 from .rce import RceDayPrices
-from .tariff import G13Zone
 
 # From this hour a planning run targets tomorrow evening: today's windows are
 # behind us, and writing them again would re-open a window already past.
@@ -221,8 +221,7 @@ class EveningPlan:
         """Hours worth considering — the T2 block, or a broad evening off-peak."""
         if not is_workday:
             return cls.NON_WORKDAY_EVENING
-        start, end = G13Zone.evening_peak_hours(day)
-        return range(start, end)
+        return evening_peak(day)
 
     @staticmethod
     def _contiguous_runs(hours: list[int]) -> list[list[int]]:
@@ -257,7 +256,7 @@ class EveningPlan:
         """Hour at which T2 ends, or None on days that have no expensive zone."""
         if not is_workday:
             return None
-        return G13Zone.evening_peak_hours(day)[1]
+        return evening_peak(day).stop
 
 
 @dataclass(frozen=True)

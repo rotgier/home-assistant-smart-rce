@@ -15,8 +15,7 @@ from dataclasses import dataclass
 import datetime
 from typing import TYPE_CHECKING
 
-from .tariff import Zone
-from .tariff_zones import zone_for
+from ...tariff import Zone, zone_for
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

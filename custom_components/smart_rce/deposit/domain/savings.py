@@ -31,7 +31,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .tariff import Zone
+from ...tariff import Zone
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

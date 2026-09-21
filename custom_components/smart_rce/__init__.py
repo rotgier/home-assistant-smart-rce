@@ -237,6 +237,7 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.grid_export"))
     reload(import_module("custom_components.smart_rce.domain.water_heater"))
     reload(import_module("custom_components.smart_rce.domain.charge_slots"))
+    reload(import_module("custom_components.smart_rce.domain.evening_plan"))
     reload(import_module("custom_components.smart_rce.domain.discharge_slots"))
     reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
     reload(import_module("custom_components.smart_rce.domain.dod_policy"))
@@ -482,6 +483,12 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.deposit.const"))
     reload(import_module("custom_components.smart_rce.deposit.deposit_device"))
     reload(import_module("custom_components.smart_rce.deposit.domain.billing_month"))
+    # Shared tariff package first — both contexts read it. Order inside:
+    # rates (Zone/ZoneRates) -> zones + table (both import rates) -> package.
+    reload(import_module("custom_components.smart_rce.tariff.rates"))
+    reload(import_module("custom_components.smart_rce.tariff.zones"))
+    reload(import_module("custom_components.smart_rce.tariff.table"))
+    reload(import_module("custom_components.smart_rce.tariff"))
     reload(import_module("custom_components.smart_rce.deposit.domain.tariff"))
     reload(import_module("custom_components.smart_rce.deposit.domain.deposit_ledger"))
     reload(import_module("custom_components.smart_rce.deposit.domain.reference_year"))
@@ -489,7 +496,6 @@ def live_reload() -> None:
     reload(
         import_module("custom_components.smart_rce.deposit.domain.settlement_regime")
     )
-    reload(import_module("custom_components.smart_rce.deposit.domain.tariff_zones"))
     reload(import_module("custom_components.smart_rce.deposit.domain.meter_reading"))
     reload(
         import_module("custom_components.smart_rce.deposit.domain.settlement_history")

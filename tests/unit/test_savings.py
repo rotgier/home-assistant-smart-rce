@@ -12,12 +12,8 @@ from custom_components.smart_rce.deposit.domain.self_consumption import (
     HouseholdHour,
     self_consumption_by_zone,
 )
-from custom_components.smart_rce.deposit.domain.tariff import (
-    FlatRates,
-    Tariff,
-    Zone,
-    ZoneRates,
-)
+from custom_components.smart_rce.deposit.domain.tariff import FlatRates, Tariff
+from custom_components.smart_rce.tariff import Zone, ZoneRates
 import pytest
 
 _RATES = ZoneRates(

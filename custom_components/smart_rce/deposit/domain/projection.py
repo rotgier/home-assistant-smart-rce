@@ -15,11 +15,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Final
 
+from ...tariff import ZoneRates
 from .billing_month import BillingMonth
 from .capacity import ConsumptionCapacity
 from .deposit_ledger import DepositLedger, MonthSettlement
 from .reference_year import ReferenceYear
-from .tariff import ZoneRates
 
 
 class DepositProjection:

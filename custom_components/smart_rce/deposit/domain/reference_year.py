@@ -16,8 +16,8 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from ...tariff import Zone
 from .billing_month import BillingMonth
-from .tariff import Zone
 
 _MONTHS_IN_YEAR = 12
 

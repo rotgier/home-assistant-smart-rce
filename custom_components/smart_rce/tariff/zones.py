@@ -13,12 +13,22 @@ from __future__ import annotations
 import datetime
 from typing import Final
 
-from .tariff import Zone
+from .rates import Zone
 
 _SUMMER_MONTHS: Final = range(4, 10)  # April through September
 _MORNING_PEAK: Final = range(7, 13)
 _SUMMER_EVENING_PEAK: Final = range(19, 22)
 _WINTER_EVENING_PEAK: Final = range(16, 21)
+
+
+def evening_peak(day: datetime.date) -> range:
+    """Hours of the T2 evening peak on `day` — the season decides which block.
+
+    Public because the evening planner picks its candidate hours from exactly
+    this window; `zone_for` answers a different question (one moment, one zone)
+    and cannot express "which hours should I consider tonight".
+    """
+    return _SUMMER_EVENING_PEAK if day.month in _SUMMER_MONTHS else _WINTER_EVENING_PEAK
 
 
 def zone_for(moment: datetime.datetime) -> Zone:

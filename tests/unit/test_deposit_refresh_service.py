@@ -11,7 +11,7 @@ from custom_components.smart_rce.deposit.domain.reference_year import MonthRecor
 from custom_components.smart_rce.deposit.domain.settlement_history import (
     SettlementHistory,
 )
-from custom_components.smart_rce.deposit.domain.tariff import Zone
+from custom_components.smart_rce.tariff import Zone
 import pytest
 
 

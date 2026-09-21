@@ -4,8 +4,7 @@ import datetime
 
 from custom_components.smart_rce.deposit.domain.day_valuation import value_day
 from custom_components.smart_rce.deposit.domain.meter_reading import HourReading
-from custom_components.smart_rce.deposit.domain.tariff import Zone
-from custom_components.smart_rce.deposit.domain.tariff_zones import zone_for
+from custom_components.smart_rce.tariff import Zone, zone_for
 import pytest
 
 

@@ -16,12 +16,8 @@ from custom_components.smart_rce.deposit.domain.settlement_history import (
     DayRecord,
     SettlementHistory,
 )
-from custom_components.smart_rce.deposit.domain.tariff import (
-    FlatRates,
-    Tariff,
-    Zone,
-    ZoneRates,
-)
+from custom_components.smart_rce.deposit.domain.tariff import FlatRates, Tariff
+from custom_components.smart_rce.tariff import Zone, ZoneRates
 import pytest
 
 _RATES = ZoneRates(

@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ...tariff import ZoneRates
 from .reference_year import ReferenceYear
-from .tariff import ZoneRates
 
 
 @dataclass(frozen=True)

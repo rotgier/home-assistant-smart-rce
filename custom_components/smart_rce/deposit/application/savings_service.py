@@ -13,9 +13,9 @@ import datetime
 import logging
 from typing import TYPE_CHECKING, Final
 
+from ...tariff import Zone
 from ..domain.billing_month import BillingMonth
 from ..domain.self_consumption import self_consumption_by_zone
-from ..domain.tariff import Zone
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
