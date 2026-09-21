@@ -299,3 +299,70 @@ def test_from_ten_at_night_a_run_plans_tomorrow():
 def test_after_midnight_a_run_is_back_to_planning_tonight():
     # The 00:05 retry sits inside the evening it is planning for.
     assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 21, 0, 5))
+
+
+# ─── selling the reserve early instead of holding it ───
+
+# Gross zone gap is T2 minus T3 (~870 at the 2026 tariff), and the margin
+# demands a quarter more. Net prices below are chosen either side of that.
+_HUGE = 2400.0  # ~2950 gross
+_MID = 1700.0  # ~2090 gross
+_SMALL = 640.0  # ~790 gross
+
+
+def test_a_wide_gap_before_the_last_hour_keeps_one_window():
+    # 19 and 20 pay hugely, 21 barely clears the threshold: selling the
+    # reserve into the peak beats saving it for the T2 hour.
+    proposal = _propose(
+        _day(WORKDAY, h19=_HUGE, h20=_MID, h21=_SMALL), _morning(CHEAP_MORNING)
+    )
+
+    assert len(proposal.windows) == 1
+    window = proposal.windows[0]
+    assert (window.start, window.end) == (time(19, 0), time(22, 0))
+    assert window.target_soc == FULL_TARGET_SOC
+
+
+def test_a_narrow_gap_still_splits_into_two_windows():
+    # All three hours are comparable — holding a reserve for 21:00 wins.
+    proposal = _propose(
+        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH), _morning(CHEAP_MORNING)
+    )
+
+    assert len(proposal.windows) == 2
+
+
+def test_the_margin_is_what_rejects_a_gap_that_merely_clears_break_even():
+    # Gap just over the raw zone difference but under it times the margin.
+    from custom_components.smart_rce.domain.evening_plan import EveningPlan
+    from custom_components.smart_rce.tariff import Zone
+    from custom_components.smart_rce.tariff.table import latest_rates
+
+    rates = latest_rates()
+    zone_gap = rates.marginal_cost(Zone.T2) - rates.marginal_cost(Zone.T3)
+    last = 900.0  # net
+    bare = last + (zone_gap * 1.05) / 1.23  # clears break-even, not the margin
+    ample = last + (zone_gap * EveningPlan._SELL_EARLY_MARGIN * 1.2) / 1.23
+
+    assert (
+        len(_propose(_day(WORKDAY, h19=_HUGE, h20=bare, h21=last), _morning(0)).windows)
+        == 2
+    )
+    assert (
+        len(
+            _propose(_day(WORKDAY, h19=_HUGE, h20=ample, h21=last), _morning(0)).windows
+        )
+        == 1
+    )
+
+
+def test_a_weekend_never_asks_the_question():
+    # No T2 to protect against, so the run stays whole regardless of the gap.
+    proposal = _propose(
+        _day(WEEKEND, h17=_HUGE, h18=_MID, h19=_SMALL),
+        _morning(CHEAP_MORNING),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    assert len(proposal.windows) == 2

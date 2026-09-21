@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import ClassVar, Final
 
-from ..tariff import evening_peak
+from ..tariff import Zone, evening_peak
+from ..tariff.table import latest_rates
 from .battery_schedule import (
     Scope,
     SetSlotBehaviorCommand,
@@ -66,6 +67,15 @@ class EveningPlan:
 
     # A run this long outlasts a single discharge, so it earns two windows.
     _MIN_HOURS_TO_SPLIT: Final[int] = 3
+
+    # Margin over break-even at which selling the reserve early wins instead.
+    # Emptying into the peak hours means buying the last expensive hour back
+    # at the T2 rate, so the price gap has to beat the zone-cost gap. The
+    # margin buys distance from that break-even: household draw over the hour
+    # being covered is an estimate, and with a deposit balance already built
+    # up, cash paid for distribution on a wrong call costs more than a
+    # marginally better sale gains.
+    _SELL_EARLY_MARGIN: Final[float] = 1.25
 
     _SCOPE_TODAY: Final[Scope] = "today"
     _SLOT_ORDER: Final[tuple[SlotKind, ...]] = (
@@ -203,7 +213,7 @@ class EveningPlan:
             at_least=cls.EXPORT_THRESHOLD,
             above=max_morning_price,
         )
-        runs = cls._split_long_run(cls._contiguous_runs(candidates))
+        runs = cls._split_long_run(cls._contiguous_runs(candidates), prices, is_workday)
         usable = runs[: len(cls._SLOT_ORDER)]
         zone_end = cls._expensive_zone_end(day, is_workday)
         return tuple(
@@ -235,7 +245,9 @@ class EveningPlan:
         return runs
 
     @classmethod
-    def _split_long_run(cls, runs: list[list[int]]) -> list[list[int]]:
+    def _split_long_run(
+        cls, runs: list[list[int]], prices: RceDayPrices, is_workday: bool
+    ) -> list[list[int]]:
         """Break a lone run of three-plus hours into a head and a final hour.
 
         Emptying a full battery takes roughly 1h48m, so one window spanning
@@ -249,7 +261,31 @@ class EveningPlan:
         if len(runs) != 1 or len(runs[0]) < cls._MIN_HOURS_TO_SPLIT:
             return runs
         run = runs[0]
+        if cls._sell_early_beats_holding(run, prices, is_workday):
+            return [run]
         return [run[:-1], run[-1:]]
+
+    @classmethod
+    def _sell_early_beats_holding(
+        cls, run: list[int], prices: RceDayPrices, is_workday: bool
+    ) -> bool:
+        """Tell whether emptying into the earlier hours beats keeping a reserve.
+
+        Holding back covers the house through the last expensive hour instead
+        of buying it at the T2 rate. Selling that reserve earlier instead pays
+        the price difference between those hours, so it wins only when the
+        difference clears the zone-cost gap — with a margin, because the
+        household draw being avoided is an estimate rather than a measurement.
+
+        Off-peak days have no T2 to protect against, so the question does not
+        arise; the last window already empties the battery there.
+        """
+        if not is_workday or len(run) < 2:
+            return False
+        rates = latest_rates()
+        zone_gap = rates.marginal_cost(Zone.T2) - rates.marginal_cost(Zone.T3)
+        price_gap = prices.gross_at(run[-2]) - prices.gross_at(run[-1])
+        return price_gap > zone_gap * cls._SELL_EARLY_MARGIN
 
     @staticmethod
     def _expensive_zone_end(day: date, is_workday: bool) -> int | None:
