@@ -140,6 +140,11 @@ class EveningPlan:
         )
 
     @property
+    def day(self) -> date:
+        """Evening this plan is for — today's or tomorrow's, per the run."""
+        return self._day
+
+    @property
     def windows(self) -> tuple[EveningWindow, ...]:
         return self._windows
 

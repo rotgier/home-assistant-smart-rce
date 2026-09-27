@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import logging
 from typing import TYPE_CHECKING
 
@@ -238,9 +238,22 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """
         await self._persist_and_notify(
             self._repo.schedule.apply_manual_slot_command(
-                cmd, today=self._clock().date()
+                cmd, today=self._edited_evening()
             )
         )
+
+    def _edited_evening(self) -> date:
+        """Which evening a hand edit applies to — the same one a run would plan.
+
+        The slots are a single set reused every day, so an edit made after the
+        evening window has passed is aimed at tomorrow. Stamping it with the
+        calendar date would mark the wrong evening as hand-set: the planner
+        would then either ignore a deliberate change or defer to a spent one.
+        """
+        now = self._clock()
+        if EveningPlan.plans_tomorrow_at(now):
+            return now.date() + timedelta(days=1)
+        return now.date()
 
     @property
     def evening_is_hand_set_today(self) -> bool:
@@ -278,10 +291,13 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         these two windows" are three different messages to whoever reads them.
         """
         schedule = self._repo.schedule
-        today = now.date()
         may_override = force or plan.overruled_by_morning
-        if schedule.evening_is_hand_set_on(today) and not may_override:
-            _LOGGER.debug("Evening plan skipped — hand-set on %s", today)
+        # Against the PLANNED day, not the current one: the evening run fires
+        # at 22:05 for tomorrow, by which time an edit made for tonight is
+        # spent. Asking about today there would let one manual tweak block the
+        # next day's planning entirely.
+        if schedule.evening_is_hand_set_on(plan.day) and not may_override:
+            _LOGGER.debug("Evening plan skipped — hand-set on %s", plan.day)
             return PlanApplication(outcome=PlanOutcome.DEFERRED_TO_MANUAL)
         before = self._evening_snapshot()
         changed = False

@@ -6,7 +6,7 @@ emptied by tomorrow morning's prices: that is information the user did not
 have when they edited, so it wins and hands control back.
 """
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from unittest.mock import MagicMock
 
 from custom_components.smart_rce.application.battery_schedule_service import (
@@ -217,3 +217,53 @@ async def test_no_diff_when_the_slots_already_agree():
     result = await service.adopt_evening_plan(plan, NOW)
 
     assert not result.changed_anything
+
+
+# ─── which evening a mark and a plan are talking about ───
+
+
+async def test_an_edit_made_today_does_not_block_planning_tomorrow():
+    # The 22:05 run plans tomorrow; an edit aimed at tonight is spent by then.
+    # Before this, one manual tweak silenced the next day's planning entirely.
+    schedule = BatterySchedule()
+    service = _service(schedule)
+    await service.handle_slot_command(
+        SetSlotEnabledCommand(scope="today", kind=EARLY, value=True)
+    )
+    tomorrow = TODAY + timedelta(days=1)
+    plan = EveningPlan.for_day(tomorrow, _prices(h19=RICH, h20=RICH), is_workday=True)
+
+    result = await service.adopt_evening_plan(plan, NOW)
+
+    assert result.outcome is PlanOutcome.APPLIED
+
+
+async def test_an_edit_still_protects_the_evening_it_was_made_for():
+    schedule = BatterySchedule()
+    service = _service(schedule)
+    await service.handle_slot_command(
+        SetSlotEnabledCommand(scope="today", kind=EARLY, value=True)
+    )
+
+    result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+
+    assert result.outcome is PlanOutcome.DEFERRED_TO_MANUAL
+
+
+async def test_an_edit_after_ten_at_night_marks_tomorrow_evening():
+    # Slots are one reused set, so a late edit aims at the next evening.
+    late_night = datetime(2026, 9, 21, 22, 30, tzinfo=timezone.utc)
+    schedule = BatterySchedule()
+    service = BatteryScheduleService(
+        repo=_FakeRepo(schedule),
+        clock=lambda: late_night,
+        tasks=MagicMock(),
+        notifier=MagicMock(),
+    )
+
+    await service.handle_slot_command(
+        SetSlotEnabledCommand(scope="today", kind=EARLY, value=True)
+    )
+
+    assert schedule.evening_is_hand_set_on(late_night.date() + timedelta(days=1))
+    assert not schedule.evening_is_hand_set_on(late_night.date())
