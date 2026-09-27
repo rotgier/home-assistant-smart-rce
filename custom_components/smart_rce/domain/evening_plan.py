@@ -31,10 +31,6 @@ from .battery_schedule import (
 )
 from .rce import RceDayPrices
 
-# From this hour a planning run targets tomorrow evening: today's windows are
-# behind us, and writing them again would re-open a window already past.
-_PLANNING_LOOKS_AHEAD_FROM_HOUR: Final[int] = 22
-
 
 class EveningPlan:
     """The evening's discharge decision — at most two windows, or none.
@@ -68,6 +64,15 @@ class EveningPlan:
     # A run this long outlasts a single discharge, so it earns two windows.
     _MIN_HOURS_TO_SPLIT: Final[int] = 3
 
+    # How much of T2 is worth considering on a workday, counted back from its
+    # end. Three hours covers a full discharge plus a held-back reserve for the
+    # last expensive hour; anything earlier is spent before the peak arrives.
+    _WORKDAY_HOURS: Final[int] = 3
+
+    # Hours a single discharge covers off-peak — the battery empties in about
+    # 1h48m, so a wider window only lets the strategy miss the peak.
+    _OFF_PEAK_HOURS: Final[int] = 2
+
     # Margin over break-even at which selling the reserve early wins instead.
     # Emptying into the peak hours means buying the last expensive hour back
     # at the T2 rate, so the price gap has to beat the zone-cost gap. The
@@ -100,15 +105,19 @@ class EveningPlan:
         self._max_morning_price = max_morning_price
         self._overruled_by_morning = overruled_by_morning
 
-    @staticmethod
-    def plans_tomorrow_at(now: datetime) -> bool:
+    @classmethod
+    def plans_tomorrow_at(cls, now: datetime, *, is_workday: bool = True) -> bool:
         """Tell whether a run at `now` is planning tomorrow evening.
 
-        Tonight's windows have passed by this hour, so a later run looks ahead
-        instead. Writing tomorrow's plan before that point would drop windows
-        into hours still open today and start a discharge on the spot.
+        The switchover is the end of TODAY's window, not a fixed hour: summer
+        T2 ends at 22:00, winter's at 21:00, and a day off runs to 23:00.
+        Writing tomorrow's plan any earlier would drop windows into hours still
+        open today and start a discharge on the spot.
+
+        The same rule stamps a hand edit, so an evening set by hand and an
+        evening planned automatically always mean the same day.
         """
-        return now.hour >= _PLANNING_LOOKS_AHEAD_FROM_HOUR
+        return now.hour >= cls._evening_hours(now.date(), is_workday).stop
 
     @classmethod
     def for_day(
@@ -218,7 +227,12 @@ class EveningPlan:
             at_least=cls.EXPORT_THRESHOLD,
             above=max_morning_price,
         )
-        runs = cls._split_long_run(cls._contiguous_runs(candidates), prices, is_workday)
+        if is_workday:
+            runs = cls._split_long_run(
+                cls._contiguous_runs(candidates), prices, is_workday
+            )
+        else:
+            runs = cls._best_off_peak_pair(candidates, prices)
         usable = runs[: len(cls._SLOT_ORDER)]
         zone_end = cls._expensive_zone_end(day, is_workday)
         return tuple(
@@ -233,10 +247,47 @@ class EveningPlan:
 
     @classmethod
     def _evening_hours(cls, day: date, is_workday: bool) -> range:
-        """Hours worth considering — the T2 block, or a broad evening off-peak."""
+        """Hours worth considering on `day`.
+
+        On a workday: the LAST THREE hours of T2, whatever the season. Summer's
+        block (19-22) is three hours anyway; winter's (16-21) is five, and its
+        first two are no use — the battery empties in under two hours, so
+        starting at 16:00 would spend the charge before the expensive evening
+        even peaks.
+
+        Off-peak days have no T2, so the whole evening is fair game and the
+        best pair inside it gets picked later.
+        """
         if not is_workday:
             return cls.NON_WORKDAY_EVENING
-        return evening_peak(day)
+        peak = evening_peak(day)
+        return range(max(peak.start, peak.stop - cls._WORKDAY_HOURS), peak.stop)
+
+    @classmethod
+    def _best_off_peak_pair(
+        cls, candidates: list[int], prices: RceDayPrices
+    ) -> list[list[int]]:
+        """Pick the best adjacent pair of hours — the whole plan on a day off.
+
+        With no expensive zone to reserve charge for, the only question is
+        where to sell, and the battery empties in about 1h48m. Two adjacent
+        hours is therefore the entire answer: a wider window only lets the
+        strategy drift off the peak, and a second window would have nothing
+        left to discharge. That is why days off never use the LATE slot.
+
+        Falls back to the single best hour when no two qualify side by side.
+        """
+        pairs = [
+            (first, second)
+            for first, second in zip(candidates, candidates[1:], strict=False)
+            if second == first + 1
+        ]
+        if pairs:
+            best = max(
+                pairs, key=lambda p: prices.gross_at(p[0]) + prices.gross_at(p[1])
+            )
+            return [list(best)]
+        return [[max(candidates, key=prices.gross_at)]]
 
     @staticmethod
     def _contiguous_runs(hours: list[int]) -> list[list[int]]:

@@ -104,6 +104,9 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         # to downstream consumers (e.g. BatteryChargeService would flip
         # `needs_charge_toggle` False → write Modbus → flicker).
         self._last_op: BatteryOperation = self._repo.schedule.current_operation()
+        # Today's calendar, refreshed each tick — decides where the evening
+        # ends, and so which evening a hand edit is aimed at.
+        self._last_is_workday: bool | None = None
 
     @callback
     def update(self, input: BatteryScheduleInput) -> BatteryScheduleUpdateResult:
@@ -117,6 +120,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         engage/disengage/day_rolled) — preemptive for Etap 2B observability
         sensors that will observe `_currently_engaging` state directly.
         """
+        self._last_is_workday = input.is_workday
         if input.battery_soc is None:
             return self._make_result(self._last_op)
 
@@ -251,9 +255,18 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         would then either ignore a deliberate change or defer to a spent one.
         """
         now = self._clock()
-        if EveningPlan.plans_tomorrow_at(now):
+        if EveningPlan.plans_tomorrow_at(now, is_workday=self._is_workday_today()):
             return now.date() + timedelta(days=1)
         return now.date()
+
+    def _is_workday_today(self) -> bool:
+        """Today's calendar from the last tick; assumes workday when unknown.
+
+        A workday's window ends earlier, so assuming one moves the switchover
+        earlier too — which at worst stamps an edit with tomorrow when today
+        still had an hour left, rather than the other way round.
+        """
+        return self._last_is_workday is not False
 
     @property
     def evening_is_hand_set_today(self) -> bool:

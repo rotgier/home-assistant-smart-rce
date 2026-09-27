@@ -30,8 +30,12 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# 22:05 first; the later hours are retries for an evening still discharging.
-_EVENING_RUN_HOURS: Final[tuple[int, ...]] = (22, 23, 0)
+# Attempts, earliest first. 21:05 is the winter switchover (T2 ends at 21:00);
+# 22:05 the summer one; 23:05 covers days off, whose window runs to 23:00. The
+# later hours also serve as retries when an evening is still discharging.
+# Which day each attempt plans follows `EveningPlan.plans_tomorrow_at`, so an
+# attempt that fires before today's window closes simply re-plans today.
+_EVENING_RUN_HOURS: Final[tuple[int, ...]] = (21, 22, 23, 0)
 _EVENING_RUN_MINUTE: Final[int] = 5
 
 # The afternoon sweep polls until tomorrow's prices show up (published ~14:00,
@@ -79,15 +83,23 @@ class EveningPlanScheduler:
     async def _run_evening(self, now: datetime) -> None:
         """Plan tomorrow evening, unless tonight is still discharging."""
         target = self._evening_target(now)
+        # Logged on entry, not only on success: when a run does nothing, the
+        # reason is the thing worth knowing, and a silent skip left one
+        # September evening unexplained after the buffer rolled over.
+        _LOGGER.info("Evening run at %s — target %s", now.strftime("%H:%M"), target)
         if self._planned_evening_on == target:
-            return  # already done for that evening; later hours are retries
+            _LOGGER.info("Evening run skipped — %s already planned", target)
+            return
         if self._ems.battery_schedule_service.is_discharging_now:
             _LOGGER.info("Evening plan deferred — a discharge is still running")
             return
         # Past midnight the target evening is already today, so the plan must
         # be read off today's prices rather than tomorrow's.
         if await self._plan_and_apply(
-            now, for_tomorrow=EveningPlan.plans_tomorrow_at(now)
+            now,
+            for_tomorrow=EveningPlan.plans_tomorrow_at(
+                now, is_workday=self._ems.is_workday_today
+            ),
         ):
             self._planned_evening_on = target
 
@@ -114,14 +126,13 @@ class EveningPlanScheduler:
         )
         return True
 
-    @staticmethod
-    def _evening_target(now: datetime) -> date:
+    def _evening_target(self, now: datetime) -> date:
         """Date of the evening this run is planning.
 
-        22:05 and 23:05 plan the NEXT day's evening; the 00:05 retry already
-        sits inside that day. Naming the target rather than the run lets all
-        three fire against one "done" marker.
+        An attempt fired after today's window closes plans the next day; one
+        fired before it (or the 00:05 retry) plans today. Naming the target
+        rather than the run lets every attempt share one "done" marker.
         """
-        if now.hour >= _EVENING_RUN_HOURS[0]:
+        if EveningPlan.plans_tomorrow_at(now, is_workday=self._ems.is_workday_today):
             return now.date() + timedelta(days=1)
         return now.date()

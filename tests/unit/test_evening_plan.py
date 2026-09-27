@@ -157,15 +157,28 @@ def test_a_gap_in_the_middle_produces_two_windows():
     assert (late.start, late.end) == (time(21, 0), time(22, 0))
 
 
-def test_winter_shifts_the_window_three_hours_earlier():
+def test_winter_considers_the_last_three_hours_of_its_longer_peak():
+    # Winter T2 runs 16-21, but the battery empties in under two hours, so
+    # only 18, 19 and 20 are of any use — starting at 16:00 would spend the
+    # charge before the expensive evening peaks.
     proposal = _propose(
-        _day(WINTER_WORKDAY, h16=RICH, h17=RICH),
+        _day(WINTER_WORKDAY, h18=RICH, h19=RICH),
         _morning(CHEAP_MORNING),
         day=WINTER_WORKDAY,
     )
 
     slot = proposal.windows[0]
-    assert (slot.start, slot.end) == (time(16, 0), time(18, 0))
+    assert (slot.start, slot.end) == (time(18, 0), time(20, 0))
+
+
+def test_winter_ignores_the_first_hours_of_its_peak():
+    proposal = _propose(
+        _day(WINTER_WORKDAY, h16=_HUGE, h17=_HUGE),
+        _morning(CHEAP_MORNING),
+        day=WINTER_WORKDAY,
+    )
+
+    assert proposal.is_empty
 
 
 def test_evening_hours_outside_the_expensive_zone_are_ignored_on_workdays():
@@ -189,15 +202,47 @@ def test_a_weekend_considers_the_whole_evening_and_always_empties():
     assert slot.target_soc == FULL_TARGET_SOC
 
 
-def test_at_most_two_windows_are_proposed():
+def test_a_day_off_takes_the_best_adjacent_pair():
+    # 20 and 21 together beat any other neighbouring pair, so that is the
+    # window — one slot, nothing held back, LATE unused.
     proposal = _propose(
-        _day(WEEKEND, h16=RICH, h18=RICH, h20=RICH, h22=RICH),
+        _day(WEEKEND, h17=RICH, h18=RICH, h20=_HUGE, h21=_MID),
         _morning(CHEAP_MORNING),
         day=WEEKEND,
         is_workday=False,
     )
 
-    assert len(proposal.windows) == 2
+    assert len(proposal.windows) == 1
+    window = proposal.windows[0]
+    assert (window.start, window.end) == (time(20, 0), time(22, 0))
+    assert window.target_soc == FULL_TARGET_SOC
+
+
+def test_a_day_off_never_fills_the_late_slot():
+    proposal = _propose(
+        _day(WEEKEND, h17=RICH, h18=RICH, h19=RICH, h20=RICH),
+        _morning(CHEAP_MORNING),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    late = [
+        c for c in proposal.slot_commands() if c.kind is SlotKind.DISCHARGE_EVENING_LATE
+    ]
+    assert len(proposal.windows) == 1
+    assert [c.value for c in late] == [False]
+
+
+def test_a_day_off_falls_back_to_one_hour_when_none_adjoin():
+    proposal = _propose(
+        _day(WEEKEND, h17=RICH, h20=_HUGE),
+        _morning(CHEAP_MORNING),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    assert len(proposal.windows) == 1
+    assert proposal.windows[0].start == time(20, 0)
 
 
 # ─── the plan speaks the aggregate's language ───
@@ -286,14 +331,24 @@ def test_a_window_knows_whether_it_runs_to_a_given_hour():
 # ─── which evening a run targets ───
 
 
-def test_before_ten_at_night_a_run_plans_tonight():
-    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 19, 35))
-    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 21, 59))
+def test_a_summer_workday_switches_over_when_its_peak_ends_at_ten():
+    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 21, 21, 59))
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 21, 22, 5))
 
 
-def test_from_ten_at_night_a_run_plans_tomorrow():
-    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 22, 5))
-    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 20, 23, 5))
+def test_a_winter_workday_switches_over_an_hour_earlier():
+    # Winter T2 ends at 21:00, so by 21:05 tonight is done and the run looks
+    # ahead — a fixed 22:00 would have wasted that hour every winter evening.
+    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 10, 5, 20, 5))
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 10, 5, 21, 5))
+
+
+def test_a_day_off_switches_over_latest_of_all():
+    # Its window runs to 23:00, so 22:05 still belongs to tonight.
+    assert not EveningPlan.plans_tomorrow_at(
+        datetime(2026, 9, 26, 22, 5), is_workday=False
+    )
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 26, 23, 5), is_workday=False)
 
 
 def test_after_midnight_a_run_is_back_to_planning_tonight():
@@ -356,8 +411,9 @@ def test_the_margin_is_what_rejects_a_gap_that_merely_clears_break_even():
     )
 
 
-def test_a_weekend_never_asks_the_question():
-    # No T2 to protect against, so the run stays whole regardless of the gap.
+def test_a_day_off_never_asks_the_question():
+    # No T2 to reserve against, and only ever one window — so the early-sale
+    # rule has nothing to decide there.
     proposal = _propose(
         _day(WEEKEND, h17=_HUGE, h18=_MID, h19=_SMALL),
         _morning(CHEAP_MORNING),
@@ -365,4 +421,4 @@ def test_a_weekend_never_asks_the_question():
         is_workday=False,
     )
 
-    assert len(proposal.windows) == 2
+    assert len(proposal.windows) == 1
