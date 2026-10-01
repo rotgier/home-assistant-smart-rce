@@ -9,7 +9,7 @@ Three phases require dynamic decisions:
 
 - pre-charge (7:00 → start_charge_hour, workday)
 - post-charge (start_charge_hour → 13:00, workday)
-- afternoon-dynamic (13:00 → 19:00, low-price peak)
+- afternoon-dynamic (13:00 → start of the evening region, low-price peak)
 
 The remaining phases use direct rules in DodPolicy (DoD = 0 or 90 by phase
 identity, no hysteresis).

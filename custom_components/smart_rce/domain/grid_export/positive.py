@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 if TYPE_CHECKING:
     from datetime import time
 
+from custom_components.smart_rce.domain.bucket import PV_WINDOW_HOURS
 from custom_components.smart_rce.domain.grid_export.intervention import (
     CONTINUE,
     ContinueResult,
@@ -103,7 +104,8 @@ SOC_ENTRY_CEILING: Final[int] = 99
 SOC_CEILING: Final[int] = 100
 
 # Pre-charge window: 7:00 → start_charge_hour_override (BatteryManager rules).
-PRE_CHARGE_WINDOW_START_HOUR: Final[int] = 7
+# Shares its start with the PV window — the same morning the forecast covers.
+PRE_CHARGE_WINDOW_START_HOUR: Final[int] = PV_WINDOW_HOURS.start
 
 # PV low → STANDBY (night, no surplus).
 PV_STANDBY_THRESHOLD_W: Final[int] = 200

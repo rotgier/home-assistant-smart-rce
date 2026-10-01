@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from ..bucket import Bucket, Buckets
+from ..bucket import PV_WINDOW_HOURS, Bucket, Buckets
 from ..target_soc import PvProfile
 
 # --- Framework: ForecastStrategy (template method) --- #
@@ -271,7 +271,7 @@ class PvForecastResult:
             if dt.date() != match_date:
                 continue
             matched = True
-            if dt.hour < 7 or dt.hour >= 13 or dt.minute not in (0, 30):
+            if dt.hour not in PV_WINDOW_HOURS or dt.minute not in (0, 30):
                 continue
             by_bucket[Bucket(dt.hour, dt.minute)] = round(
                 period.pv_estimate_adjusted / 2, 4
@@ -280,7 +280,7 @@ class PvForecastResult:
             raise ValueError(
                 f"PvForecastResult.to_profile: no periods match {target_date!r}"
             )
-        for h in range(7, 13):
+        for h in PV_WINDOW_HOURS:
             for m in (0, 30):
                 by_bucket.setdefault(Bucket(h, m), 0.0)
         return PvProfile(buckets=Buckets(by_bucket=by_bucket)).with_now_override(

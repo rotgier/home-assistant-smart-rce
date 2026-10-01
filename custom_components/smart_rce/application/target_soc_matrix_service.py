@@ -48,6 +48,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from ..application.energy_balance_service import EnergyBalanceService
+from ..domain.bucket import PV_WINDOW_HOURS
 from ..domain.pv_forecast import PvForecast
 from ..domain.target_soc import PvProfile, TargetSoc
 from ..domain.target_soc_catalog import TargetSocCatalog
@@ -185,7 +186,7 @@ class TargetSocMatrixService:
         # Apples-to-apples Σ PV source via PvProfile.with_now_override —
         # same time-shift formula as today's PvForecastResult.to_profile.
         # `now` is None outside the 7-13 window (no in-progress override).
-        matrix_now = now if is_today and 7 <= now.hour < 13 else None
+        matrix_now = now if is_today and now.hour in PV_WINDOW_HOURS else None
         live_pv_w = (
             self._energy_balance_service.forecasts.signals.pv_power_w
             if matrix_now

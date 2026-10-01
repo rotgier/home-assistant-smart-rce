@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime  # noqa: TC003 — used in TargetSocContext at runtime
 from typing import TYPE_CHECKING, Final
 
-from .bucket import Bucket, Buckets
+from .bucket import PV_WINDOW_HOURS, Bucket, Buckets
 
 if TYPE_CHECKING:
     from .consumption_profiles import ConsumptionProfile
@@ -244,7 +244,7 @@ class PvProfile:
         """
         by_bucket = {
             Bucket(h, m): realized.get((h, m), 0.0)
-            for h in range(7, 13)
+            for h in PV_WINDOW_HOURS
             for m in (0, 30)
         }
         return cls(buckets=Buckets(by_bucket=by_bucket))
@@ -313,7 +313,7 @@ def _calculate_target_soc(
     min_idx = -1
     prev_hour: int | None = None
 
-    for hour in range(7, 13):
+    for hour in PV_WINDOW_HOURS:
         for minute in (0, 30):
             # Hour-boundary clamp: if prior hour was in pre-charge, its surplus
             # was exported (not stored in battery) — zero out positive cumulative.

@@ -49,7 +49,8 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
         name="Evening Plan Targets Tomorrow",
         # Which day the evening slots currently describe. The rule lives in
         # EveningPlan; only the clock comes from here, so the dashboard can
-        # chart the right day without restating the 22:00 switchover in JS.
+        # chart the right day without restating the switchover in JS — it
+        # moves with the season and with workday/day off.
         value_fn=lambda ems: EveningPlan.plans_tomorrow_at(
             now_local(), is_workday=ems.is_workday_today
         ),

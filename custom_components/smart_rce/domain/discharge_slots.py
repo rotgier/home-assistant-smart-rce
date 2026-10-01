@@ -82,8 +82,13 @@ def max_upcoming_peak(rce_data: RcePrices, now: datetime) -> UpcomingPeak | None
     - **Do 12:00**: dzisiejszy poranny peak (today 5-12).
       Use case: rano user widzi czy poranny peak już był / będzie.
     - **Od 12:00**: dzisiejszy wieczorny + jutrzejszy poranny/popołudniowy
-      (today 19-24 + tomorrow 6-14). Standard "next peak" decision dla
+      (today 16-24 + tomorrow 6-14). Standard "next peak" decision dla
       afternoon-static, evening discharge etc.
+
+      Wieczór zaczyna się o 16:00, nie o 19:00: zimowe T2 rusza o 16:00,
+      a `EveningPlan` w dni wolne i tak przeszukuje 16-23. Okno jest tu
+      szersze niż strefa taryfowa i to jest w porządku — pytamy o cenę,
+      nie o strefę, a wynik i tak przechodzi przez `max()`.
 
     Sensor **NIE filtruje past slots** — intentional, dla retrospekcji
     (rano user chce widzieć czy oddawaliśmy w wieczornym peaku, sprawdza
@@ -99,7 +104,7 @@ def max_upcoming_peak(rce_data: RcePrices, now: datetime) -> UpcomingPeak | None
         candidates.extend(s for s in today_slots if 5 <= s[1].hour < 12)
     else:
         # Afternoon/evening cycle: dziś wieczór + jutro morning/afternoon
-        candidates.extend(s for s in today_slots if 19 <= s[1].hour < 24)
+        candidates.extend(s for s in today_slots if 16 <= s[1].hour < 24)
         candidates.extend(
             s for s in _hourly_slots(rce_data.tomorrow) if 6 <= s[1].hour < 14
         )

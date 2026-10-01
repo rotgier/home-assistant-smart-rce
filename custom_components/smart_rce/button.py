@@ -105,9 +105,10 @@ class OneShotCancelButton(ButtonEntity):
 class EveningPlanRecalculateButton(ButtonEntity):
     """Recompute the evening discharge plan now, instead of waiting for a run.
 
-    Targets whichever evening comes next — tonight before 22:00, tomorrow
-    after — so pressing it mid-evening cannot drop tomorrow's windows into
-    hours that are still open today.
+    Targets whichever evening comes next: tonight while today's window is
+    still open, tomorrow once it has closed. `EveningPlan.plans_tomorrow_at`
+    owns that switchover, which moves with the season — so pressing this
+    mid-evening cannot drop tomorrow's windows into hours still open today.
     """
 
     _attr_has_entity_name = False

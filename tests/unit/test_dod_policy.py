@@ -220,6 +220,72 @@ class TestPhaseDispatch:
         assert p._compute_phase(s) == Phase.UNKNOWN
 
 
+def _winter_at(h, m=0):
+    return datetime(2026, 10, 5, h, m, tzinfo=TIMEZONE)  # Monday, winter T2 16-21
+
+
+def _winter_weekend_at(h, m=0):
+    return datetime(2026, 10, 3, h, m, tzinfo=TIMEZONE)  # Saturday, winter
+
+
+class TestSeasonalEveningRegion:
+    """The evening region follows T2, so it moves when the tariff's does.
+
+    Winter T2 runs 16:00-21:00 instead of summer's 19:00-22:00. The hours in
+    between are what used to be mispriced: at 16:00-19:00 the battery was held
+    at DoD=0 while the house bought T2 energy at 1496 PLN/MWh, and at
+    21:00-22:00 it kept discharging into cheap T3 instead of saving the charge
+    for the T1 morning.
+    """
+
+    def test_winter_evening_starts_at_16(self):
+        p = DodPolicy()
+        s = _state(now=_winter_at(16), is_workday=True)
+        assert p._compute_phase(s) == Phase.EVENING_DISCHARGE
+
+    def test_winter_afternoon_ends_at_16(self):
+        p = DodPolicy()
+        s = _state(now=_winter_at(15), is_workday=True)
+        assert p._compute_phase(s, should_hold_for_peak=True) == Phase.AFTERNOON_STATIC
+
+    def test_winter_night_starts_at_21(self):
+        """21:00 is past T2 — preserve for the morning rather than discharge."""
+        p = DodPolicy()
+        s = _state(now=_winter_at(21), is_workday=True, is_workday_tomorrow=True)
+        assert p._compute_phase(s) == Phase.NIGHT_PRESERVE
+
+    def test_winter_night_at_21_reads_tomorrow_not_today(self):
+        """Pre-midnight the morning ahead is tomorrow's, whatever the hour."""
+        p = DodPolicy()
+        s = _state(now=_winter_at(21), is_workday=True, is_workday_tomorrow=False)
+        assert p._compute_phase(s) == Phase.NIGHT_FREE
+
+    def test_summer_boundaries_unchanged(self):
+        p = DodPolicy()
+        assert (
+            p._compute_phase(
+                _state(now=_at(16), is_workday=True), should_hold_for_peak=True
+            )
+            == Phase.AFTERNOON_STATIC
+        )
+        assert (
+            p._compute_phase(_state(now=_at(21), is_workday=True))
+            == Phase.EVENING_DISCHARGE
+        )
+
+    def test_day_off_keeps_the_fixed_evening(self):
+        """No T2 on a day off — the region stays where the price heuristic put it."""
+        p = DodPolicy()
+        s = _state(now=_winter_weekend_at(17), is_workday=False)
+        assert p._compute_phase(s, should_hold_for_peak=True) == Phase.AFTERNOON_STATIC
+
+    def test_workday_unknown_keeps_the_fixed_evening(self):
+        """`is_workday` missing after a restart must not widen the evening."""
+        p = DodPolicy()
+        s = _state(now=_winter_at(17), is_workday=None)
+        assert p._compute_phase(s, should_hold_for_peak=True) == Phase.AFTERNOON_STATIC
+
+
 class TestDirectPhasesDoD:
     """Phases with fixed DoD rule (no delegation, no entry initial)."""
 

@@ -151,10 +151,20 @@ class Bucket:
         )
 
 
+PV_WINDOW_HOURS: Final[range] = range(7, 13)
+"""Hours the PV forecast, the consumption profile and the charge window cover.
+
+One constant because seven modules used to spell it `range(7, 13)` or
+`7 <= hour < 13` on their own. Deliberately NOT the tariff's T1 block, which
+happens to span the same hours: this window follows the morning PV ramp and
+the charge decision, so a future tariff moving T1 must not silently reshape
+the forecast buckets.
+"""
+
 # Canonical 12-bucket set for the 7:00..12:30 PV window. Used by
 # `Buckets.__post_init__` validation and by `Buckets.flat` construction.
 _PV_WINDOW_BUCKETS: Final[frozenset[Bucket]] = frozenset(
-    Bucket(h, m) for h in range(7, 13) for m in (0, 30)
+    Bucket(h, m) for h in PV_WINDOW_HOURS for m in (0, 30)
 )
 
 

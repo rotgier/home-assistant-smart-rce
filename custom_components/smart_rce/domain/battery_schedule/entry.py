@@ -288,8 +288,11 @@ class SlotKind(Enum):
     CHARGE_AFTERNOON = SlotProfile(
         direction=Direction.CHARGE,
         notification_level=NotificationLevel.NORMAL,
+        # Ends where the summer evening peak begins. Winter T2 starts at 16:00,
+        # so the window wants shortening then — but only the user can do that:
+        # this value seeds a fresh install, and a persisted window is never
+        # rewritten from here.
         default_window=(time(13, 0), time(19, 0)),
-        # April-September. Other months user shortens to (13, 16).
         default_target_soc=80.0,
         # 80% leaves headroom for late-afternoon PV surplus.
     )

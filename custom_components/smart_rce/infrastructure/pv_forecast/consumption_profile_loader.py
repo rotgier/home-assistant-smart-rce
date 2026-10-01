@@ -22,7 +22,7 @@ from homeassistant.components.recorder.statistics import statistics_during_perio
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from ...domain.bucket import Bucket, Buckets
+from ...domain.bucket import PV_WINDOW_HOURS, Bucket, Buckets
 from ...domain.consumption_profiles import (
     PREV_DAYS_COUNT,
     ConsumptionProfile,
@@ -37,7 +37,7 @@ _CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
 # (sensor gaps, restarts, etc.). Domain default `CONSUMPTION_PER_30MIN` is
 # the same baseline as the synthetic "live" profile.
 _DEFAULT_BUCKETS: Final[dict[Bucket, float]] = {
-    Bucket(h, m): CONSUMPTION_PER_30MIN for h in range(7, 13) for m in (0, 30)
+    Bucket(h, m): CONSUMPTION_PER_30MIN for h in PV_WINDOW_HOURS for m in (0, 30)
 }
 
 _LOGGER = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ class ConsumptionProfileLoader:
                 continue
             ts = datetime.fromtimestamp(float(raw_start), tz=UTC).astimezone(tz)
             d = ts.date()
-            if d not in by_date or ts.hour < 7 or ts.hour >= 13:
+            if d not in by_date or ts.hour not in PV_WINDOW_HOURS:
                 continue
             state_val = slot.get("state")
             if state_val is None:

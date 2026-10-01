@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from .bucket import PV_WINDOW_HOURS
 from .consumption_profiles import ConsumptionProfile, ConsumptionProfiles
 from .pv_forecast import PvForecast
 from .target_soc import TargetSoc, TargetSocContext, TargetSocInputs
@@ -80,7 +81,7 @@ class TargetSocCatalog:
         """
         # Auto-switch by now vs the 7-13 PV window: now-aware inside window,
         # full-window fallback post-13 (matrix would otherwise go degenerate).
-        now_in_window = 7 <= now.hour < 13
+        now_in_window = now.hour in PV_WINDOW_HOURS
         today_ctx = TargetSocContext(
             target_date=now.date(),
             signals=forecasts.signals,

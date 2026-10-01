@@ -29,21 +29,21 @@ Phase classification + decisions:
   with POSITIVE intervention (POSITIVE first line >60 Wh, block_post_charge
   second line >=100 Wh / instant_surplus when POSITIVE cannot absorb, e.g.
   SoC=100% / BMS clamp / sustained surplus).
-- **AFTERNOON_STATIC** (13:00 → 19:00, peak=True): direct DoD=0 — preserve
+- **AFTERNOON_STATIC** (13:00 → evening, peak=True): direct DoD=0 — preserve
   for evening peak. Battery typically full → POSITIVE entry blocked by
   `soc_at_entry_ceiling` anyway.
-- **AFTERNOON_DYNAMIC** (13:00 → 19:00, peak=False): delegates to
+- **AFTERNOON_DYNAMIC** (13:00 → evening, peak=False): delegates to
   `block_afternoon_dynamic` — aggressive thresholds (>0 Wh hourly) since
   past PV peak.
-- **EVENING_DISCHARGE** (19:00 → 22:00, workday today OR weekend without
+- **EVENING_DISCHARGE** (evening region, workday today OR weekend without
   preserve): direct DoD=90. Workday: cover expensive evening consumption;
   explicit BatterySchedule engagement raises `ems_interventions_blocked` for
   fast discharge windows. Weekend: free when no peak ahead and tomorrow=weekend.
-- **EVENING_PRESERVE** (19:00 → 22:00, weekend today AND (peak ahead OR
+- **EVENING_PRESERVE** (evening region, weekend today AND (peak ahead OR
   workday tomorrow)): direct DoD=0 — protect battery for upcoming load.
-- **NIGHT_PRESERVE** (22:00 → 07:00, workday tomorrow): direct DoD=0 —
+- **NIGHT_PRESERVE** (evening end → 07:00, workday tomorrow): direct DoD=0 —
   preserve for tomorrow morning load.
-- **NIGHT_FREE** (22:00 → 07:00, weekend tomorrow): direct DoD=90 — free
+- **NIGHT_FREE** (evening end → 07:00, weekend tomorrow): direct DoD=90 — free
   discharge.
 - **WEEKEND_MORNING** (7:00 → 13:00, weekend): direct DoD=0 — passive PV
   capture (RCE typically flat, no expensive hours to protect surplus).
@@ -84,18 +84,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
+from ..tariff import evening_peak
 from .block_discharge import (
     block_afternoon_dynamic,
     block_post_charge,
     block_pre_charge,
 )
+from .bucket import PV_WINDOW_HOURS
 
 if TYPE_CHECKING:
-    from datetime import time
+    from datetime import date, time
 
     from .input_state import InputState
+
+
+# Evening region on a day that has no T2 at all — days off, and days where
+# `is_workday` has not arrived yet. Not a tariff boundary: on those days the
+# question is only "is an expensive RCE hour ahead", and this is the window
+# that heuristic was built around.
+_OFF_PEAK_EVENING: Final[range] = range(19, 22)
 
 
 class Phase(Enum):
@@ -109,12 +118,12 @@ class Phase(Enum):
     # can drive discharge through. Renamed from EMS_ALLOW_DISCHARGE (Etap 0).
     WORKDAY_PRE_CHARGE = "workday_pre_charge"  # 7:00..start_charge, workday
     WORKDAY_POST_CHARGE = "workday_post_charge"  # start_charge..13:00, workday
-    AFTERNOON_STATIC = "afternoon_static"  # 13:00..19:00, peak=True (any day)
-    AFTERNOON_DYNAMIC = "afternoon_dynamic"  # 13:00..19:00, peak=False (any day)
-    EVENING_DISCHARGE = "evening_discharge"  # 19:00..22:00, workday OR weekend free
-    EVENING_PRESERVE = "evening_preserve"  # 19:00..22:00, weekend with peak/preserve
-    NIGHT_PRESERVE = "night_preserve"  # 22:00..07:00, workday tomorrow
-    NIGHT_FREE = "night_free"  # 22:00..07:00, weekend tomorrow
+    AFTERNOON_STATIC = "afternoon_static"  # 13:00..evening, peak=True (any day)
+    AFTERNOON_DYNAMIC = "afternoon_dynamic"  # 13:00..evening, peak=False (any day)
+    EVENING_DISCHARGE = "evening_discharge"  # evening, workday OR weekend free
+    EVENING_PRESERVE = "evening_preserve"  # evening, weekend with peak/preserve
+    NIGHT_PRESERVE = "night_preserve"  # evening end..07:00, workday tomorrow
+    NIGHT_FREE = "night_free"  # evening end..07:00, weekend tomorrow
     WEEKEND_MORNING = "weekend_morning"  # 7:00..13:00, weekend
     UNKNOWN = "unknown"  # fallback (missing inputs)
 
@@ -272,17 +281,18 @@ class DodPolicy:
             return Phase.UNKNOWN
 
         hour = state.now.hour
+        evening = self._evening_region(state.now.date(), state.is_workday)
 
-        # Night phases 22:00..07:00 (next day)
-        if hour >= 22 or hour < 7:
+        # Night — from the end of the evening region to the morning window.
+        if hour >= evening.stop or hour < PV_WINDOW_HOURS.start:
             return self._night_phase(state)
 
-        # Evening 19:00..22:00 — workday vs weekend distinction
-        if 19 <= hour < 22:
+        # Evening — workday vs weekend distinction
+        if hour in evening:
             return self._evening_phase(state, should_hold_for_peak)
 
-        # Afternoon 13:00..19:00 — peak preserve OR dynamic hysteresis
-        if 13 <= hour < 19:
+        # Afternoon — peak preserve OR dynamic hysteresis
+        if PV_WINDOW_HOURS.stop <= hour < evening.start:
             if should_hold_for_peak is None:
                 # Either max_upcoming_peak hasn't been computed yet
                 # (discharge_slots.update not yet called after reload) or the
@@ -311,8 +321,29 @@ class DodPolicy:
         return Phase.WORKDAY_POST_CHARGE
 
     @staticmethod
+    def _evening_region(day: date, is_workday: bool | None) -> range:
+        """Hours the evening phase owns — and so where night and afternoon end.
+
+        On a workday this is the T2 block, which moves with the season (19-22
+        in summer, 16-21 in winter). Tying it to the tariff rather than to a
+        literal is what makes the house draw from the battery through the
+        expensive hours instead of buying them from the grid: in winter 16:00
+        is already T2 at 1496 PLN/MWh, and leaving it to the afternoon phase
+        would hold the battery at DoD=0 right through it. The same tie moves
+        NIGHT_PRESERVE to 21:00, where the expensive zone actually ends.
+
+        Days off have no T2, so they keep the fixed evening region — there the
+        phase asks about RCE prices, not about zones. `is_workday` missing is
+        treated the same way: it is transient after a restart, and the branches
+        that need the flag answer UNKNOWN on their own.
+        """
+        if is_workday is not True:
+            return _OFF_PEAK_EVENING
+        return evening_peak(day)
+
+    @staticmethod
     def _evening_phase(state: InputState, should_hold_for_peak: bool | None) -> Phase:
-        """19:00..22:00 — workday discharge OR weekend preserve/free.
+        """Evening region — workday discharge OR weekend preserve/free.
 
         - Workday today → DISCHARGE (DoD=90): cover expensive evening peak load.
           Other automations (`Battery Discharge in the evening`) flip
@@ -338,10 +369,10 @@ class DodPolicy:
 
     @staticmethod
     def _night_phase(state: InputState) -> Phase:
-        """22:00..07:00 — preserve when the morning ahead is a workday, else free.
+        """Evening end..07:00 — preserve when a workday morning is ahead.
 
         "Morning ahead" depends on which half of the night phase we're in:
-        - Pre-midnight (hour >= 22): morning ahead = tomorrow → check
+        - Pre-midnight: morning ahead = tomorrow → check
           `is_workday_tomorrow`.
         - Post-midnight (hour < 7): morning ahead = today → check
           `is_workday`. HA's `binary_sensor.workday` reflects the calendar
@@ -366,8 +397,14 @@ class DodPolicy:
         trigger.
         """
         assert state.now is not None
+        # Which side of midnight we are on. Testing against the morning window
+        # rather than against 22:00: the night now starts wherever the evening
+        # region ends (21:00 in winter), and every pre-midnight hour is above
+        # 07:00 while every post-midnight one is below it.
         morning_is_workday = (
-            state.is_workday_tomorrow if state.now.hour >= 22 else state.is_workday
+            state.is_workday_tomorrow
+            if state.now.hour >= PV_WINDOW_HOURS.start
+            else state.is_workday
         )
         if morning_is_workday is True:
             return Phase.NIGHT_PRESERVE
