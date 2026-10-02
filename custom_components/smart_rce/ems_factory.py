@@ -51,6 +51,7 @@ from .infrastructure.tariff_reminder import TariffReminder
 from .infrastructure.water_heater_reserved_repository import (
     WaterHeaterReservedRepository,
 )
+from .tariff.table import latest_month, latest_rates
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,6 +158,11 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     )
     update_hourly(now_local())
 
+    # Warm the tariff table off the event loop. Both readers are lru_cached, so
+    # this is the only file read they will ever do — but left cold, the first
+    # one lands inside a scheduler callback and HA logs it as a blocking call.
+    await hass.async_add_executor_job(_warm_tariff_cache)
+
     # Evening discharge planner — 22:05 for tomorrow, afternoon sweep for today.
     entry.async_on_unload(EveningPlanScheduler(hass, ems).start())
 
@@ -180,3 +186,9 @@ async def create_ems(hass: HomeAssistant, entry: ConfigEntry) -> Ems:
     )
 
     return ems
+
+
+def _warm_tariff_cache() -> None:
+    """Fill the tariff table's caches. Runs in an executor; see the call site."""
+    latest_month()
+    latest_rates()
