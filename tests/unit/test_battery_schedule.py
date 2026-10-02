@@ -61,6 +61,41 @@ class TestDirection:
         assert Direction.CHARGE.ems_mode == EmsMode.CHARGE_BATTERY
         assert Direction.CHARGE.needs_charge_toggle is True
 
+    def test_charge_rate_matches_measured_sessions(self):
+        """Nine sessions from research/2026-10-02-battery-charge-per-pp.csv.
+
+        Measured totals, in minutes, for the three sessions that ran into the
+        plateau and on to 100%: 62.3 (60→100), 76.5 (53→100), 54.5 (64→100).
+        The flat part below 89% is checked separately because it is the part
+        the model nails outright.
+        """
+
+        def mins(a: float, b: float) -> float:
+            return Direction.CHARGE.seconds_for_soc_traversal(a, b) / 60
+
+        # Flat region — three sessions measured 74.1, 26.4 and 63.9 minutes.
+        assert mins(11, 70) == pytest.approx(73.8, abs=0.5)
+        assert mins(24, 45) == pytest.approx(26.2, abs=0.5)
+        assert mins(19, 70) == pytest.approx(63.8, abs=0.5)
+
+        # Into the plateau and the top. The model runs a few minutes long on
+        # purpose: a charge that starts early still finishes, one that starts
+        # late misses the window.
+        for start, measured in ((60, 62.3), (53, 76.5), (64, 54.5)):
+            modelled = mins(start, 100)
+            assert modelled >= measured - 1.5, (start, modelled, measured)
+            assert modelled <= measured + 7.5, (start, modelled, measured)
+
+    def test_charge_full_traversal_fits_the_afternoon_window(self):
+        """0→100% must fit the ~3h window the seasonal automation sets.
+
+        The old flat stub said 2h05m; measured sessions say the top alone adds
+        another quarter of an hour.
+        """
+        full = Direction.CHARGE.seconds_for_soc_traversal(0, 100)
+        assert 8000 < full < 8800  # 2h13m .. 2h27m
+        assert full < 2 * 3600 + 50 * 60  # mieści się w zimowym 13:00-15:50
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SlotKind + SlotProfile
@@ -200,8 +235,13 @@ class TestEntryPredicates:
         entry = self._evening(target_soc=30.0)
         assert entry.time_to_complete_at(100.0) == pytest.approx(70 * 75, abs=1.0)
 
-    def test_time_to_complete_at_charge_uniform(self):
-        """CHARGE keeps constant 75 sec/pp (no empirical zones yet)."""
+    def test_time_to_complete_at_charge_crosses_the_plateau(self):
+        """CHARGE 30→100 sums the flat run, the BMS plateau and the top.
+
+        Was a flat 75 sec/pp over the whole range until the sessions in
+        `research/2026-10-02-battery-charge-per-pp.csv` showed the last
+        eleven points cost as much as the preceding thirty.
+        """
         entry = BatteryScheduleEntry(
             kind=SlotKind.CHARGE_MORNING,
             enabled=True,
@@ -209,8 +249,19 @@ class TestEntryPredicates:
             end=time(6, 0),
             target_soc=100.0,
         )
-        # 30→100: 70pp × 75 = 5250 sec
-        assert entry.time_to_complete_at(30.0) == pytest.approx(70 * 75, abs=1.0)
+        # 30→89: 59pp × 75 = 4425 s | 89→91: 2 × 390 = 780 | 91→100: 9 × 115 = 1035
+        assert entry.time_to_complete_at(30.0) == pytest.approx(6240, abs=1.0)
+
+    def test_time_to_complete_at_charge_below_the_plateau_is_flat(self):
+        """Nothing changed under 89% — that part the old stub already had right."""
+        entry = BatteryScheduleEntry(
+            kind=SlotKind.CHARGE_MORNING,
+            enabled=True,
+            start=time(2, 0),
+            end=time(6, 0),
+            target_soc=70.0,
+        )
+        assert entry.time_to_complete_at(11.0) == pytest.approx(59 * 75, abs=1.0)
 
     def test_time_to_complete_at_full_discharge(self):
         """DISCHARGE 100→10 matches empirical ~104 min (zone-aware sum)."""

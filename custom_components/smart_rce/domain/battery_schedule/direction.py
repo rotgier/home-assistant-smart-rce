@@ -45,8 +45,12 @@ class Direction(Enum):
     normal evening discharge 100→30; below 25 we hit BMS quirks (compressed
     mid-range, calibration pause 14-16, fast end below 14).
 
-    CHARGE rate zones — no empirical data yet, uniform 75 sec/pp stub.
-    TODO: collect empirical data + replace with zones analogous to discharge.
+    CHARGE rate zones — empirical from nine slot-driven sessions 22.09-02.10
+    2026 (`research/2026-10-02-battery-charge-per-pp.csv`). Flat 75 sec/pp
+    holds remarkably well up to 89%, then the BMS plateaus across 89-91 and
+    runs a compressed, uneven top. Modelling the top as one zone rather than
+    per-pp is deliberate: the plateau's exact position wanders between
+    sessions while the time to cross it does not.
 
     Comparison: NEVER use `is` across `live_reload()` boundary (re-imported
     enum class gives new member identity). Use `direction.is_discharge` /
@@ -72,7 +76,18 @@ class Direction(Enum):
         EmsMode.CHARGE_BATTERY,
         6000,
         True,
-        (RateZone(soc_from=0.0, soc_to=100.01, sec_per_pp=75.0),),
+        (
+            # Flat and tight: median 75 s/pp with every bucket inside 72-80,
+            # over 59 consecutive points in the longest session.
+            RateZone(soc_from=0.0, soc_to=89.0, sec_per_pp=75.0),
+            # BMS plateau. Which of the two points stalls varies wildly
+            # (37-685 s on a single pp), but crossing both takes 630-820 s
+            # in every session, so the pair is modelled as one zone.
+            RateZone(soc_from=89.0, soc_to=91.0, sec_per_pp=390.0),
+            # Compressed top: fast 91-94, then a long taper into 100 where
+            # the last point alone costs 200-580 s.
+            RateZone(soc_from=91.0, soc_to=100.01, sec_per_pp=115.0),
+        ),
     )
 
     def __init__(
