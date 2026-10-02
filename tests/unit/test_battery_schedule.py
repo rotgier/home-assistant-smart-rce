@@ -132,6 +132,7 @@ class TestSlotProfile:
             SlotKind.CHARGE_AFTERNOON,
             SlotKind.DISCHARGE_MORNING,
             SlotKind.DISCHARGE_EVENING_EARLY,
+            SlotKind.DISCHARGE_EVENING_MID,
             SlotKind.DISCHARGE_EVENING_LATE,
         ]
         # Last wins — the later evening window is strongest, so an overlap

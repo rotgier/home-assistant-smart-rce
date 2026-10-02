@@ -269,11 +269,11 @@ def test_a_slot_without_a_window_is_switched_off():
     assert late[0].value is False
 
 
-def test_an_empty_plan_switches_both_slots_off():
+def test_an_empty_plan_switches_every_slot_off():
     plan = _propose(_day(WORKDAY, h19=POOR), _morning(CHEAP_MORNING))
 
     assert plan.is_empty
-    assert [c.value for c in plan.slot_commands()] == [False, False]
+    assert [c.value for c in plan.slot_commands()] == [False, False, False]
 
 
 def test_commands_carry_the_window_settings():
@@ -356,6 +356,111 @@ def test_after_midnight_a_run_is_back_to_planning_tonight():
     assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 21, 0, 5))
 
 
+# ─── the three-rung ladder ───
+
+# A trio that falls from hour to hour. Gross: ~2950 / ~2090 / ~1600.
+_LADDER_DAY = {"h19": 2400.0, "h20": 1700.0, "h21": 1300.0}
+
+
+def test_a_falling_trio_becomes_three_one_hour_rungs():
+    plan = _propose(_day(WORKDAY, **_LADDER_DAY), _morning(CHEAP_MORNING))
+
+    assert [(w.start, w.end) for w in plan.windows] == [
+        (time(19, 0), time(20, 0)),
+        (time(20, 0), time(21, 0)),
+        (time(21, 0), time(22, 0)),
+    ]
+    assert [w.target_soc for w in plan.windows] == [47.0, 33.0, 10.0]
+    assert [w.behavior for w in plan.windows] == [
+        SlotBehavior.DELAYED_TO_END,
+        SlotBehavior.DELAYED_TO_END,
+        SlotBehavior.IMMEDIATE,
+    ]
+
+
+def test_the_two_upper_rungs_wait_so_they_land_on_target_as_the_hour_turns():
+    """The whole point of the ladder: be standing on the reserve at the boundary.
+
+    IMMEDIATE would reach the target early and hand the rest of the hour to
+    the house, which quietly eats into the reserve the next hour needs.
+    """
+    plan = _propose(_day(WORKDAY, **_LADDER_DAY), _morning(CHEAP_MORNING))
+
+    assert all(w.behavior is SlotBehavior.DELAYED_TO_END for w in plan.windows[:2])
+
+
+def test_the_ladder_fills_all_three_slots_in_order():
+    plan = _propose(_day(WORKDAY, **_LADDER_DAY), _morning(CHEAP_MORNING))
+
+    enabled = [
+        c.kind.name
+        for c in plan.slot_commands()
+        if type(c).__name__ == "SetSlotEnabledCommand" and c.value
+    ]
+    assert enabled == [
+        "DISCHARGE_EVENING_EARLY",
+        "DISCHARGE_EVENING_MID",
+        "DISCHARGE_EVENING_LATE",
+    ]
+
+
+def test_a_peak_in_the_middle_is_left_to_the_price_driven_path():
+    """Not a falling trio — and that path already lands on the reserve itself."""
+    plan = _propose(
+        _day(WORKDAY, h19=1300.0, h20=2400.0, h21=1700.0), _morning(CHEAP_MORNING)
+    )
+
+    assert len(plan.windows) == 2
+    assert plan.windows[0].behavior is SlotBehavior.DELAYED_TO_END
+
+
+def test_a_rising_trio_is_left_alone():
+    plan = _propose(
+        _day(WORKDAY, h19=1300.0, h20=1700.0, h21=2400.0), _morning(CHEAP_MORNING)
+    )
+
+    assert len(plan.windows) == 2
+
+
+def test_equal_hours_are_not_a_falling_trio():
+    """`>` not `>=`.
+
+    What follows is then the price-driven path's business — here it sells the
+    reserve early, because 20:00 beats 21:00 by more than the zone gap. The
+    point of the assertion is only that the ladder stood down.
+    """
+    plan = _propose(
+        _day(WORKDAY, h19=2400.0, h20=2400.0, h21=1300.0), _morning(CHEAP_MORNING)
+    )
+
+    assert len(plan.windows) < 3
+    assert all(w.target_soc != 47.0 for w in plan.windows)
+
+
+def test_only_two_qualifying_hours_keep_the_old_pair():
+    """The ladder needs three hours; two stay on EARLY + LATE, MID unused."""
+    plan = _propose(_day(WORKDAY, h19=2400.0, h20=1700.0), _morning(CHEAP_MORNING))
+
+    enabled = [
+        c.kind.name
+        for c in plan.slot_commands()
+        if type(c).__name__ == "SetSlotEnabledCommand" and c.value
+    ]
+    assert "DISCHARGE_EVENING_MID" not in enabled
+
+
+def test_a_day_off_never_climbs_the_ladder():
+    """Days off have no T2 to ration — one window, and MID stays out of it."""
+    plan = _propose(
+        _day(WEEKEND, h17=2400.0, h18=1700.0, h19=1300.0),
+        _morning(CHEAP_MORNING),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    assert len(plan.windows) == 1
+
+
 # ─── selling the reserve early instead of holding it ───
 
 # Gross zone gap is T2 minus T3 (~870 at the 2026 tariff), and the margin
@@ -368,8 +473,12 @@ _SMALL = 640.0  # ~790 gross
 def test_a_wide_gap_before_the_last_hour_keeps_one_window():
     # 19 and 20 pay hugely, 21 barely clears the threshold: selling the
     # reserve into the peak beats saving it for the T2 hour.
+    #
+    # The peak sits at 20:00, not 19:00. A trio that falls all the way belongs
+    # to the ladder now, so the early-sale rule is only ever asked about
+    # evenings shaped like this one.
     proposal = _propose(
-        _day(WORKDAY, h19=_HUGE, h20=_MID, h21=_SMALL), _morning(CHEAP_MORNING)
+        _day(WORKDAY, h19=_MID, h20=_HUGE, h21=_SMALL), _morning(CHEAP_MORNING)
     )
 
     assert len(proposal.windows) == 1
@@ -399,13 +508,15 @@ def test_the_margin_is_what_rejects_a_gap_that_merely_clears_break_even():
     bare = last + (zone_gap * 1.05) / 1.23  # clears break-even, not the margin
     ample = last + (zone_gap * EveningPlan._SELL_EARLY_MARGIN * 1.2) / 1.23
 
+    # 19:00 matches 20:00 rather than beating it, so the trio does not fall
+    # all the way and the ladder leaves the decision here.
     assert (
-        len(_propose(_day(WORKDAY, h19=_HUGE, h20=bare, h21=last), _morning(0)).windows)
+        len(_propose(_day(WORKDAY, h19=bare, h20=bare, h21=last), _morning(0)).windows)
         == 2
     )
     assert (
         len(
-            _propose(_day(WORKDAY, h19=_HUGE, h20=ample, h21=last), _morning(0)).windows
+            _propose(_day(WORKDAY, h19=ample, h20=ample, h21=last), _morning(0)).windows
         )
         == 1
     )

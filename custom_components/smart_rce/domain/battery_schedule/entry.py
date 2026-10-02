@@ -305,6 +305,17 @@ class SlotKind(Enum):
         default_target_soc=10.0,
     )
 
+    DISCHARGE_EVENING_MID = SlotProfile(
+        direction=Direction.DISCHARGE,
+        notification_level=NotificationLevel.EMERGENCY,
+        # Middle rung of the descending ladder, used only on evenings whose
+        # three expensive hours get cheaper one after another. Its job is less
+        # to sell than to be standing at the reserve when the hour closes —
+        # see `EveningPlan._descending_ladder`.
+        default_window=(time(20, 0), time(21, 0)),
+        default_target_soc=33.0,
+    )
+
     DISCHARGE_EVENING_LATE = SlotProfile(
         direction=Direction.DISCHARGE,
         notification_level=NotificationLevel.EMERGENCY,
@@ -339,5 +350,6 @@ class SlotKind(Enum):
             cls.CHARGE_AFTERNOON,
             cls.DISCHARGE_MORNING,
             cls.DISCHARGE_EVENING_EARLY,
+            cls.DISCHARGE_EVENING_MID,
             cls.DISCHARGE_EVENING_LATE,
         ]

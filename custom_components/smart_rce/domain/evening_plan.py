@@ -85,8 +85,28 @@ class EveningPlan:
     _SCOPE_TODAY: Final[Scope] = "today"
     _SLOT_ORDER: Final[tuple[SlotKind, ...]] = (
         SlotKind.DISCHARGE_EVENING_EARLY,
+        SlotKind.DISCHARGE_EVENING_MID,
         SlotKind.DISCHARGE_EVENING_LATE,
     )
+
+    # Which slots carry a plan of N windows. MID only ever joins the three-rung
+    # ladder: with two windows the pair stays EARLY + LATE, exactly as before
+    # the ladder existed, so an evening that does not need it looks unchanged.
+    _SLOTS_BY_COUNT: Final[dict[int, tuple[SlotKind, ...]]] = {
+        0: (),
+        1: (SlotKind.DISCHARGE_EVENING_EARLY,),
+        2: (SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE),
+        3: (
+            SlotKind.DISCHARGE_EVENING_EARLY,
+            SlotKind.DISCHARGE_EVENING_MID,
+            SlotKind.DISCHARGE_EVENING_LATE,
+        ),
+    }
+
+    # Windows the price-driven path may produce. The third slot belongs to the
+    # ladder alone — handing it a third run would park two windows on the same
+    # partial target, where the second has nothing left to do.
+    _ADAPTIVE_WINDOWS: Final[int] = 2
 
     def __init__(
         self,
@@ -196,8 +216,12 @@ class EveningPlan:
         window surviving into a day that does not want it is exactly the kind
         of stale setting this plan exists to prevent.
         """
+        carried = dict(
+            zip(self._SLOTS_BY_COUNT[len(self._windows)], self._windows, strict=True)
+        )
         commands: list[SlotCommand] = []
-        for kind, window in zip(self._SLOT_ORDER, self._padded_windows(), strict=True):
+        for kind in self._SLOT_ORDER:
+            window = carried.get(kind)
             if window is None:
                 commands.append(
                     SetSlotEnabledCommand(
@@ -207,11 +231,6 @@ class EveningPlan:
                 continue
             commands.extend(window.commands_for(kind, scope=self._SCOPE_TODAY))
         return commands
-
-    def _padded_windows(self) -> tuple[EveningWindow | None, ...]:
-        """Windows aligned to the slot order, padded with None."""
-        missing = len(self._SLOT_ORDER) - len(self._windows)
-        return self._windows + (None,) * missing
 
     @classmethod
     def _windows_for(
@@ -228,12 +247,13 @@ class EveningPlan:
             above=max_morning_price,
         )
         if is_workday:
-            runs = cls._split_long_run(
-                cls._contiguous_runs(candidates), prices, is_workday
-            )
+            runs = cls._contiguous_runs(candidates)
+            if ladder := cls._descending_ladder(runs, prices):
+                return ladder
+            runs = cls._split_long_run(runs, prices, is_workday)
         else:
             runs = cls._best_off_peak_pair(candidates, prices)
-        usable = runs[: len(cls._SLOT_ORDER)]
+        usable = runs[: cls._ADAPTIVE_WINDOWS]
         zone_end = cls._expensive_zone_end(day, is_workday)
         return tuple(
             EveningWindow.covering(
@@ -301,6 +321,42 @@ class EveningPlan:
         return runs
 
     @classmethod
+    def _descending_ladder(
+        cls, runs: list[list[int]], prices: RceDayPrices
+    ) -> tuple[EveningWindow, ...] | None:
+        """Three one-hour rungs, or None when the evening does not call for them.
+
+        Used on exactly one shape: a single unbroken run of three expensive
+        hours whose prices fall from the first to the third. That shape is the
+        one the price-driven path handles badly. It picks IMMEDIATE (the first
+        hour pays best), empties the battery to the reserve well before the
+        second hour closes, and from then until the last hour opens the house
+        quietly eats the reserve — so the last expensive hour, which still has
+        to be covered, starts short.
+
+        Every other shape is left alone on purpose. With the peak in the middle
+        or at the end the same path already picks DELAYED_TO_END and lands on
+        the reserve as the hour turns, which is exactly what this ladder has to
+        arrange by hand.
+
+        Each rung ends where an hour ends, so holding it back costs nothing:
+        hourly settlement nets the whole hour, and within one hour it does not
+        matter when the battery gave what it gave.
+        """
+        if len(runs) != 1 or len(runs[0]) != cls._MIN_HOURS_TO_SPLIT:
+            return None
+        hours = runs[0]
+        paid = [prices.gross_at(hour) for hour in hours]
+        if not paid[0] > paid[1] > paid[2]:
+            return None
+        return tuple(
+            EveningWindow.rung(hour, target_soc=target, behavior=behavior)
+            for hour, (target, behavior) in zip(
+                hours, EveningWindow.LADDER, strict=True
+            )
+        )
+
+    @classmethod
     def _split_long_run(
         cls, runs: list[list[int]], prices: RceDayPrices, is_workday: bool
     ) -> list[list[int]]:
@@ -360,9 +416,28 @@ class EveningWindow:
     happens to build the window.
     """
 
-    # Left in the battery when an expensive hour still lies ahead.
+    # Left in the battery when an expensive hour still lies ahead. 33 pp above
+    # the floor is roughly what the house draws over one evening hour, measured
+    # at 1.17 kWh on 02.10 against 1.58 kWh for the 33->10% stretch.
     PARTIAL_TARGET_SOC: ClassVar[float] = 33.0
     FULL_TARGET_SOC: ClassVar[float] = 10.0
+
+    # Top rung of the ladder: one hour of discharge below a nearly full
+    # battery. At 75 s/pp above 25% an hour sheds about 48 pp, so a battery
+    # starting near 95% lands here as the hour closes; starting from 100% the
+    # rung simply runs out of hour and stops a few points high, which the next
+    # rung absorbs because its target is absolute.
+    FIRST_RUNG_TARGET_SOC: ClassVar[float] = 47.0
+
+    # Targets and behaviors of the three rungs, in slot order. The two upper
+    # rungs have to be standing on their target when the hour turns, which is
+    # what DELAYED_TO_END arranges; the last one empties and may as well do it
+    # at once.
+    LADDER: ClassVar[tuple[tuple[float, SlotBehavior], ...]] = (
+        (FIRST_RUNG_TARGET_SOC, SlotBehavior.DELAYED_TO_END),
+        (PARTIAL_TARGET_SOC, SlotBehavior.DELAYED_TO_END),
+        (FULL_TARGET_SOC, SlotBehavior.IMMEDIATE),
+    )
 
     hours: tuple[int, ...]
     target_soc: float
@@ -383,6 +458,13 @@ class EveningWindow:
             target_soc=cls._target_for(hours, zone_end, is_last=is_last),
             behavior=cls._behavior_for(hours, prices),
         )
+
+    @classmethod
+    def rung(
+        cls, hour: int, *, target_soc: float, behavior: SlotBehavior
+    ) -> EveningWindow:
+        """One step of the ladder — target and behavior come from it, not from prices."""
+        return cls(hours=(hour,), target_soc=target_soc, behavior=behavior)
 
     @property
     def start(self) -> time:
