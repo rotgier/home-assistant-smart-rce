@@ -84,9 +84,15 @@ class Direction(Enum):
             # (37-685 s on a single pp), but crossing both takes 630-820 s
             # in every session, so the pair is modelled as one zone.
             RateZone(soc_from=89.0, soc_to=91.0, sec_per_pp=390.0),
-            # Compressed top: fast 91-94, then a long taper into 100 where
-            # the last point alone costs 200-580 s.
-            RateZone(soc_from=91.0, soc_to=100.01, sec_per_pp=115.0),
+            # Compressed top, split because one rate cannot hold it: the
+            # three points above the plateau run at a third of the flat rate,
+            # the next four at roughly the flat rate, and the last two cost
+            # more than the whole 91-98 stretch put together. Medians of
+            # 38 / 77 / 304 s/pp, rounded up — a charge that starts early
+            # still finishes, one that starts late does not.
+            RateZone(soc_from=91.0, soc_to=94.0, sec_per_pp=40.0),
+            RateZone(soc_from=94.0, soc_to=98.0, sec_per_pp=80.0),
+            RateZone(soc_from=98.0, soc_to=100.01, sec_per_pp=320.0),
         ),
     )
 

@@ -58,6 +58,7 @@ class TestDirection:
         assert Direction.DISCHARGE.power_limit_w == 6000
         assert Direction.DISCHARGE.needs_charge_toggle is False
         assert len(Direction.DISCHARGE.rate_zones) == 4
+        assert len(Direction.CHARGE.rate_zones) == 5
         assert Direction.CHARGE.ems_mode == EmsMode.CHARGE_BATTERY
         assert Direction.CHARGE.needs_charge_toggle is True
 
@@ -83,8 +84,8 @@ class TestDirection:
         # late misses the window.
         for start, measured in ((60, 62.3), (53, 76.5), (64, 54.5)):
             modelled = mins(start, 100)
-            assert modelled >= measured - 1.5, (start, modelled, measured)
-            assert modelled <= measured + 7.5, (start, modelled, measured)
+            assert modelled >= measured - 1.0, (start, modelled, measured)
+            assert modelled <= measured + 8.0, (start, modelled, measured)
 
     def test_charge_full_traversal_fits_the_afternoon_window(self):
         """0→100% must fit the ~3h window the seasonal automation sets.
@@ -249,8 +250,9 @@ class TestEntryPredicates:
             end=time(6, 0),
             target_soc=100.0,
         )
-        # 30→89: 59pp × 75 = 4425 s | 89→91: 2 × 390 = 780 | 91→100: 9 × 115 = 1035
-        assert entry.time_to_complete_at(30.0) == pytest.approx(6240, abs=1.0)
+        # 30→89: 59 × 75 = 4425 | 89→91: 2 × 390 = 780 | 91→94: 3 × 40 = 120
+        # 94→98: 4 × 80 = 320 | 98→100: 2 × 320 = 640
+        assert entry.time_to_complete_at(30.0) == pytest.approx(6285, abs=1.0)
 
     def test_time_to_complete_at_charge_below_the_plateau_is_flat(self):
         """Nothing changed under 89% — that part the old stub already had right."""
