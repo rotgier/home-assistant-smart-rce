@@ -23,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 NOTIFY_DOMAIN: Final = "script"
 NOTIFY_SERVICE: Final = "notify_text"
 NOTIFY_TITLE: Final = "EMS — plan wieczorny"
+FAILURE_TITLE: Final = "EMS — plan wieczorny NIE ZADZIAŁAŁ"
 
 
 async def notify_evening_plan(
@@ -100,3 +101,32 @@ _OUTCOME_TEXT: Final[dict[PlanOutcome, str]] = {
     PlanOutcome.ALREADY_CURRENT: "bez zmian (już aktualne)",
     PlanOutcome.DEFERRED_TO_MANUAL: "zostawiono Twoje ustawienie ręczne",
 }
+
+
+async def notify_evening_plan_failed(
+    hass: HomeAssistant, *, run: str, error: BaseException
+) -> None:
+    """Say out loud that a run died, because the alternative is silence.
+
+    A run that raises leaves a traceback in the log and nothing else: no slots
+    change, no message arrives, and the evening simply keeps yesterday's
+    windows. That is how two runs were lost on 02.10 and very possibly how the
+    25.09 evening went missing — the logs had rolled over by the time anyone
+    looked. The reader cannot act on a log they do not read, so the channel
+    that carries good news has to carry this too.
+
+    Never raises: reporting a failure must not become a second one.
+    """
+    message = (
+        f"{run}: {type(error).__name__} — {error}\n"
+        "Sloty zostały bez zmian. Szczegóły w logu Core."
+    )
+    try:
+        await hass.services.async_call(
+            NOTIFY_DOMAIN,
+            NOTIFY_SERVICE,
+            {"title": FAILURE_TITLE, "message": message},
+            blocking=False,
+        )
+    except Exception:  # noqa: BLE001 - reporting must never break planning
+        _LOGGER.exception("Evening plan failure notification failed")

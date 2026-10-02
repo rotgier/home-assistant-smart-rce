@@ -17,15 +17,17 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import logging
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
 from ..domain.evening_plan import EveningPlan
-from .evening_plan_notifier import notify_evening_plan
+from .evening_plan_notifier import notify_evening_plan, notify_evening_plan_failed
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from ..application.ems import Ems
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,26 +55,58 @@ class EveningPlanScheduler:
         self._planned_evening_on: date | None = None
         self._revised_evening_on: date | None = None
         self._cancels: list[CALLBACK_TYPE] = []
+        self._failure_reported: bool = False
 
     def start(self) -> CALLBACK_TYPE:
         """Subscribe both runs. Returns an unsubscribe for `async_on_unload`."""
         self._cancels = [
             async_track_time_change(
                 self._hass,
-                self._run_evening,
+                self._guarded(self._run_evening, "tura wieczorna"),
                 hour=list(_EVENING_RUN_HOURS),
                 minute=_EVENING_RUN_MINUTE,
                 second=0,
             ),
             async_track_time_change(
                 self._hass,
-                self._run_afternoon,
+                self._guarded(self._run_afternoon, "przegląd popołudniowy"),
                 hour=_AFTERNOON_HOURS,
                 minute=_AFTERNOON_MINUTES,
                 second=30,
             ),
         ]
         return self._stop
+
+    def _guarded(
+        self,
+        run: Callable[[datetime], Coroutine[Any, Any, None]],
+        label: str,
+    ) -> Callable[[datetime], Coroutine[Any, Any, None]]:
+        """Wrap a run so a crash is reported instead of vanishing into the log.
+
+        Both runs are fired by `async_track_time_change`, which hands the
+        coroutine to the event loop and never looks at it again — so anything
+        raised ends up as "Task exception was never retrieved" and the evening
+        quietly keeps yesterday's windows.
+
+        Only the first failure of an outage is announced. The afternoon sweep
+        fires every five minutes; left unguarded, one broken deploy would send
+        a dozen messages an hour and teach the reader to mute the channel. The
+        flag clears on the next clean run, so a fresh outage speaks up again.
+        """
+
+        async def guarded(now: datetime) -> None:
+            try:
+                await run(now)
+            except Exception as err:  # noqa: BLE001 - a run must not die silently
+                _LOGGER.exception("%s failed", label)
+                if not self._failure_reported:
+                    self._failure_reported = True
+                    await notify_evening_plan_failed(self._hass, run=label, error=err)
+            else:
+                self._failure_reported = False
+
+        return guarded
 
     @callback
     def _stop(self) -> None:
