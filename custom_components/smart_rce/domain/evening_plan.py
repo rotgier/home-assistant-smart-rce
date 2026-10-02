@@ -73,13 +73,11 @@ class EveningPlan:
     # 1h48m, so a wider window only lets the strategy miss the peak.
     _OFF_PEAK_HOURS: Final[int] = 2
 
-    # Margin over break-even at which selling the reserve early wins instead.
-    # Emptying into the peak hours means buying the last expensive hour back
-    # at the T2 rate, so the price gap has to beat the zone-cost gap. The
-    # margin buys distance from that break-even: household draw over the hour
-    # being covered is an estimate, and with a deposit balance already built
-    # up, cash paid for distribution on a wrong call costs more than a
-    # marginally better sale gains.
+    # Sets the bar for selling the reserve early rather than holding it.
+    # Together with the zone gap it lands near 1090 PLN/MWh, which is about
+    # where the deposit-aware arithmetic puts the real break-even — see
+    # `_sell_early_beats_holding` for why the formula itself does not derive
+    # that number and why the gap between the two costs tenths of a zloty.
     _SELL_EARLY_MARGIN: Final[float] = 1.25
 
     _SCOPE_TODAY: Final[Scope] = "today"
@@ -384,10 +382,28 @@ class EveningPlan:
         """Tell whether emptying into the earlier hours beats keeping a reserve.
 
         Holding back covers the house through the last expensive hour instead
-        of buying it at the T2 rate. Selling that reserve earlier instead pays
-        the price difference between those hours, so it wins only when the
-        difference clears the zone-cost gap — with a margin, because the
-        household draw being avoided is an estimate rather than a measurement.
+        of buying it at the T2 rate. Selling the reserve an hour early earns
+        the price difference instead, so it wins only when that difference
+        beats what the house then buys back.
+
+        The threshold is a stand-in, not a derivation, and the zone gap it is
+        built from does not belong in the arithmetic: the battery ends the
+        evening at 10% either way, so the night top-up — and with it the T3
+        price — is identical on both paths and cancels. What the bar should
+        answer to is the deposit: with the balance in surplus an exported kWh
+        is worth about 30% of its RCE, while the distribution half of a T2
+        purchase is paid in cash whatever the deposit does. Working that
+        through puts the honest threshold at roughly 1100-1500 PLN/MWh, which
+        is where this constant happens to sit. It is kept because it lands in
+        the right place, not because the formula explains it.
+
+        What makes the imprecision affordable is the domain. Every candidate
+        hour already clears `EXPORT_THRESHOLD`, so the last one is never below
+        750 gross and this can only fire above roughly 1840. On top of that a
+        trio whose prices fall all the way is claimed by the ladder, and
+        `_WORKDAY_HOURS` caps a run at three — so what is left is a middle
+        hour paying over 1840 with a cheap hour behind it. A handful of hours
+        a year, worth tenths of a zloty when the call goes the wrong way.
 
         Off-peak days have no T2 to protect against, so the question does not
         arise; the last window already empties the battery there.
