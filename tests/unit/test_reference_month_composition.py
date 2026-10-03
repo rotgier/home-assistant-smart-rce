@@ -41,18 +41,23 @@ def _day(date: datetime.date, exported: float, earned: float) -> DayRecord:
     )
 
 
-def _history(*measured: DayRecord) -> SettlementHistory:
-    """Twelve closed months ending with September, plus the given October days."""
+def _history(
+    *measured: DayRecord, last_closed: BillingMonth = BillingMonth(2026, 9)
+) -> SettlementHistory:
+    """Twelve closed months ending with `last_closed`, plus the given open days."""
     records = [
         MonthRecord(
-            month=BillingMonth(2025, 10).shifted(offset),
+            month=last_closed.shifted(offset - 11),
             exported_kwh=100.0,
             deposit_earned=50.0,
             import_kwh=dict.fromkeys(Zone, 10.0),
         )
         for offset in range(12)
     ]
-    history = SettlementHistory(records, last_data_day=datetime.date(2026, 9, 30))
+    history = SettlementHistory(
+        records,
+        last_data_day=datetime.date(last_closed.year, last_closed.month, 28),
+    )
     history.add_days(measured)
     return history
 
@@ -132,3 +137,27 @@ class TestComposition:
         october = _reference_october(service)
 
         assert october.exported_kwh == pytest.approx(20.0)
+
+
+def test_a_month_that_ended_but_has_not_settled_is_used_as_measured():
+    """The projection must not forecast a month that already happened.
+
+    A month settles a week after it ends. For that week the reference year used
+    to fall back to its counterpart a year earlier — so on 2026-10-03 September
+    was projected at last year's 355,5 kWh while the measured September 2026
+    (551,6 kWh) sat in the store, complete.
+    """
+    september = [
+        _day(datetime.date(2026, 9, number), 20.0, 18.0) for number in range(1, 31)
+    ]
+    october = [_day(datetime.date(2026, 10, 1), 20.0, 18.0)]
+    history = _history(*september, *october, last_closed=BillingMonth(2026, 8))
+    service = DepositService(_TARIFF, history)
+    service.update_last_year_days(_last_year(exported=5.0, earned=3.0))
+
+    projected = {str(m.month): m for m in service.report.winter.months}
+
+    assert str(history.months[-1].month) == "2026-08", "September must still be open"
+    months = sorted(projected)
+    september_slot = next(m for m in months if m.endswith("-09"))
+    assert projected[september_slot].exported_kwh == pytest.approx(30 * 20.0)

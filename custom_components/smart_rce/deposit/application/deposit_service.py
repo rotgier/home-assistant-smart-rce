@@ -116,7 +116,7 @@ class DepositService:
         ledger, settled = self._replay()
         projection = DepositProjection(
             ReferenceYear.from_history(
-                self._history.months, partial=self._reference_partial()
+                self._measured_year(), partial=self._reference_partial()
             ),
             self._tariff.latest,
             consumption_factor=self._consumption_factor,
@@ -186,6 +186,20 @@ class DepositService:
             )
             for record in self._history.months
         }
+
+    def _measured_year(self) -> list[MonthRecord]:
+        """Return closed months plus those that ended but have not settled yet.
+
+        A month settles a week after it ends, and for that week the projection
+        used to fall back to its counterpart a year earlier — forecasting a month
+        that had already happened, from worse data, while the real one sat in the
+        store. On 2026-10-03 September was projected at 355,5 kWh (September 2025)
+        with the measured September 2026 at 551,6 kWh.
+
+        The newest open month is left out: it is still being written, and
+        `_reference_partial` composes it day by day instead.
+        """
+        return self._history.months + list(self._history.open_months[:-1])
 
     def _reference_partial(self) -> MonthRecord | None:
         """Build the current month whole: days that happened, plus days that have not.
