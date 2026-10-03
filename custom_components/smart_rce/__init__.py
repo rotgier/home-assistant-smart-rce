@@ -237,7 +237,6 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.grid_export"))
     reload(import_module("custom_components.smart_rce.domain.water_heater"))
     reload(import_module("custom_components.smart_rce.domain.charge_slots"))
-    reload(import_module("custom_components.smart_rce.domain.evening_plan"))
     reload(import_module("custom_components.smart_rce.domain.discharge_slots"))
     reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
     reload(import_module("custom_components.smart_rce.domain.dod_policy"))
@@ -264,6 +263,14 @@ def live_reload() -> None:
         import_module("custom_components.smart_rce.domain.battery_schedule.schedule")
     )
     reload(import_module("custom_components.smart_rce.domain.battery_schedule"))
+    # evening_plan keeps SlotKind members in module-level tables (_SLOT_ORDER,
+    # _SLOTS_BY_COUNT), so it MUST come after battery_schedule. Reloading it
+    # first binds the outgoing SlotKind class while the aggregate is rebuilt
+    # with the incoming one; enum members hash by identity, so every
+    # `target[cmd.kind]` in apply_slot_command then raises KeyError and the
+    # evening planner stops applying plans. Cost us the 21:05 and 22:05 runs
+    # on 02.10 and three more hours of the afternoon sweep on 03.10.
+    reload(import_module("custom_components.smart_rce.domain.evening_plan"))
     # battery_charge_policy imports BatteryOperation from battery_schedule —
     # reload AFTER battery_schedule.
     reload(import_module("custom_components.smart_rce.domain.battery_charge_policy"))
