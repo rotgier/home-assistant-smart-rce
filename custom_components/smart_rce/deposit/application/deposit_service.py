@@ -8,6 +8,7 @@ it has appended new days.
 
 from __future__ import annotations
 
+import datetime
 from typing import TYPE_CHECKING, Final
 
 from ...tariff import Zone
@@ -17,7 +18,7 @@ from ..domain.market_price import MonthlyMarketPrices
 from ..domain.projection import DepositProjection
 from ..domain.reference_year import MonthRecord, ReferenceYear
 from ..domain.savings import LegacyMonth, compute_savings
-from ..domain.settlement_history import SettlementHistory
+from ..domain.settlement_history import DayRecord, SettlementHistory, sum_days
 from ..domain.tariff import Tariff
 from .report import DepositReport, MonthlyVolumes, OpenMonth
 
@@ -55,6 +56,7 @@ class DepositService:
         self._monthly_prices = self._shipped_prices
         self._seed_production = dict(seed_production or {})
         self._measured_production: dict[BillingMonth, float] = {}
+        self._last_year_days: dict[datetime.date, DayRecord] = {}
         self._self_consumption: dict[BillingMonth, Mapping[Zone, float]] = {}
         self._consumption_factor = consumption_factor
         self._price_factor = price_factor
@@ -77,6 +79,15 @@ class DepositService:
     def update_market_prices(self, prices: Mapping[BillingMonth, float]) -> None:
         """Layer prices published since the table was shipped, and rebuild."""
         self._monthly_prices = self._shipped_prices.merged_with(prices)
+        self.recalculate()
+
+    def update_last_year_days(self, days: Mapping[datetime.date, DayRecord]) -> None:
+        """Supply last year's days, re-dated to this year, and rebuild.
+
+        They fill the part of the current month that has not happened yet, so the
+        reference year stops inventing it. Keyed by the date they stand in for.
+        """
+        self._last_year_days = dict(days)
         self.recalculate()
 
     def update_production(self, by_month: Mapping[BillingMonth, float]) -> None:
@@ -177,16 +188,33 @@ class DepositService:
         }
 
     def _reference_partial(self) -> MonthRecord | None:
-        """Scale the open month to a full one — the reference year needs whole months.
+        """Build the current month whole: days that happened, plus days that have not.
 
-        Without it the profile falls back to the same calendar month a year ago,
-        which silently understates anything that changed since (a new export
-        strategy, most obviously).
+        The reference year needs full months, and the current one is half-written.
+        Days already measured come from this year; the rest are the very same dates
+        a year ago, taken as they were — not a month total spread evenly over them.
+
+        Spreading was the first idea and the measurements killed it: within one
+        month the shape is set by weather, not by the calendar. October 2024 put
+        63% of its export in the second half, November 2025 put 76% in the first.
+        No scaling reproduces that; the actual days do.
+
+        Scaling the whole month up from the days so far — what this did until
+        2026-10-03 — was worse still. Two sunny days of October became 676 kWh,
+        three times the real October before it, and the winter trough jumped with it.
         """
         partial = self._history.partial
-        if partial is None or self._history.elapsed_days == 0:
+        if partial is None:
             return None
-        return partial.extrapolated(self._history.elapsed_days)
+        month = partial.month
+        measured = {record.day.day: record for record in self._history.days_in(month)}
+        composed = [
+            measured.get(number)
+            or self._last_year_days.get(datetime.date(month.year, month.month, number))
+            for number in range(1, month.days + 1)
+        ]
+        present = [record for record in composed if record is not None]
+        return sum_days(month, present) if present else None
 
     def _running_balance(self, settled_balance: float) -> float:
         """Add everything measured but not yet settled to the settled balance.

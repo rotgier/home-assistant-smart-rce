@@ -568,6 +568,11 @@ def live_reload() -> None:
     )
     reload(
         import_module(
+            "custom_components.smart_rce.deposit.application.reference_days_service"
+        )
+    )
+    reload(
+        import_module(
             "custom_components.smart_rce.deposit.application.market_price_service"
         )
     )

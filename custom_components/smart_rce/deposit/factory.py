@@ -29,6 +29,7 @@ from . import websocket_api
 from .application.deposit_service import DepositService
 from .application.market_price_service import MarketPriceService
 from .application.production_service import ProductionService
+from .application.reference_days_service import ReferenceDaysService
 from .application.refresh_service import DepositRefreshService
 from .application.savings_service import SavingsService
 from .infrastructure.elicznik_reader import ElicznikReader
@@ -68,6 +69,7 @@ class Deposit:
     savings: SavingsService
     production: ProductionService
     market_prices: MarketPriceService
+    reference_days: ReferenceDaysService
     refresh: DepositRefreshService | None
 
 
@@ -96,14 +98,16 @@ async def create_deposit(
 
     savings = SavingsService(HouseholdEnergyReader(hass), service)
     production = ProductionService(PvProductionReader(hass), service)
+    archive = HourArchive(hass)
     deposit = Deposit(
         service=service,
         savings=savings,
         production=production,
+        reference_days=ReferenceDaysService(archive, service),
         market_prices=MarketPriceService(
             PseRcemReader(hass), service, prices_repository
         ),
-        refresh=_build_refresh(hass, entry, repository, prices),
+        refresh=_build_refresh(hass, entry, repository, prices, archive),
     )
     _schedule_daily(hass, entry, deposit)
     await _publish(hass, service)
@@ -115,6 +119,7 @@ def _build_refresh(
     entry: SmartRceConfigEntry,
     repository: HistoryRepository,
     prices: PriceSource,
+    archive: HourArchive,
 ) -> DepositRefreshService | None:
     """Build the meter refresh, or None when credentials are missing."""
     username = entry.options.get(CONF_USERNAME)
@@ -130,7 +135,7 @@ def _build_refresh(
         repository,
         RcePriceReader(prices),
         ElicznikReader(hass, username, password),
-        HourArchive(hass),
+        archive,
         on_updated=lambda: None,  # the daily job republishes once both sources ran
     )
 
@@ -161,6 +166,10 @@ def _schedule_daily(
             await deposit.production.async_refresh(today)
         except Exception:  # noqa: BLE001 - reporting extra, never fatal
             _LOGGER.exception("Deposit: production refresh failed")
+        try:
+            await deposit.reference_days.async_refresh(today)
+        except Exception:  # noqa: BLE001 - projection detail, never fatal
+            _LOGGER.exception("Deposit: reference days refresh failed")
         try:
             await deposit.market_prices.async_refresh()
         except Exception as err:  # noqa: BLE001 - a scraped page, expected to rot

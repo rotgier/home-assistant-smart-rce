@@ -31,7 +31,7 @@ from .billing_month import BillingMonth
 from .reference_year import MonthRecord
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
 # A month stays open to correction for as long as the refresh still re-reads its
 # days. Must not be shorter than `DepositRefreshService._TRAILING_DAYS`, or a
@@ -145,7 +145,7 @@ class SettlementHistory:
         for record in self._days:
             grouped[BillingMonth(record.day.year, record.day.month)].append(record)
         return tuple(
-            _sum_days(month, records) for month, records in sorted(grouped.items())
+            sum_days(month, records) for month, records in sorted(grouped.items())
         )
 
     @property
@@ -161,8 +161,12 @@ class SettlementHistory:
 
     def measured_days(self, month: BillingMonth) -> int:
         """How many days of that month have been measured so far."""
-        return sum(
-            1
+        return len(self.days_in(month))
+
+    def days_in(self, month: BillingMonth) -> tuple[DayRecord, ...]:
+        """Return the measured days of that month, oldest first."""
+        return tuple(
+            record
             for record in self._days
             if (record.day.year, record.day.month) == (month.year, month.month)
         )
@@ -209,7 +213,7 @@ class SettlementHistory:
             if _last_day_of(month) > newest - _FINALISED_AFTER:
                 keep.extend(records)
             else:
-                self._months.append(_sum_days(month, records))
+                self._months.append(sum_days(month, records))
         self._months.sort(key=lambda record: record.month)
         self._days = keep
 
@@ -228,7 +232,8 @@ class DayRecord:
         return sum(self.import_kwh.values())
 
 
-def _sum_days(month: BillingMonth, records: list[DayRecord]) -> MonthRecord:
+def sum_days(month: BillingMonth, records: Sequence[DayRecord]) -> MonthRecord:
+    """Add days up into the month they belong to."""
     imports: dict[Zone, float] = dict.fromkeys(Zone, 0.0)
     for record in records:
         for zone, kwh in record.import_kwh.items():
