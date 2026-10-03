@@ -47,8 +47,12 @@ class DepositReport:
     PSE quotes, which are net.
     """
     history: tuple[MonthSettlement, ...]
-    current: OpenMonth | None
-    """The month being measured right now — no row in `history` until it settles."""
+    open_months: tuple[OpenMonth, ...]
+    """Months being measured right now — no row in `history` until they settle.
+
+    More than one in the first days of a month, while the previous one waits out
+    the week in which its days can still change.
+    """
     volumes: Mapping[BillingMonth, MonthlyVolumes]
     """Measured energy behind each settled month — what the ledger was derived from."""
     winter: WinterOutlook
@@ -112,7 +116,7 @@ class DepositReport:
             "first_forfeit": str(self.expiry.first_forfeit)
             if self.expiry.first_forfeit
             else None,
-            "current": None if self.current is None else self.current.to_dict(),
+            "open_months": [month.to_dict() for month in self.open_months],
             "history": [
                 {**_settlement(s), **_volumes(self.volumes.get(s.month))}
                 for s in self.history
@@ -183,7 +187,7 @@ class DepositReport:
 
 @dataclass(frozen=True)
 class OpenMonth:
-    """The month in progress: measured so far, settled by nobody yet.
+    """A month in progress: measured so far, settled by nobody yet.
 
     It has no place in `history`, which holds what the ledger has closed — but
     leaving it out of the report entirely made the dashboard look a fortnight

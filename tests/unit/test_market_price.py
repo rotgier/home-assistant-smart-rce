@@ -223,10 +223,9 @@ class TestOpenMonth:
         )
         report = DepositService(_TARIFF, history).report
 
-        assert report.current is not None
-        assert report.current.month == BillingMonth(2026, 2)
-        assert report.current.elapsed_days == 1
-        assert report.current.earned == pytest.approx(15.0)
+        assert [m.month for m in report.open_months] == [BillingMonth(2026, 2)]
+        assert report.open_months[0].elapsed_days == 1
+        assert report.open_months[0].earned == pytest.approx(15.0)
 
     def test_the_open_month_is_not_in_the_settled_history(self):
         history = _history(self.MONTH)
@@ -244,9 +243,48 @@ class TestOpenMonth:
 
         assert "2026-02" not in [row["month"] for row in report.to_dict()["history"]]
 
-    def test_its_balance_is_the_running_one(self):
+    def test_the_last_open_month_carries_the_running_balance(self):
+        """The balance runs through them in order, so the newest is the total."""
         report = self._report()
 
-        assert report.current is None or report.current.balance == pytest.approx(
-            report.balance_running
+        assert not report.open_months or report.open_months[
+            -1
+        ].balance == pytest.approx(report.balance_running)
+
+    def test_a_month_that_ended_but_has_not_settled_still_counts(self):
+        """The 2026-10-02 regression: it was in neither bucket, so it vanished.
+
+        A month finalises a week after it ends. Until then it is not in `history`
+        (the ledger has not closed it) and it is not the newest open month — and
+        counting only the newest silently wiped a full September, 264 zl, off the
+        running balance in a single refresh.
+        """
+        history = _history(self.MONTH)
+        history.add_days(
+            [
+                DayRecord(
+                    day=datetime.date(2026, 2, day),
+                    exported_kwh=20.0,
+                    deposit_earned=15.0,
+                    import_kwh=dict.fromkeys(Zone, 1.0),
+                )
+                for day in (27, 28)
+            ]
+            + [
+                DayRecord(
+                    day=datetime.date(2026, 3, 1),
+                    exported_kwh=5.0,
+                    deposit_earned=4.0,
+                    import_kwh=dict.fromkeys(Zone, 1.0),
+                )
+            ]
         )
+        report = DepositService(_TARIFF, history).report
+
+        assert [m.month for m in report.open_months] == [
+            BillingMonth(2026, 2),
+            BillingMonth(2026, 3),
+        ]
+        earned = sum(m.earned for m in report.open_months)
+        assert earned == pytest.approx(34.0)
+        assert report.balance_running > report.balance + 25.0

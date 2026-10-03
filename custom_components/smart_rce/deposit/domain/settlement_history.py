@@ -133,16 +133,39 @@ class SettlementHistory:
         return tuple(day.day for day in self._days if day.total_import_kwh <= 0)
 
     @property
-    def partial(self) -> MonthRecord | None:
-        """The month in progress, summed over measured days (not extrapolated).
+    def open_months(self) -> tuple[MonthRecord, ...]:
+        """Every measured month the ledger has not closed yet, oldest first.
 
-        Only the newest month: `days` also holds the tail of the previous one
-        until it finalises, and summing both would invent a monster month.
+        Usually one. But a month finalises a week after it ends, so for the first
+        days of a new month there are two open at once — and treating only the
+        newest as "what is accruing" dropped a whole September out of the running
+        balance on 2026-10-02 (1733,10 zl -> 1469,05 zl in one refresh).
         """
-        days = self._current_month_days()
-        if not days:
-            return None
-        return _sum_days(BillingMonth(days[0].day.year, days[0].day.month), days)
+        grouped: dict[BillingMonth, list[DayRecord]] = defaultdict(list)
+        for record in self._days:
+            grouped[BillingMonth(record.day.year, record.day.month)].append(record)
+        return tuple(
+            _sum_days(month, records) for month, records in sorted(grouped.items())
+        )
+
+    @property
+    def partial(self) -> MonthRecord | None:
+        """The newest unsettled month, summed over measured days (not extrapolated).
+
+        Only the newest, because its one caller extrapolates it to a full month
+        for the reference year; summing two months would invent a monster one.
+        For "everything not settled yet" use `open_months`.
+        """
+        months = self.open_months
+        return months[-1] if months else None
+
+    def measured_days(self, month: BillingMonth) -> int:
+        """How many days of that month have been measured so far."""
+        return sum(
+            1
+            for record in self._days
+            if (record.day.year, record.day.month) == (month.year, month.month)
+        )
 
     def _current_month_days(self) -> list[DayRecord]:
         if not self._days:

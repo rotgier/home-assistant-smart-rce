@@ -123,7 +123,7 @@ class DepositService:
             oldest_tranche_age=ledger.oldest_tranche_age(last_settled),
             break_even_rce_net=self._tariff.latest.night_marginal_cost * _PLN_PER_MWH,
             history=settled,
-            current=self._open_month(ledger.balance),
+            open_months=self._open_months(ledger.balance),
             volumes=self._volumes(),
             winter=projection.winter(ledger, after=last_settled),
             expiry=projection.expiry(ledger, after=last_settled),
@@ -136,22 +136,30 @@ class DepositService:
             ),
         )
 
-    def _open_month(self, settled_balance: float) -> OpenMonth | None:
-        """Describe the month being measured, or None between roll-up and first day."""
-        partial = self._history.partial
-        if partial is None:
-            return None
-        energy_cost = self._tariff.for_month(partial.month).energy_cost(
-            partial.import_kwh
-        )
-        return OpenMonth(
-            month=partial.month,
-            elapsed_days=self._history.elapsed_days,
-            exported_kwh=partial.exported_kwh,
-            earned=partial.deposit_earned,
-            energy_cost=energy_cost,
-            balance=settled_balance + partial.deposit_earned - energy_cost,
-        )
+    def _open_months(self, settled_balance: float) -> tuple[OpenMonth, ...]:
+        """Describe every month measured but not settled, balance running through.
+
+        More than one whenever a month has ended but not yet finalised — the week
+        in which its days can still come back from the meter.
+        """
+        months: list[OpenMonth] = []
+        balance = settled_balance
+        for record in self._history.open_months:
+            energy_cost = self._tariff.for_month(record.month).energy_cost(
+                record.import_kwh
+            )
+            balance += record.deposit_earned - energy_cost
+            months.append(
+                OpenMonth(
+                    month=record.month,
+                    elapsed_days=self._history.measured_days(record.month),
+                    exported_kwh=record.exported_kwh,
+                    earned=record.deposit_earned,
+                    energy_cost=energy_cost,
+                    balance=balance,
+                )
+            )
+        return tuple(months)
 
     def _volumes(self) -> dict[BillingMonth, MonthlyVolumes]:
         """Join measured energy with the RCEm counterfactual, month by month."""
@@ -181,20 +189,20 @@ class DepositService:
         return partial.extrapolated(self._history.elapsed_days)
 
     def _running_balance(self, settled_balance: float) -> float:
-        """Add what the open month has accrued to the settled balance.
+        """Add everything measured but not yet settled to the settled balance.
 
         The settled figure is the one that reconciles with the invoice; this is
         the one that answers "how much do I have right now".
+
+        Every open month, not just the newest: a month closes a week after it
+        ends, so in the first days of a new one two are open at once. Counting
+        only the newest dropped all of September here on 2026-10-02.
         """
-        partial = self._history.partial
-        if partial is None:
-            return settled_balance
-        rates = self._tariff.for_month(partial.month)
-        return (
-            settled_balance
-            + partial.deposit_earned
-            - rates.energy_cost(partial.import_kwh)
-        )
+        balance = settled_balance
+        for record in self._history.open_months:
+            rates = self._tariff.for_month(record.month)
+            balance += record.deposit_earned - rates.energy_cost(record.import_kwh)
+        return balance
 
     def _replay(self) -> tuple[DepositLedger, tuple[MonthSettlement, ...]]:
         """Settle every closed month in order — reproduces the invoiced history."""
