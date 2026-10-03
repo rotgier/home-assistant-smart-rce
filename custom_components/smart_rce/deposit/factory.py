@@ -109,9 +109,23 @@ async def create_deposit(
         ),
         refresh=_build_refresh(hass, entry, repository, prices, archive),
     )
+    # Before anything reads the report: without last year's days the current month
+    # is only the days measured so far, which makes it look like a month of barely
+    # using anything — the projection then reports a trough that is too high and a
+    # capacity that is too low. The daily job would fix it a second later, but a
+    # failure there would leave those numbers standing, quietly wrong.
+    await _load_reference_days(deposit)
     _schedule_daily(hass, entry, deposit)
     await _publish(hass, service)
     return deposit
+
+
+async def _load_reference_days(deposit: Deposit) -> None:
+    """Fill the rest of the current month before the first report is built."""
+    try:
+        await deposit.reference_days.async_refresh(dt_util.now().date())
+    except Exception:  # noqa: BLE001 - projection detail, never blocks setup
+        _LOGGER.exception("Deposit: could not load last year's days at startup")
 
 
 def _build_refresh(
