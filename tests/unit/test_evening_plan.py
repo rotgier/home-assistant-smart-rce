@@ -356,6 +356,39 @@ def test_after_midnight_a_run_is_back_to_planning_tonight():
     assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 21, 0, 5))
 
 
+# ─── a day off where the morning wins outright ───
+
+
+def test_a_day_off_with_nothing_left_after_the_morning_filter_is_empty():
+    """Every evening hour vetoed on a day off used to raise ValueError.
+
+    Real case, 04.10.2026: the evening paid 702-1255 gross, which clears the
+    export threshold, but Monday 07:00 paid 1309 and outbid all of it. The
+    workday path reaches this state through `_contiguous_runs`, which returns
+    no runs; the day-off path went to `_best_off_peak_pair`, whose fallback
+    called `max()` on an empty list. The afternoon sweep died every five
+    minutes until the Telegram guard said so.
+    """
+    plan = _propose(
+        _day(WEEKEND, h17=1003.0, h18=1173.0, h19=1255.0, h20=1195.0),
+        _morning(1309.0),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    assert plan.is_empty
+    assert plan.overruled_by_morning
+    assert [c.value for c in plan.slot_commands()] == [False, False, False]
+
+
+def test_a_day_off_with_nothing_qualifying_at_all_is_empty_too():
+    """Same shape without a morning to blame — simply no hour worth selling."""
+    plan = _propose(_day(WEEKEND), day=WEEKEND, is_workday=False)
+
+    assert plan.is_empty
+    assert not plan.overruled_by_morning
+
+
 # ─── the three-rung ladder ───
 
 # A trio that falls from hour to hour. Gross: ~2950 / ~2090 / ~1600.

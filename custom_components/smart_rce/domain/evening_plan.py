@@ -293,8 +293,15 @@ class EveningPlan:
         strategy drift off the peak, and a second window would have nothing
         left to discharge. That is why days off never use the LATE slot.
 
-        Falls back to the single best hour when no two qualify side by side.
+        Falls back to the single best hour when no two qualify side by side,
+        and to no window at all when nothing qualifies — which is a real
+        outcome, not an edge case: the morning filter vetoes every evening
+        hour whenever tomorrow's sunrise pays better, and on a day off that
+        leaves this with an empty list. The workday path reaches the same
+        state through `_contiguous_runs`, which simply returns no runs.
         """
+        if not candidates:
+            return []
         pairs = [
             (first, second)
             for first, second in zip(candidates, candidates[1:], strict=False)
