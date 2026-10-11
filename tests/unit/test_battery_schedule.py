@@ -477,7 +477,7 @@ def _schedule(
     tomorrow_dict = {k: BatteryScheduleEntry.default_for(k) for k in SlotKind}
     if tomorrow:
         tomorrow_dict.update(tomorrow)
-    return BatterySchedule(_today=today_dict, _tomorrow=tomorrow_dict)
+    return BatterySchedule(today=today_dict, tomorrow=tomorrow_dict)
 
 
 def _enabled_charge_afternoon(target=80.0, behavior=SlotBehavior.IMMEDIATE):

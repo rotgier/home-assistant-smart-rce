@@ -16,7 +16,6 @@ Eight named slots — four per day (today / tomorrow):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -43,7 +42,6 @@ _EVENING_KINDS = frozenset(
 )
 
 
-@dataclass
 class BatterySchedule:
     """Aggregate root — 4 named slots × 2 days = 8 entries + optional one-shot.
 
@@ -59,33 +57,55 @@ class BatterySchedule:
     Midnight roll: tomorrow_* → today_*, tomorrow_* reset to disabled defaults.
     Implemented in `roll_day()`; called by `compute_operation` on date change
     (currently disabled — today's slots persist across midnight).
+
+    A plain class rather than a dataclass: an aggregate is compared by identity,
+    and the constructor takes exactly what `from_dict` restores.
     """
 
-    _today: dict[SlotKind, BatteryScheduleEntry] = field(
-        default_factory=lambda: BatteryScheduleEntry.defaults_for_all_kinds()
-    )
-    _tomorrow: dict[SlotKind, BatteryScheduleEntry] = field(
-        default_factory=lambda: BatteryScheduleEntry.defaults_for_all_kinds()
-    )
-    last_seen_date: date | None = None
-    _currently_engaging: SlotKind | None = None
-    _interventions_blocked_override: bool = False
-    # When a slot or one-shot disengages, records the timestamp so consumers
-    # can ask `is_active_this_hour(now)` — GridExportManager uses this to
-    # step aside in the clock hour following any smart_rce intervention.
-    _last_disengaged_at: datetime | None = None
-    # One-shot operation state: when set, beats every scheduled slot. Auto-
-    # clears in compute_operation on target_reached / expired, or via
-    # cancel_oneshot() on user button.
-    _oneshot: OneShotOperation | None = None
-    _oneshot_params: dict[Direction, OneShotParams] = field(
-        default_factory=lambda: OneShotParams.defaults_by_direction()
-    )
-    # Day on which the user last edited an evening slot by hand. The proposer
-    # stands down while this equals today, so an automatic run never quietly
-    # undoes a deliberate change. A date rather than a flag: it expires on its
-    # own at midnight, with no clearing step that a restart could miss.
-    _evening_hand_set_day: date | None = None
+    def __init__(
+        self,
+        *,
+        today: dict[SlotKind, BatteryScheduleEntry] | None = None,
+        tomorrow: dict[SlotKind, BatteryScheduleEntry] | None = None,
+        last_seen_date: date | None = None,
+        currently_engaging: SlotKind | None = None,
+        interventions_blocked_override: bool = False,
+        last_disengaged_at: datetime | None = None,
+        oneshot: OneShotOperation | None = None,
+        oneshot_params: dict[Direction, OneShotParams] | None = None,
+        evening_hand_set_day: date | None = None,
+    ) -> None:
+        self._today: dict[SlotKind, BatteryScheduleEntry] = (
+            dict(today)
+            if today is not None
+            else BatteryScheduleEntry.defaults_for_all_kinds()
+        )
+        self._tomorrow: dict[SlotKind, BatteryScheduleEntry] = (
+            dict(tomorrow)
+            if tomorrow is not None
+            else BatteryScheduleEntry.defaults_for_all_kinds()
+        )
+        self.last_seen_date = last_seen_date
+        self._currently_engaging = currently_engaging
+        self._interventions_blocked_override = interventions_blocked_override
+        # When a slot or one-shot disengages, records the timestamp so consumers
+        # can ask `is_active_this_hour(now)` — GridExportManager uses this to
+        # step aside in the clock hour following any smart_rce intervention.
+        self._last_disengaged_at = last_disengaged_at
+        # One-shot operation state: when set, beats every scheduled slot. Auto-
+        # clears in compute_operation on target_reached / expired, or via
+        # cancel_oneshot() on user button.
+        self._oneshot = oneshot
+        self._oneshot_params: dict[Direction, OneShotParams] = (
+            oneshot_params
+            if oneshot_params is not None
+            else OneShotParams.defaults_by_direction()
+        )
+        # Day on which the user last edited an evening slot by hand. The proposer
+        # stands down while this equals today, so an automatic run never quietly
+        # undoes a deliberate change. A date rather than a flag: it expires on its
+        # own at midnight, with no clearing step that a restart could miss.
+        self._evening_hand_set_day = evening_hand_set_day
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -460,15 +480,15 @@ class BatterySchedule:
             oneshot = OneShotOperation.from_dict(raw_oneshot)
 
         return cls(
-            _today={k: _entry("today", k) for k in SlotKind},
-            _tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
+            today={k: _entry("today", k) for k in SlotKind},
+            tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
             last_seen_date=last_seen_date,
-            _evening_hand_set_day=evening_hand_set_day,
-            _currently_engaging=currently_engaging,
-            _interventions_blocked_override=bool(
+            currently_engaging=currently_engaging,
+            interventions_blocked_override=bool(
                 data.get("interventions_blocked_override", False)
             ),
-            _last_disengaged_at=last_disengaged_at,
-            _oneshot=oneshot,
-            _oneshot_params=OneShotParams.restore_by_direction(data),
+            last_disengaged_at=last_disengaged_at,
+            oneshot=oneshot,
+            oneshot_params=OneShotParams.restore_by_direction(data),
+            evening_hand_set_day=evening_hand_set_day,
         )
