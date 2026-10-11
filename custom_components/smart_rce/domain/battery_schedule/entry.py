@@ -279,10 +279,16 @@ class SlotProfile:
     # number, which then serves only as the fallback when no forecast exists.
     auto_target: bool = False
     # DELAYED_TO_END starts this many seconds earlier than the rate model asks.
+    # Charge slots only: a charge that lands a few minutes early costs nothing,
+    # one that misses its deadline buys the shortfall at the next zone's price.
     delayed_lead_sec: float = 0.0
     # Engage only when at least this many pp of work are left — keeps a
     # forecast jittering by a point or two from starting a one-minute charge.
     min_start_gap_pp: float = 0.0
+
+
+# Lead for every CHARGE slot's DELAYED_TO_END start (4 min ~ 3 pp of charge).
+_CHARGE_LEAD_SEC = 240.0
 
 
 class SlotKind(Enum):
@@ -297,6 +303,7 @@ class SlotKind(Enum):
         notification_level=NotificationLevel.NORMAL,
         default_window=(time(2, 0), time(6, 0)),
         default_target_soc=100.0,
+        delayed_lead_sec=_CHARGE_LEAD_SEC,
     )
 
     CHARGE_MORNING_AUTO = SlotProfile(
@@ -309,7 +316,7 @@ class SlotKind(Enum):
         # target exists for the day.
         default_target_soc=60.0,
         auto_target=True,
-        delayed_lead_sec=240.0,
+        delayed_lead_sec=_CHARGE_LEAD_SEC,
         min_start_gap_pp=3.0,
     )
 
@@ -330,6 +337,7 @@ class SlotKind(Enum):
         # rewritten from here.
         default_window=(time(13, 0), time(19, 0)),
         default_target_soc=80.0,
+        delayed_lead_sec=_CHARGE_LEAD_SEC,
         # 80% leaves headroom for late-afternoon PV surplus.
     )
 
