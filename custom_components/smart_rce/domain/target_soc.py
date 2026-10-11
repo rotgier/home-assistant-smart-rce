@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime  # noqa: TC003 — used in TargetSocContext at runtime
+from datetime import date, datetime, time  # noqa: TC003 — used at runtime
 from typing import TYPE_CHECKING, Final
 
 from .bucket import PV_WINDOW_HOURS, Bucket, Buckets
@@ -135,8 +135,22 @@ class TargetSoc:
         """Single target_soc computation reusing cached pv_profile."""
         assert self.pv_profile is not None
         return _calculate_target_soc(
-            self.pv_profile, cons_view, start_charge_hour=ctx.start_charge_hour
+            self.pv_profile,
+            cons_view,
+            start_charge_hour=ctx.start_charge_hour,
+            count_from=self._count_from(ctx),
         )
+
+    def _count_from(self, ctx: TargetSocContext) -> time | None:
+        """First bucket that still counts — the in-progress one inside the window.
+
+        Closed buckets of a now-aware view are zeroed, not dropped; left in the
+        minimum they would pin the tightest point at 0 and hide a surplus that
+        is still ahead. Outside the window the whole 7:00-12:30 walk counts.
+        """
+        if not (self.variant.is_today and ctx.now_in_window):
+            return None
+        return time(ctx.now.hour, 0 if ctx.now.minute < 30 else 30)
 
 
 # --- Input VOs --- #
@@ -184,12 +198,14 @@ class TargetSocInputs:
 
 @dataclass(frozen=True)
 class TargetSocResult:
-    """Target SOC + per-bucket trace + most-negative cumulative balance.
+    """Target SOC + per-bucket trace + signed dip at the tightest point.
 
-    `dip_kwh` is the absolute value of the lowest cumulative_balance reached
-    during the 7:00..12:30 walk (0.0 when PV always covered consumption).
-    Exposed as sensor attribute so recorder keeps history — Historical
-    matrix can read it at any past `T` without recomputing from `buckets`.
+    `dip_kwh` is the lowest cumulative balance of the counted buckets with the
+    sign flipped: positive = deficit the battery must cover, negative = the
+    surplus left at the tightest point (headroom). Signed so the target is a
+    continuous function of it — the buffer fades out as headroom grows instead
+    of switching on at the first Wh of deficit. Exposed as sensor attribute so
+    the recorder keeps history.
     """
 
     value: int  # target SOC percent (MIN_SOC_PERCENT or higher)
@@ -206,7 +222,7 @@ class TargetSocBucket:
     cons_kwh: float
     balance: float
     cumulative: float
-    is_min: bool  # True for bucket where cumulative is most negative
+    is_min: bool  # True for the counted bucket with the lowest cumulative
 
 
 # --- PV profile (input to calculate_target_soc) --- #
@@ -284,12 +300,22 @@ def _calculate_target_soc(
     pv_profile: PvProfile,
     consumption_profile: ConsumptionProfile,
     start_charge_hour: int | None = None,
+    count_from: time | None = None,
 ) -> TargetSocResult:
     """Calculate target battery SOC + per-bucket trace.
 
-    Pure cumulative-deficit sum over the 7:00..12:30 window. Each bucket
-    contributes `pv_profile.get(h,m) - consumption_profile.get(h,m)`;
-    the maximum cumulative deficit drives the SOC% needed.
+    Pure cumulative-balance walk over the 7:00..12:30 window. Each bucket
+    contributes `pv_profile.get(h,m) - consumption_profile.get(h,m)`; the
+    lowest cumulative balance among the counted buckets (signed `dip_kwh`)
+    drives the SOC% needed:
+
+        target = MIN + dip% x (1 + LOSS) + BUFFER, floored at MIN
+
+    The buffer always applies; headroom (negative dip) eats into it, so the
+    target reaches MIN only once the tightest point keeps ~1.17 kWh to spare.
+
+    `count_from`: first bucket taking part in the minimum (None = 7:00).
+    Earlier buckets still appear in the trace; their zeros must not count.
 
     Time-awareness lives on the input profiles, not here — callers wanting
     "from now onwards" semantics pass profiles built via
@@ -309,7 +335,7 @@ def _calculate_target_soc(
     """
     buckets: list[TargetSocBucket] = []
     cumulative_balance = 0.0
-    min_balance = 0.0
+    min_balance: float | None = None
     min_idx = -1
     prev_hour: int | None = None
 
@@ -329,7 +355,8 @@ def _calculate_target_soc(
             cons_kwh = consumption_profile.get(hour, minute)
             balance = pv_kwh - cons_kwh
             cumulative_balance += balance
-            if cumulative_balance < min_balance:
+            counted = count_from is None or time(hour, minute) >= count_from
+            if counted and (min_balance is None or cumulative_balance < min_balance):
                 min_balance = cumulative_balance
                 min_idx = len(buckets)
             buckets.append(
@@ -355,17 +382,12 @@ def _calculate_target_soc(
             is_min=True,
         )
 
-    dip_kwh = round(abs(min_balance), 3) if min_balance < 0 else 0.0
-
-    if min_balance >= 0:
-        return TargetSocResult(value=MIN_SOC_PERCENT, buckets=buckets, dip_kwh=dip_kwh)
-
-    deficit_kwh = abs(min_balance)
-    deficit_percent = deficit_kwh / (BATTERY_CAPACITY_KWH / 100)
-    target = MIN_SOC_PERCENT + deficit_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
+    dip = -min_balance if min_balance is not None else 0.0
+    dip_percent = dip / (BATTERY_CAPACITY_KWH / 100)
+    target = MIN_SOC_PERCENT + dip_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
 
     return TargetSocResult(
         value=max(round(target), MIN_SOC_PERCENT),
         buckets=buckets,
-        dip_kwh=dip_kwh,
+        dip_kwh=round(dip, 3) + 0.0,  # + 0.0 turns -0.0 into 0.0
     )

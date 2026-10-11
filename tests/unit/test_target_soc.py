@@ -9,7 +9,7 @@ via `PvProfile.flat()` / `ConsumptionProfile.flat()`.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 
 from custom_components.smart_rce.domain.bucket import Bucket, Buckets
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
@@ -18,6 +18,7 @@ from custom_components.smart_rce.domain.pv_forecast import (
     PvForecastResult,
 )
 from custom_components.smart_rce.domain.target_soc import (
+    BUFFER_PERCENT,
     CONSUMPTION_PER_30MIN,
     MIN_SOC_PERCENT,
     PvProfile,
@@ -52,12 +53,49 @@ def _make_forecast(
     return PvForecastResult(forecast=periods, total_kwh=total_kwh)
 
 
-def test_surplus_pv_returns_min_soc() -> None:
-    """Gdy PV pokrywa consumption, no deficit → MIN_SOC."""
-    result = _calculate_target_soc(_make_profile(2.0), ConsumptionProfile.flat())
+def test_large_headroom_returns_min_soc() -> None:
+    """Headroom beyond the buffer (~1.17 kWh at the tightest point) → MIN_SOC."""
+    result = _calculate_target_soc(_make_profile(4.0), ConsumptionProfile.flat())
     assert result.value == MIN_SOC_PERCENT
     assert len(result.buckets) == 12
-    assert result.dip_kwh == 0.0  # No deficit → no dip
+    # Tightest point is the first bucket: 2.0 - 0.45 = 1.55 kWh to spare.
+    assert result.dip_kwh == -1.55
+
+
+def test_small_headroom_only_partly_eats_the_buffer() -> None:
+    """0.55 kWh headroom: 10 + 12 - 0.55 / 0.107 x 1.1 = 16.3 -> 16%."""
+    result = _calculate_target_soc(_make_profile(2.0), ConsumptionProfile.flat())
+    assert result.dip_kwh == -0.55
+    assert result.value == 16
+
+
+def test_target_is_continuous_across_zero_dip() -> None:
+    """A Wh either side of break-even moves the target by a point, not by 12."""
+
+    def at(rate: float) -> int:
+        return _calculate_target_soc(
+            _make_profile(rate), ConsumptionProfile.flat()
+        ).value
+
+    just_short, just_over = at(0.898), at(0.902)  # 0.449 / 0.451 kWh per bucket
+    assert just_short == just_over == MIN_SOC_PERCENT + BUFFER_PERCENT
+
+
+def test_count_from_ignores_closed_zero_buckets() -> None:
+    """Zeroed closed buckets must not pin the tightest point at 0."""
+    by_bucket = {
+        Bucket(h, m): (0.0 if h < 10 else 0.75) for h in range(7, 13) for m in (0, 30)
+    }
+    cons = {
+        Bucket(h, m): (0.0 if h < 10 else 0.45) for h in range(7, 13) for m in (0, 30)
+    }
+    pv = PvProfile(buckets=Buckets(by_bucket=by_bucket))
+    cv = ConsumptionProfile(buckets=Buckets(by_bucket=cons))
+    whole = _calculate_target_soc(pv, cv)
+    ahead = _calculate_target_soc(pv, cv, count_from=time(10, 0))
+    assert whole.dip_kwh == 0.0  # pinned by the zeros before 10:00
+    assert ahead.dip_kwh == -0.3  # first counted bucket: +0.3 kWh to spare
+    assert ahead.value < whole.value
 
 
 def test_deficit_pv_yields_positive_dip_kwh() -> None:
