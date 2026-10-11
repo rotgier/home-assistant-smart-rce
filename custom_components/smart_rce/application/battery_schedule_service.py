@@ -90,6 +90,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     # T1 opens at 07:00 on workdays: until then the auto morning charge works
     # towards this morning, from then on towards tomorrow's.
     _MORNING_CHARGE_DEADLINE_HOUR: Final[int] = 7
+    # From this hour the remembered target moves on to tomorrow morning.
+    _TOMORROW_TARGET_FROM_HOUR: Final[int] = 8
 
     def __init__(
         self,
@@ -168,10 +170,15 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """Remember the auto morning-charge target from the latest forecast.
 
         Called on every energy-balance recalculation. Before 07:00 the target is
-        for this morning (LIVE); from 07:00 on, for tomorrow (TOMORROW_LIVE) —
+        for this morning (LIVE); from 08:00 on, for tomorrow (TOMORROW_LIVE) —
         so the evening already holds the figure the night will charge to, and a
         restart after midnight, before the forecast is rebuilt, still has it.
         A variant with nothing computed yet leaves the remembered value alone.
+
+        The hour in between keeps this morning's figure: the slot's 07:00
+        window-end tick still reports it, and an early switch to tomorrow would
+        make that telegram read as a fallback. LIVE turns now-aware at 07:00,
+        so there is nothing worth pushing for today in that hour anyway.
         """
         target = self._resolve_morning_target(self._clock(), catalog)
         if target is None or not self._repo.schedule.set_morning_target(target):
@@ -185,6 +192,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     ) -> MorningChargeTarget | None:
         if now.hour < BatteryScheduleService._MORNING_CHARGE_DEADLINE_HOUR:
             variant, day, source = PvForecast.LIVE, now.date(), "live"
+        elif now.hour < BatteryScheduleService._TOMORROW_TARGET_FROM_HOUR:
+            return None
         else:
             variant = PvForecast.TOMORROW_LIVE
             day, source = now.date() + timedelta(days=1), "tomorrow_live"

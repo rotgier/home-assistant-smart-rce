@@ -278,9 +278,18 @@ class TestResolveMorningTarget:
         assert target is not None
         assert (target.day, target.value, target.source) == (DAY, 31, "live")
 
-    def test_from_seven_targets_tomorrow(self):
+    def test_hour_after_deadline_keeps_this_morning(self):
+        """07:00-08:00: no push, so the 07:00 window-end telegram is not a fallback."""
+        assert (
+            BatteryScheduleService._resolve_morning_target(  # noqa: SLF001
+                _at(7, 30), self._catalog()
+            )
+            is None
+        )
+
+    def test_from_eight_targets_tomorrow(self):
         target = BatteryScheduleService._resolve_morning_target(  # noqa: SLF001
-            _at(7, 0), self._catalog()
+            _at(8, 0), self._catalog()
         )
         assert target is not None
         assert (target.day, target.value, target.source) == (

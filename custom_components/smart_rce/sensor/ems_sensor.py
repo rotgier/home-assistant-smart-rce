@@ -182,7 +182,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
     EmsSensorDescription(
         name="Morning Charge Target",
         # SoC the CHARGE_MORNING_AUTO slot charges to before T1 — workdays only.
-        # Before 07:00 it is this morning's figure (LIVE), from 07:00 tomorrow's
+        # Before 08:00 it is this morning's figure (LIVE), from 08:00 tomorrow's
         # (TOMORROW_LIVE), so the evening already shows what the night will do.
         # Measurement state class keeps long-term history for later review.
         native_unit_of_measurement=PERCENTAGE,

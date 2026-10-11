@@ -44,7 +44,7 @@ _EVENING_KINDS = frozenset(
 
 
 class BatterySchedule:
-    """Aggregate root — 4 named slots × 2 days = 8 entries + optional one-shot.
+    """Aggregate root — one entry per `SlotKind` × 2 days + optional one-shot.
 
     Plus two state fields that drive `ems_interventions_blocked`:
     - `_currently_engaging` (persisted): which slot is currently being executed
