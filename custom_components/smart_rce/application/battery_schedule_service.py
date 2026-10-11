@@ -37,13 +37,14 @@ from ..domain.battery_schedule import (
     BatteryScheduleEntry,
     BatteryScheduleInput,
     Direction,
-    MorningChargeTarget,
     OneShotOperation,
     OneShotParams,
     OneShotParamsCommand,
+    ReserveWindow,
     Scope,
     SlotCommand,
     SlotKind,
+    T1SocReserve,
 )
 from ..domain.evening_plan import EveningPlan
 from ..domain.pv_forecast import PvForecast
@@ -87,11 +88,11 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     are the external API for HA entities. Repository stays internal.
     """
 
-    # T1 opens at 07:00 on workdays: until then the auto morning charge works
-    # towards this morning, from then on towards tomorrow's.
-    _MORNING_CHARGE_DEADLINE_HOUR: Final[int] = 7
-    # From this hour the remembered target moves on to tomorrow morning.
-    _TOMORROW_TARGET_FROM_HOUR: Final[int] = 8
+    # T1 (expensive zone, workdays) runs 07:00-13:00.
+    _T1_START_HOUR: Final[int] = 7
+    _T1_END_HOUR: Final[int] = 13
+    # From this hour the reserve moves on to tomorrow's window.
+    _TOMORROW_FROM_HOUR: Final[int] = 16
 
     def __init__(
         self,
@@ -116,6 +117,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         # Today's calendar, refreshed each tick — decides where the evening
         # ends, and so which evening a hand edit is aimed at.
         self._last_is_workday: bool | None = None
+        # LIVE+EXTRAP reserve — observation only, nothing acts on it yet.
+        self._t1_reserve_extrap: T1SocReserve | None = None
 
     @callback
     def update(self, input: BatteryScheduleInput) -> BatteryScheduleUpdateResult:
@@ -166,46 +169,98 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         return self._make_result(op)
 
     @callback
-    def update_morning_target(self, catalog: TargetSocCatalog) -> None:
-        """Remember the auto morning-charge target from the latest forecast.
+    def update_t1_reserve(self, catalog: TargetSocCatalog) -> None:
+        """Refresh the T1 reserves from the latest forecast.
 
-        Called on every energy-balance recalculation. Before 07:00 the target is
-        for this morning (LIVE); from 08:00 on, for tomorrow (TOMORROW_LIVE) —
-        so the evening already holds the figure the night will charge to, and a
-        restart after midnight, before the forecast is rebuilt, still has it.
+        Called on every energy-balance recalculation. Which variant and which
+        part of the window feed the reserve depends on the time of day:
+
+        - before 07:00 — today's LIVE, whole window (the night charge target),
+        - 07:00-13:00 — today's LIVE, what is left of the window (falls),
+        - 13:00-16:00 — today's LIVE, whole window replayed after it closed,
+        - from 16:00 — TOMORROW_LIVE, whole window (evening preview; the night
+          charges to it, and a restart after midnight still has it).
+
         A variant with nothing computed yet leaves the remembered value alone.
-
-        The hour in between keeps this morning's figure: the slot's 07:00
-        window-end tick still reports it, and an early switch to tomorrow would
-        make that telegram read as a fallback. LIVE turns now-aware at 07:00,
-        so there is nothing worth pushing for today in that hour anyway.
+        The LIVE+EXTRAP reserve is in-memory only and exists until 16:00 —
+        EXTRAP variants have no tomorrow.
         """
-        target = self._resolve_morning_target(self._clock(), catalog)
-        if target is None or not self._repo.schedule.set_morning_target(target):
+        now = self._clock()
+        self._t1_reserve_extrap = self._resolve_extrap_reserve(now, catalog)
+        reserve = self._resolve_t1_reserve(now, catalog)
+        if reserve is None or not self._repo.schedule.set_t1_reserve(reserve, now):
+            self._notify_all()
             return
         self._repo.save_if_changed()
         self._notify_all()
 
     @staticmethod
-    def _resolve_morning_target(
+    def _resolve_t1_reserve(
         now: datetime, catalog: TargetSocCatalog
-    ) -> MorningChargeTarget | None:
-        if now.hour < BatteryScheduleService._MORNING_CHARGE_DEADLINE_HOUR:
-            variant, day, source = PvForecast.LIVE, now.date(), "live"
-        elif now.hour < BatteryScheduleService._TOMORROW_TARGET_FROM_HOUR:
-            return None
-        else:
-            variant = PvForecast.TOMORROW_LIVE
-            day, source = now.date() + timedelta(days=1), "tomorrow_live"
-        target_soc = catalog.target_socs.get(variant)
+    ) -> T1SocReserve | None:
+        if now.hour >= BatteryScheduleService._TOMORROW_FROM_HOUR:
+            target_soc = catalog.target_socs.get(PvForecast.TOMORROW_LIVE)
+            if target_soc is None:
+                return None
+            return T1SocReserve.from_target_soc(
+                now.date() + timedelta(days=1),
+                target_soc,
+                source="tomorrow_live",
+                window=ReserveWindow.FULL,
+            )
+        target_soc = catalog.target_socs.get(PvForecast.LIVE)
         if target_soc is None:
             return None
-        return MorningChargeTarget.from_target_soc(day, target_soc, source=source)
+        return T1SocReserve.from_target_soc(
+            now.date(),
+            target_soc,
+            source="live",
+            window=BatteryScheduleService._today_window(now),
+        )
+
+    @staticmethod
+    def _resolve_extrap_reserve(
+        now: datetime, catalog: TargetSocCatalog
+    ) -> T1SocReserve | None:
+        """Highest reserve over today's LIVE and EXTRAP variants (None from 16:00)."""
+        if now.hour >= BatteryScheduleService._TOMORROW_FROM_HOUR:
+            return None
+        window = BatteryScheduleService._today_window(now)
+        candidates = [
+            reserve
+            for variant in PvForecast.today()
+            if variant is not PvForecast.AT_6
+            and (target_soc := catalog.target_socs.get(variant)) is not None
+            and (
+                reserve := T1SocReserve.from_target_soc(
+                    now.date(),
+                    target_soc,
+                    # Same naming as the sensor.rce_target_soc_<suffix> entities.
+                    source=variant.pretty_label.lower().replace(" ", "_"),
+                    window=window,
+                )
+            )
+            is not None
+        ]
+        return max(candidates, key=lambda r: r.value) if candidates else None
+
+    @staticmethod
+    def _today_window(now: datetime) -> ReserveWindow:
+        if now.hour < BatteryScheduleService._T1_START_HOUR:
+            return ReserveWindow.FULL
+        if now.hour < BatteryScheduleService._T1_END_HOUR:
+            return ReserveWindow.REMAINING
+        return ReserveWindow.PAST
 
     @property
-    def morning_target(self) -> MorningChargeTarget | None:
-        """Latest remembered auto morning-charge target (any day)."""
-        return self._repo.schedule.morning_target
+    def t1_reserve(self) -> T1SocReserve | None:
+        """Latest remembered LIVE reserve (any day)."""
+        return self._repo.schedule.t1_reserve
+
+    @property
+    def t1_reserve_extrap(self) -> T1SocReserve | None:
+        """LIVE+EXTRAP reserve for today, None from 16:00."""
+        return self._t1_reserve_extrap
 
     def _make_result(self, op: BatteryOperation) -> BatteryScheduleUpdateResult:
         """Capture current aggregate state alongside given operation."""

@@ -13,12 +13,12 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from ..application.ems import Ems
 from ..domain.battery_charge_policy import ChargeStartSource
-from ..domain.battery_schedule import MorningChargeTarget, OneShotOperation
+from ..domain.battery_schedule import OneShotOperation, T1SocReserve
 from ._state_writer_mixin import StateWriterMixin
 
 EMS_UNIQUE_ID_PREFIX: Final = "ems"
@@ -180,32 +180,74 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         icon="mdi:flash-outline",
     ),
     EmsSensorDescription(
-        name="Morning Charge Target",
-        # SoC the CHARGE_MORNING_AUTO slot charges to before T1 — workdays only.
-        # Before 08:00 it is this morning's figure (LIVE), from 08:00 tomorrow's
-        # (TOMORROW_LIVE), so the evening already shows what the night will do.
-        # Measurement state class keeps long-term history for later review.
+        name="T1 SoC Reserve",
+        # SoC to hold for the rest of the T1 window (07-13, workdays), LIVE
+        # variant. Before 07:00 the whole window ahead — the target of the
+        # CHARGE_MORNING_AUTO slot; 07-13 what is left (falls); 13-16 today's
+        # window replayed in full; from 16:00 tomorrow's window (TOMORROW_LIVE).
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda ems: _morning_target_value(
-            ems.battery_schedule_service.morning_target
+        value_fn=lambda ems: _reserve_field(
+            ems.battery_schedule_service.t1_reserve, "value"
         ),
-        attr_fn=lambda ems: _morning_target_attrs(
-            ems.battery_schedule_service.morning_target
+        attr_fn=lambda ems: _reserve_attrs(ems.battery_schedule_service.t1_reserve),
+        icon="mdi:battery-clock-outline",
+    ),
+    EmsSensorDescription(
+        name="T1 SoC Reserve Flat",
+        # Component of the reserve: default consumption (0.45 kWh / 30 min).
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _reserve_field(
+            ems.battery_schedule_service.t1_reserve, "flat"
+        ),
+        icon="mdi:battery-clock-outline",
+    ),
+    EmsSensorDescription(
+        name="T1 SoC Reserve Prev",
+        # Component of the reserve: prev-workday profiles without the worst one.
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _reserve_field(
+            ems.battery_schedule_service.t1_reserve, "prev_without_worst"
+        ),
+        icon="mdi:battery-clock-outline",
+    ),
+    EmsSensorDescription(
+        name="T1 SoC Reserve Dip",
+        # Signed dip of the flat reading behind the reserve: positive = deficit
+        # at the tightest point, negative = headroom (the buffer fades out by
+        # ~-1.17 kWh). No energy device class — it goes negative.
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _reserve_field(
+            ems.battery_schedule_service.t1_reserve, "dip_kwh"
+        ),
+        icon="mdi:chart-bell-curve",
+    ),
+    EmsSensorDescription(
+        name="T1 SoC Reserve Extrap",
+        # Highest reserve over today's LIVE + 4 EXTRAP variants, until 16:00
+        # (EXTRAP has no tomorrow). Observation only — nothing acts on it yet.
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _reserve_field(
+            ems.battery_schedule_service.t1_reserve_extrap, "value"
+        ),
+        attr_fn=lambda ems: _reserve_attrs(
+            ems.battery_schedule_service.t1_reserve_extrap
         ),
         icon="mdi:battery-clock-outline",
     ),
 )
 
 
-def _morning_target_value(target: MorningChargeTarget | None) -> int | None:
-    return target.value if target is not None else None
+def _reserve_field(reserve: T1SocReserve | None, field_name: str) -> Any:
+    return getattr(reserve, field_name) if reserve is not None else None
 
 
-def _morning_target_attrs(target: MorningChargeTarget | None) -> dict[str, Any]:
-    if target is None:
-        return {"workdays_only": True}
-    return {**target.to_dict(), "workdays_only": True}
+def _reserve_attrs(reserve: T1SocReserve | None) -> dict[str, Any] | None:
+    return reserve.to_dict() if reserve is not None else None
 
 
 def _format_oneshot(op: OneShotOperation | None) -> str:

@@ -91,16 +91,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         rce_coordinator=rce_coordinator,
     )
 
-    # The auto morning charge takes its target from the energy balance. Ems is
-    # built first (the energy balance depends on it), so the target is pushed
-    # on every recalculation rather than pulled by the schedule.
+    # The T1 reserve (target of the auto morning charge) comes from the energy
+    # balance. Ems is built first (the energy balance depends on it), so the
+    # reserve is pushed on every recalculation rather than pulled by the schedule.
     schedule_service = ems.battery_schedule_service
 
-    def _push_morning_target() -> None:
-        schedule_service.update_morning_target(pv_forecast.target_socs)
+    def _push_t1_reserve() -> None:
+        schedule_service.update_t1_reserve(pv_forecast.target_socs)
 
-    entry.async_on_unload(pv_forecast.async_add_listener(_push_morning_target))
-    _push_morning_target()
+    entry.async_on_unload(pv_forecast.async_add_listener(_push_t1_reserve))
+    _push_t1_reserve()
 
     weather_history_loader = WeatherHistoryLoader(hass)
     weather_table_service = WeatherTableService(
@@ -257,7 +257,7 @@ def live_reload() -> None:
     # already in sys.modules, so edits inside the package would silently not
     # take effect (the same trap garden hit before it was itemised here).
     # Order: direction -> operation -> entry -> oneshot -> commands -> events
-    # -> morning_target -> schedule -> package re-exports.
+    # -> t1_reserve -> schedule -> package re-exports.
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.direction")
     )
@@ -271,9 +271,7 @@ def live_reload() -> None:
     )
     reload(import_module("custom_components.smart_rce.domain.battery_schedule.events"))
     reload(
-        import_module(
-            "custom_components.smart_rce.domain.battery_schedule.morning_target"
-        )
+        import_module("custom_components.smart_rce.domain.battery_schedule.t1_reserve")
     )
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.schedule")

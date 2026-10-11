@@ -1,6 +1,6 @@
-"""CHARGE_MORNING_AUTO — forecast-driven morning charge before T1."""
+"""T1 reserve + CHARGE_MORNING_AUTO — forecast-driven morning charge before T1."""
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 
 from custom_components.smart_rce.application.battery_schedule_service import (
@@ -10,11 +10,12 @@ from custom_components.smart_rce.domain.battery_schedule import (
     BatterySchedule,
     BatteryScheduleEntry,
     DisengageReason,
-    MorningChargeTarget,
+    ReserveWindow,
     SlotBehavior,
     SlotDisengaged,
     SlotEngaged,
     SlotKind,
+    T1SocReserve,
 )
 from custom_components.smart_rce.domain.pv_forecast import PvForecast
 from custom_components.smart_rce.domain.target_soc import TargetSoc, TargetSocResult
@@ -38,9 +39,20 @@ def _auto(fallback: float = 60.0, *, enabled: bool = True) -> BatteryScheduleEnt
     )
 
 
-def _target(value: int, day: date = DAY, source: str = "live") -> MorningChargeTarget:
-    return MorningChargeTarget(
-        day=day, value=value, flat=value, prev_without_worst=None, source=source
+def _target(
+    value: int,
+    day: date = DAY,
+    source: str = "live",
+    window: ReserveWindow = ReserveWindow.FULL,
+) -> T1SocReserve:
+    return T1SocReserve(
+        day=day,
+        value=value,
+        flat=value,
+        prev_without_worst=None,
+        dip_kwh=None,
+        source=source,
+        window=window,
     )
 
 
@@ -61,16 +73,16 @@ def _engaged(events) -> SlotEngaged:
 
 class TestPrevWithoutWorst:
     def test_drops_only_the_single_highest(self):
-        assert MorningChargeTarget.prev_without_worst_of([24, 29, 28, 30, 23]) == 29
+        assert T1SocReserve.prev_without_worst_of([24, 29, 28, 30, 23]) == 29
 
     def test_tie_at_the_top_keeps_the_twin(self):
-        assert MorningChargeTarget.prev_without_worst_of([30, 30, 20]) == 30
+        assert T1SocReserve.prev_without_worst_of([30, 30, 20]) == 30
 
     def test_single_value_is_the_answer(self):
-        assert MorningChargeTarget.prev_without_worst_of([41]) == 41
+        assert T1SocReserve.prev_without_worst_of([41]) == 41
 
     def test_empty_is_none(self):
-        assert MorningChargeTarget.prev_without_worst_of([]) is None
+        assert T1SocReserve.prev_without_worst_of([]) is None
 
 
 class TestFromTargetSoc:
@@ -80,7 +92,9 @@ class TestFromTargetSoc:
             flat=_result(25),
             prev_days=[_result(v) for v in (24, 29, 28, 30, 23)] + [None],
         )
-        target = MorningChargeTarget.from_target_soc(DAY, ts, source="live")
+        target = T1SocReserve.from_target_soc(
+            DAY, ts, source="live", window=ReserveWindow.FULL
+        )
         assert target is not None
         assert (target.value, target.flat, target.prev_without_worst) == (29, 25, 29)
 
@@ -88,23 +102,32 @@ class TestFromTargetSoc:
         ts = TargetSoc(
             variant=PvForecast.LIVE, flat=_result(36), prev_days=[_result(30)]
         )
-        target = MorningChargeTarget.from_target_soc(DAY, ts, source="live")
+        target = T1SocReserve.from_target_soc(
+            DAY, ts, source="live", window=ReserveWindow.FULL
+        )
         assert target is not None and target.value == 36
 
     def test_capped_at_100(self):
         ts = TargetSoc(variant=PvForecast.LIVE, flat=_result(126), prev_days=[])
-        target = MorningChargeTarget.from_target_soc(DAY, ts, source="live")
+        target = T1SocReserve.from_target_soc(
+            DAY, ts, source="live", window=ReserveWindow.FULL
+        )
         assert target is not None and target.value == 100
 
     def test_nothing_computed_is_none(self):
         ts = TargetSoc(variant=PvForecast.LIVE, flat=None, prev_days=[None, None])
-        assert MorningChargeTarget.from_target_soc(DAY, ts, source="live") is None
+        assert (
+            T1SocReserve.from_target_soc(
+                DAY, ts, source="live", window=ReserveWindow.FULL
+            )
+            is None
+        )
 
 
 class TestEffectiveTarget:
     def test_engages_with_forecast_target_and_reports_source(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         _, events = sch.compute_operation(_at(6, 40), 20.0, is_workday=True)
         engaged = _engaged(events)
         assert engaged.slot is SlotKind.CHARGE_MORNING_AUTO
@@ -119,13 +142,13 @@ class TestEffectiveTarget:
 
     def test_target_for_another_day_is_ignored(self):
         sch = _schedule(_auto(fallback=60.0))
-        sch.set_morning_target(_target(40, day=date(2026, 10, 9)))
+        sch.set_t1_reserve(_target(40, day=date(2026, 10, 9)), _at(3))
         _, events = sch.compute_operation(_at(6, 10), 20.0, is_workday=True)
         assert _engaged(events).target_source == "fallback"
 
     def test_slot_number_untouched_by_target(self):
         sch = _schedule(_auto(fallback=60.0))
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         sch.compute_operation(_at(6, 40), 20.0, is_workday=True)
         assert sch.today_entry_for(SlotKind.CHARGE_MORNING_AUTO).target_soc == 60.0
 
@@ -135,13 +158,13 @@ class TestDelayedLead:
 
     def test_waits_while_more_than_time_plus_lead_remains(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         _, events = sch.compute_operation(_at(6, 30), 20.0, is_workday=True)
         assert not any(isinstance(e, SlotEngaged) for e in events)
 
     def test_starts_four_minutes_before_the_rate_model_would(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         # 06:32 leaves 1680 s: above the bare 1500 s, inside 1500 + 240.
         _, events = sch.compute_operation(_at(6, 32), 20.0, is_workday=True)
         assert _engaged(events).slot is SlotKind.CHARGE_MORNING_AUTO
@@ -175,21 +198,21 @@ class TestDelayedLead:
 class TestStartGap:
     def test_two_points_short_does_not_start(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         _, events = sch.compute_operation(_at(6, 59), 38.0, is_workday=True)
         assert not any(isinstance(e, SlotEngaged) for e in events)
 
     def test_three_points_short_starts(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         _, events = sch.compute_operation(_at(6, 59), 37.0, is_workday=True)
         assert _engaged(events).slot is SlotKind.CHARGE_MORNING_AUTO
 
     def test_target_dropping_below_soc_ends_the_charge(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         sch.compute_operation(_at(6, 40), 20.0, is_workday=True)
-        sch.set_morning_target(_target(25))
+        sch.set_t1_reserve(_target(25), _at(3))
         _, events = sch.compute_operation(_at(6, 45), 26.0, is_workday=True)
         ended = next(e for e in events if isinstance(e, SlotDisengaged))
         assert ended.reason is DisengageReason.TARGET_REACHED
@@ -199,13 +222,13 @@ class TestStartGap:
 class TestWorkdayGate:
     def test_day_off_never_starts(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         _, events = sch.compute_operation(_at(6, 50), 20.0, is_workday=False)
         assert not any(isinstance(e, SlotEngaged) for e in events)
 
     def test_unknown_calendar_counts_as_workday(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         _, events = sch.compute_operation(_at(6, 50), 20.0, is_workday=None)
         assert _engaged(events).slot is SlotKind.CHARGE_MORNING_AUTO
 
@@ -234,7 +257,7 @@ class TestManualBeatsAuto:
             behavior=SlotBehavior.IMMEDIATE,
         )
         sch = _schedule(_auto(), manual)
-        sch.set_morning_target(_target(40))
+        sch.set_t1_reserve(_target(40), _at(3))
         _, events = sch.compute_operation(_at(6, 50), 20.0, is_workday=True)
         assert _engaged(events).slot is SlotKind.CHARGE_MORNING
 
@@ -242,17 +265,17 @@ class TestManualBeatsAuto:
 class TestPersistence:
     def test_target_round_trips(self):
         sch = _schedule(_auto())
-        sch.set_morning_target(_target(42, source="tomorrow_live"))
+        sch.set_t1_reserve(_target(42, source="tomorrow_live"), _at(3))
         restored = BatterySchedule.from_dict(sch.to_dict())
-        assert restored.morning_target == _target(42, source="tomorrow_live")
+        assert restored.t1_reserve == _target(42, source="tomorrow_live")
 
     def test_store_without_new_fields_restores_defaults(self):
         data = BatterySchedule().to_dict()
-        data.pop("morning_target")
+        data.pop("t1_reserve")
         for scope in ("today", "tomorrow"):
             data[scope].pop(SlotKind.CHARGE_MORNING_AUTO.name)
         restored = BatterySchedule.from_dict(data)
-        assert restored.morning_target is None
+        assert restored.t1_reserve is None
         auto = restored.today_entry_for(SlotKind.CHARGE_MORNING_AUTO)
         assert (auto.enabled, auto.start, auto.end, auto.target_soc) == (
             False,
@@ -263,52 +286,116 @@ class TestPersistence:
 
     def test_set_same_target_reports_no_change(self):
         sch = BatterySchedule()
-        assert sch.set_morning_target(_target(40)) is True
-        assert sch.set_morning_target(_target(40)) is False
+        assert sch.set_t1_reserve(_target(40), _at(3)) is True
+        assert sch.set_t1_reserve(_target(40), _at(3)) is False
 
 
-class TestResolveMorningTarget:
-    """Which forecast variant feeds the remembered target, by time of day."""
+class TestResolveT1Reserve:
+    """Which forecast variant and window feed the reserve, by time of day."""
 
     @staticmethod
     def _catalog() -> SimpleNamespace:
+        def ts(v: PvForecast, flat: int) -> TargetSoc:
+            return TargetSoc(variant=v, flat=_result(flat), prev_days=[])
+
         return SimpleNamespace(
             target_socs={
-                PvForecast.LIVE: TargetSoc(
-                    variant=PvForecast.LIVE, flat=_result(31), prev_days=[]
-                ),
-                PvForecast.TOMORROW_LIVE: TargetSoc(
-                    variant=PvForecast.TOMORROW_LIVE, flat=_result(44), prev_days=[]
+                PvForecast.AT_6: ts(PvForecast.AT_6, 90),
+                PvForecast.LIVE: ts(PvForecast.LIVE, 31),
+                PvForecast.TOMORROW_LIVE: ts(PvForecast.TOMORROW_LIVE, 44),
+                PvForecast.EXTRAP_PATTERN: ts(PvForecast.EXTRAP_PATTERN, 52),
+                PvForecast.EXTRAP_BAND: TargetSoc(
+                    variant=PvForecast.EXTRAP_BAND, flat=None, prev_days=[]
                 ),
             }
         )
 
-    def test_before_seven_targets_this_morning(self):
-        target = BatteryScheduleService._resolve_morning_target(  # noqa: SLF001
-            _at(3, 0), self._catalog()
+    @staticmethod
+    def _live(h: int, m: int = 0) -> T1SocReserve:
+        reserve = BatteryScheduleService._resolve_t1_reserve(  # noqa: SLF001
+            _at(h, m), TestResolveT1Reserve._catalog()
         )
-        assert target is not None
-        assert (target.day, target.value, target.source) == (DAY, 31, "live")
+        assert reserve is not None
+        return reserve
 
-    def test_hour_after_deadline_keeps_this_morning(self):
-        """07:00-08:00: no push, so the 07:00 window-end telegram is not a fallback."""
+    def test_night_is_todays_whole_window(self):
+        r = self._live(3)
+        assert (r.day, r.value, r.source, r.window) == (
+            DAY,
+            31,
+            "live",
+            ReserveWindow.FULL,
+        )
+
+    def test_t1_hours_are_what_is_left(self):
+        assert self._live(7).window is ReserveWindow.REMAINING
+        assert self._live(12, 59).window is ReserveWindow.REMAINING
+
+    def test_early_afternoon_replays_today(self):
+        r = self._live(13)
+        assert (r.day, r.window) == (DAY, ReserveWindow.PAST)
+        assert self._live(15, 59).day == DAY
+
+    def test_from_sixteen_targets_tomorrow(self):
+        r = self._live(16)
+        assert (r.day, r.value, r.source, r.window) == (
+            date(2026, 10, 13),
+            44,
+            "tomorrow_live",
+            ReserveWindow.FULL,
+        )
+
+    def test_extrap_reserve_takes_the_highest_variant_without_at6(self):
+        r = BatteryScheduleService._resolve_extrap_reserve(  # noqa: SLF001
+            _at(9), self._catalog()
+        )
+        assert r is not None
+        assert (r.value, r.source) == (52, "extrap_pattern")
+
+    def test_extrap_reserve_has_no_tomorrow(self):
         assert (
-            BatteryScheduleService._resolve_morning_target(  # noqa: SLF001
-                _at(7, 30), self._catalog()
+            BatteryScheduleService._resolve_extrap_reserve(  # noqa: SLF001
+                _at(16), self._catalog()
             )
             is None
         )
 
-    def test_from_eight_targets_tomorrow(self):
-        target = BatteryScheduleService._resolve_morning_target(  # noqa: SLF001
-            _at(8, 0), self._catalog()
-        )
-        assert target is not None
-        assert (target.day, target.value, target.source) == (
-            date(2026, 10, 13),
-            44,
-            "tomorrow_live",
-        )
+
+class TestCheckpoint:
+    """The stored copy follows the reserve at most every 15 min within a window."""
+
+    def test_same_window_change_waits_for_the_interval(self):
+        sch = BatterySchedule()
+        first = _target(30, window=ReserveWindow.REMAINING)
+        sch.set_t1_reserve(first, _at(8, 0))
+        sch.set_t1_reserve(_target(28, window=ReserveWindow.REMAINING), _at(8, 5))
+        assert sch.t1_reserve is not None and sch.t1_reserve.value == 28
+        assert sch.to_dict()["t1_reserve"]["value"] == 30
+        sch.set_t1_reserve(_target(25, window=ReserveWindow.REMAINING), _at(8, 15))
+        assert sch.to_dict()["t1_reserve"]["value"] == 25
+
+    def test_new_day_or_window_is_stored_at_once(self):
+        sch = BatterySchedule()
+        sch.set_t1_reserve(_target(30, window=ReserveWindow.REMAINING), _at(12, 55))
+        sch.set_t1_reserve(_target(36, window=ReserveWindow.PAST), _at(13, 0))
+        assert sch.to_dict()["t1_reserve"]["window"] == "past"
+        tomorrow = _target(29, day=DAY + timedelta(days=1), source="tomorrow_live")
+        sch.set_t1_reserve(tomorrow, _at(16, 0))
+        assert sch.to_dict()["t1_reserve"]["day"] == "2026-10-13"
+
+    def test_first_release_key_still_restores(self):
+        data = BatterySchedule().to_dict()
+        data.pop("t1_reserve")
+        data["morning_target"] = {
+            "day": "2026-10-12",
+            "value": 30,
+            "flat": 29,
+            "prev_without_worst": 30,
+            "source": "tomorrow_live",
+        }
+        restored = BatterySchedule.from_dict(data).t1_reserve
+        assert restored is not None
+        assert (restored.value, restored.window) == (30, ReserveWindow.FULL)
 
 
 class TestNotification:

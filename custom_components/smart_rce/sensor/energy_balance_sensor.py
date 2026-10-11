@@ -14,7 +14,7 @@ from homeassistant.util import dt as dt_util
 from ..application.energy_balance_service import EnergyBalanceService
 from ..const import DOMAIN
 from ..coordinator import SmartRceDataUpdateCoordinator
-from ..domain.battery_schedule import MorningChargeTarget
+from ..domain.battery_schedule import T1SocReserve
 from ..domain.bucket import Bucket
 from ..domain.consumption_profiles import ConsumptionProfile
 from ..domain.pv_forecast import PvForecast, PvForecastResult, PvForecasts
@@ -197,7 +197,7 @@ def _target_soc_attrs(
     # Prev-workday readings without the single worst — the half of the morning
     # auto-charge rule that is not the flat reading (state). Charted per variant
     # on the Target SOC dashboard tab.
-    attrs["prev_without_worst"] = MorningChargeTarget.prev_without_worst_of(
+    attrs["prev_without_worst"] = T1SocReserve.prev_without_worst_of(
         r.value for r in entity.prev_days if r is not None
     )
     # dip_kwh per cell (flat + 8 prev_days) — Historical matrix (Iter 2)

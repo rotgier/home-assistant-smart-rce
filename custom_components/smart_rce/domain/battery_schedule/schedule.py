@@ -17,7 +17,7 @@ Eight named slots — four per day (today / tomorrow):
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
 from .commands import OneShotParamsCommand, SlotCommand
 from .direction import Direction
@@ -30,9 +30,9 @@ from .events import (
     SlotDisengaged,
     SlotEngaged,
 )
-from .morning_target import MorningChargeTarget
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
+from .t1_reserve import T1SocReserve
 
 # Store key of the single evening slot that predates the EARLY/LATE split.
 _LEGACY_EVENING_KEY = "DISCHARGE_EVENING"
@@ -63,6 +63,8 @@ class BatterySchedule:
     and the constructor takes exactly what `from_dict` restores.
     """
 
+    CHECKPOINT_EVERY: Final[timedelta] = timedelta(minutes=15)
+
     def __init__(
         self,
         *,
@@ -75,7 +77,7 @@ class BatterySchedule:
         oneshot: OneShotOperation | None = None,
         oneshot_params: dict[Direction, OneShotParams] | None = None,
         evening_hand_set_day: date | None = None,
-        morning_target: MorningChargeTarget | None = None,
+        t1_reserve: T1SocReserve | None = None,
     ) -> None:
         self._today: dict[SlotKind, BatteryScheduleEntry] = (
             dict(today)
@@ -108,11 +110,17 @@ class BatterySchedule:
         # undoes a deliberate change. A date rather than a flag: it expires on its
         # own at midnight, with no clearing step that a restart could miss.
         self._evening_hand_set_day = evening_hand_set_day
-        # Latest forecast-derived target for the auto morning charge, kept with
-        # the day it is for. Persisted so a restart in the night — when the
-        # forecast has not been rebuilt yet — still charges to the evening's
-        # figure rather than to the slot's fallback.
-        self._morning_target = morning_target
+        # Latest forecast-derived T1 reserve, kept with the day it is for. The
+        # auto morning charge uses it as its target. Persisted so a restart in
+        # the night — when the forecast has not been rebuilt yet — still charges
+        # to the evening's figure rather than to the slot's fallback.
+        self._t1_reserve = t1_reserve
+        # What `to_dict` writes. Between 07:00 and 13:00 the reserve moves
+        # nearly every minute; the night only needs the evening figure, so the
+        # stored copy follows at most every CHECKPOINT_EVERY (immediately when
+        # the day, variant or window changes).
+        self._t1_reserve_checkpoint = t1_reserve
+        self._t1_reserve_checkpoint_at: datetime | None = None
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -229,22 +237,33 @@ class BatterySchedule:
         self._evening_hand_set_day = None
         return True
 
-    def set_morning_target(self, target: MorningChargeTarget) -> bool:
-        """Remember the auto morning-charge target. True if it changed."""
-        if self._morning_target == target:
+    def set_t1_reserve(self, reserve: T1SocReserve, now: datetime) -> bool:
+        """Remember the latest T1 reserve. True if it changed.
+
+        The stored checkpoint moves along only when the reserve switches day,
+        variant or window, or once CHECKPOINT_EVERY has passed since the last.
+        """
+        if self._t1_reserve == reserve:
             return False
-        self._morning_target = target
+        self._t1_reserve = reserve
+        if (
+            not reserve.same_slot_as(self._t1_reserve_checkpoint)
+            or self._t1_reserve_checkpoint_at is None
+            or now - self._t1_reserve_checkpoint_at >= self.CHECKPOINT_EVERY
+        ):
+            self._t1_reserve_checkpoint = reserve
+            self._t1_reserve_checkpoint_at = now
         return True
 
-    def morning_target_for(self, day: date) -> MorningChargeTarget | None:
-        """Return the remembered target when it is for `day`, else None."""
-        target = self._morning_target
-        return target if target is not None and target.day == day else None
+    def t1_reserve_for(self, day: date) -> T1SocReserve | None:
+        """Return the remembered reserve when it is for `day`, else None."""
+        reserve = self._t1_reserve
+        return reserve if reserve is not None and reserve.day == day else None
 
     @property
-    def morning_target(self) -> MorningChargeTarget | None:
-        """Latest remembered target, whatever day it is for."""
-        return self._morning_target
+    def t1_reserve(self) -> T1SocReserve | None:
+        """Latest remembered reserve, whatever day it is for."""
+        return self._t1_reserve
 
     def apply_slot_command(self, cmd: SlotCommand) -> bool:
         """Apply a slot Command to the targeted entry. True if entry changed.
@@ -433,24 +452,24 @@ class BatterySchedule:
     def _effective_entry(self, kind: SlotKind, day: date) -> BatteryScheduleEntry:
         """Today's entry as the orchestrator runs it.
 
-        Auto-target kinds swap in the remembered morning target for `day`;
+        Auto-target kinds swap in the remembered T1 reserve for `day`;
         without one their own `target_soc` (the fallback) stands. Every other
         predicate — window, DELAYED_TO_END, target reached — is the entry's own.
         """
         entry = self._today[kind]
         if not kind.profile.auto_target:
             return entry
-        target = self.morning_target_for(day)
-        if target is None:
+        reserve = self.t1_reserve_for(day)
+        if reserve is None:
             return entry
-        return entry.with_target_soc(float(target.value))
+        return entry.with_target_soc(float(reserve.value))
 
     def _target_source(self, kind: SlotKind, day: date) -> str | None:
         """Where an auto-target slot's target came from; None for fixed slots."""
         if not kind.profile.auto_target:
             return None
-        target = self.morning_target_for(day)
-        return target.source if target is not None else "fallback"
+        reserve = self.t1_reserve_for(day)
+        return reserve.source if reserve is not None else "fallback"
 
     def roll_day(self) -> None:
         """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
@@ -485,9 +504,9 @@ class BatterySchedule:
                 else None
             ),
             "oneshot": self._oneshot.to_dict() if self._oneshot is not None else None,
-            "morning_target": (
-                self._morning_target.to_dict()
-                if self._morning_target is not None
+            "t1_reserve": (
+                self._t1_reserve_checkpoint.to_dict()
+                if self._t1_reserve_checkpoint is not None
                 else None
             ),
             "oneshot_params": {
@@ -539,9 +558,10 @@ class BatterySchedule:
             except (TypeError, ValueError):
                 evening_hand_set_day = None
 
-        morning_target: MorningChargeTarget | None = None
-        if raw_target := data.get("morning_target"):
-            morning_target = MorningChargeTarget.from_dict(raw_target)
+        t1_reserve: T1SocReserve | None = None
+        # `morning_target` is the key the first release (2026-10-11) wrote.
+        if raw_reserve := data.get("t1_reserve") or data.get("morning_target"):
+            t1_reserve = T1SocReserve.from_dict(raw_reserve)
 
         oneshot: OneShotOperation | None = None
         if raw_oneshot := data.get("oneshot"):
@@ -559,5 +579,5 @@ class BatterySchedule:
             oneshot=oneshot,
             oneshot_params=OneShotParams.restore_by_direction(data),
             evening_hand_set_day=evening_hand_set_day,
-            morning_target=morning_target,
+            t1_reserve=t1_reserve,
         )
