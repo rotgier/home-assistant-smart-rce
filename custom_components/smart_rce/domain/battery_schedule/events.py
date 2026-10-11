@@ -29,6 +29,10 @@ class SlotEngaged(BatteryScheduleEvent):
     slot: SlotKind
     soc: float
     at: datetime
+    # Target the slot ran with, and for auto-target slots where it came from
+    # (`live`, `tomorrow_live`, `fallback`) — None source for fixed slots.
+    target_soc: float | None = None
+    target_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,8 @@ class SlotDisengaged(BatteryScheduleEvent):
     soc: float
     at: datetime
     reason: DisengageReason
+    target_soc: float | None = None
+    target_source: str | None = None
 
 
 @dataclass(frozen=True)

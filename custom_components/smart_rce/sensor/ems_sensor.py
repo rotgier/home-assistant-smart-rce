@@ -6,19 +6,19 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
 import logging
-from typing import Final
+from typing import Any, Final
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfPower
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from ..application.ems import Ems
 from ..domain.battery_charge_policy import ChargeStartSource
-from ..domain.battery_schedule import OneShotOperation
+from ..domain.battery_schedule import MorningChargeTarget, OneShotOperation
 from ._state_writer_mixin import StateWriterMixin
 
 EMS_UNIQUE_ID_PREFIX: Final = "ems"
@@ -66,6 +66,10 @@ class EmsSensor(StateWriterMixin):
     def native_value(self) -> str | int | float | None:
         return self.entity_description.value_fn(self.ems)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        return self.entity_description.attr_fn(self.ems)
+
 
 @dataclass(frozen=True, kw_only=True)
 class EmsSensorDescription(SensorEntityDescription):
@@ -73,6 +77,7 @@ class EmsSensorDescription(SensorEntityDescription):
 
     key: str = field(init=False)
     value_fn: Callable[[Ems], str | int | float | None]
+    attr_fn: Callable[[Ems], dict[str, Any] | None] = lambda _: None
 
     def __post_init__(self) -> None:
         assert isinstance(self.name, str)
@@ -174,7 +179,33 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: _format_oneshot(ems.battery_schedule_service.oneshot),
         icon="mdi:flash-outline",
     ),
+    EmsSensorDescription(
+        name="Morning Charge Target",
+        # SoC the CHARGE_MORNING_AUTO slot charges to before T1 — workdays only.
+        # Before 07:00 it is this morning's figure (LIVE), from 07:00 tomorrow's
+        # (TOMORROW_LIVE), so the evening already shows what the night will do.
+        # Measurement state class keeps long-term history for later review.
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _morning_target_value(
+            ems.battery_schedule_service.morning_target
+        ),
+        attr_fn=lambda ems: _morning_target_attrs(
+            ems.battery_schedule_service.morning_target
+        ),
+        icon="mdi:battery-clock-outline",
+    ),
 )
+
+
+def _morning_target_value(target: MorningChargeTarget | None) -> int | None:
+    return target.value if target is not None else None
+
+
+def _morning_target_attrs(target: MorningChargeTarget | None) -> dict[str, Any]:
+    if target is None:
+        return {"workdays_only": True}
+    return {**target.to_dict(), "workdays_only": True}
 
 
 def _format_oneshot(op: OneShotOperation | None) -> str:

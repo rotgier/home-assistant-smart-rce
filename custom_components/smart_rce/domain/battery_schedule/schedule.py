@@ -30,6 +30,7 @@ from .events import (
     SlotDisengaged,
     SlotEngaged,
 )
+from .morning_target import MorningChargeTarget
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
 
@@ -74,6 +75,7 @@ class BatterySchedule:
         oneshot: OneShotOperation | None = None,
         oneshot_params: dict[Direction, OneShotParams] | None = None,
         evening_hand_set_day: date | None = None,
+        morning_target: MorningChargeTarget | None = None,
     ) -> None:
         self._today: dict[SlotKind, BatteryScheduleEntry] = (
             dict(today)
@@ -106,6 +108,11 @@ class BatterySchedule:
         # undoes a deliberate change. A date rather than a flag: it expires on its
         # own at midnight, with no clearing step that a restart could miss.
         self._evening_hand_set_day = evening_hand_set_day
+        # Latest forecast-derived target for the auto morning charge, kept with
+        # the day it is for. Persisted so a restart in the night — when the
+        # forecast has not been rebuilt yet — still charges to the evening's
+        # figure rather than to the slot's fallback.
+        self._morning_target = morning_target
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -222,6 +229,23 @@ class BatterySchedule:
         self._evening_hand_set_day = None
         return True
 
+    def set_morning_target(self, target: MorningChargeTarget) -> bool:
+        """Remember the auto morning-charge target. True if it changed."""
+        if self._morning_target == target:
+            return False
+        self._morning_target = target
+        return True
+
+    def morning_target_for(self, day: date) -> MorningChargeTarget | None:
+        """Return the remembered target when it is for `day`, else None."""
+        target = self._morning_target
+        return target if target is not None and target.day == day else None
+
+    @property
+    def morning_target(self) -> MorningChargeTarget | None:
+        """Latest remembered target, whatever day it is for."""
+        return self._morning_target
+
     def apply_slot_command(self, cmd: SlotCommand) -> bool:
         """Apply a slot Command to the targeted entry. True if entry changed.
 
@@ -301,7 +325,7 @@ class BatterySchedule:
     # ─── compute_operation — pure decision function w/ aggregate state mutations ───
 
     def compute_operation(
-        self, now: datetime, current_soc: float
+        self, now: datetime, current_soc: float, *, is_workday: bool | None = None
     ) -> tuple[BatteryOperation, list[BatteryScheduleEvent]]:
         """Decide BatteryOperation + emit domain events for what changed.
 
@@ -315,7 +339,12 @@ class BatterySchedule:
 
         Precedence (when no current engagement, multiple slots in window):
         DISCHARGE_EVENING_EARLY > DISCHARGE_MORNING > CHARGE_AFTERNOON > CHARGE_MORNING
-        (see `SlotKind.by_precedence()` — last wins as strongest).
+        > CHARGE_MORNING_AUTO (see `SlotKind.by_precedence()` — last wins).
+
+        Auto-target slots run on an effective entry whose target is the
+        remembered morning target (see `_effective_entry`), and stay out on a
+        day `is_workday` reports as off. Unknown (None) counts as a workday:
+        a needless charge costs only round-trip losses, a missed one a T1 hour.
         """
         events: list[BatteryScheduleEvent] = []
 
@@ -343,7 +372,7 @@ class BatterySchedule:
 
         # 3. Already engaging? Stick until target_reached / window_ended / disabled.
         if self._currently_engaging is not None:
-            entry = self.today_entry_for(self._currently_engaging)
+            entry = self._effective_entry(self._currently_engaging, now.date())
             disengage_reason = entry.disengage_reason(now, current_soc)
             if disengage_reason is None:
                 # Stay engaged — sticky hysteresis trumps DELAYED_TO_END flicker.
@@ -354,6 +383,8 @@ class BatterySchedule:
                     soc=current_soc,
                     at=now,
                     reason=disengage_reason,
+                    target_soc=entry.target_soc,
+                    target_source=self._target_source(entry.kind, now.date()),
                 )
             )
             self._currently_engaging = None
@@ -361,10 +392,16 @@ class BatterySchedule:
             # Fall through — another slot might be ready to engage immediately.
 
         # 4. Find highest-precedence slot that should engage NOW.
-        engaging_entry = self._find_engaging_entry(now, current_soc)
+        engaging_entry = self._find_engaging_entry(now, current_soc, is_workday)
         if engaging_entry is not None:
             events.append(
-                SlotEngaged(slot=engaging_entry.kind, soc=current_soc, at=now)
+                SlotEngaged(
+                    slot=engaging_entry.kind,
+                    soc=current_soc,
+                    at=now,
+                    target_soc=engaging_entry.target_soc,
+                    target_source=self._target_source(engaging_entry.kind, now.date()),
+                )
             )
             self._currently_engaging = engaging_entry.kind
             return engaging_entry.to_battery_operation(), events
@@ -383,15 +420,37 @@ class BatterySchedule:
         return None
 
     def _find_engaging_entry(
-        self, now: datetime, current_soc: float
+        self, now: datetime, current_soc: float, is_workday: bool | None
     ) -> BatteryScheduleEntry | None:
-        today = self.today_entries()
-        engaging = [
-            today[k]
+        candidates = [
+            self._effective_entry(k, now.date())
             for k in SlotKind.by_precedence()
-            if today[k].should_apply_now(now, current_soc)
+            if not (k.profile.auto_target and is_workday is False)
         ]
+        engaging = [e for e in candidates if e.should_apply_now(now, current_soc)]
         return engaging[-1] if engaging else None
+
+    def _effective_entry(self, kind: SlotKind, day: date) -> BatteryScheduleEntry:
+        """Today's entry as the orchestrator runs it.
+
+        Auto-target kinds swap in the remembered morning target for `day`;
+        without one their own `target_soc` (the fallback) stands. Every other
+        predicate — window, DELAYED_TO_END, target reached — is the entry's own.
+        """
+        entry = self._today[kind]
+        if not kind.profile.auto_target:
+            return entry
+        target = self.morning_target_for(day)
+        if target is None:
+            return entry
+        return entry.with_target_soc(float(target.value))
+
+    def _target_source(self, kind: SlotKind, day: date) -> str | None:
+        """Where an auto-target slot's target came from; None for fixed slots."""
+        if not kind.profile.auto_target:
+            return None
+        target = self.morning_target_for(day)
+        return target.source if target is not None else "fallback"
 
     def roll_day(self) -> None:
         """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
@@ -426,6 +485,11 @@ class BatterySchedule:
                 else None
             ),
             "oneshot": self._oneshot.to_dict() if self._oneshot is not None else None,
+            "morning_target": (
+                self._morning_target.to_dict()
+                if self._morning_target is not None
+                else None
+            ),
             "oneshot_params": {
                 d.name: p.to_dict() for d, p in self._oneshot_params.items()
             },
@@ -475,6 +539,10 @@ class BatterySchedule:
             except (TypeError, ValueError):
                 evening_hand_set_day = None
 
+        morning_target: MorningChargeTarget | None = None
+        if raw_target := data.get("morning_target"):
+            morning_target = MorningChargeTarget.from_dict(raw_target)
+
         oneshot: OneShotOperation | None = None
         if raw_oneshot := data.get("oneshot"):
             oneshot = OneShotOperation.from_dict(raw_oneshot)
@@ -491,4 +559,5 @@ class BatterySchedule:
             oneshot=oneshot,
             oneshot_params=OneShotParams.restore_by_direction(data),
             evening_hand_set_day=evening_hand_set_day,
+            morning_target=morning_target,
         )

@@ -125,9 +125,13 @@ class TestSlotProfile:
         assert SlotKind.DISCHARGE_EVENING_EARLY.direction.is_discharge
 
     def test_by_precedence_order(self):
-        """Discharge > charge; evening > morning; PM charge > AM charge."""
+        """Discharge > charge; evening > morning; PM charge > AM charge.
+
+        The manual morning charge beats the auto one (it is the fallback).
+        """
         prec = SlotKind.by_precedence()
         assert prec == [
+            SlotKind.CHARGE_MORNING_AUTO,
             SlotKind.CHARGE_MORNING,
             SlotKind.CHARGE_AFTERNOON,
             SlotKind.DISCHARGE_MORNING,

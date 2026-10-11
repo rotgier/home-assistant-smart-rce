@@ -119,7 +119,10 @@ class BatteryScheduleNotifier:
             level = engaged.slot.value.notification_level
             return (
                 f"🔋 BatterySchedule: {engaged.slot.name} start",
-                f"Slot {engaged.slot.name} started at SoC={engaged.soc:.1f}%.",
+                (
+                    f"Slot {engaged.slot.name} started at SoC={engaged.soc:.1f}%"
+                    f"{BatteryScheduleNotifier._target_suffix(engaged.target_soc, engaged.target_source)}."
+                ),
                 level,
             )
         if event_type == "SlotDisengaged":
@@ -132,7 +135,8 @@ class BatteryScheduleNotifier:
                 f"🏁 BatterySchedule: {disengaged.slot.name} end",
                 (
                     f"Slot {disengaged.slot.name} ended at SoC={disengaged.soc:.1f}%, "
-                    f"reason: {reason_label}."
+                    f"reason: {reason_label}"
+                    f"{BatteryScheduleNotifier._target_suffix(disengaged.target_soc, disengaged.target_source)}."
                 ),
                 level,
             )
@@ -160,3 +164,14 @@ class BatteryScheduleNotifier:
             )
         _LOGGER.warning("BatteryScheduleNotifier: unhandled event type %s", event_type)
         return None
+
+    @staticmethod
+    def _target_suffix(target_soc: float | None, source: str | None) -> str:
+        """Render the slot target; flag a fallback target, which means no forecast."""
+        if target_soc is None:
+            return ""
+        if source is None:
+            return f", target {target_soc:.0f}%"
+        if source == "fallback":
+            return f", target {target_soc:.0f}% ⚠️ FALLBACK — no forecast target"
+        return f", target {target_soc:.0f}% (from {source})"

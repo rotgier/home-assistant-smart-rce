@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from homeassistant.core import callback
 
@@ -37,6 +37,7 @@ from ..domain.battery_schedule import (
     BatteryScheduleEntry,
     BatteryScheduleInput,
     Direction,
+    MorningChargeTarget,
     OneShotOperation,
     OneShotParams,
     OneShotParamsCommand,
@@ -45,6 +46,7 @@ from ..domain.battery_schedule import (
     SlotKind,
 )
 from ..domain.evening_plan import EveningPlan
+from ..domain.pv_forecast import PvForecast
 from ..infrastructure.battery_schedule_repository import BatteryScheduleRepository
 from .plan_application import PlanApplication, PlanOutcome, SlotChange
 from .service import Service
@@ -68,6 +70,7 @@ class BatteryScheduleUpdateResult:
 
 
 if TYPE_CHECKING:
+    from ..domain.target_soc_catalog import TargetSocCatalog
     from ..infrastructure.async_task_runner import AsyncTaskRunner
     from ..infrastructure.battery_schedule_notifier import BatteryScheduleNotifier
 
@@ -83,6 +86,10 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     Use case methods (set_ems_interventions_blocked_override, add_listener)
     are the external API for HA entities. Repository stays internal.
     """
+
+    # T1 opens at 07:00 on workdays: until then the auto morning charge works
+    # towards this morning, from then on towards tomorrow's.
+    _MORNING_CHARGE_DEADLINE_HOUR: Final[int] = 7
 
     def __init__(
         self,
@@ -126,7 +133,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
         # ─── Domain logic — aggregate decides operation + emits events ───
         op, events = self._repo.schedule.compute_operation(
-            self._clock(), input.battery_soc
+            self._clock(), input.battery_soc, is_workday=input.is_workday
         )
 
         # ─── Persistence — repo save_if_changed checks dict equality internally ───
@@ -155,6 +162,41 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
             # TODO Etap 2D: self._tasks.run_background(self._applier.apply(op))
 
         return self._make_result(op)
+
+    @callback
+    def update_morning_target(self, catalog: TargetSocCatalog) -> None:
+        """Remember the auto morning-charge target from the latest forecast.
+
+        Called on every energy-balance recalculation. Before 07:00 the target is
+        for this morning (LIVE); from 07:00 on, for tomorrow (TOMORROW_LIVE) —
+        so the evening already holds the figure the night will charge to, and a
+        restart after midnight, before the forecast is rebuilt, still has it.
+        A variant with nothing computed yet leaves the remembered value alone.
+        """
+        target = self._resolve_morning_target(self._clock(), catalog)
+        if target is None or not self._repo.schedule.set_morning_target(target):
+            return
+        self._repo.save_if_changed()
+        self._notify_all()
+
+    @staticmethod
+    def _resolve_morning_target(
+        now: datetime, catalog: TargetSocCatalog
+    ) -> MorningChargeTarget | None:
+        if now.hour < BatteryScheduleService._MORNING_CHARGE_DEADLINE_HOUR:
+            variant, day, source = PvForecast.LIVE, now.date(), "live"
+        else:
+            variant = PvForecast.TOMORROW_LIVE
+            day, source = now.date() + timedelta(days=1), "tomorrow_live"
+        target_soc = catalog.target_socs.get(variant)
+        if target_soc is None:
+            return None
+        return MorningChargeTarget.from_target_soc(day, target_soc, source=source)
+
+    @property
+    def morning_target(self) -> MorningChargeTarget | None:
+        """Latest remembered auto morning-charge target (any day)."""
+        return self._repo.schedule.morning_target
 
     def _make_result(self, op: BatteryOperation) -> BatteryScheduleUpdateResult:
         """Capture current aggregate state alongside given operation."""

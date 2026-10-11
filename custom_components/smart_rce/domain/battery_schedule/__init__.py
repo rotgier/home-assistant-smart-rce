@@ -36,6 +36,7 @@ from .events import (
     SlotDisengaged,
     SlotEngaged,
 )
+from .morning_target import MorningChargeTarget
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation, BatteryScheduleInput
 from .schedule import BatterySchedule
@@ -50,6 +51,7 @@ __all__ = [
     "DayRolled",
     "Direction",
     "DisengageReason",
+    "MorningChargeTarget",
     "NotificationLevel",
     "OneShotDisengageReason",
     "OneShotEnded",

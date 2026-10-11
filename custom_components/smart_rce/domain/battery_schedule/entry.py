@@ -129,8 +129,9 @@ class BatteryScheduleEntry:
         - slot is disabled
         - `now` outside `[start, end)`
         - `target_soc` already reached
+        - the gap to `target_soc` is below the kind's `min_start_gap_pp`
         - `behavior=DELAYED_TO_END` and remaining window time still exceeds
-          the projected time-to-complete
+          the projected time-to-complete plus the kind's `delayed_lead_sec`
 
         `behavior=IMMEDIATE` → True as soon as inside window with target not
         reached.
@@ -146,11 +147,24 @@ class BatteryScheduleEntry:
             return False
         if self.soc_target_reached(current_soc):
             return False
+        if self._gap_to_target(current_soc) < self.kind.profile.min_start_gap_pp:
+            return False
         if self.behavior == SlotBehavior.IMMEDIATE:
             return True
         # DELAYED_TO_END: engage only when remaining window time is just
-        # enough to hit target at the assumed rate.
-        return self._sec_until_end(now) <= self.time_to_complete_at(current_soc)
+        # enough to hit target at the assumed rate (plus the kind's lead, a
+        # margin against the rate model running slow).
+        return (
+            self._sec_until_end(now)
+            <= self.time_to_complete_at(current_soc)
+            + self.kind.profile.delayed_lead_sec
+        )
+
+    def _gap_to_target(self, current_soc: float) -> float:
+        """Percentage points of work left — positive while target not reached."""
+        if self.kind.direction.is_discharge:
+            return current_soc - self.target_soc
+        return self.target_soc - current_soc
 
     def _sec_until_end(self, now: datetime) -> float:
         """Seconds from `now` until today's `end` time. Negative if already past."""
@@ -261,6 +275,14 @@ class SlotProfile:
     notification_level: NotificationLevel
     default_window: tuple[time, time]
     default_target_soc: float
+    # Target comes from the morning-charge forecast instead of the slot's own
+    # number, which then serves only as the fallback when no forecast exists.
+    auto_target: bool = False
+    # DELAYED_TO_END starts this many seconds earlier than the rate model asks.
+    delayed_lead_sec: float = 0.0
+    # Engage only when at least this many pp of work are left — keeps a
+    # forecast jittering by a point or two from starting a one-minute charge.
+    min_start_gap_pp: float = 0.0
 
 
 class SlotKind(Enum):
@@ -275,6 +297,20 @@ class SlotKind(Enum):
         notification_level=NotificationLevel.NORMAL,
         default_window=(time(2, 0), time(6, 0)),
         default_target_soc=100.0,
+    )
+
+    CHARGE_MORNING_AUTO = SlotProfile(
+        direction=Direction.CHARGE,
+        notification_level=NotificationLevel.NORMAL,
+        # Workdays only (gated in `BatterySchedule`): 07:00 opens T1. A full
+        # 10->100% charge takes ~2h48m, so 04:00 always leaves enough room.
+        default_window=(time(4, 0), time(7, 0)),
+        # Fallback only — used when neither a fresh nor a remembered forecast
+        # target exists for the day.
+        default_target_soc=60.0,
+        auto_target=True,
+        delayed_lead_sec=240.0,
+        min_start_gap_pp=3.0,
     )
 
     DISCHARGE_MORNING = SlotProfile(
@@ -343,9 +379,11 @@ class SlotKind(Enum):
         Rules: Discharge beats charge (RCE peaks are time-critical; charging
         can wait). Evening discharge beats morning (typically higher RCE
         peak). Afternoon charge beats morning charge (closer to use, less
-        time wasted holding).
+        time wasted holding). The manual morning charge beats the automatic
+        one — it is the fallback the user reaches for when auto misbehaves.
         """
         return [
+            cls.CHARGE_MORNING_AUTO,
             cls.CHARGE_MORNING,
             cls.CHARGE_AFTERNOON,
             cls.DISCHARGE_MORNING,
