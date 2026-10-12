@@ -152,6 +152,8 @@ class ChargeStartShiftService:
         if rce is None or rce.today is None or rce.today.day != today:
             return None
         prices = rce.today.hour_price
+        # Positional hour index: on a 23/25-hour DST day it does not line up
+        # with the clock, so the shift deliberately stays off (S0 applies).
         return prices if len(prices) == 24 else None
 
     def _observe(

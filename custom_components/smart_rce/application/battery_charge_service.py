@@ -321,6 +321,8 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         today = now.date()
         policy = self._repo.policy
         changed = self._follow_s0(s0, today)
+        # Persist a fresh shift too, so the sensor survives a restart.
+        changed |= policy.forecast_shift is None or policy.forecast_shift.day != today
         shift = policy.forecast_shift_for(today, to_minutes(s0))
         before = shift.to_dict()
         old_start = shift.start

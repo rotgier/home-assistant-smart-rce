@@ -140,9 +140,9 @@ def test_message_names_the_move_and_the_hand_set_start():
     )
     text = render(report)
     assert text.splitlines() == [
-        "Start BY SIĘ zmienił: 12:00 → 9:00 (wcześniej), ale obowiązuje ręczny 11:30",
+        "Start BY SIĘ zmienił: 12:00 → 09:00 (wcześniej), ale obowiązuje ręczny 11:30",
         (
-            "SOC 35% — do pełna 7,6 kWh; prognoza nadwyżki 9:00–15:00: 8,1 kWh"
+            "SOC 35% — do pełna 7,6 kWh; prognoza nadwyżki 09:00–15:00: 8,1 kWh"
             " (Live − 0,9 kWh/h)"
         ),
         "Start z cen: 12:00",

@@ -74,7 +74,7 @@ def render(report: ShiftReport) -> str:
 
 
 def _hm(minutes: int) -> str:
-    return f"{minutes // 60}:{minutes % 60:02d}"
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def _kwh(value: float) -> str:
