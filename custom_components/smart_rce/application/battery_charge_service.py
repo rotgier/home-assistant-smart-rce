@@ -9,7 +9,10 @@ Public API consumed by HA entities (select, time, sensors) and Ems:
   — UI mutators (async; persist + notify).
 - `refresh_start_charge(computed_today, now)` — single sync entry point
   called after every `ChargeSlots` recompute: promotes a due tomorrow-plan,
-  then auto-syncs the override unless it was hand-set for today.
+  then auto-syncs the override (moved by today's forecast shift, if any)
+  unless it was hand-set for today.
+- `evaluate_forecast_shift(now, s0, candidate, soc)` — one 5-minute
+  evaluation of the forecast-driven charge start.
 - `add_listener(cb)` — single-registry refresh hook (inherited from `Service`).
 
 Repository is the internal collaborator (owns + persists policy). Service
@@ -36,6 +39,7 @@ from ..domain.battery_charge_policy import (
 )
 from ..domain.battery_schedule import BatteryOperation
 from ..domain.charge_slots import ChargeWindowParams
+from ..domain.charge_start_shift import ChargeStartShift, to_minutes, to_time
 from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 from .service import Service
 
@@ -57,6 +61,19 @@ class BatteryChargeUpdateResult:
 
     charge_allowed: bool
     start_charge_hour_override: time | None
+
+
+@dataclass(frozen=True)
+class ForecastShiftMove:
+    """The forecast moved today's charge start (minutes of the day).
+
+    `manual_start` is the hand-set start that stays in force instead — the
+    move is then only reported ("would have moved").
+    """
+
+    before: int
+    after: int
+    manual_start: time | None
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -117,6 +134,14 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
     @property
     def tomorrow_plan(self) -> ChargeStartPlan | None:
         return self._repo.policy.tomorrow_plan
+
+    @property
+    def forecast_shift(self) -> ChargeStartShift | None:
+        """Today's forecast shift (None before the first evaluation of the day)."""
+        shift = self._repo.policy.forecast_shift
+        if shift is None or shift.day != self._clock().date():
+            return None
+        return shift
 
     @property
     def start_charge_source(self) -> ChargeStartSource:
@@ -188,10 +213,18 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         trying to see. Clearing happens even when `value` is None (no prices
         for today), so the marks never outlive the request.
         """
+        today = self._clock().date()
         changed = self._repo.policy.clear_start_charge_manual()
         changed |= self._repo.policy.clear_tomorrow_plan()
         if value is not None:
-            changed |= self._repo.policy.set_start_charge_hour_override(value)
+            # The forecast shift starts over from the new window too — unless it
+            # is locked: then the battery is already taking PV and stays so.
+            shift = self.forecast_shift
+            if shift is not None:
+                changed |= shift.restart(to_minutes(value))
+            changed |= self._repo.policy.set_start_charge_hour_override(
+                self._effective_start(value, today)
+            )
         await self._persist_and_notify(changed)
 
     async def set_initial_charge_hours(self, value: int) -> None:
@@ -235,14 +268,17 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         the same whether this runs at midnight, after a restart, or on the
         first tick of a day HA slept through.
         """
-        self._promote_due_plan(now.date())
-        if computed_today is None:
-            return
-        if self._repo.policy.start_charge_manual_day == now.date():
-            return  # hand-set for today — automation keeps its hands off
-        self._save_if_changed_and_notify(
-            self._repo.policy.set_start_charge_hour_override(computed_today)
-        )
+        today = now.date()
+        self._promote_due_plan(today)
+        changed = self._repo.policy.drop_stale_forecast_shift(today)
+        if computed_today is not None:
+            changed |= self._follow_s0(computed_today, today)
+            # Hand-set for today — automation keeps its hands off.
+            if self._repo.policy.start_charge_manual_day != today:
+                changed |= self._repo.policy.set_start_charge_hour_override(
+                    self._effective_start(computed_today, today)
+                )
+        self._save_if_changed_and_notify(changed)
 
     @callback
     def _promote_due_plan(self, today: date) -> None:
@@ -264,3 +300,49 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
                 today,
             )
         self._save_if_changed_and_notify(changed)
+
+    def _effective_start(self, computed_today: time, today: date) -> time:
+        """Return the computed start, or today's forecast shift of it."""
+        shift = self._repo.policy.forecast_shift
+        if shift is None or shift.day != today:
+            return computed_today
+        return to_time(shift.start)
+
+    @callback
+    def evaluate_forecast_shift(
+        self, now: datetime, s0: time, candidate: int, soc: float | None
+    ) -> ForecastShiftMove | None:
+        """Take one evaluation of today's shift; apply and return a move.
+
+        The shift is evaluated (and persisted, with its lock baseline) even
+        while today's start is hand-set — the move is then only returned, so it
+        can be reported, and the hand-set start stays in force.
+        """
+        today = now.date()
+        policy = self._repo.policy
+        changed = self._follow_s0(s0, today)
+        shift = policy.forecast_shift_for(today, to_minutes(s0))
+        before = shift.to_dict()
+        old_start = shift.start
+        moved = shift.evaluate(to_minutes(now.time()), candidate, soc)
+        changed |= shift.to_dict() != before
+        manual = policy.start_charge_manual_day == today
+        if not manual:
+            changed |= policy.set_start_charge_hour_override(to_time(shift.start))
+        self._save_if_changed_and_notify(changed)
+        if not moved:
+            return None
+        return ForecastShiftMove(
+            before=old_start,
+            after=shift.start,
+            manual_start=policy.start_charge_hour_override if manual else None,
+        )
+
+    @callback
+    def _follow_s0(self, computed_today: time, today: date) -> bool:
+        """Restart today's shift when the windows moved S0 under it."""
+        shift = self._repo.policy.forecast_shift
+        s0 = to_minutes(computed_today)
+        if shift is None or shift.day != today or shift.s0 == s0:
+            return False
+        return shift.restart(s0)

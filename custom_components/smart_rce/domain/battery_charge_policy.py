@@ -40,6 +40,7 @@ from .charge_slots import (
     DEFAULT_INITIAL_HOURS,
     ChargeWindowParams,
 )
+from .charge_start_shift import ChargeStartShift
 
 if TYPE_CHECKING:
     from .battery_schedule import BatteryOperation
@@ -96,6 +97,7 @@ class BatteryChargePolicy:
         start_charge_hour_override: time | None = None,
         start_charge_manual_day: date | None = None,
         tomorrow_plan: ChargeStartPlan | None = None,
+        forecast_shift: ChargeStartShift | None = None,
         initial_charge_hours: int = DEFAULT_INITIAL_HOURS,
         charge_extend_threshold: float = DEFAULT_EXTEND_THRESHOLD,
         charge_absolute_cheap_price: float = DEFAULT_ABSOLUTE_CHEAP_PRICE,
@@ -123,6 +125,11 @@ class BatteryChargePolicy:
         # computed window, and is promoted into `start_charge_hour_override` on
         # the day it names. Absent (None) means "show the computed window".
         self.tomorrow_plan = tomorrow_plan
+        # Today's charge start moved by the PV forecast (iteration 3): opens the
+        # battery to PV earlier when the cheap-hours window alone won't fill it.
+        # Pinned to its day like `tomorrow_plan`; a hand-set start for today
+        # still wins — the shift keeps being evaluated, only not applied.
+        self.forecast_shift = forecast_shift
         # User-tunable inputs to the charge-window selection algorithm (consumed
         # by `ChargeSlots.compute` cross-aggregate via Ems on recompute). Kept
         # here because this policy already owns a crash-safe Store and groups the
@@ -266,6 +273,19 @@ class BatteryChargePolicy:
         self.tomorrow_plan = None
         return True
 
+    def forecast_shift_for(self, today: date, s0: int) -> ChargeStartShift:
+        """Today's shift, started from `s0` (minutes) when there is none yet."""
+        if self.forecast_shift is None or self.forecast_shift.day != today:
+            self.forecast_shift = ChargeStartShift(day=today, s0=s0)
+        return self.forecast_shift
+
+    def drop_stale_forecast_shift(self, today: date) -> bool:
+        """Forget a shift from an earlier day — it must not move today's start."""
+        if self.forecast_shift is None or self.forecast_shift.day == today:
+            return False
+        self.forecast_shift = None
+        return True
+
     def set_initial_charge_hours(self, value: int) -> bool:
         """Mutate the base charge-window length. Returns True if changed."""
         if self.initial_charge_hours == value:
@@ -327,6 +347,11 @@ class BatteryChargePolicy:
             ),
             "tomorrow_plan": (
                 self.tomorrow_plan.to_dict() if self.tomorrow_plan is not None else None
+            ),
+            "forecast_shift": (
+                self.forecast_shift.to_dict()
+                if self.forecast_shift is not None
+                else None
             ),
             "initial_charge_hours": self.initial_charge_hours,
             "charge_extend_threshold": self.charge_extend_threshold,
@@ -400,6 +425,7 @@ class BatteryChargePolicy:
             start_charge_hour_override=start_charge,
             start_charge_manual_day=manual_day,
             tomorrow_plan=tomorrow_plan,
+            forecast_shift=ChargeStartShift.from_dict(data.get("forecast_shift")),
             initial_charge_hours=initial_hours,
             charge_extend_threshold=extend_threshold,
             charge_absolute_cheap_price=absolute_cheap_price,

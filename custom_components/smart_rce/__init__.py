@@ -315,6 +315,8 @@ def live_reload() -> None:
     # evening planner stops applying plans. Cost us the 21:05 and 22:05 runs
     # on 02.10 and three more hours of the afternoon sweep on 03.10.
     reload(import_module("custom_components.smart_rce.domain.evening_plan"))
+    # battery_charge_policy imports ChargeStartShift — reload the shift first.
+    reload(import_module("custom_components.smart_rce.domain.charge_start_shift"))
     # battery_charge_policy imports BatteryOperation from battery_schedule —
     # reload AFTER battery_schedule.
     reload(import_module("custom_components.smart_rce.domain.battery_charge_policy"))
