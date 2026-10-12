@@ -10,9 +10,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_change
 
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
+from .application.pv_surplus_service import PvSurplusService
 from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
@@ -20,6 +22,7 @@ from .deposit.factory import Deposit, create_deposit
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .garden.factory import Garden, create_garden
+from .infrastructure.pv_forecast.hourly_energy_loader import HourlyEnergyLoader
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.rce_api import RceApi
 from .infrastructure.weather_history_loader import WeatherHistoryLoader
@@ -64,6 +67,7 @@ class SmartRceData:
     target_soc_matrix_service: TargetSocMatrixService
     garden: Garden
     deposit: Deposit
+    pv_surplus: PvSurplusService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -102,6 +106,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     entry.async_on_unload(pv_forecast.async_add_listener(_push_t1_reserve))
     _push_t1_reserve()
 
+    # PV surplus (room for sun): recomputed on every energy-balance update;
+    # consumption history reloads when the target day changes, today's measured
+    # energy every 5 minutes.
+    pv_surplus = PvSurplusService(pv_forecast, HourlyEnergyLoader(hass))
+    entry.async_on_unload(pv_forecast.async_add_listener(pv_surplus.recompute))
+    await pv_surplus.async_refresh()
+
+    def _refresh_pv_surplus(_now: object) -> None:
+        hass.async_create_task(pv_surplus.async_refresh())
+
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, _refresh_pv_surplus, minute=list(range(0, 60, 5)), second=20
+        )
+    )
+
     weather_history_loader = WeatherHistoryLoader(hass)
     weather_table_service = WeatherTableService(
         hass, weather_history_loader, weather_listener
@@ -133,6 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         target_soc_matrix_service,
         garden,
         deposit,
+        pv_surplus,
     )
 
     # Credentials for the deposit fetch live in options; picking them up needs a
