@@ -21,6 +21,13 @@ The rule, evaluated every 5 minutes from 07:41 (Solcast refreshes at :10/:40):
   the battery is taking PV, the decision is made (the effect is measured, not
   the forecast).
 
+Applied variant (GUARDED, chosen after `shift7.py`): a move EARLIER is trusted
+to Live alone only when even the earliest start is not enough; otherwise it
+waits for 09:10 (fresh Solcast, first reliable Extrap) and needs Live and
+Extrap Proportional to agree — both earlier, the later of the two. Live
+under-reads sunny mornings 2-3x; waiting cut the early moves to zero at the
+cost of one start an hour late. Moves later follow Live as before.
+
 Backtest of this rule: `research/2026-10-11-backtest-poranne-ladowanie/shift6.py`.
 Times are minutes of the day throughout; S0 may be a half hour (9:30), a moved
 start is a whole hour or "now".
@@ -29,6 +36,7 @@ start is a whole hour or "now".
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
@@ -39,24 +47,39 @@ if TYPE_CHECKING:
 FIRST_EVALUATION: Final[int] = 7 * 60 + 41
 EARLIEST_START: Final[int] = 8 * 60
 MIN_SUN_KWH_PER_H: Final[float] = 0.2
+EXTRAP_FROM: Final[int] = 9 * 60 + 10
 
 
 class ShiftVariant(Enum):
-    """Forecast surplus variants evaluated side by side; FLAT is the one applied.
+    """Forecast variants evaluated side by side; GUARDED is the one applied.
 
-    Value: (key, consumption from the median of earlier days?, PV scale). The
-    others are observed for 2–3 weeks before choosing on a larger sample.
+    Value: (key, consumption from the median of earlier days?, PV scale,
+    guarded by Extrap?). Consumption is flat 0.9 kWh/h unless median. The
+    observed ones are kept for 2–3 weeks before choosing on a larger sample.
     """
 
-    FLAT = ("flat", False, 1.0)
-    MEDIAN = ("median", True, 1.0)
-    MEDIAN_X12 = ("median_x1_2", True, 1.2)
-    FLAT_X12 = ("flat_x1_2", False, 1.2)
+    GUARDED = ("guarded", False, 1.0, True)
+    FLAT = ("flat", False, 1.0, False)
+    MEDIAN = ("median", True, 1.0, False)
+    MEDIAN_X12 = ("median_x1_2", True, 1.2, False)
+    FLAT_X12 = ("flat_x1_2", False, 1.2, False)
 
-    def __init__(self, key: str, median: bool, pv_scale: float) -> None:
+    def __init__(self, key: str, median: bool, pv_scale: float, guarded: bool) -> None:
         self.key = key
         self.median = median
         self.pv_scale = pv_scale
+        self.guarded = guarded
+
+
+APPLIED_VARIANT: Final = ShiftVariant.GUARDED
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A forecast's start; `enough` False when even the earliest start falls short."""
+
+    start: int
+    enough: bool
 
 
 def candidate_start(
@@ -67,18 +90,29 @@ def candidate_start(
     s0: int,
 ) -> int:
     """Return the start this forecast asks for, seen from `now` (minute of day)."""
+    return find_candidate(profile, hour_prices, now, need_kwh, s0).start
+
+
+def find_candidate(
+    profile: SurplusProfile,
+    hour_prices: Sequence[float],
+    now: int,
+    need_kwh: float,
+    s0: int,
+) -> Candidate:
+    """Like `candidate_start`, telling apart "enough" from "earliest, still short"."""
     first = _first_sun_hour(profile, now, s0)
     if first is None:
-        return s0  # no sun before S0 — nothing to gain by opening earlier
+        return Candidate(s0, True)  # no sun before S0 — nothing to gain earlier
     lowest = max(EARLIEST_START, first * 60)
     if lowest > s0:
-        return s0
+        return Candidate(s0, True)
     for start in _starts_latest_first(s0, lowest):
         begin = max(start, now)  # a start already past means "now"
         end = price_window_end(start, hour_prices) * 60
         if profile.total(begin, end) >= need_kwh:
-            return begin
-    return max(lowest, now)
+            return Candidate(begin, True)
+    return Candidate(max(lowest, now), False)
 
 
 def _first_sun_hour(profile: SurplusProfile, now: int, s0: int) -> int | None:
@@ -95,6 +129,23 @@ def _starts_latest_first(s0: int, lowest: int) -> list[int]:
     """S0 itself, then the whole hours below it down to `lowest`."""
     whole = range((s0 - 1) // 60, lowest // 60 - 1, -1)
     return [s0, *(hour * 60 for hour in whole if hour * 60 >= lowest)]
+
+
+def guarded_candidate(
+    live: Candidate, extrap: int | None, current: int, now: int
+) -> int:
+    """Live's candidate, held back from moving earlier until Extrap agrees.
+
+    Returns `current` (no signal — breaks a run of confirmations) when an
+    earlier move is not trusted yet.
+    """
+    if live.start >= current:
+        return live.start
+    if now < EXTRAP_FROM:
+        return current if live.enough else live.start
+    if extrap is not None and extrap < current:
+        return max(live.start, extrap)
+    return current
 
 
 def price_window_end(start: int, hour_prices: Sequence[float]) -> int:

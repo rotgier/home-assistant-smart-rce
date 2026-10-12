@@ -1,8 +1,9 @@
 """ChargeStartShiftService — evaluates the forecast-driven charge start every 5 min.
 
 Gathers the inputs (S0 from `ChargeSlots`, today's hourly prices, SoC, the
-LIVE surplus per variant), asks the domain for a candidate per variant and
-hands the applied one (0.9 kWh/h) to `BatteryChargeService`, which owns and
+LIVE surplus per variant, from 09:10 Extrap Proportional), asks the domain for
+a candidate per variant and hands the applied one (GUARDED: 0.9 kWh/h, earlier
+moves held back until Extrap agrees) to `BatteryChargeService`, which owns and
 persists the shift. The other variants are only tracked here, in memory, so
 the sensor can show where each of them would have put the start.
 
@@ -22,13 +23,18 @@ from homeassistant.core import CALLBACK_TYPE, callback
 
 from ..domain.charge_curve import kwh_to_full
 from ..domain.charge_start_shift import (
+    APPLIED_VARIANT,
+    EXTRAP_FROM,
     FIRST_EVALUATION,
     ChargeStartShift,
     ShiftVariant,
     candidate_start,
+    find_candidate,
+    guarded_candidate,
     price_window_end,
     to_minutes,
 )
+from ..domain.pv_forecast import PvForecast
 
 if TYPE_CHECKING:
     from .battery_charge_service import BatteryChargeService, ForecastShiftMove
@@ -58,6 +64,7 @@ class ShiftEvaluation:
     soc: float
     need_kwh: float
     candidates: dict[ShiftVariant, int]
+    extrap: int | None
 
 
 class ChargeStartShiftService:
@@ -100,7 +107,7 @@ class ChargeStartShiftService:
 
     def observed_start(self, variant: ShiftVariant) -> int | None:
         """Where an observed variant would have put today's start."""
-        if variant is ShiftVariant.FLAT:
+        if variant is APPLIED_VARIANT:
             shift = self.shift
             return shift.start if shift is not None else None
         tracker = self._observed.get(variant)
@@ -119,21 +126,29 @@ class ChargeStartShiftService:
         if soc is None or prices is None:
             return
         now_min, s0_min, need = to_minutes(now.time()), to_minutes(s0), kwh_to_full(soc)
+        live = None
         candidates: dict[ShiftVariant, int] = {}
         for variant in ShiftVariant:
+            if variant.guarded:
+                continue
             profile = self._pv_surplus.today_profile(
                 median=variant.median, pv_scale=variant.pv_scale
             )
             if profile is not None:
-                candidates[variant] = candidate_start(
-                    profile, prices, now_min, need, s0_min
-                )
-        if ShiftVariant.FLAT not in candidates:
+                found = find_candidate(profile, prices, now_min, need, s0_min)
+                candidates[variant] = found.start
+                if variant is ShiftVariant.FLAT:
+                    live = found
+        if live is None:
             return
-        self.last = ShiftEvaluation(now, soc, need, candidates)
+        extrap = self._extrap_candidate(prices, now_min, need, s0_min)
+        shift = self.shift
+        current = shift.start if shift is not None else s0_min
+        candidates[APPLIED_VARIANT] = guarded_candidate(live, extrap, current, now_min)
+        self.last = ShiftEvaluation(now, soc, need, candidates, extrap)
         self._observe(now.date(), now_min, s0_min, candidates)
         move = self._charge.evaluate_forecast_shift(
-            now, s0, candidates[ShiftVariant.FLAT], soc
+            now, s0, candidates[APPLIED_VARIANT], soc
         )
         if move is not None:
             self._report(move, s0_min, soc, need, prices)
@@ -146,6 +161,19 @@ class ChargeStartShiftService:
             return False
         shift = self.shift
         return shift is None or not shift.locked
+
+    def _extrap_candidate(
+        self, prices: tuple[float, ...], now_min: int, need: float, s0_min: int
+    ) -> int | None:
+        """Extrap Proportional's start (flat 0.9), from 09:10 when it is reliable."""
+        if now_min < EXTRAP_FROM:
+            return None
+        profile = self._pv_surplus.today_profile(
+            median=False, pv_scale=1.0, source=PvForecast.EXTRAP_PROPORTIONAL
+        )
+        if profile is None:
+            return None
+        return candidate_start(profile, prices, now_min, need, s0_min)
 
     def _today_prices(self, today: date) -> tuple[float, ...] | None:
         rce = self._ems.rce_prices.rce_prices
@@ -165,7 +193,7 @@ class ChargeStartShiftService:
     ) -> None:
         """Track the variants that are not applied (no lock — they never charge)."""
         for variant, candidate in candidates.items():
-            if variant is ShiftVariant.FLAT:
+            if variant is APPLIED_VARIANT:
                 continue
             tracker = self._observed.get(variant)
             if tracker is None or tracker.day != today:

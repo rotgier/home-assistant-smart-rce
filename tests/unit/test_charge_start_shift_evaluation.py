@@ -56,7 +56,9 @@ class _Clock:
 class _Surplus:
     """Same LIVE surplus for every variant: 4 kWh/h from 8 to 16, flat use."""
 
-    def today_profile(self, *, median: bool, pv_scale: float) -> SurplusProfile:
+    def today_profile(
+        self, *, median: bool, pv_scale: float, source: object = None
+    ) -> SurplusProfile:
         pv = slots_from_hourly(dict.fromkeys(range(8, 16), 4.0))
         return SurplusProfile.build(DAY, pv, None)
 
@@ -86,13 +88,23 @@ def test_nothing_before_0741():
     assert service.last is None
 
 
-def test_moves_after_three_evaluations_and_reports_why():
-    # SoC 20% -> 9.16 kWh to full. 12:00 window (12-14) gives 6.2 kWh, 11:00
-    # (11-15) 12.4 kWh -> candidate 11:00.
-    service, charge, clock, reports = _setup()
-    for minute in (1, 6, 11):
-        clock.at(8, minute)
+def _run(service, clock, hour, minutes):
+    for minute in minutes:
+        clock.at(hour, minute)
         service.evaluate()
+
+
+def test_waits_for_extrap_then_moves_and_reports_why():
+    # SoC 20% -> 9.16 kWh to full. 12:00 window (12-14) gives 6.2 kWh, 11:00
+    # (11-15) 12.4 kWh -> candidate 11:00. Live alone would move at 08:11; the
+    # applied variant waits for 09:10 and Extrap (same forecast here) agreeing.
+    service, charge, clock, reports = _setup()
+    _run(service, clock, 8, (1, 6, 11))
+    assert charge.start_charge_hour_override == time(12, 0)
+    assert service.observed_start(ShiftVariant.FLAT) == 11 * H
+    assert reports == []
+
+    _run(service, clock, 9, (11, 16, 21))
 
     assert charge.start_charge_hour_override == time(11, 0)
     assert len(reports) == 1
@@ -103,9 +115,27 @@ def test_moves_after_three_evaluations_and_reports_why():
     assert report.need_kwh == pytest.approx(9.16)
     assert report.surplus_kwh == pytest.approx(12.4)
     assert report.window_end_hour == 15
-    assert service.observed_start(ShiftVariant.MEDIAN) == 11 * H
     assert service.last is not None
+    assert service.last.extrap == 11 * H
     assert set(service.last.candidates) == set(ShiftVariant)
+
+
+def test_moves_before_0910_when_live_is_short_even_at_the_earliest():
+    service, charge, clock, reports = _setup(soc=10.0, s0=time(12, 0))
+    service._pv_surplus = _ThinSurplus()  # noqa: SLF001
+    _run(service, clock, 8, (1, 6, 11))
+    assert charge.start_charge_hour_override == time(8, 11)
+    assert len(reports) == 1
+
+
+class _ThinSurplus:
+    """1.5 kWh/h from 8 to 16 — 0.6 kWh/h above use, never enough for 10.64."""
+
+    def today_profile(
+        self, *, median: bool, pv_scale: float, source: object = None
+    ) -> SurplusProfile:
+        pv = slots_from_hourly(dict.fromkeys(range(8, 16), 1.5))
+        return SurplusProfile.build(DAY, pv, None)
 
 
 def test_stops_at_s0():
@@ -117,13 +147,11 @@ def test_stops_at_s0():
 
 def test_stops_once_locked():
     service, charge, clock, _ = _setup()
-    for minute in (1, 6, 11):
-        clock.at(8, minute)
-        service.evaluate()
+    _run(service, clock, 9, (11, 16, 21))
     shift = charge.forecast_shift
     assert shift is not None
     shift._locked = True  # noqa: SLF001 — state reached through the lock
-    clock.at(8, 16)
+    clock.at(9, 26)
     before = service.last
     service.evaluate()
     assert service.last is before

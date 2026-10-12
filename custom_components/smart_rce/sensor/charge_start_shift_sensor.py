@@ -2,7 +2,8 @@
 
 State: today's start of taking PV into the battery as the forecast set it
 (S0 from prices until the first move). Attributes carry the last evaluation —
-candidates of the four variants and where each would have put the start — so
+candidates of every variant (the applied `guarded` and the observed ones) and
+where each would have put the start, plus Extrap Proportional's candidate — so
 the variants can be compared over 2–3 weeks before one is chosen for good.
 """
 
@@ -72,6 +73,7 @@ class ChargeStartShiftSensor(SensorEntity):
             attrs["evaluated_at"] = last.at.isoformat()
             attrs["soc"] = last.soc
             attrs["need_kwh"] = round(last.need_kwh, 2)
+            attrs["extrap_candidate"] = _hm_or_none(last.extrap)
             attrs["variants"] = {
                 variant.key: {
                     "candidate": _hm_or_none(last.candidates.get(variant)),

@@ -198,14 +198,21 @@ class PvSurplusService:
         )
         self._notify()
 
-    def today_profile(self, *, median: bool, pv_scale: float) -> SurplusProfile | None:
-        """Today's LIVE surplus for one charge-start variant, or None without data.
+    def today_profile(
+        self,
+        *,
+        median: bool,
+        pv_scale: float,
+        source: PvForecast = PvForecast.LIVE,
+    ) -> SurplusProfile | None:
+        """Today's surplus for one charge-start variant, or None without data.
 
         `median` picks the consumption of earlier days of the same kind
-        (otherwise flat 0.9 kWh/h); `pv_scale` scales the PV forecast.
+        (otherwise flat 0.9 kWh/h); `pv_scale` scales the PV forecast of
+        `source` (LIVE, or an Extrap variant).
         """
         today = self._clock().date()
-        pv = self._pv_by_slot(PvForecast.LIVE, today)
+        pv = self._pv_by_slot(source, today)
         if not pv:
             return None
         cons: dict[int, float] | None = None

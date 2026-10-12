@@ -5,8 +5,11 @@ import json
 from pathlib import Path
 
 from custom_components.smart_rce.domain.charge_start_shift import (
+    Candidate,
     ChargeStartShift,
     candidate_start,
+    find_candidate,
+    guarded_candidate,
     price_window_end,
 )
 from custom_components.smart_rce.domain.pv_surplus import (
@@ -76,6 +79,34 @@ class TestCandidate:
         assert candidate_start(profile, PRICES, 7 * H + 41, 17.0, s0) == s0
         # 9:00 (window 9-15, hour 8 = 400) adds the first half of hour 9.
         assert candidate_start(profile, PRICES, 7 * H + 41, 18.0, s0) == 9 * H
+
+
+class TestGuarded:
+    """Variant A: earlier moves wait for 09:10 and Extrap, unless Live is short."""
+
+    def test_flags_a_forecast_short_even_at_the_earliest_start(self):
+        profile = _profile(dict.fromkeys(range(8, 16), 4.0))
+        assert find_candidate(profile, PRICES, 7 * H + 41, 9.0, 12 * H) == (
+            Candidate(11 * H, True)
+        )
+        assert find_candidate(profile, PRICES, 7 * H + 41, 50.0, 12 * H) == (
+            Candidate(8 * H, False)
+        )
+
+    def test_before_0910_moves_earlier_only_when_even_the_earliest_is_short(self):
+        now = 8 * H + 1
+        assert guarded_candidate(Candidate(10 * H, True), None, 12 * H, now) == 12 * H
+        assert guarded_candidate(Candidate(8 * H, False), None, 12 * H, now) == 8 * H
+
+    def test_from_0910_live_and_extrap_must_agree(self):
+        now = 9 * H + 11
+        live = Candidate(10 * H, True)
+        assert guarded_candidate(live, 11 * H, 12 * H, now) == 11 * H  # later of two
+        assert guarded_candidate(live, 12 * H, 12 * H, now) == 12 * H  # Extrap: no
+        assert guarded_candidate(live, None, 12 * H, now) == 12 * H  # no Extrap
+
+    def test_later_moves_follow_live(self):
+        assert guarded_candidate(Candidate(11 * H, True), None, 9 * H, 8 * H) == 11 * H
 
 
 class TestConfirmation:
