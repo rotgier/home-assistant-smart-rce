@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Final
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
+from ..domain.charge_start_shift import to_hhmm
 from .battery_schedule_notifier import NOTIFY_TEXT_SCRIPT
 
 if TYPE_CHECKING:
@@ -56,7 +57,7 @@ def render(report: ShiftReport) -> str:
     """Message text: the move, then why (need vs forecast surplus)."""
     move = report.move
     way = "wcześniej" if move.after < move.before else "później"
-    change = f"{_hm(move.before)} → {_hm(move.after)} ({way})"
+    change = f"{to_hhmm(move.before)} → {to_hhmm(move.after)} ({way})"
     if move.manual_start is not None:
         head = (
             f"Start BY SIĘ zmienił: {change}, ale obowiązuje ręczny "
@@ -67,14 +68,10 @@ def render(report: ShiftReport) -> str:
     return (
         f"{head}\n"
         f"SOC {report.soc:.0f}% — do pełna {_kwh(report.need_kwh)}; "
-        f"prognoza nadwyżki {_hm(move.after)}–{report.window_end_hour}:00: "
+        f"prognoza nadwyżki {to_hhmm(move.after)}–{report.window_end_hour}:00: "
         f"{_kwh(report.surplus_kwh)} (Live − 0,9 kWh/h)\n"
-        f"Start z cen: {_hm(report.s0)}"
+        f"Start z cen: {to_hhmm(report.s0)}"
     )
-
-
-def _hm(minutes: int) -> str:
-    return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def _kwh(value: float) -> str:

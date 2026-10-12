@@ -260,3 +260,7 @@ def to_minutes(value: time) -> int:
 
 def to_time(minutes: int) -> time:
     return time(minutes // 60, minutes % 60)
+
+
+def to_hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"

@@ -21,6 +21,7 @@ from custom_components.smart_rce.domain.battery_charge_policy import (
     ChargeStartPlan,
     ChargeStartSource,
 )
+from custom_components.smart_rce.domain.charge_start_shift import ChargeStartShift
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.rce import RceDayPrices, RcePrices
 
@@ -373,24 +374,36 @@ def test_source_reads_auto_when_nothing_is_pinned():
 def test_source_reads_manual_today():
     policy = BatteryChargePolicy(start_charge_manual_day=TODAY)
 
-    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL_TODAY
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL
 
 
-def test_source_reads_manual_tomorrow():
+def test_a_plan_for_tomorrow_does_not_change_todays_source():
     policy = BatteryChargePolicy(
         tomorrow_plan=ChargeStartPlan(day=TOMORROW, value=BY_HAND)
     )
 
-    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL_TOMORROW
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.AUTO
 
 
-def test_source_reads_manual_both():
+def test_source_reads_forecast_only_when_the_start_moved():
+    policy = BatteryChargePolicy(
+        forecast_shift=ChargeStartShift(day=TODAY, s0=11 * 60, start=9 * 60)
+    )
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.FORECAST
+
+    unmoved = BatteryChargePolicy(
+        forecast_shift=ChargeStartShift(day=TODAY, s0=11 * 60)
+    )
+    assert unmoved.start_charge_source(TODAY) is ChargeStartSource.AUTO
+
+
+def test_hand_set_today_outranks_the_forecast():
     policy = BatteryChargePolicy(
         start_charge_manual_day=TODAY,
-        tomorrow_plan=ChargeStartPlan(day=TOMORROW, value=BY_HAND),
+        forecast_shift=ChargeStartShift(day=TODAY, s0=11 * 60, start=9 * 60),
     )
 
-    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL_BOTH
+    assert policy.start_charge_source(TODAY) is ChargeStartSource.MANUAL
 
 
 def test_a_spent_manual_mark_reads_as_auto():
@@ -404,10 +417,45 @@ def test_service_resolves_the_source_against_its_own_clock():
     policy = BatteryChargePolicy(start_charge_manual_day=TODAY)
 
     assert _service(_at(TODAY, 9), policy).start_charge_source is (
-        ChargeStartSource.MANUAL_TODAY
+        ChargeStartSource.MANUAL
     )
     assert _service(_at(TOMORROW, 9), policy).start_charge_source is (
         ChargeStartSource.AUTO
+    )
+
+
+def test_details_name_both_hours_and_tomorrows_hand_set_start():
+    policy = BatteryChargePolicy(
+        start_charge_hour_override=time(9, 0),
+        forecast_shift=ChargeStartShift(day=TODAY, s0=11 * 60, start=9 * 60),
+        tomorrow_plan=ChargeStartPlan(day=TOMORROW, value=BY_HAND),
+    )
+
+    assert _service(_at(TODAY, 9), policy).start_charge_details() == {
+        "summary": "11:00 → 09:00 z prognozy",
+        "tomorrow_manual": "10:00",
+    }
+
+
+def test_details_of_a_hand_set_start_mention_the_forecast():
+    policy = BatteryChargePolicy(
+        start_charge_hour_override=BY_HAND,
+        start_charge_manual_day=TODAY,
+        forecast_shift=ChargeStartShift(day=TODAY, s0=11 * 60, start=9 * 60),
+    )
+
+    details = _service(_at(TODAY, 9), policy).start_charge_details()
+    assert details == {
+        "summary": "10:00 ręcznie (prognoza: 09:00)",
+        "tomorrow_manual": None,
+    }
+
+
+def test_details_of_an_automatic_start():
+    policy = BatteryChargePolicy(start_charge_hour_override=COMPUTED)
+
+    assert _service(_at(TODAY, 9), policy).start_charge_details()["summary"] == (
+        "09:30 z cen RCE"
     )
 
 

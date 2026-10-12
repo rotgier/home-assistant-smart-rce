@@ -116,6 +116,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=[source.value for source in ChargeStartSource],
         value_fn=lambda ems: ems.battery_charge_service.start_charge_source.value,
+        attr_fn=lambda ems: ems.battery_charge_service.start_charge_details(),
         icon="mdi:source-branch",
     ),
     EmsSensorDescription(

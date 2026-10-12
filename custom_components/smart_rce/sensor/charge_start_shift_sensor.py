@@ -14,7 +14,7 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
 
 from ..const import DOMAIN
-from ..domain.charge_start_shift import ShiftVariant
+from ..domain.charge_start_shift import ShiftVariant, to_hhmm
 from ..ems_device import ems_device_info
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ class ChargeStartShiftSensor(SensorEntity):
     @property
     def native_value(self) -> str | None:
         shift = self._service.shift
-        return _hm(shift.start) if shift is not None else None
+        return to_hhmm(shift.start) if shift is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -60,11 +60,11 @@ class ChargeStartShiftSensor(SensorEntity):
             return None
         attrs: dict[str, Any] = {
             "day": shift.day.isoformat(),
-            "s0": _hm(shift.s0),
+            "s0": to_hhmm(shift.s0),
             "shifted": shift.is_shifted,
             "locked": shift.locked,
             "soc_at_start": shift.soc_at_start,
-            "recent": [_hm(c) for c in shift.recent],
+            "recent": [to_hhmm(c) for c in shift.recent],
             "manual_start": self._service.manual_start_today,
         }
         last = self._service.last
@@ -82,9 +82,5 @@ class ChargeStartShiftSensor(SensorEntity):
         return attrs
 
 
-def _hm(minutes: int) -> str:
-    return f"{minutes // 60:02d}:{minutes % 60:02d}"
-
-
 def _hm_or_none(minutes: int | None) -> str | None:
-    return None if minutes is None else _hm(minutes)
+    return None if minutes is None else to_hhmm(minutes)

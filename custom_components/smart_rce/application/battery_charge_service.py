@@ -39,7 +39,7 @@ from ..domain.battery_charge_policy import (
 )
 from ..domain.battery_schedule import BatteryOperation
 from ..domain.charge_slots import ChargeWindowParams
-from ..domain.charge_start_shift import ChargeStartShift, to_minutes, to_time
+from ..domain.charge_start_shift import ChargeStartShift, to_hhmm, to_minutes, to_time
 from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 from .service import Service
 
@@ -147,6 +147,34 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
     def start_charge_source(self) -> ChargeStartSource:
         """Whether today's / tomorrow's start is hand-set — resolved against today."""
         return self._repo.policy.start_charge_source(self._clock().date())
+
+    def start_charge_details(self) -> dict[str, str | None]:
+        """Human readout of today's start and a hand-set start for tomorrow.
+
+        `summary` names today's start with its source ("11:00 → 09:00 z
+        prognozy"); `tomorrow_manual` is set only when tomorrow was pinned by
+        hand — a separate fact, not folded into the source.
+        """
+        policy = self._repo.policy
+        start = policy.start_charge_hour_override
+        shift = self.forecast_shift
+        source = self.start_charge_source
+        summary: str | None
+        if start is None:
+            summary = None
+        elif source is ChargeStartSource.FORECAST and shift is not None:
+            summary = f"{to_hhmm(shift.s0)} → {start:%H:%M} z prognozy"
+        elif source is ChargeStartSource.MANUAL:
+            summary = f"{start:%H:%M} ręcznie"
+            if shift is not None and shift.is_shifted:
+                summary += f" (prognoza: {to_hhmm(shift.start)})"
+        else:
+            summary = f"{start:%H:%M} z cen RCE"
+        plan = policy.tomorrow_plan
+        return {
+            "summary": summary,
+            "tomorrow_manual": f"{plan.value:%H:%M}" if plan is not None else None,
+        }
 
     @property
     def start_charge_is_manual_today(self) -> bool:
