@@ -3,11 +3,11 @@
 Two reads from the HA recorder:
 - consumption without water heating per hour for past days, from the hourly
   long-term statistics (kept indefinitely — any number of days back);
-- PV and that consumption per hour for today, from the 5-minute statistics
-  (the hourly ones lag up to an hour behind the clock).
+- PV and that consumption per 30-min slot for today, from the 5-minute
+  statistics (the hourly ones lag up to an hour behind the clock).
 
 Both meters are utility meters resetting every 30 min; the statistics' `change`
-is reset-aware, so summing it per hour gives the hour's energy.
+is reset-aware, so summing it per hour (or slot) gives that period's energy.
 """
 
 from __future__ import annotations
@@ -21,9 +21,11 @@ from homeassistant.components.recorder.statistics import statistics_during_perio
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from ...domain.pv_surplus import SLOT_MINUTES
+
 _PV_ENTITY: Final = "sensor.total_pv_generation_bi_hourly"
 _CONSUMPTION_ENTITY: Final = "sensor.total_consumption_minus_bi_hourly"
-# An hour's change outside this range is a meter glitch, not energy.
+# A 5-min or hourly change outside this range is a meter glitch, not energy.
 _MAX_HOURLY_KWH: Final = 15.0
 # A past day with fewer hours than this is a gap in the data, not a profile.
 _MIN_HOURS_PER_DAY: Final = 20
@@ -46,8 +48,8 @@ class HourlyEnergyLoader:
         """
         if not days:
             return {}
-        per_day = await self._hourly(
-            _CONSUMPTION_ENTITY, min(days), max(days) + timedelta(days=1), "hour"
+        per_day = await self._by_day(
+            _CONSUMPTION_ENTITY, min(days), max(days) + timedelta(days=1), "hour", 60
         )
         wanted = set(days)
         return {
@@ -56,18 +58,26 @@ class HourlyEnergyLoader:
             if d in wanted and len(hours) >= _MIN_HOURS_PER_DAY
         }
 
-    async def today_by_hour(
+    async def today_by_slot(
         self, today: date
     ) -> tuple[dict[int, float], dict[int, float]]:
-        """PV and consumption without water heating per hour so far today."""
+        """PV and consumption without water heating per 30-min slot so far today."""
         end = today + timedelta(days=1)
-        pv = await self._hourly(_PV_ENTITY, today, end, "5minute")
-        cons = await self._hourly(_CONSUMPTION_ENTITY, today, end, "5minute")
+        pv = await self._by_day(_PV_ENTITY, today, end, "5minute", SLOT_MINUTES)
+        cons = await self._by_day(
+            _CONSUMPTION_ENTITY, today, end, "5minute", SLOT_MINUTES
+        )
         return pv.get(today, {}), cons.get(today, {})
 
-    async def _hourly(
-        self, statistic_id: str, first: date, end: date, period: str
+    async def _by_day(
+        self,
+        statistic_id: str,
+        first: date,
+        end: date,
+        period: str,
+        bucket_minutes: int,
     ) -> dict[date, dict[int, float]]:
+        """Energy per day, summed into buckets of `bucket_minutes` (key = index)."""
         tz = dt_util.DEFAULT_TIME_ZONE
         start_dt = datetime.combine(first, time(0, 0), tzinfo=tz)
         end_dt = datetime.combine(end, time(0, 0), tzinfo=tz)
@@ -92,8 +102,9 @@ class HourlyEnergyLoader:
             if not 0.0 <= kwh <= _MAX_HOURLY_KWH:
                 continue
             ts = datetime.fromtimestamp(float(raw_start), tz=UTC).astimezone(tz)
-            hours = per_day.setdefault(ts.date(), {})
-            hours[ts.hour] = hours.get(ts.hour, 0.0) + kwh
+            buckets = per_day.setdefault(ts.date(), {})
+            key = (ts.hour * 60 + ts.minute) // bucket_minutes
+            buckets[key] = buckets.get(key, 0.0) + kwh
         _LOGGER.debug(
             "HourlyEnergyLoader: %s %s %s..%s -> %d days",
             statistic_id,

@@ -14,8 +14,8 @@ from homeassistant.const import EntityCategory, UnitOfEnergy
 from homeassistant.core import callback
 from homeassistant.util import dt as dt_util
 
-from ..application.pv_surplus_service import CHARGE_KWH_PER_PP
 from ..const import DOMAIN
+from ..domain.charge_curve import pp_below_full
 from ..ems_device import ems_device_info
 
 if TYPE_CHECKING:
@@ -90,10 +90,11 @@ class PvSurplusForecastSensor(_PvSurplusSensor):
             "start_hour": forecast.start_hour,
             "end_hour": forecast.end_hour,
             "window_total_kwh": forecast.total(profile),
-            # Room for sun: how many pp of SoC the surplus still to come refills.
-            "room_pp": round(left / CHARGE_KWH_PER_PP) if left is not None else None,
+            # Room for sun: how many pp below full the surplus still to come
+            # refills (charge curve walked down from 100%).
+            "room_pp": round(pp_below_full(left)) if left is not None else None,
             "prev_days": [d.isoformat() for d in forecast.prev_days],
-            "hours": [h.to_dict() for h in profile.hours if 4 <= h.hour < 21],
+            "hours": [h.to_dict() for h in profile.hourly() if 4 <= h.hour < 21],
         }
 
 
@@ -120,8 +121,10 @@ class PvSurplusRealizedSensor(_PvSurplusSensor):
         return {
             "day": realized.day.isoformat(),
             "start_hour": realized.start_hour,
-            "end_hour": realized.end_hour,
-            "hours": [h.to_dict() for h in realized.profile.hours if 4 <= h.hour < 21],
+            "end_hour": round(realized.end_minute / 60, 2),
+            "hours": [
+                h.to_dict() for h in realized.profile.hourly() if 4 <= h.hour < 21
+            ],
         }
 
 

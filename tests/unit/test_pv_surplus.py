@@ -9,6 +9,7 @@ from custom_components.smart_rce.domain.pv_surplus import (
     DayType,
     SurplusProfile,
     median_by_hour,
+    slots_from_hourly,
     surplus_window_end,
 )
 import pytest
@@ -54,26 +55,44 @@ def test_window_end_is_t2_start_by_season():
 class TestSurplusProfile:
     def test_surplus_never_negative_and_sums_window(self):
         p = SurplusProfile.build(
-            date(2026, 10, 12), {10: 0.5, 11: 2.4, 12: 3.0}, {10: 0.9, 11: 0.6, 12: 1.0}
+            date(2026, 10, 12),
+            {20: 0.25, 21: 0.25, 22: 1.2, 23: 1.2, 24: 1.5, 25: 1.5},
+            slots_from_hourly({10: 0.9, 11: 0.6, 12: 1.0}),
         )
-        assert p.total(10, 13) == pytest.approx(1.8 + 2.0)
-        assert p.total(12, 13) == pytest.approx(2.0)
+        assert p.total(10 * 60, 13 * 60) == pytest.approx(1.8 + 2.0)
+        assert p.total(12 * 60, 13 * 60) == pytest.approx(2.0)
 
-    def test_remaining_prorates_the_current_hour(self):
+    def test_sunny_half_is_not_cancelled_by_a_dull_one(self):
+        # Hour 10: nothing, then 1.0 kWh — hourly netting would leave 0.1.
+        p = SurplusProfile.build(date(2026, 10, 12), {20: 0.0, 21: 1.0}, None)
+        hour10 = p.hourly()[10]
+        assert hour10.pv_kwh == pytest.approx(1.0)
+        assert hour10.surplus_kwh == pytest.approx(0.55)
+
+    def test_remaining_prorates_the_current_slot(self):
         p = SurplusProfile.build(
-            date(2026, 10, 12), {10: 2.0, 11: 2.0, 12: 2.0}, {10: 1.0, 11: 1.0, 12: 1.0}
+            date(2026, 10, 12),
+            dict.fromkeys(range(20, 26), 1.0),
+            dict.fromkeys(range(48), 0.5),
         )
         at = datetime(2026, 10, 12, 11, 45, tzinfo=TZ)
-        # hour 10 gone, a quarter of hour 11 left, hour 12 whole
-        assert p.remaining(10, 13, at) == pytest.approx(0.25 + 1.0)
+        # slots before 11:30 gone, half of 11:30-12:00 left, 12:00-13:00 whole
+        assert p.remaining(10 * 60, 13 * 60, at) == pytest.approx(0.25 + 1.0)
         before = datetime(2026, 10, 12, 8, 0, tzinfo=TZ)
-        assert p.remaining(10, 13, before) == pytest.approx(3.0)
-        assert p.remaining(10, 13, datetime(2026, 10, 11, 20, 0, tzinfo=TZ)) == 3.0
-        assert p.remaining(10, 13, datetime(2026, 10, 13, 8, 0, tzinfo=TZ)) == 0.0
+        assert p.remaining(10 * 60, 13 * 60, before) == pytest.approx(3.0)
+        evening = datetime(2026, 10, 11, 20, 0, tzinfo=TZ)
+        assert p.remaining(10 * 60, 13 * 60, evening) == pytest.approx(3.0)
+        after = datetime(2026, 10, 13, 8, 0, tzinfo=TZ)
+        assert p.remaining(10 * 60, 13 * 60, after) == 0.0
+
+    def test_window_may_start_mid_hour(self):
+        p = SurplusProfile.build(date(2026, 10, 12), {18: 1.0, 19: 1.0}, None)
+        assert p.total(9 * 60 + 30, 10 * 60) == pytest.approx(0.55)
+        assert p.total(9 * 60 + 45, 10 * 60) == pytest.approx(0.275)
 
     def test_none_consumption_is_flat(self):
-        p = SurplusProfile.build(date(2026, 10, 12), {11: 2.4}, None)
-        assert p.total(11, 12) == pytest.approx(1.5)
+        p = SurplusProfile.build(date(2026, 10, 12), {22: 1.2, 23: 1.2}, None)
+        assert p.total(11 * 60, 12 * 60) == pytest.approx(1.5)
 
 
 class _FakeForecasts:
@@ -102,8 +121,8 @@ class _Loader:
     async def consumption_by_day(self, days):
         return dict.fromkeys(days, self.profiles)
 
-    async def today_by_hour(self, today):
-        return {11: 3.0}, {11: 1.0}
+    async def today_by_slot(self, today):
+        return {22: 1.5, 23: 1.5}, {22: 0.5, 23: 0.5}
 
 
 def _service(now: datetime, start_today=11, start_tomorrow=10):

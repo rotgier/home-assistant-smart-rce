@@ -1,4 +1,4 @@
-"""PvSurplusService — hourly PV surplus forecast, realized surplus, variant table.
+"""PvSurplusService — PV surplus forecast (30-min slots), realized surplus, table.
 
 Which day: today until the start of T2, then tomorrow (the evening already
 shows what the next day's sun can fill). Window: actual charge start of that
@@ -26,9 +26,12 @@ from homeassistant.util import dt as dt_util
 
 from ..domain.pv_forecast import PvForecast
 from ..domain.pv_surplus import (
+    SLOT_MINUTES,
     DayType,
     SurplusProfile,
     median_by_hour,
+    minute_of_day,
+    slots_from_hourly,
     surplus_window_end,
 )
 
@@ -38,10 +41,6 @@ if TYPE_CHECKING:
     from .energy_balance_service import EnergyBalanceService
 
 _LOGGER = logging.getLogger(__name__)
-
-# Energy that goes in per 1 pp of SoC when charging — battery charge counter
-# against SoC on 2026-10-11 (6.6 kWh for 58 pp).
-CHARGE_KWH_PER_PP: Final[float] = 0.114
 
 
 @dataclass(frozen=True)
@@ -61,13 +60,15 @@ class SurplusForecast:
     def total(self, profile: SurplusProfile) -> float | None:
         if self.start_hour is None:
             return None
-        return round(profile.total(self.start_hour, self.end_hour), 3)
+        return round(profile.total(self.start_hour * 60, self.end_hour * 60), 3)
 
     def remaining(self, profile: SurplusProfile, now: datetime) -> float | None:
-        """Surplus still to come in the window, the current hour prorated."""
+        """Surplus still to come in the window, the current slot prorated."""
         if self.start_hour is None:
             return None
-        return round(profile.remaining(self.start_hour, self.end_hour, now), 3)
+        return round(
+            profile.remaining(self.start_hour * 60, self.end_hour * 60, now), 3
+        )
 
 
 @dataclass(frozen=True)
@@ -76,14 +77,14 @@ class RealizedSurplus:
 
     day: date
     start_hour: int | None
-    end_hour: int
+    end_minute: int
     profile: SurplusProfile
 
     @property
     def total(self) -> float | None:
         if self.start_hour is None:
             return None
-        return round(self.profile.total(self.start_hour, self.end_hour), 3)
+        return round(self.profile.total(self.start_hour * 60, self.end_minute), 3)
 
 
 class PvSurplusService:
@@ -143,16 +144,19 @@ class PvSurplusService:
     async def _refresh_realized(self, now: datetime) -> None:
         today = now.date()
         try:
-            pv, cons = await self._loader.today_by_hour(today)
+            pv, cons = await self._loader.today_by_slot(today)
         except Exception:  # noqa: BLE001 — keep the previous figure
             _LOGGER.exception("PvSurplusService: realized energy load failed")
             return
-        # Only measured hours count; hours to come stay out of the sum.
-        measured = {h: pv.get(h, 0.0) for h in range(now.hour + 1)}
+        # Only measured slots count (the current one with what it has so far).
+        current = int(minute_of_day(now)) // SLOT_MINUTES
+        measured = {slot: pv.get(slot, 0.0) for slot in range(current + 1)}
         self.realized = RealizedSurplus(
             day=today,
             start_hour=self._energy_balance.target_socs.inputs.start_charge_hour_today,
-            end_hour=min(surplus_window_end(today), now.hour + 1),
+            end_minute=min(
+                surplus_window_end(today) * 60, (current + 1) * SLOT_MINUTES
+            ),
             profile=SurplusProfile.build(today, measured, cons),
         )
 
@@ -179,14 +183,15 @@ class PvSurplusService:
             if self._prev_profiles
             else None
         )
-        live_pv = self._pv_by_hour(rows[0][1], day)
+        live_pv = self._pv_by_slot(rows[0][1], day)
+        median_slots = slots_from_hourly(median) if median is not None else None
         self.forecast = SurplusForecast(
             day=day,
             source="live" if is_today else "tomorrow_live",
             day_type=DayType.of(day),
             start_hour=start,
             end_hour=surplus_window_end(day),
-            prev=SurplusProfile.build(day, live_pv, median),
+            prev=SurplusProfile.build(day, live_pv, median_slots),
             flat=SurplusProfile.build(day, live_pv, None),
             prev_days=prev_days,
             matrix=self._matrix(day, rows, start, median, prev_days, now=now),
@@ -239,16 +244,21 @@ class PvSurplusService:
         pv_sums: dict[str, float] = {}
         cons_sums: dict[str, float] = {}
         pv_strategies: list[str] = []
+        first, last = start * 60, end * 60
         for key, variant in rows:
-            pv = self._pv_by_hour(variant, day)
+            pv = self._pv_by_slot(variant, day)
             if not pv:
                 continue
             pv_strategies.append(key)
-            pv_sums[key] = round(sum(v for h, v in pv.items() if start <= h < end), 2)
             for col_key, cons, _meta in columns:
-                profile = SurplusProfile.build(day, pv, cons)
-                cells[f"{key}|{col_key}"] = round(profile.remaining(start, end, now), 2)
-                cons_sums[col_key] = round(profile.consumption(start, end), 2)
+                profile = SurplusProfile.build(
+                    day, pv, slots_from_hourly(cons) if cons is not None else None
+                )
+                cells[f"{key}|{col_key}"] = round(
+                    profile.remaining(first, last, now), 2
+                )
+                cons_sums[col_key] = round(profile.consumption(first, last), 2)
+                pv_sums[key] = round(profile.pv(first, last), 2)
         return {
             "pv_strategies": pv_strategies,
             "cons_strategies": [meta for _k, _c, meta in columns],
@@ -259,7 +269,7 @@ class PvSurplusService:
             "prev_dates": [d.isoformat() for d in prev_days],
         }
 
-    def _pv_by_hour(self, variant: PvForecast, day: date) -> dict[int, float]:
+    def _pv_by_slot(self, variant: PvForecast, day: date) -> dict[int, float]:
         result: PvForecastResult | None = self._energy_balance.forecasts.get(variant)
         out: dict[int, float] = {}
         if result is None:
@@ -267,10 +277,9 @@ class PvSurplusService:
         for period in result.forecast:
             moment = datetime.fromisoformat(str(period.period_start).replace(" ", "T"))
             if moment.date() == day:
+                slot = int(minute_of_day(moment)) // SLOT_MINUTES
                 # pv_estimate_adjusted is a kWh/h rate over a 30-min period.
-                out[moment.hour] = out.get(moment.hour, 0.0) + (
-                    period.pv_estimate_adjusted / 2
-                )
+                out[slot] = out.get(slot, 0.0) + period.pv_estimate_adjusted / 2
         return out
 
     def _notify(self) -> None:
