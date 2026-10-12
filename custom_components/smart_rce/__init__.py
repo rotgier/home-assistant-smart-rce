@@ -113,8 +113,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     entry.async_on_unload(pv_forecast.async_add_listener(pv_surplus.recompute))
     await pv_surplus.async_refresh()
 
-    def _refresh_pv_surplus(_now: object) -> None:
-        hass.async_create_task(pv_surplus.async_refresh())
+    # A coroutine function runs on the event loop; a plain function would be
+    # run in a worker thread, where creating tasks is not allowed.
+    async def _refresh_pv_surplus(_now: object) -> None:
+        await pv_surplus.async_refresh()
 
     entry.async_on_unload(
         async_track_time_change(
