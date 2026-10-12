@@ -1,0 +1,149 @@
+"""ChargeStartShiftService — when it evaluates, what it applies, what it reports."""
+
+from datetime import date, datetime, time, timezone
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from custom_components.smart_rce.application.battery_charge_service import (
+    BatteryChargeService,
+    ForecastShiftMove,
+)
+from custom_components.smart_rce.application.charge_start_shift_service import (
+    ChargeStartShiftService,
+    ShiftReport,
+)
+from custom_components.smart_rce.domain.battery_charge_policy import BatteryChargePolicy
+from custom_components.smart_rce.domain.charge_start_shift import ShiftVariant
+from custom_components.smart_rce.domain.pv_surplus import (
+    SurplusProfile,
+    slots_from_hourly,
+)
+from custom_components.smart_rce.infrastructure.charge_start_shift_notifier import (
+    render,
+)
+import pytest
+
+DAY = date(2026, 10, 13)
+H = 60
+PRICES = (
+    500, 500, 500, 500, 500, 500, 450, 420, 400, 380, 300, 200,
+    100, 100, 200, 400, 600, 700, 700, 650, 600, 550, 500, 500,
+)  # fmt: skip
+
+
+class _Repo:
+    def __init__(self) -> None:
+        self.policy = BatteryChargePolicy()
+
+    async def persist(self) -> None:
+        pass
+
+    def save_if_changed(self) -> None:
+        pass
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = datetime(2026, 10, 13, 7, 36, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def at(self, hour: int, minute: int) -> None:
+        self.now = datetime(2026, 10, 13, hour, minute, tzinfo=timezone.utc)
+
+
+class _Surplus:
+    """Same LIVE surplus for every variant: 4 kWh/h from 8 to 16, flat use."""
+
+    def today_profile(self, *, median: bool, pv_scale: float) -> SurplusProfile:
+        pv = slots_from_hourly(dict.fromkeys(range(8, 16), 4.0))
+        return SurplusProfile.build(DAY, pv, None)
+
+
+def _setup(soc: float = 20.0, s0: time = time(12, 0)):
+    clock = _Clock()
+    charge = BatteryChargeService(repo=_Repo(), clock=clock, actuator=MagicMock())
+    charge.refresh_start_charge(s0, clock.now)
+    ems = SimpleNamespace(
+        battery_charge_service=charge,
+        charge_slots=SimpleNamespace(today_start=s0),
+        last_input_state=SimpleNamespace(battery_soc=soc),
+        rce_prices=SimpleNamespace(
+            rce_prices=SimpleNamespace(
+                today=SimpleNamespace(day=DAY, hour_price=PRICES)
+            )
+        ),
+    )
+    reports: list[ShiftReport] = []
+    service = ChargeStartShiftService(ems, _Surplus(), reports.append, clock)
+    return service, charge, clock, reports
+
+
+def test_nothing_before_0741():
+    service, _, _, _ = _setup()
+    service.evaluate()
+    assert service.last is None
+
+
+def test_moves_after_three_evaluations_and_reports_why():
+    # SoC 20% -> 9.16 kWh to full. 12:00 window (12-14) gives 6.2 kWh, 11:00
+    # (11-15) 12.4 kWh -> candidate 11:00.
+    service, charge, clock, reports = _setup()
+    for minute in (1, 6, 11):
+        clock.at(8, minute)
+        service.evaluate()
+
+    assert charge.start_charge_hour_override == time(11, 0)
+    assert len(reports) == 1
+    report = reports[0]
+    assert report.move == ForecastShiftMove(
+        before=12 * H, after=11 * H, manual_start=None
+    )
+    assert report.need_kwh == pytest.approx(9.16)
+    assert report.surplus_kwh == pytest.approx(12.4)
+    assert report.window_end_hour == 15
+    assert service.observed_start(ShiftVariant.MEDIAN) == 11 * H
+    assert service.last is not None
+    assert set(service.last.candidates) == set(ShiftVariant)
+
+
+def test_stops_at_s0():
+    service, _, clock, _ = _setup(s0=time(9, 0))
+    clock.at(9, 1)
+    service.evaluate()
+    assert service.last is None
+
+
+def test_stops_once_locked():
+    service, charge, clock, _ = _setup()
+    for minute in (1, 6, 11):
+        clock.at(8, minute)
+        service.evaluate()
+    shift = charge.forecast_shift
+    assert shift is not None
+    shift._locked = True  # noqa: SLF001 — state reached through the lock
+    clock.at(8, 16)
+    before = service.last
+    service.evaluate()
+    assert service.last is before
+
+
+def test_message_names_the_move_and_the_hand_set_start():
+    report = ShiftReport(
+        move=ForecastShiftMove(before=12 * H, after=9 * H, manual_start=time(11, 30)),
+        s0=12 * H,
+        soc=35.0,
+        need_kwh=7.64,
+        surplus_kwh=8.12,
+        window_end_hour=15,
+    )
+    text = render(report)
+    assert text.splitlines() == [
+        "Start BY SIĘ zmienił: 12:00 → 9:00 (wcześniej), ale obowiązuje ręczny 11:30",
+        (
+            "SOC 35% — do pełna 7,6 kWh; prognoza nadwyżki 9:00–15:00: 8,1 kWh"
+            " (Live − 0,9 kWh/h)"
+        ),
+        "Start z cen: 12:00",
+    ]

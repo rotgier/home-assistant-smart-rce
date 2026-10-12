@@ -21,6 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .. import SmartRceConfigEntry
 from ..deposit.sensor_entities import build_sensors as build_deposit_sensors
 from ..garden.sensor_entities import build_sensors as build_garden_sensors
+from .charge_start_shift_sensor import build_charge_start_shift_sensors
 from .ems_sensor import EMS_SENSOR_DESCRIPTIONS, EmsSensor
 from .energy_balance_sensor import ENERGY_BALANCE_DESCRIPTIONS, EnergyBalanceSensor
 from .pv_surplus_sensor import build_pv_surplus_sensors
@@ -93,5 +94,6 @@ async def async_setup_entry(
     sensors.extend(build_garden_sensors(entry))
     sensors.extend(build_deposit_sensors(entry))
     sensors.extend(build_pv_surplus_sensors(entry))
+    sensors.extend(build_charge_start_shift_sensors(entry))
 
     async_add_entities(sensors)

@@ -11,7 +11,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.util import dt as dt_util
 
+from .application.charge_start_shift_service import ChargeStartShiftService
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
 from .application.pv_surplus_service import PvSurplusService
@@ -22,6 +24,7 @@ from .deposit.factory import Deposit, create_deposit
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .garden.factory import Garden, create_garden
+from .infrastructure.charge_start_shift_notifier import ChargeStartShiftNotifier
 from .infrastructure.pv_forecast.hourly_energy_loader import HourlyEnergyLoader
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.rce_api import RceApi
@@ -68,6 +71,7 @@ class SmartRceData:
     garden: Garden
     deposit: Deposit
     pv_surplus: PvSurplusService
+    charge_start_shift: ChargeStartShiftService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -131,6 +135,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
 
     entry.async_on_unload(async_track_time_change(hass, _tick_pv_surplus, second=5))
 
+    # Charge start moved by the PV forecast: evaluated at :01, :06, :11 ... —
+    # just after Solcast's :10/:40 refresh has landed.
+    charge_start_shift = ChargeStartShiftService(
+        ems,
+        pv_surplus,
+        ChargeStartShiftNotifier(hass, entry).notify,
+        dt_util.now,
+    )
+
+    @callback
+    def _evaluate_charge_start_shift(_now: object) -> None:
+        charge_start_shift.evaluate()
+
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, _evaluate_charge_start_shift, minute=list(range(1, 60, 5)), second=0
+        )
+    )
+
     weather_history_loader = WeatherHistoryLoader(hass)
     weather_table_service = WeatherTableService(
         hass, weather_history_loader, weather_listener
@@ -163,6 +186,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         garden,
         deposit,
         pv_surplus,
+        charge_start_shift,
     )
 
     # Credentials for the deposit fetch live in options; picking them up needs a
