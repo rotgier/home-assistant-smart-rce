@@ -8,7 +8,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change
 
@@ -123,6 +123,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
             hass, _refresh_pv_surplus, minute=list(range(0, 60, 5)), second=20
         )
     )
+
+    # "Still to come" shrinks by the minute even when no forecast changes.
+    @callback
+    def _tick_pv_surplus(_now: object) -> None:
+        pv_surplus.recompute()
+
+    entry.async_on_unload(async_track_time_change(hass, _tick_pv_surplus, second=5))
 
     weather_history_loader = WeatherHistoryLoader(hass)
     weather_table_service = WeatherTableService(

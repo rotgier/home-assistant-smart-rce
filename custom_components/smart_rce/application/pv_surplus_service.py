@@ -64,13 +64,10 @@ class SurplusForecast:
         return round(profile.total(self.start_hour, self.end_hour), 3)
 
     def remaining(self, profile: SurplusProfile, now: datetime) -> float | None:
-        """Surplus from the current hour on (today), whole window otherwise."""
+        """Surplus still to come in the window, the current hour prorated."""
         if self.start_hour is None:
             return None
-        start = self.start_hour
-        if now.date() == self.day:
-            start = max(start, now.hour)
-        return round(profile.total(start, self.end_hour), 3)
+        return round(profile.remaining(self.start_hour, self.end_hour, now), 3)
 
 
 @dataclass(frozen=True)
@@ -192,7 +189,7 @@ class PvSurplusService:
             prev=SurplusProfile.build(day, live_pv, median),
             flat=SurplusProfile.build(day, live_pv, None),
             prev_days=prev_days,
-            matrix=self._matrix(day, rows, start, median, prev_days),
+            matrix=self._matrix(day, rows, start, median, prev_days, now=now),
         )
         self._notify()
 
@@ -209,8 +206,14 @@ class PvSurplusService:
         start: int | None,
         median: dict[int, float] | None,
         prev_days: tuple[date, ...],
+        *,
+        now: datetime,
     ) -> dict[str, Any]:
-        """Variant x consumption table in the Target SOC card's payload shape."""
+        """Variant x consumption table in the Target SOC card's payload shape.
+
+        Cells hold the surplus still to come (as the sensors do); the PV and
+        consumption sums cover the whole window.
+        """
         end = surplus_window_end(day)
         if start is None:
             return {}
@@ -244,7 +247,7 @@ class PvSurplusService:
             pv_sums[key] = round(sum(v for h, v in pv.items() if start <= h < end), 2)
             for col_key, cons, _meta in columns:
                 profile = SurplusProfile.build(day, pv, cons)
-                cells[f"{key}|{col_key}"] = round(profile.total(start, end), 2)
+                cells[f"{key}|{col_key}"] = round(profile.remaining(start, end, now), 2)
                 cons_sums[col_key] = round(profile.consumption(start, end), 2)
         return {
             "pv_strategies": pv_strategies,

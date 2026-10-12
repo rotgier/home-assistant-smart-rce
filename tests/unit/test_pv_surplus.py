@@ -59,6 +59,18 @@ class TestSurplusProfile:
         assert p.total(10, 13) == pytest.approx(1.8 + 2.0)
         assert p.total(12, 13) == pytest.approx(2.0)
 
+    def test_remaining_prorates_the_current_hour(self):
+        p = SurplusProfile.build(
+            date(2026, 10, 12), {10: 2.0, 11: 2.0, 12: 2.0}, {10: 1.0, 11: 1.0, 12: 1.0}
+        )
+        at = datetime(2026, 10, 12, 11, 45, tzinfo=TZ)
+        # hour 10 gone, a quarter of hour 11 left, hour 12 whole
+        assert p.remaining(10, 13, at) == pytest.approx(0.25 + 1.0)
+        before = datetime(2026, 10, 12, 8, 0, tzinfo=TZ)
+        assert p.remaining(10, 13, before) == pytest.approx(3.0)
+        assert p.remaining(10, 13, datetime(2026, 10, 11, 20, 0, tzinfo=TZ)) == 3.0
+        assert p.remaining(10, 13, datetime(2026, 10, 13, 8, 0, tzinfo=TZ)) == 0.0
+
     def test_none_consumption_is_flat(self):
         p = SurplusProfile.build(date(2026, 10, 12), {11: 2.4}, None)
         assert p.total(11, 12) == pytest.approx(1.5)

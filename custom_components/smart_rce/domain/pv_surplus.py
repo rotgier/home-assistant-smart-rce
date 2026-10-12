@@ -22,7 +22,7 @@ does not move it, and spikes from different days do not stack.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from statistics import median
 from typing import TYPE_CHECKING, Any, Final
@@ -140,6 +140,24 @@ class SurplusProfile:
     def total(self, start: int, end: int) -> float:
         """Surplus summed over hours `start` .. `end - 1`."""
         return sum(h.surplus_kwh for h in self.hours if start <= h.hour < end)
+
+    def remaining(self, start: int, end: int, now: datetime) -> float:
+        """Surplus still to come in `start` .. `end - 1`, seen from `now`.
+
+        Hours already gone count nothing, the current hour only for the minutes
+        left in it; before the window opens the whole window counts.
+        """
+        if now.date() < self.day:
+            return self.total(start, end)
+        if now.date() > self.day:
+            return 0.0
+        left = 0.0
+        for h in self.hours:
+            if not start <= h.hour < end or h.hour < now.hour:
+                continue
+            fraction = (60 - now.minute) / 60 if h.hour == now.hour else 1.0
+            left += h.surplus_kwh * fraction
+        return left
 
     def consumption(self, start: int, end: int) -> float:
         return sum(h.cons_kwh for h in self.hours if start <= h.hour < end)

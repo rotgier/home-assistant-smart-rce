@@ -47,7 +47,11 @@ class _PvSurplusSensor(SensorEntity):
 
 
 class PvSurplusForecastSensor(_PvSurplusSensor):
-    """Forecast surplus over [charge start, T2) — LIVE PV, median or flat use."""
+    """Forecast surplus still to come in [charge start, T2) — LIVE PV.
+
+    State = what is left from now (current hour prorated; before the charge
+    starts, the whole window). `window_total_kwh` keeps the whole window.
+    """
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -67,7 +71,9 @@ class PvSurplusForecastSensor(_PvSurplusSensor):
     @property
     def native_value(self) -> float | None:
         forecast = self._service.forecast
-        return forecast.total(self._profile(forecast)) if forecast else None
+        if forecast is None:
+            return None
+        return forecast.remaining(self._profile(forecast), dt_util.now())
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -75,7 +81,7 @@ class PvSurplusForecastSensor(_PvSurplusSensor):
         if forecast is None:
             return None
         profile = self._profile(forecast)
-        total = forecast.total(profile)
+        left = forecast.remaining(profile, dt_util.now())
         return {
             "day": forecast.day.isoformat(),
             "source": forecast.source,
@@ -83,9 +89,9 @@ class PvSurplusForecastSensor(_PvSurplusSensor):
             "consumption": "flat 0.9 kWh/h" if self._flat else "median",
             "start_hour": forecast.start_hour,
             "end_hour": forecast.end_hour,
-            "remaining_kwh": forecast.remaining(profile, dt_util.now()),
-            # Room for sun: how many pp of SoC this surplus refills.
-            "room_pp": round(total / CHARGE_KWH_PER_PP) if total is not None else None,
+            "window_total_kwh": forecast.total(profile),
+            # Room for sun: how many pp of SoC the surplus still to come refills.
+            "room_pp": round(left / CHARGE_KWH_PER_PP) if left is not None else None,
             "prev_days": [d.isoformat() for d in forecast.prev_days],
             "hours": [h.to_dict() for h in profile.hours if 4 <= h.hour < 21],
         }
