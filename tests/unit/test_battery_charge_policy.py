@@ -257,8 +257,8 @@ class TestRecordModbusRead:
 
     def test_same_value_returns_false_but_updates_timestamp(self):
         policy = BatteryChargePolicy(
-            _modbus_current_value=18.5,
-            _last_modbus_read_at=_at(11),
+            modbus_current_value=18.5,
+            last_modbus_read_at=_at(11),
         )
         assert policy.record_modbus_read(18.5, _at(12)) is False
         assert policy.modbus_current_value == 18.5
@@ -267,7 +267,7 @@ class TestRecordModbusRead:
 
     def test_different_value_returns_true(self):
         policy = BatteryChargePolicy(
-            _modbus_current_value=18.5, _last_modbus_read_at=_at(11)
+            modbus_current_value=18.5, last_modbus_read_at=_at(11)
         )
         assert policy.record_modbus_read(0.0, _at(12)) is True
         assert policy.modbus_current_value == 0.0
@@ -290,8 +290,8 @@ class TestPersistence:
     def test_full_round_trip(self):
         original = BatteryChargePolicy(
             charge_allowed_override=OverrideMode.ALLOWED,
-            _modbus_current_value=18.5,
-            _last_modbus_read_at=_at(8, 15),
+            modbus_current_value=18.5,
+            last_modbus_read_at=_at(8, 15),
         )
         restored = BatteryChargePolicy.from_dict(original.to_dict())
         assert restored.charge_allowed_override == OverrideMode.ALLOWED

@@ -76,47 +76,61 @@ CHARGE_CURRENT_OFF_AMPS: float = 0.0
 BLOCK_WINDOW_START: time = time(6, 0)
 
 
-@dataclass
 class BatteryChargePolicy:
     """Aggregate root for charge enablement decision + Modbus state cache.
 
     Persisted fields = real state (user input + Modbus readback cache).
     Decision logic is pure functions taking per-tick inputs (`now`,
     `schedule_op`) — no shadow fields that mirror inputs.
+
+    A plain class rather than a dataclass: an aggregate is compared by identity,
+    and the constructor takes exactly what `from_dict` restores.
     """
 
-    charge_allowed_override: OverrideMode = OverrideMode.OFF
-    _modbus_current_value: float | None = None
-    _last_modbus_read_at: datetime | None = None
-    # Etap B' time-gate: charging is BLOCKED in `[BLOCK_WINDOW_START=06:00,
-    # start_charge_hour_override)`. Outside that window charging is ALLOWED.
-    # For start < 06:00 the block window wraps midnight:
-    # `[06:00, 24:00) U [00:00, start)`. When None, time-gate is disabled
-    # (defers entirely to schedule). Fed from `state.start_charge_hour_override`
-    # (legacy input_datetime) for now; future commit migrates ownership to
-    # smart_rce time entity + drops state_mapper bridge.
-    start_charge_hour_override: time | None = None
-    # Provenance of `start_charge_hour_override`: the day for which the value
-    # was set BY HAND. Auto-sync refuses to touch the override while this
-    # equals today, so a manual value survives price refreshes AND restarts
-    # (the flag is persisted; `ChargeSlots` is not). Storing a date rather
-    # than a bool makes the manual mark expire on its own at midnight — no
-    # clearing event to miss when HA is down over the rollover.
-    start_charge_manual_day: date | None = None
-    # Manual plan for TOMORROW's charge start, pinned to the day it applies
-    # to. Unlike the today override this is NOT the effective value consumed
-    # by the time-gate — it only exists while the user has overridden the
-    # computed window, and is promoted into `start_charge_hour_override` on
-    # the day it names. Absent (None) means "show the computed window".
-    tomorrow_plan: ChargeStartPlan | None = None
-    # User-tunable inputs to the charge-window selection algorithm (consumed by
-    # `ChargeSlots.compute` cross-aggregate via Ems on recompute). Kept here
-    # because this policy already owns a crash-safe Store and groups the other
-    # charge-window knobs. Exposed as a VO via `charge_window_params()`.
-    initial_charge_hours: int = DEFAULT_INITIAL_HOURS
-    charge_extend_threshold: float = DEFAULT_EXTEND_THRESHOLD
-    charge_absolute_cheap_price: float = DEFAULT_ABSOLUTE_CHEAP_PRICE
-    charge_base_window_shift_minutes: int = DEFAULT_BASE_WINDOW_SHIFT_MIN
+    def __init__(
+        self,
+        *,
+        charge_allowed_override: OverrideMode = OverrideMode.OFF,
+        modbus_current_value: float | None = None,
+        last_modbus_read_at: datetime | None = None,
+        start_charge_hour_override: time | None = None,
+        start_charge_manual_day: date | None = None,
+        tomorrow_plan: ChargeStartPlan | None = None,
+        initial_charge_hours: int = DEFAULT_INITIAL_HOURS,
+        charge_extend_threshold: float = DEFAULT_EXTEND_THRESHOLD,
+        charge_absolute_cheap_price: float = DEFAULT_ABSOLUTE_CHEAP_PRICE,
+        charge_base_window_shift_minutes: int = DEFAULT_BASE_WINDOW_SHIFT_MIN,
+    ) -> None:
+        self.charge_allowed_override = charge_allowed_override
+        self._modbus_current_value = modbus_current_value
+        self._last_modbus_read_at = last_modbus_read_at
+        # Etap B' time-gate: charging is BLOCKED in `[BLOCK_WINDOW_START=06:00,
+        # start_charge_hour_override)`. Outside that window charging is ALLOWED.
+        # For start < 06:00 the block window wraps midnight:
+        # `[06:00, 24:00) U [00:00, start)`. When None, time-gate is disabled
+        # (defers entirely to schedule).
+        self.start_charge_hour_override = start_charge_hour_override
+        # Provenance of `start_charge_hour_override`: the day for which the value
+        # was set BY HAND. Auto-sync refuses to touch the override while this
+        # equals today, so a manual value survives price refreshes AND restarts
+        # (the flag is persisted; `ChargeSlots` is not). Storing a date rather
+        # than a bool makes the manual mark expire on its own at midnight — no
+        # clearing event to miss when HA is down over the rollover.
+        self.start_charge_manual_day = start_charge_manual_day
+        # Manual plan for TOMORROW's charge start, pinned to the day it applies
+        # to. Unlike the today override this is NOT the effective value consumed
+        # by the time-gate — it only exists while the user has overridden the
+        # computed window, and is promoted into `start_charge_hour_override` on
+        # the day it names. Absent (None) means "show the computed window".
+        self.tomorrow_plan = tomorrow_plan
+        # User-tunable inputs to the charge-window selection algorithm (consumed
+        # by `ChargeSlots.compute` cross-aggregate via Ems on recompute). Kept
+        # here because this policy already owns a crash-safe Store and groups the
+        # other charge-window knobs. Exposed as a VO via `charge_window_params()`.
+        self.initial_charge_hours = initial_charge_hours
+        self.charge_extend_threshold = charge_extend_threshold
+        self.charge_absolute_cheap_price = charge_absolute_cheap_price
+        self.charge_base_window_shift_minutes = charge_base_window_shift_minutes
 
     def charge_window_params(self) -> ChargeWindowParams:
         return ChargeWindowParams(
@@ -381,8 +395,8 @@ class BatteryChargePolicy:
 
         return cls(
             charge_allowed_override=mode,
-            _modbus_current_value=modbus_value,
-            _last_modbus_read_at=last_read_at,
+            modbus_current_value=modbus_value,
+            last_modbus_read_at=last_read_at,
             start_charge_hour_override=start_charge,
             start_charge_manual_day=manual_day,
             tomorrow_plan=tomorrow_plan,
