@@ -70,11 +70,16 @@ class ChargeStartShiftNotifier:
             _LOGGER.exception("ChargeStartShiftNotifier: %s failed", script)
 
 
+# CallMeBot rejects some characters with an HTML error page — "→", "−" (minus)
+# and "–" (en dash) never got through (13.10: six failed tries), "—" does.
+# Keep the message to plain punctuation.
+
+
 def render(report: ShiftReport) -> str:
     """Message text: the move, then why (need vs forecast surplus)."""
     move = report.move
     way = "wcześniej" if move.after < move.before else "później"
-    change = f"{to_hhmm(move.before)} → {to_hhmm(move.after)} ({way})"
+    change = f"{to_hhmm(move.before)} na {to_hhmm(move.after)} ({way})"
     if move.manual_start is not None:
         head = (
             f"Start BY SIĘ zmienił: {change}, ale obowiązuje ręczny "
@@ -85,8 +90,8 @@ def render(report: ShiftReport) -> str:
     return (
         f"{head}\n"
         f"SOC {report.soc:.0f}% — do pełna {_kwh(report.need_kwh)}; "
-        f"prognoza nadwyżki {to_hhmm(move.after)}–{report.window_end_hour}:00: "
-        f"{_kwh(report.surplus_kwh)} (Live − 0,9 kWh/h)\n"
+        f"prognoza nadwyżki {to_hhmm(move.after)}-{report.window_end_hour}:00: "
+        f"{_kwh(report.surplus_kwh)} (Live minus 0,9 kWh/h)\n"
         f"Start z cen: {to_hhmm(report.s0)}"
     )
 
@@ -96,7 +101,7 @@ def render_rewind(report: RewindReport) -> str:
     return (
         f"Ładowanie z PV trwa od {to_hhmm(report.start)} (SOC {report.soc:.0f}%). "
         f"Start o {to_hhmm(report.suggestion)} nadal napełni baterię: do pełna "
-        f"{_kwh(report.need_kwh)}, nadwyżka {to_hhmm(report.suggestion)}–"
+        f"{_kwh(report.need_kwh)}, nadwyżka {to_hhmm(report.suggestion)}-"
         f"{report.window_end_hour}:00 wg Live {_kwh(report.live_kwh)}, "
         f"wg Extrap {_kwh(report.extrap_kwh)}.\n"
         f"Żeby przerwać: ustaw ręcznie start {to_hhmm(report.suggestion)} "
