@@ -24,7 +24,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
-from typing import Any
+from pathlib import Path
+from typing import Any, Final
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
@@ -37,10 +38,13 @@ from homeassistant.util import dt as dt_util
 
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
+from .application.forecast_archive_service import ForecastArchiveService
 from .coordinator import SmartRceDataUpdateCoordinator
 from .domain.pv_forecast import PvForecasts
 from .domain.target_soc_catalog import TargetSocCatalog
 from .domain.weather_forecast_history import WeatherForecastHistory
+from .infrastructure.code_version import read_code_version
+from .infrastructure.daily_jsonl_archive import DailyJsonlArchive
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
@@ -50,6 +54,10 @@ from .infrastructure.pv_forecast.solcast_reader import SolcastReader
 from .infrastructure.weather_diff_writer import WeatherDiffWriter
 from .infrastructure.weather_listener import WeatherForecastListener
 from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
+
+# Inside /config: git-ignored by the config repo, but part of HA's daily backup
+# (which leaves /share out). Long-term copies: Z2 pulls this tree nightly.
+_FORECAST_ARCHIVE_DIR: Final = "smart_rce/archive/forecast"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -192,4 +200,51 @@ async def create_energy_balance_service(
             hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_ha_started)
         )
 
+    await _wire_forecast_archive(hass, entry, forecasts, solcast)
+
     return service
+
+
+async def _wire_forecast_archive(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    forecasts: PvForecasts,
+    solcast: SolcastReader,
+) -> None:
+    """Snapshot the forecasts after each Solcast fetch, on the grid, at 04:00."""
+    archive_service = ForecastArchiveService(
+        hass,
+        forecasts=forecasts,
+        solcast=solcast,
+        archive=DailyJsonlArchive(Path(hass.config.path(_FORECAST_ARCHIVE_DIR))),
+        code_version=await hass.async_add_executor_job(read_code_version),
+    )
+    entry.async_on_unload(
+        async_track_state_change_event(
+            hass, [solcast.api_update_entity_id], archive_service.on_solcast_api_update
+        )
+    )
+    # Fallback grid; the schedule keeps it quiet when a fetch-driven snapshot
+    # is pending or recent. :11:30 leaves ~20 s after the latest normal fetch
+    # (:10:13 + up to 31 s random delay + API time + 20 s settle).
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, archive_service.on_grid_tick, minute=[11, 41], second=30
+        )
+    )
+    # Morning charge window opens at 04:00 (CHARGE_MORNING_AUTO).
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, archive_service.on_morning_charge, hour=4, minute=0, second=30
+        )
+    )
+
+    # A coroutine function runs on the event loop; a plain function would be
+    # run in a worker thread, where creating tasks is not allowed.
+    async def _close_finished_days(_now: datetime) -> None:
+        await archive_service.async_close_finished_days()
+
+    entry.async_on_unload(
+        async_track_time_change(hass, _close_finished_days, hour=0, minute=5, second=0)
+    )
+    hass.async_create_task(archive_service.async_start())

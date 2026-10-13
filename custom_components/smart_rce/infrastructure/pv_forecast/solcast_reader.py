@@ -20,6 +20,11 @@ from ...domain.pv_forecast import SolcastPeriod
 _SOLCAST_AT_6_ENTITY: Final = "sensor.solcast_forecast_at_6"
 _SOLCAST_LIVE_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_dzisiaj"
 _SOLCAST_TOMORROW_ENTITY: Final = "sensor.solcast_pv_forecast_prognoza_na_jutro"
+# Timestamp of the last successful API fetch — unlike the forecast sensors it
+# changes only on a real fetch (not at midnight, not on a Core restart).
+_SOLCAST_API_UPDATE_ENTITY: Final = (
+    "sensor.solcast_pv_forecast_ostatnia_aktualizacja_api"
+)
 
 
 class SolcastReader:
@@ -36,6 +41,16 @@ class SolcastReader:
             _SOLCAST_LIVE_ENTITY,
             _SOLCAST_TOMORROW_ENTITY,
         )
+
+    @property
+    def api_update_entity_id(self) -> str:
+        """Entity id of the "last API update" timestamp (composition root wiring)."""
+        return _SOLCAST_API_UPDATE_ENTITY
+
+    def read_api_update(self) -> str | None:
+        """Raw state of the "last API update" timestamp, or None when absent."""
+        state = self._hass.states.get(_SOLCAST_API_UPDATE_ENTITY)
+        return state.state if state else None
 
     def read_at_6(self) -> list[SolcastPeriod] | None:
         """Read morning snapshot (Solcast forecast fetched przy ~06:00)."""

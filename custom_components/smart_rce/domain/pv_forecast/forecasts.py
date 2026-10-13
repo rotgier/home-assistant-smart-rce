@@ -58,6 +58,8 @@ class PvForecasts:
     _realized_pv_today: dict[tuple[int, int], float] = field(default_factory=dict)
     _consumption_w: float | None = None
     _start_charge_hour: int | None = None
+    # Context of the latest dispatch — what every bound strategy last saw.
+    _last_context: ForecastContext | None = None
 
     # ─── Read API ──────────────────────────────────────────────────────────
 
@@ -85,6 +87,15 @@ class PvForecasts:
     def signals(self) -> LivePvSignals:
         """Read-only snapshot of current PV-side live readings."""
         return self._signals
+
+    @property
+    def last_context(self) -> ForecastContext | None:
+        """Inputs of the latest dispatch; None before the first one.
+
+        The current `variant.result` of every variant was computed from this
+        context, which is what makes an archived snapshot replayable.
+        """
+        return self._last_context
 
     @property
     def solcast_today(self) -> list[SolcastPeriod]:
@@ -174,6 +185,7 @@ class PvForecasts:
             consumption_w=self._consumption_w,
             start_charge_hour=self._start_charge_hour,
         )
+        self._last_context = ctx
         for variant in PvForecast:
             if variant.strategy is not None:
                 variant.strategy.update(ctx)

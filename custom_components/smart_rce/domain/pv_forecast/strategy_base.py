@@ -10,9 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from typing import TYPE_CHECKING, Any
 
 from ..bucket import PV_WINDOW_HOURS, Bucket, Buckets
 from ..target_soc import PvProfile
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # --- Framework: ForecastStrategy (template method) --- #
 
@@ -113,6 +117,52 @@ class ForecastContext:
     consumption_w: float | None = None
     start_charge_hour: int | None = None
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ForecastContext:
+        """Rebuild from the archive form; keys absent in older records take defaults."""
+        return cls(
+            now=datetime.fromisoformat(data["now"]),
+            signals=LivePvSignals.from_dict(data.get("signals", {})),
+            weather=WeatherConditions.from_dict(data.get("weather", {})),
+            solcast_at_6=cls._periods(data.get("solcast_at_6", [])),
+            solcast_today=cls._periods(data.get("solcast_today", [])),
+            solcast_tomorrow=cls._periods(data.get("solcast_tomorrow", [])),
+            realized_pv_today={
+                cls._slot_key(slot): float(kwh)
+                for slot, kwh in data.get("realized_pv_today_kwh", {}).items()
+            },
+            consumption_w=data.get("consumption_w"),
+            start_charge_hour=data.get("start_charge_hour"),
+        )
+
+    @staticmethod
+    def _periods(items: list[Mapping[str, Any]]) -> list[SolcastPeriod]:
+        return [SolcastPeriod.from_dict(item) for item in items]
+
+    @staticmethod
+    def _slot_key(slot: str) -> tuple[int, int]:
+        """`"HH:MM"` → `(hour, minute)`, the in-memory key of a 30-min slot."""
+        hour, minute = slot.split(":")
+        return int(hour), int(minute)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Archive form. Units live in the keys: `_kwh` = energy, `_kwh_h` = rate."""
+        return {
+            "now": self.now.isoformat(),
+            "signals": self.signals.to_dict(),
+            "weather": self.weather.to_dict(),
+            "solcast_at_6": [p.to_dict() for p in self.solcast_at_6],
+            "solcast_today": [p.to_dict() for p in self.solcast_today],
+            "solcast_tomorrow": [p.to_dict() for p in self.solcast_tomorrow],
+            # Energy of each closed 30-min slot (kWh), keyed by slot start.
+            "realized_pv_today_kwh": {
+                f"{hour:02d}:{minute:02d}": kwh
+                for (hour, minute), kwh in sorted(self.realized_pv_today.items())
+            },
+            "consumption_w": self.consumption_w,
+            "start_charge_hour": self.start_charge_hour,
+        }
+
 
 # --- LivePvSignals: ctx.signals field 1 --- #
 
@@ -130,6 +180,23 @@ class LivePvSignals:
     bucket_so_far_kwh: float | None = None
     derivative_w_per_min: float | None = None
     stability_stable: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> LivePvSignals:
+        return cls(
+            pv_power_w=data.get("pv_power_w"),
+            bucket_so_far_kwh=data.get("bucket_so_far_kwh"),
+            derivative_w_per_min=data.get("derivative_w_per_min"),
+            stability_stable=data.get("stability_stable"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pv_power_w": self.pv_power_w,
+            "bucket_so_far_kwh": self.bucket_so_far_kwh,
+            "derivative_w_per_min": self.derivative_w_per_min,
+            "stability_stable": self.stability_stable,
+        }
 
 
 # --- WeatherConditions: ctx.weather field 2 (merged history + forecast) --- #
@@ -185,6 +252,17 @@ class WeatherConditions:
     def __bool__(self) -> bool:
         return bool(self.conditions)
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> WeatherConditions:
+        return cls(
+            conditions=[
+                WeatherConditionAtHour.from_dict(c) for c in data.get("conditions", [])
+            ]
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"conditions": [c.to_dict() for c in self.conditions]}
+
 
 # --- WeatherConditionAtHour: WeatherConditions.conditions list element --- #
 
@@ -194,6 +272,22 @@ class WeatherConditionAtHour:
     hour: int  # 0-23 local time
     condition_custom: str
     forecast_date: date | None = None  # None = match only by hour
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> WeatherConditionAtHour:
+        raw_date = data.get("date")
+        return cls(
+            hour=int(data["hour"]),
+            condition_custom=str(data["condition"]),
+            forecast_date=date.fromisoformat(raw_date) if raw_date else None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "date": self.forecast_date.isoformat() if self.forecast_date else None,
+            "hour": self.hour,
+            "condition": self.condition_custom,
+        }
 
 
 # --- SolcastPeriod: ctx.solcast_* field 3 element --- #
@@ -205,6 +299,23 @@ class SolcastPeriod:
     pv_estimate: float  # hourly rate kWh/h
     pv_estimate10: float
     pv_estimate90: float
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> SolcastPeriod:
+        return cls(
+            period_start=str(data["start"]),
+            pv_estimate=float(data["p50_kwh_h"]),
+            pv_estimate10=float(data["p10_kwh_h"]),
+            pv_estimate90=float(data["p90_kwh_h"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.period_start,
+            "p50_kwh_h": self.pv_estimate,
+            "p10_kwh_h": self.pv_estimate10,
+            "p90_kwh_h": self.pv_estimate90,
+        }
 
 
 # --- PvForecastResult: return type from ForecastStrategy._compute --- #
@@ -421,6 +532,19 @@ class PvForecastResult:
             total += period.pv_estimate_adjusted / 2
         return round(total, 4)
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> PvForecastResult:
+        return cls(
+            forecast=[AdjustedPeriod.from_dict(p) for p in data.get("periods", [])],
+            total_kwh=float(data["total_kwh"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_kwh": self.total_kwh,
+            "periods": [p.to_dict() for p in self.forecast],
+        }
+
 
 # --- AdjustedPeriod: PvForecastResult.forecast list element --- #
 
@@ -429,3 +553,13 @@ class PvForecastResult:
 class AdjustedPeriod:
     period_start: str  # ISO 8601
     pv_estimate_adjusted: float  # hourly rate kWh/h
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> AdjustedPeriod:
+        return cls(
+            period_start=str(data["start"]),
+            pv_estimate_adjusted=float(data["pv_kwh_h"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"start": self.period_start, "pv_kwh_h": self.pv_estimate_adjusted}
