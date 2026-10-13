@@ -45,6 +45,7 @@ from .domain.target_soc_catalog import TargetSocCatalog
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.code_version import read_code_version
 from .infrastructure.daily_jsonl_archive import DailyJsonlArchive
+from .infrastructure.energy_archive_writer import EnergyArchiveWriter
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
@@ -58,6 +59,7 @@ from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
 # Inside /config: git-ignored by the config repo, but part of HA's daily backup
 # (which leaves /share out). Long-term copies: Z2 pulls this tree nightly.
 _FORECAST_ARCHIVE_DIR: Final = "smart_rce/archive/forecast"
+_ENERGY_ARCHIVE_DIR: Final = "smart_rce/archive/energy"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -201,6 +203,7 @@ async def create_energy_balance_service(
         )
 
     await _wire_forecast_archive(hass, entry, forecasts, solcast)
+    _wire_energy_archive(hass, entry)
 
     return service
 
@@ -248,3 +251,34 @@ async def _wire_forecast_archive(
         async_track_time_change(hass, _close_finished_days, hour=0, minute=5, second=0)
     )
     hass.async_create_task(archive_service.async_start())
+
+
+def _wire_energy_archive(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Archive finished days of 5-minute energy statistics: nightly + on start."""
+    writer = EnergyArchiveWriter(
+        hass, DailyJsonlArchive(Path(hass.config.path(_ENERGY_ARCHIVE_DIR)))
+    )
+
+    async def _catch_up(_now: datetime | None = None) -> None:
+        try:
+            await writer.async_catch_up(dt_util.now().date())
+        except Exception:  # noqa: BLE001 — an archive hiccup must not break setup
+            _LOGGER.exception("Energy archive: catch-up failed")
+
+    # 00:15, not 00:00: the last 5-minute statistic of the day (23:55) is
+    # compiled a few minutes after midnight.
+    entry.async_on_unload(
+        async_track_time_change(hass, _catch_up, hour=0, minute=15, second=0)
+    )
+
+    # The recorder must be up before reading statistics.
+    @callback
+    def _on_started(_event: Event | None) -> None:
+        hass.async_create_task(_catch_up())
+
+    if hass.is_running:
+        _on_started(None)
+    else:
+        entry.async_on_unload(
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
+        )
