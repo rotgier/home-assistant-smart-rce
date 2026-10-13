@@ -1,7 +1,7 @@
 """ChargeStartShiftService — evaluates the forecast-driven charge start every 5 min.
 
 Gathers the inputs (S0 from `ChargeSlots`, today's hourly prices, SoC, the
-LIVE surplus per variant, from 09:10 Extrap Proportional), asks the domain for
+LIVE_SOFT surplus per variant, from 09:10 Extrap Proportional), asks the domain for
 a candidate per variant and hands the applied one (GUARDED: 0.9 kWh/h, earlier
 moves held back until Extrap agrees) to `BatteryChargeService`, which owns and
 persists the shift. The other variants are only tracked here, in memory, so

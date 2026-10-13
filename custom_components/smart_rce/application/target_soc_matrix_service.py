@@ -77,6 +77,8 @@ def _matrix_key(v: PvForecast) -> str:
             return "at_6"
         case PvForecast.LIVE | PvForecast.TOMORROW_LIVE:
             return "live"
+        case PvForecast.LIVE_SOFT | PvForecast.TOMORROW_LIVE_SOFT:
+            return "live_soft"
         case PvForecast.EXTRAP_PATTERN:
             return "extrap_pattern"
         case PvForecast.EXTRAP_PROPORTIONAL:

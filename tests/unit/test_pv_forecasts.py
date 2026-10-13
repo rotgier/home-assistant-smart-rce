@@ -31,10 +31,10 @@ def _reset_bound_strategies():
 
 
 def test_strategy_enum_coverage() -> None:
-    """All 10 strategies partition cleanly into today (8) and tomorrow (2)."""
-    assert len(list(PvForecast)) == 10
-    assert len(PvForecast.today()) == 8
-    assert len(PvForecast.tomorrow()) == 2
+    """All 12 strategies partition cleanly into today (9) and tomorrow (3)."""
+    assert len(list(PvForecast)) == 12
+    assert len(PvForecast.today()) == 9
+    assert len(PvForecast.tomorrow()) == 3
     assert len(PvForecast.extrap()) == 6
     all_listed = set(PvForecast.today()) | set(PvForecast.tomorrow())
     assert all_listed == set(PvForecast)

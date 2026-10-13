@@ -47,7 +47,7 @@ class _PvSurplusSensor(SensorEntity):
 
 
 class PvSurplusForecastSensor(_PvSurplusSensor):
-    """Forecast surplus still to come in [charge start, T2) — LIVE PV.
+    """Forecast surplus still to come in [charge start, T2) — LIVE_SOFT PV.
 
     State = what is left from now (current hour prorated; before the charge
     starts, the whole window). `window_total_kwh` keeps the whole window.
@@ -154,7 +154,7 @@ class PvSurplusMatrixSensor(_PvSurplusSensor):
         )
         return {
             "date": forecast.day.isoformat(),
-            "kind": "today" if forecast.source == "live" else "tomorrow",
+            "kind": "today" if forecast.day == dt_util.now().date() else "tomorrow",
             "window_label": f"okno {window} · {forecast.day_type.value}",
             "matrix": forecast.matrix or None,
         }

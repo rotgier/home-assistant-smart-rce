@@ -27,6 +27,8 @@ waits for 09:10 (fresh Solcast, first reliable Extrap) and needs Live and
 Extrap Proportional to agree — both earlier, the later of the two. Live
 under-reads sunny mornings 2-3x; waiting cut the early moves to zero at the
 cost of one start an hour late. Moves later follow Live as before.
+Since 14.10.2026 the PV behind "Live" here is Live Soft (median + half of
+Live's weather adjustment); the guard was backtested on plain Live.
 
 Backtest of this rule: `research/2026-10-11-backtest-poranne-ladowanie/shift6.py`.
 Times are minutes of the day throughout; S0 may be a half hour (9:30), a moved

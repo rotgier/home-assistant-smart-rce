@@ -14,7 +14,7 @@ from .strategies_extrapolation import (
     ExtrapProportionalCappedStrategy,
     ExtrapProportionalStrategy,
 )
-from .strategies_weather import At6Strategy, LiveStrategy
+from .strategies_weather import At6Strategy, LiveSoftStrategy, LiveStrategy
 from .strategy_base import (
     AdjustedPeriod,
     ForecastContext,
@@ -38,6 +38,7 @@ __all__ = [
     "ForecastContext",
     "ForecastStrategy",
     "LivePvSignals",
+    "LiveSoftStrategy",
     "LiveStrategy",
     "PvForecast",
     "PvForecastResult",

@@ -19,6 +19,7 @@ from custom_components.smart_rce.domain.pv_forecast import (
     ForecastContext,
     ForecastStrategy,
     LivePvSignals,
+    LiveSoftStrategy,
     LiveStrategy,
     PvForecast,
     SolcastPeriod,
@@ -207,3 +208,48 @@ def test_forecast_strategy_base_raises_not_implemented() -> None:
     except NotImplementedError:
         return
     raise AssertionError("ForecastStrategy._compute should raise NotImplementedError")
+
+
+def test_live_soft_is_halfway_between_median_and_live() -> None:
+    """Rate = p50 + 0.5 x (live - p50), per period."""
+    periods = _solcast_periods()
+    cloudy = WeatherConditions(
+        conditions=[WeatherConditionAtHour(hour=7, condition_custom="cloudy")]
+    )
+    ctx = ForecastContext(
+        now=datetime(2026, 1, 15, 5, 0),
+        signals=LivePvSignals(),
+        weather=cloudy,
+        solcast_today=periods,
+    )
+    live, soft = LiveStrategy(), LiveSoftStrategy()
+    live.update(ctx)
+    soft.update(ctx)
+    assert live.result is not None
+    assert soft.result is not None
+    # Cloudy → Live takes p10 (0.5, 1.0); median is (1.0, 2.0).
+    assert [p.pv_estimate_adjusted for p in live.result.forecast] == [0.5, 1.0]
+    assert [p.pv_estimate_adjusted for p in soft.result.forecast] == [0.75, 1.5]
+    assert soft.result.total_kwh == 1.125
+
+
+def test_live_soft_tomorrow_reads_solcast_tomorrow() -> None:
+    strategy = LiveSoftStrategy(today=False)
+    assert strategy.pretty_label == "Tomorrow Live Soft"
+    assert strategy.supports_in_progress_patch is False
+    strategy.update(
+        ForecastContext(
+            now=datetime(2026, 1, 14, 21, 0),
+            signals=LivePvSignals(),
+            weather=_weather(),
+            solcast_tomorrow=_solcast_periods(),
+        )
+    )
+    assert strategy.result is not None
+
+
+def test_live_soft_variants_are_bound() -> None:
+    assert isinstance(PvForecast.LIVE_SOFT.strategy, LiveSoftStrategy)
+    assert PvForecast.LIVE_SOFT.is_today
+    assert isinstance(PvForecast.TOMORROW_LIVE_SOFT.strategy, LiveSoftStrategy)
+    assert PvForecast.TOMORROW_LIVE_SOFT.is_tomorrow

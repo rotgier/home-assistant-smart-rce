@@ -38,6 +38,11 @@ def test_today_and_tomorrow_share_key_per_axis() -> None:
     assert (
         _matrix_key(PvForecast.LIVE) == _matrix_key(PvForecast.TOMORROW_LIVE) == "live"
     )
+    assert (
+        _matrix_key(PvForecast.LIVE_SOFT)
+        == _matrix_key(PvForecast.TOMORROW_LIVE_SOFT)
+        == "live_soft"
+    )
 
 
 def test_extrap_proportional_uses_abbreviated_cross_repo_key() -> None:
@@ -46,10 +51,11 @@ def test_extrap_proportional_uses_abbreviated_cross_repo_key() -> None:
 
 
 def test_today_resolver_keys_match_dashboard_contract() -> None:
-    """All 8 today variants present, keys match dashboard PV_LABELS dict."""
+    """All 9 today variants present, keys match dashboard PV_LABELS dict."""
     assert set(_TODAY_PV_RESOLVERS.keys()) == {
         "at_6",
         "live",
+        "live_soft",
         "extrap_pattern",
         "extrap_propor",
         "extrap_band",
@@ -60,8 +66,8 @@ def test_today_resolver_keys_match_dashboard_contract() -> None:
 
 
 def test_tomorrow_resolver_keys_match_dashboard_contract() -> None:
-    """Only 2 tomorrow variants (no extrap), share keys with today."""
-    assert set(_TOMORROW_PV_RESOLVERS.keys()) == {"at_6", "live"}
+    """Only 3 tomorrow variants (no extrap), share keys with today."""
+    assert set(_TOMORROW_PV_RESOLVERS.keys()) == {"at_6", "live", "live_soft"}
 
 
 def test_resolver_value_round_trip_matches_variant() -> None:

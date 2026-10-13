@@ -1,4 +1,4 @@
-"""Weather-adjusted strategies — `At6Strategy` + `LiveStrategy`.
+"""Weather-adjusted strategies — `At6Strategy`, `LiveStrategy`, `LiveSoftStrategy`.
 
 Both consume a Solcast forecast (at_6 snapshot vs. continuous live) and
 apply weather-condition-dependent modifiers to each period's hourly
@@ -130,9 +130,9 @@ class LiveStrategy(ForecastStrategy):
             return None
         return self._adjust_forecast(periods, ctx)
 
-    @staticmethod
+    @classmethod
     def _adjust_forecast(
-        solcast_periods: list[SolcastPeriod], ctx: ForecastContext
+        cls, solcast_periods: list[SolcastPeriod], ctx: ForecastContext
     ) -> PvForecastResult:
         forecast: list[AdjustedPeriod] = []
         total_kwh = 0.0
@@ -141,7 +141,8 @@ class LiveStrategy(ForecastStrategy):
             dt = datetime.fromisoformat(period.period_start)
             is_first_hour = dt.hour == current_hour
             condition = ctx.weather.for_hour(dt.hour, dt.date())
-            adj_rate = LiveStrategy._adjust_period(period, condition, is_first_hour)
+            # Polymorphic: LiveSoftStrategy softens the adjusted rate.
+            adj_rate = cls._adjust_period(period, condition, is_first_hour)
             forecast.append(
                 AdjustedPeriod(
                     period_start=period.period_start,
@@ -168,6 +169,37 @@ class LiveStrategy(ForecastStrategy):
         if cat == "partly":
             return period.pv_estimate * 0.7
         return period.pv_estimate10 * 1.0
+
+
+# --- LiveSoftStrategy --- #
+
+
+class LiveSoftStrategy(LiveStrategy):
+    """Live with a weakened weather adjustment, per 30-min period.
+
+    rate = p50 + ALPHA x (live - p50), where `live` is LiveStrategy's
+    adjusted rate for the period and p50 the Solcast median it started from.
+    Live's modifiers (x0.7 / x0.8 / p10) overshoot: over 187 days it
+    under-forecast the day by a median 15%, the raw median over-forecast
+    by 6%. ALPHA 0.4 and 0.5 tie on symmetric error; 0.5 over-forecasts
+    less often, which is the costly direction (too little night charge,
+    T1 power bought in the morning). Backtest:
+    home-assistant-ops/research/2026-10-11-backtest-poranne-ladowanie/live_soft_alpha.py
+    """
+
+    _ALPHA: Final[float] = 0.5
+
+    @property
+    def pretty_label(self) -> str:
+        return "Live Soft" if self.is_today else "Tomorrow Live Soft"
+
+    @classmethod
+    def _adjust_period(
+        cls, period: SolcastPeriod, condition: str, is_first_hour: bool
+    ) -> float:
+        """Blend the LIVE-adjusted rate back towards the Solcast median."""
+        live = super()._adjust_period(period, condition, is_first_hour)
+        return period.pv_estimate + cls._ALPHA * (live - period.pv_estimate)
 
 
 # --- Shared helper (used by At6Strategy + LiveStrategy adjust_period) --- #

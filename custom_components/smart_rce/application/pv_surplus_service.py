@@ -6,7 +6,7 @@ day .. start of T2 — before the charge starts the battery takes nothing from
 PV, so only those hours make room for sun.
 
 Consumption: per-hour median of the same kind of earlier days (`DayType`),
-plus the flat 0.9 kWh/h for comparison. PV: the LIVE forecast for the sensors;
+plus the flat 0.9 kWh/h for comparison. PV: the LIVE_SOFT forecast for the sensors;
 every variant of the day for the table.
 
 Realized surplus is today's measured counterpart over the same window — the
@@ -45,7 +45,7 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SurplusForecast:
-    """Forecast surplus of one day: LIVE with median and flat consumption."""
+    """Forecast surplus of one day: LIVE_SOFT with median and flat consumption."""
 
     day: date
     source: str
@@ -91,7 +91,9 @@ class PvSurplusService:
     """Owns the surplus figures; sensors read them, listeners get notified."""
 
     # Table rows: matrix key (shared with the Target SOC card labels) per variant.
+    # The first row is the PV source of the surplus sensors.
     _TODAY_ROWS: Final = (
+        ("live_soft", PvForecast.LIVE_SOFT),
         ("live", PvForecast.LIVE),
         ("at_6", PvForecast.AT_6),
         ("extrap_pattern", PvForecast.EXTRAP_PATTERN),
@@ -102,6 +104,7 @@ class PvSurplusService:
         ("extrap_blend", PvForecast.EXTRAP_BLEND),
     )
     _TOMORROW_ROWS: Final = (
+        ("live_soft", PvForecast.TOMORROW_LIVE_SOFT),
         ("live", PvForecast.TOMORROW_LIVE),
         ("at_6", PvForecast.TOMORROW_AT_6),
     )
@@ -189,7 +192,7 @@ class PvSurplusService:
         median_slots = slots_from_hourly(median) if median is not None else None
         self.forecast = SurplusForecast(
             day=day,
-            source="live" if is_today else "tomorrow_live",
+            source="live_soft" if is_today else "tomorrow_live_soft",
             day_type=DayType.of(day),
             start_hour=start,
             end_hour=surplus_window_end(day),
@@ -205,13 +208,13 @@ class PvSurplusService:
         *,
         median: bool,
         pv_scale: float,
-        source: PvForecast = PvForecast.LIVE,
+        source: PvForecast = PvForecast.LIVE_SOFT,
     ) -> SurplusProfile | None:
         """Today's surplus for one charge-start variant, or None without data.
 
         `median` picks the consumption of earlier days of the same kind
         (otherwise flat 0.9 kWh/h); `pv_scale` scales the PV forecast of
-        `source` (LIVE, or an Extrap variant).
+        `source` (LIVE_SOFT, or an Extrap variant).
         """
         today = self._clock().date()
         pv = self._pv_by_slot(source, today)

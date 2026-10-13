@@ -91,7 +91,7 @@ def render(report: ShiftReport) -> str:
         f"{head}\n"
         f"SOC {report.soc:.0f}% — do pełna {_kwh(report.need_kwh)}; "
         f"prognoza nadwyżki {to_hhmm(move.after)}-{report.window_end_hour}:00: "
-        f"{_kwh(report.surplus_kwh)} (Live minus 0,9 kWh/h)\n"
+        f"{_kwh(report.surplus_kwh)} (Live Soft minus 0,9 kWh/h)\n"
         f"Start z cen: {to_hhmm(report.s0)}"
     )
 
@@ -102,7 +102,7 @@ def render_rewind(report: RewindReport) -> str:
         f"Ładowanie z PV trwa od {to_hhmm(report.start)} (SOC {report.soc:.0f}%). "
         f"Start o {to_hhmm(report.suggestion)} nadal napełni baterię: do pełna "
         f"{_kwh(report.need_kwh)}, nadwyżka {to_hhmm(report.suggestion)}-"
-        f"{report.window_end_hour}:00 wg Live {_kwh(report.live_kwh)}, "
+        f"{report.window_end_hour}:00 wg Live Soft {_kwh(report.live_kwh)}, "
         f"wg Extrap {_kwh(report.extrap_kwh)}.\n"
         f"Żeby przerwać: ustaw ręcznie start {to_hhmm(report.suggestion)} "
         f"(EMS Battery Charge Start Hour Override).\n"

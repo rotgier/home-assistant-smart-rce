@@ -177,7 +177,7 @@ def test_message_names_the_move_and_the_hand_set_start():
         "Start BY SIĘ zmienił: 12:00 na 09:00 (wcześniej), ale obowiązuje ręczny 11:30",
         (
             "SOC 35% — do pełna 7,6 kWh; prognoza nadwyżki 09:00-15:00: 8,1 kWh"
-            " (Live minus 0,9 kWh/h)"
+            " (Live Soft minus 0,9 kWh/h)"
         ),
         "Start z cen: 12:00",
     ]
@@ -224,7 +224,7 @@ def test_rewind_message_says_how_to_pause():
     assert text.splitlines() == [
         (
             "Ładowanie z PV trwa od 09:00 (SOC 45%). Start o 11:00 nadal napełni"
-            " baterię: do pełna 6,1 kWh, nadwyżka 11:00-15:00 wg Live 7,2 kWh,"
+            " baterię: do pełna 6,1 kWh, nadwyżka 11:00-15:00 wg Live Soft 7,2 kWh,"
             " wg Extrap 8,9 kWh."
         ),
         (

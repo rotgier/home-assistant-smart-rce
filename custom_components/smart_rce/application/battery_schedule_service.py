@@ -175,11 +175,13 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         Called on every energy-balance recalculation. Which variant and which
         part of the window feed the reserve depends on the time of day:
 
-        - before 07:00 — today's LIVE, whole window (the night charge target),
-        - 07:00-13:00 — today's LIVE, what is left of the window (falls),
-        - 13:00-16:00 — today's LIVE, whole window replayed after it closed,
-        - from 16:00 — TOMORROW_LIVE, whole window (evening preview; the night
-          charges to it, and a restart after midnight still has it).
+        - before 07:00 — today's LIVE_SOFT, whole window (the night charge
+          target),
+        - 07:00-13:00 — today's LIVE_SOFT, what is left of the window (falls),
+        - 13:00-16:00 — today's LIVE_SOFT, whole window replayed after it
+          closed,
+        - from 16:00 — TOMORROW_LIVE_SOFT, whole window (evening preview; the
+          night charges to it, and a restart after midnight still has it).
 
         A variant with nothing computed yet leaves the remembered value alone.
         The LIVE+EXTRAP reserve is in-memory only and exists until 16:00 —
@@ -199,22 +201,22 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         now: datetime, catalog: TargetSocCatalog
     ) -> T1SocReserve | None:
         if now.hour >= BatteryScheduleService._TOMORROW_FROM_HOUR:
-            target_soc = catalog.target_socs.get(PvForecast.TOMORROW_LIVE)
+            target_soc = catalog.target_socs.get(PvForecast.TOMORROW_LIVE_SOFT)
             if target_soc is None:
                 return None
             return T1SocReserve.from_target_soc(
                 now.date() + timedelta(days=1),
                 target_soc,
-                source="tomorrow_live",
+                source="tomorrow_live_soft",
                 window=ReserveWindow.FULL,
             )
-        target_soc = catalog.target_socs.get(PvForecast.LIVE)
+        target_soc = catalog.target_socs.get(PvForecast.LIVE_SOFT)
         if target_soc is None:
             return None
         return T1SocReserve.from_target_soc(
             now.date(),
             target_soc,
-            source="live",
+            source="live_soft",
             window=BatteryScheduleService._today_window(now),
         )
 
@@ -222,7 +224,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     def _resolve_extrap_reserve(
         now: datetime, catalog: TargetSocCatalog
     ) -> T1SocReserve | None:
-        """Highest reserve over today's LIVE and EXTRAP variants (None from 16:00)."""
+        """Highest reserve over today's variants except AT_6 (None from 16:00)."""
         if now.hour >= BatteryScheduleService._TOMORROW_FROM_HOUR:
             return None
         window = BatteryScheduleService._today_window(now)
@@ -254,7 +256,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
     @property
     def t1_reserve(self) -> T1SocReserve | None:
-        """Latest remembered LIVE reserve (any day)."""
+        """Latest remembered LIVE_SOFT reserve (any day)."""
         return self._repo.schedule.t1_reserve
 
     @property

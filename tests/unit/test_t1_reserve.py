@@ -301,8 +301,10 @@ class TestResolveT1Reserve:
         return SimpleNamespace(
             target_socs={
                 PvForecast.AT_6: ts(PvForecast.AT_6, 90),
-                PvForecast.LIVE: ts(PvForecast.LIVE, 31),
-                PvForecast.TOMORROW_LIVE: ts(PvForecast.TOMORROW_LIVE, 44),
+                PvForecast.LIVE: ts(PvForecast.LIVE, 35),
+                PvForecast.LIVE_SOFT: ts(PvForecast.LIVE_SOFT, 31),
+                PvForecast.TOMORROW_LIVE: ts(PvForecast.TOMORROW_LIVE, 48),
+                PvForecast.TOMORROW_LIVE_SOFT: ts(PvForecast.TOMORROW_LIVE_SOFT, 44),
                 PvForecast.EXTRAP_PATTERN: ts(PvForecast.EXTRAP_PATTERN, 52),
                 PvForecast.EXTRAP_BAND: TargetSoc(
                     variant=PvForecast.EXTRAP_BAND, flat=None, prev_days=[]
@@ -323,7 +325,7 @@ class TestResolveT1Reserve:
         assert (r.day, r.value, r.source, r.window) == (
             DAY,
             31,
-            "live",
+            "live_soft",
             ReserveWindow.FULL,
         )
 
@@ -341,7 +343,7 @@ class TestResolveT1Reserve:
         assert (r.day, r.value, r.source, r.window) == (
             date(2026, 10, 13),
             44,
-            "tomorrow_live",
+            "tomorrow_live_soft",
             ReserveWindow.FULL,
         )
 

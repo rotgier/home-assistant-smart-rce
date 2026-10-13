@@ -1,4 +1,4 @@
-"""`PvForecast` enum — all 10 variants + axis classmethods.
+"""`PvForecast` enum — all 12 variants + axis classmethods.
 
 Each enum member declares at the source: string key + bound `ForecastStrategy`
 instance. Axis flags (`is_today`, `is_extrap`) live on the strategy itself —
@@ -23,7 +23,7 @@ from .strategies_extrapolation import (
     ExtrapProportionalCappedStrategy,
     ExtrapProportionalStrategy,
 )
-from .strategies_weather import At6Strategy, LiveStrategy
+from .strategies_weather import At6Strategy, LiveSoftStrategy, LiveStrategy
 from .strategy_base import ForecastStrategy, PvForecastResult
 
 
@@ -36,13 +36,15 @@ class PvForecast(Enum):
     `.extrap()` classmethods.
 
     Naming convention: `<date_axis>_<source>` where source ∈ {at_6, live,
-    extrap_*}. Today's variants drop the date prefix (implicit).
+    live_soft, extrap_*}. Today's variants drop the date prefix (implicit).
     """
 
     AT_6 = ("at_6", At6Strategy(today=True))
     LIVE = ("live", LiveStrategy(today=True))
+    LIVE_SOFT = ("live_soft", LiveSoftStrategy(today=True))
     TOMORROW_AT_6 = ("tomorrow_at_6", At6Strategy(today=False))
     TOMORROW_LIVE = ("tomorrow_live", LiveStrategy(today=False))
+    TOMORROW_LIVE_SOFT = ("tomorrow_live_soft", LiveSoftStrategy(today=False))
     EXTRAP_PATTERN = ("extrapolated_live_pattern", ExtrapPatternStrategy())
     EXTRAP_PROPORTIONAL = (
         "extrapolated_live_proportional",
@@ -87,12 +89,12 @@ class PvForecast(Enum):
 
     @classmethod
     def today(cls) -> tuple[PvForecast, ...]:
-        """Today-axis variants (AT_6 + LIVE + 6× EXTRAP)."""
+        """Today-axis variants (AT_6 + LIVE + LIVE_SOFT + 6× EXTRAP)."""
         return tuple(v for v in cls if v.is_today)
 
     @classmethod
     def tomorrow(cls) -> tuple[PvForecast, ...]:
-        """Tomorrow-axis variants (TOMORROW_AT_6 + TOMORROW_LIVE)."""
+        """Tomorrow-axis variants (TOMORROW_AT_6 + TOMORROW_LIVE + _SOFT)."""
         return tuple(v for v in cls if v.is_tomorrow)
 
     @classmethod

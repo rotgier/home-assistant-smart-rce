@@ -129,8 +129,13 @@ def _service(now: datetime, start_today=11, start_tomorrow=10):
     eb = SimpleNamespace(
         forecasts=_FakeForecasts(
             {
-                PvForecast.LIVE: _result("2026-10-12", {11: 4.0, 12: 2.0, 15: 1.0}),
-                PvForecast.TOMORROW_LIVE: _result("2026-10-13", {10: 3.0}),
+                PvForecast.LIVE_SOFT: _result(
+                    "2026-10-12", {11: 4.0, 12: 2.0, 15: 1.0}
+                ),
+                PvForecast.TOMORROW_LIVE_SOFT: _result("2026-10-13", {10: 3.0}),
+                # Live is only a table row now; the surplus follows Live Soft.
+                PvForecast.LIVE: _result("2026-10-12", {11: 2.0}),
+                PvForecast.TOMORROW_LIVE: _result("2026-10-13", {10: 1.0}),
             }
         ),
         target_socs=SimpleNamespace(
@@ -153,14 +158,15 @@ class TestService:
         assert f is not None
         assert (f.day, f.source, f.start_hour, f.end_hour) == (
             date(2026, 10, 12),
-            "live",
+            "live_soft",
             11,
             16,
         )
         # Hours 11/12/15 carry 4.0/2.0/1.0 kWh; median use 0.5 kWh/h.
         assert f.total(f.prev) == pytest.approx(3.5 + 1.5 + 0.5)
         assert f.total(f.flat) == pytest.approx(3.1 + 1.1 + 0.1)
-        assert f.matrix["cells_surplus_kwh"]["live|median"] == pytest.approx(5.5)
+        assert f.matrix["cells_surplus_kwh"]["live_soft|median"] == pytest.approx(5.5)
+        assert f.matrix["cells_surplus_kwh"]["live|median"] == pytest.approx(1.5)
         assert len(f.prev_days) == 10
 
     async def test_tomorrow_from_t2(self):
@@ -170,7 +176,7 @@ class TestService:
         assert f is not None
         assert (f.day, f.source, f.start_hour) == (
             date(2026, 10, 13),
-            "tomorrow_live",
+            "tomorrow_live_soft",
             10,
         )
 
