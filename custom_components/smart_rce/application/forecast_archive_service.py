@@ -93,7 +93,7 @@ class ForecastArchiveService:
             # Sensor (re)created on startup: the value is old, not a fetch.
             self._schedule.remember_fetch(value)
             return
-        if not self._schedule.accept_fetch(value):
+        if not self._schedule.accept_fetch(value, dt_util.now()):
             return
         if self._cancel_settle is not None:
             self._cancel_settle()

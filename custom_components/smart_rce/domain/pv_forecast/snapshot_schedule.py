@@ -7,7 +7,8 @@ fetch, no fetch planned for that half hour).
 
 Two rules keep the archive at one record per half hour in the normal case:
 - a fetch is new only when the "last API update" value differs from the one
-  already archived — a Core restart re-emits the old value;
+  already archived and is itself recent — a Core restart re-emits the old
+  value, sometimes via `unknown` so it even looks like a change;
 - the grid stays quiet while a fetch-driven snapshot is pending or was taken
   recently, so it never races the fetch it is a fallback for.
 """
@@ -28,6 +29,9 @@ class SnapshotSchedule:
     GRID_LAST: Final = time(16, 11)
     # A snapshot younger than this makes the grid slot redundant.
     RECENT: Final = timedelta(minutes=25)
+    # A real fetch reports a timestamp from moments ago; an older one is a
+    # restored value showing up after a restart.
+    FETCH_MAX_AGE: Final = timedelta(minutes=15)
 
     def __init__(self) -> None:
         self._last_fetched_at: str | None = None
@@ -46,7 +50,7 @@ class SnapshotSchedule:
         if fetched_at is not None and fetched_at not in _UNUSABLE_STATES:
             self._last_fetched_at = fetched_at
 
-    def accept_fetch(self, fetched_at: str | None) -> bool:
+    def accept_fetch(self, fetched_at: str | None, now: datetime) -> bool:
         """Register a "last API update" value; True when it is a new fetch.
 
         A new fetch marks a snapshot as pending until `fetch_handled` is called.
@@ -56,8 +60,21 @@ class SnapshotSchedule:
         if fetched_at == self._last_fetched_at:
             return False
         self._last_fetched_at = fetched_at
+        if self._is_stale(fetched_at, now):
+            return False
         self._fetch_pending = True
         return True
+
+    @classmethod
+    def _is_stale(cls, fetched_at: str, now: datetime) -> bool:
+        """Say whether a parsable timestamp is older than `FETCH_MAX_AGE`."""
+        try:
+            moment = datetime.fromisoformat(fetched_at)
+        except ValueError:
+            return False  # unknown format: trust the change itself
+        if moment.tzinfo is None:
+            return False
+        return now - moment > cls.FETCH_MAX_AGE
 
     def grid_due(self, now: datetime) -> bool:
         """Say whether the grid slot at `now` should write a fallback snapshot."""
