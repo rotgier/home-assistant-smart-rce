@@ -11,6 +11,7 @@ per-variant algorithm details are `@staticmethod` on each class below.
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from typing import Final
 
 from .extrapolation_utils import (
@@ -205,8 +206,8 @@ class ExtrapProportionalStrategy(_ExtrapStrategyBase):
         )
         if cum_s is None:
             return None
-        future_overrides = ExtrapProportionalStrategy._project_future_buckets(
-            solcast_by_bucket=solcast_by_bucket, now=ctx.now, cum_s=cum_s
+        future_overrides = self._future_overrides(
+            solcast_by_bucket, ctx.now, cum_s, pv_forecast_live
         )
         return assemble(
             pv_forecast_live=pv_forecast_live,
@@ -239,6 +240,123 @@ class ExtrapProportionalStrategy(_ExtrapStrategyBase):
                 continue
             overrides[(h, m)] = max(0.0, sp.pv_estimate * (1.0 + clamped))
         return overrides
+
+    def _future_overrides(
+        self,
+        solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+        now: datetime,
+        cum_s: float,
+        pv_forecast_live: PvForecastResult,  # noqa: ARG002 — used by ExtrapBlend
+    ) -> dict[tuple[int, int], float]:
+        """Future rates for this variant — subclasses bound or blend them."""
+        return ExtrapProportionalStrategy._project_future_buckets(
+            solcast_by_bucket=solcast_by_bucket, now=now, cum_s=cum_s
+        )
+
+
+class ExtrapProportionalCappedStrategy(ExtrapProportionalStrategy):
+    """Proportional held inside Solcast's band: `p10 <= rate <= p50 + 0.3 (p90-p50)`.
+
+    Proportional's score has no upper bound, so a bright morning against a
+    small median multiplies the whole midday; and a dull start pushes it below
+    p10. The floor helps more than the cap (backtest 3-12.10.2026,
+    `research/2026-10-11-backtest-poranne-ladowanie/extrap_accuracy.py`: mean
+    error of 10-16 PV from 09:10 0.13 -> 0.10).
+    """
+
+    pretty_label = "Extrap Proportional Capped"
+
+    # Share of the way from p50 to p90 the projection may reach.
+    _UPPER_SHARE: Final[float] = 0.3
+
+    def _future_overrides(
+        self,
+        solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+        now: datetime,
+        cum_s: float,
+        pv_forecast_live: PvForecastResult,
+    ) -> dict[tuple[int, int], float]:
+        raw = super()._future_overrides(solcast_by_bucket, now, cum_s, pv_forecast_live)
+        return {
+            bucket: ExtrapProportionalCappedStrategy._bound(
+                rate, solcast_by_bucket[bucket]
+            )
+            for bucket, rate in raw.items()
+        }
+
+    @staticmethod
+    def _bound(rate: float, sp: SolcastPeriod) -> float:
+        """Clamp a projected rate to [p10, p50 + share x (p90 - p50)]."""
+        upper = sp.pv_estimate + ExtrapProportionalCappedStrategy._UPPER_SHARE * (
+            sp.pv_estimate90 - sp.pv_estimate
+        )
+        return max(0.0, min(max(rate, sp.pv_estimate10), upper))
+
+
+class ExtrapBlendStrategy(ExtrapProportionalCappedStrategy):
+    """Capped Proportional near now, fading into Live further ahead.
+
+    What PV does now foretells the next hour well and the afternoon poorly; the
+    weather-adjusted Live is the better guess far ahead. Rate per future bucket:
+
+        live + w(dt) x (capped - live),
+        w = 1 within the first hour, then 0.5 ** ((dt - 1 h) / 2.5 h)
+
+    with dt from now to the bucket's middle. Backtest 3-12.10.2026
+    (`horizon_decay.py`): mean error of 10-16 PV 0.111 vs 0.133 without the
+    fade and 0.167 for Live alone; a linear fade to zero at 6-8 h scores the
+    same.
+    """
+
+    pretty_label = "Extrap Blend"
+
+    _FULL_TRUST_H: Final[float] = 1.0
+    _HALF_LIFE_H: Final[float] = 2.5
+
+    def _future_overrides(
+        self,
+        solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+        now: datetime,
+        cum_s: float,
+        pv_forecast_live: PvForecastResult,
+    ) -> dict[tuple[int, int], float]:
+        capped = super()._future_overrides(
+            solcast_by_bucket, now, cum_s, pv_forecast_live
+        )
+        live = ExtrapBlendStrategy._live_by_bucket(pv_forecast_live, now)
+        out: dict[tuple[int, int], float] = {}
+        for (h, m), rate in capped.items():
+            live_rate = live.get((h, m))
+            if live_rate is None:
+                out[(h, m)] = rate
+                continue
+            middle = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            hours_ahead = ((middle - now).total_seconds() + 15 * 60) / 3600
+            weight = ExtrapBlendStrategy._weight(hours_ahead)
+            out[(h, m)] = max(0.0, live_rate + weight * (rate - live_rate))
+        return out
+
+    @staticmethod
+    def _live_by_bucket(
+        pv_forecast_live: PvForecastResult, now: datetime
+    ) -> dict[tuple[int, int], float]:
+        out: dict[tuple[int, int], float] = {}
+        for period in pv_forecast_live.forecast:
+            start = datetime.fromisoformat(str(period.period_start).replace(" ", "T"))
+            if start.date() == now.date():
+                out[(start.hour, start.minute)] = period.pv_estimate_adjusted
+        return out
+
+    @staticmethod
+    def _weight(hours_ahead: float) -> float:
+        """Trust in the extrapolation `hours_ahead` from now."""
+        if hours_ahead <= ExtrapBlendStrategy._FULL_TRUST_H:
+            return 1.0
+        return math.pow(
+            0.5,
+            (hours_ahead - ExtrapBlendStrategy._FULL_TRUST_H)
+            / ExtrapBlendStrategy._HALF_LIFE_H,
+        )
 
 
 class ExtrapBandStrategy(_ExtrapStrategyBase):

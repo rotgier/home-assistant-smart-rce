@@ -1,4 +1,4 @@
-"""`PvForecast` enum — all 8 variants + axis classmethods.
+"""`PvForecast` enum — all 10 variants + axis classmethods.
 
 Each enum member declares at the source: string key + bound `ForecastStrategy`
 instance. Axis flags (`is_today`, `is_extrap`) live on the strategy itself —
@@ -18,7 +18,9 @@ from enum import Enum
 from .strategies_extrapolation import (
     ExtrapBandRecentStrategy,
     ExtrapBandStrategy,
+    ExtrapBlendStrategy,
     ExtrapPatternStrategy,
+    ExtrapProportionalCappedStrategy,
     ExtrapProportionalStrategy,
 )
 from .strategies_weather import At6Strategy, LiveStrategy
@@ -51,6 +53,11 @@ class PvForecast(Enum):
         "extrapolated_live_band_recent",
         ExtrapBandRecentStrategy(),
     )
+    EXTRAP_PROPORTIONAL_CAPPED = (
+        "extrapolated_live_proportional_capped",
+        ExtrapProportionalCappedStrategy(),
+    )
+    EXTRAP_BLEND = ("extrapolated_live_blend", ExtrapBlendStrategy())
 
     def __init__(self, key: str, strategy: ForecastStrategy) -> None:
         self.key = key
@@ -80,7 +87,7 @@ class PvForecast(Enum):
 
     @classmethod
     def today(cls) -> tuple[PvForecast, ...]:
-        """Today-axis variants (AT_6 + LIVE + 4× EXTRAP)."""
+        """Today-axis variants (AT_6 + LIVE + 6× EXTRAP)."""
         return tuple(v for v in cls if v.is_today)
 
     @classmethod
@@ -90,5 +97,5 @@ class PvForecast(Enum):
 
     @classmethod
     def extrap(cls) -> tuple[PvForecast, ...]:
-        """EXTRAP variants (4× extrapolated-from-LIVE)."""
+        """EXTRAP variants (6× extrapolated-from-LIVE)."""
         return tuple(v for v in cls if v.is_extrap)

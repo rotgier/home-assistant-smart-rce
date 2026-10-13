@@ -9,7 +9,9 @@ from .forecasts import PvForecasts
 from .strategies_extrapolation import (
     ExtrapBandRecentStrategy,
     ExtrapBandStrategy,
+    ExtrapBlendStrategy,
     ExtrapPatternStrategy,
+    ExtrapProportionalCappedStrategy,
     ExtrapProportionalStrategy,
 )
 from .strategies_weather import At6Strategy, LiveStrategy
@@ -28,8 +30,10 @@ __all__ = [
     "AdjustedPeriod",
     "At6Strategy",
     "ExtrapBandRecentStrategy",
+    "ExtrapBlendStrategy",
     "ExtrapBandStrategy",
     "ExtrapPatternStrategy",
+    "ExtrapProportionalCappedStrategy",
     "ExtrapProportionalStrategy",
     "ForecastContext",
     "ForecastStrategy",

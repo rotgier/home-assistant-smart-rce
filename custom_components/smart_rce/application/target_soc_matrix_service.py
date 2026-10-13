@@ -85,6 +85,10 @@ def _matrix_key(v: PvForecast) -> str:
             return "extrap_band"
         case PvForecast.EXTRAP_BAND_RECENT:
             return "extrap_band_recent"
+        case PvForecast.EXTRAP_PROPORTIONAL_CAPPED:
+            return "extrap_propor_capped"
+        case PvForecast.EXTRAP_BLEND:
+            return "extrap_blend"
         case _:
             assert_never(v)
 

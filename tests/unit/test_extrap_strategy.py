@@ -1,6 +1,6 @@
 """Light coverage for EXTRAP `ForecastStrategy` subclasses.
 
-Locks the contract for each of the 4 EXTRAP variants:
+Locks the contract for each of the 6 EXTRAP variants:
 - `_compute` returns None when `PvForecast.LIVE.result` is None (chain
   dependency).
 - `_compute` returns None when `ctx.solcast_today` is empty.
@@ -15,7 +15,9 @@ from datetime import datetime
 from custom_components.smart_rce.domain.pv_forecast import (
     ExtrapBandRecentStrategy,
     ExtrapBandStrategy,
+    ExtrapBlendStrategy,
     ExtrapPatternStrategy,
+    ExtrapProportionalCappedStrategy,
     ExtrapProportionalStrategy,
     ForecastContext,
     LivePvSignals,
@@ -95,6 +97,8 @@ def _ctx_with_live(now: datetime | None = None) -> ForecastContext:
         ExtrapProportionalStrategy,
         ExtrapBandStrategy,
         ExtrapBandRecentStrategy,
+        ExtrapProportionalCappedStrategy,
+        ExtrapBlendStrategy,
     ],
 )
 def test_extrap_returns_none_when_live_result_missing(strategy_cls) -> None:
@@ -113,6 +117,8 @@ def test_extrap_returns_none_when_live_result_missing(strategy_cls) -> None:
         ExtrapProportionalStrategy,
         ExtrapBandStrategy,
         ExtrapBandRecentStrategy,
+        ExtrapProportionalCappedStrategy,
+        ExtrapBlendStrategy,
     ],
 )
 def test_extrap_returns_none_when_solcast_today_empty(strategy_cls) -> None:
@@ -138,6 +144,8 @@ def test_extrap_returns_none_when_solcast_today_empty(strategy_cls) -> None:
         ExtrapProportionalStrategy,
         ExtrapBandStrategy,
         ExtrapBandRecentStrategy,
+        ExtrapProportionalCappedStrategy,
+        ExtrapBlendStrategy,
     ],
 )
 def test_extrap_populates_result_and_remaining_kwh(strategy_cls) -> None:
@@ -160,3 +168,63 @@ def test_all_extrap_variants_bound_on_enum() -> None:
     )
     assert isinstance(PvForecast.EXTRAP_BAND.strategy, ExtrapBandStrategy)
     assert isinstance(PvForecast.EXTRAP_BAND_RECENT.strategy, ExtrapBandRecentStrategy)
+    assert isinstance(
+        PvForecast.EXTRAP_PROPORTIONAL_CAPPED.strategy,
+        ExtrapProportionalCappedStrategy,
+    )
+    assert isinstance(PvForecast.EXTRAP_BLEND.strategy, ExtrapBlendStrategy)
+
+
+# --- Capped / Blend: bounds and fade ---
+
+_SP = SolcastPeriod(
+    period_start="2026-01-15T10:00:00+01:00",
+    pv_estimate=2.0,
+    pv_estimate10=1.0,
+    pv_estimate90=4.0,
+)
+
+
+@pytest.mark.parametrize(
+    ("rate", "expected"),
+    [(0.4, 1.0), (1.5, 1.5), (2.5, 2.5), (5.0, 2.6)],  # cap = 2 + 0.3 x 2
+)
+def test_capped_keeps_the_rate_between_p10_and_a_third_toward_p90(rate, expected):
+    assert ExtrapProportionalCappedStrategy._bound(rate, _SP) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("hours_ahead", "weight"),
+    [(0.25, 1.0), (1.0, 1.0), (3.5, 0.5), (6.0, 0.25)],
+)
+def test_blend_trusts_the_extrapolation_an_hour_then_fades(hours_ahead, weight):
+    assert ExtrapBlendStrategy._weight(hours_ahead) == pytest.approx(weight)
+
+
+def test_blend_sits_between_capped_and_live_far_ahead() -> None:
+    """Realized well above median → capped above Live; blend in between later."""
+    _populate_live()
+    ctx = ForecastContext(
+        now=datetime(2026, 1, 15, 8, 0),
+        signals=LivePvSignals(pv_power_w=2500.0, bucket_so_far_kwh=0.1),
+        weather=_weather(),
+        solcast_today=_solcast_today(),
+        realized_pv_today={(7, 0): 1.4, (7, 30): 1.5},
+        consumption_w=400.0,
+    )
+    capped, blend = ExtrapProportionalCappedStrategy(), ExtrapBlendStrategy()
+    capped.update(ctx)
+    blend.update(ctx)
+    live = PvForecast.LIVE.result
+    assert capped.result is not None and blend.result is not None and live
+    rate = {
+        name: {str(p.period_start)[11:16]: p.pv_estimate_adjusted for p in res.forecast}
+        for name, res in (("c", capped.result), ("b", blend.result), ("l", live))
+    }
+    assert rate["b"]["08:30"] == pytest.approx(rate["c"]["08:30"])  # first hour
+    far = "12:30"
+    assert (
+        min(rate["l"][far], rate["c"][far])
+        < rate["b"][far]
+        < max(rate["l"][far], rate["c"][far])
+    )

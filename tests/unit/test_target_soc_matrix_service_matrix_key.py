@@ -46,7 +46,7 @@ def test_extrap_proportional_uses_abbreviated_cross_repo_key() -> None:
 
 
 def test_today_resolver_keys_match_dashboard_contract() -> None:
-    """All 6 today variants present, keys match dashboard PV_LABELS dict."""
+    """All 8 today variants present, keys match dashboard PV_LABELS dict."""
     assert set(_TODAY_PV_RESOLVERS.keys()) == {
         "at_6",
         "live",
@@ -54,6 +54,8 @@ def test_today_resolver_keys_match_dashboard_contract() -> None:
         "extrap_propor",
         "extrap_band",
         "extrap_band_recent",
+        "extrap_propor_capped",
+        "extrap_blend",
     }
 
 

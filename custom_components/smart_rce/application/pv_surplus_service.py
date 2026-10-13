@@ -98,6 +98,8 @@ class PvSurplusService:
         ("extrap_propor", PvForecast.EXTRAP_PROPORTIONAL),
         ("extrap_band", PvForecast.EXTRAP_BAND),
         ("extrap_band_recent", PvForecast.EXTRAP_BAND_RECENT),
+        ("extrap_propor_capped", PvForecast.EXTRAP_PROPORTIONAL_CAPPED),
+        ("extrap_blend", PvForecast.EXTRAP_BLEND),
     )
     _TOMORROW_ROWS: Final = (
         ("live", PvForecast.TOMORROW_LIVE),
