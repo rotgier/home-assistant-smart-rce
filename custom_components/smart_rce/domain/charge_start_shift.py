@@ -13,8 +13,8 @@ The rule, evaluated every 5 minutes from 07:41 (Solcast refreshes at :10/:40):
 - need = energy from the current SoC up to full (charge curve);
 - window of a start S = [S, first hour pricier than the hour before S);
 - candidate = the latest S <= S0 whose forecast surplus in its window covers
-  the need — never before 08:00 nor before the first hour with sun; when even
-  that one is not enough, it; with no sun before S0, S0 itself;
+  the need — never before 08:00 nor before the first hour with sun; when no
+  start is enough (the sun cannot fill the battery anyway), 08:00 — or now;
 - the start moves after 3 consecutive candidates on the same side of it, by
   the least of the three, and never later than S0;
 - once the start has struck and SoC has risen by 1 pp, the start is locked —
@@ -48,6 +48,7 @@ FIRST_EVALUATION: Final[int] = 7 * 60 + 41
 EARLIEST_START: Final[int] = 8 * 60
 MIN_SUN_KWH_PER_H: Final[float] = 0.2
 EXTRAP_FROM: Final[int] = 9 * 60 + 10
+REWIND_FROM: Final[int] = 9 * 60
 
 
 class ShiftVariant(Enum):
@@ -102,17 +103,17 @@ def find_candidate(
 ) -> Candidate:
     """Like `candidate_start`, telling apart "enough" from "earliest, still short"."""
     first = _first_sun_hour(profile, now, s0)
-    if first is None:
-        return Candidate(s0, True)  # no sun before S0 — nothing to gain earlier
-    lowest = max(EARLIEST_START, first * 60)
-    if lowest > s0:
-        return Candidate(s0, True)
+    # No sun before S0: only S0 itself is worth checking.
+    lowest = s0 if first is None else min(max(EARLIEST_START, first * 60), s0)
     for start in _starts_latest_first(s0, lowest):
         begin = max(start, now)  # a start already past means "now"
         end = price_window_end(start, hour_prices) * 60
         if profile.total(begin, end) >= need_kwh:
             return Candidate(begin, True)
-    return Candidate(max(lowest, now), False)
+    # Short even at the earliest start: open from 08:00 regardless of the sun —
+    # every kWh caught from PV saves a grid top-up (~0.73 zl vs ~0.15 exported),
+    # and while the house uses it all an open battery simply takes nothing.
+    return Candidate(max(min(EARLIEST_START, s0), now), False)
 
 
 def _first_sun_hour(profile: SurplusProfile, now: int, s0: int) -> int | None:
@@ -299,6 +300,61 @@ class ChargeStartShift:
             )
         except (KeyError, TypeError, ValueError):
             return None
+
+
+class RewindWatch:
+    """Watch a locked start for a later one that would still fill the battery.
+
+    Once charging has started the shift is locked and never moved back on its
+    own. This only reports — with a phone call — that pausing until a later
+    start looks worth it, and the user decides (a hand-set start wins). Due
+    when, from 09:00, Live and Extrap Proportional agree three times in a row
+    that a start at least 30 minutes from now still fills the battery from the
+    current SoC; at most three alerts a day. In memory only: deliberately rough,
+    meant to get a feel for how often it would fire.
+    """
+
+    CONFIRMATIONS: Final[int] = 3
+    MIN_GAIN_MINUTES: Final[int] = 30
+    MAX_ALERTS_PER_DAY: Final[int] = 3
+
+    def __init__(self, day: date) -> None:
+        self.day = day
+        self.alerts = 0
+        self.last_suggestion: int | None = None
+        self._recent: list[int | None] = []
+
+    @property
+    def recent(self) -> tuple[int | None, ...]:
+        return tuple(self._recent)
+
+    def evaluate(
+        self, now: int, live: Candidate, extrap: Candidate | None
+    ) -> int | None:
+        """Take one evaluation; return the later start to suggest, when due."""
+        if self.alerts >= RewindWatch.MAX_ALERTS_PER_DAY:
+            return None
+        self._recent = [*self._recent, self._agreed_later(now, live, extrap)][
+            -RewindWatch.CONFIRMATIONS :
+        ]
+        recent = self._recent
+        if len(recent) < RewindWatch.CONFIRMATIONS or None in recent:
+            return None
+        suggestion = min(c for c in recent if c is not None)
+        self._recent = []
+        self.alerts += 1
+        self.last_suggestion = suggestion
+        return suggestion
+
+    @staticmethod
+    def _agreed_later(
+        now: int, live: Candidate, extrap: Candidate | None
+    ) -> int | None:
+        """Return the earlier of the two later starts, when both fill the battery."""
+        if extrap is None or not (live.enough and extrap.enough):
+            return None
+        later = min(live.start, extrap.start)
+        return later if later - now >= RewindWatch.MIN_GAIN_MINUTES else None
 
 
 def _optional(kind: type[Any], raw: Any) -> Any:

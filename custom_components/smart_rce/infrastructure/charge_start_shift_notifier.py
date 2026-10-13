@@ -18,11 +18,14 @@ from ..domain.charge_start_shift import to_hhmm
 from .battery_schedule_notifier import NOTIFY_TEXT_SCRIPT
 
 if TYPE_CHECKING:
-    from ..application.charge_start_shift_service import ShiftReport
+    from ..application.charge_start_shift_service import RewindReport, ShiftReport
 
 _LOGGER = logging.getLogger(__name__)
 
 TITLE: Final = "EMS — start ładowania z PV"
+REWIND_TITLE: Final = "EMS — przerwać ładowanie z PV?"
+# Polish TTS on the call; the EN variant is for English messages.
+NOTIFY_ALERT_PL_SCRIPT: Final = "script.notify_alert"
 
 
 class ChargeStartShiftNotifier:
@@ -38,19 +41,33 @@ class ChargeStartShiftNotifier:
             self._hass, self._send(report), name="smart_rce_charge_start_shift_notify"
         )
 
+    @callback
+    def alert_rewind(self, report: RewindReport) -> None:
+        """Phone call: charging could pause until a later start — user decides."""
+        self._entry.async_create_background_task(
+            self._hass,
+            self._send_script(
+                NOTIFY_ALERT_PL_SCRIPT, REWIND_TITLE, render_rewind(report)
+            ),
+            name="smart_rce_charge_rewind_alert",
+        )
+
     async def _send(self, report: ShiftReport) -> None:
+        await self._send_script(NOTIFY_TEXT_SCRIPT, TITLE, render(report))
+
+    async def _send_script(self, script: str, title: str, message: str) -> None:
         try:
             await self._hass.services.async_call(
                 "script",
                 "turn_on",
                 {
-                    "entity_id": NOTIFY_TEXT_SCRIPT,
-                    "variables": {"title": TITLE, "message": render(report)},
+                    "entity_id": script,
+                    "variables": {"title": title, "message": message},
                 },
                 blocking=False,
             )
         except Exception:  # noqa: BLE001 — reporting must never break the shift
-            _LOGGER.exception("ChargeStartShiftNotifier: notify failed")
+            _LOGGER.exception("ChargeStartShiftNotifier: %s failed", script)
 
 
 def render(report: ShiftReport) -> str:
@@ -71,6 +88,20 @@ def render(report: ShiftReport) -> str:
         f"prognoza nadwyżki {to_hhmm(move.after)}–{report.window_end_hour}:00: "
         f"{_kwh(report.surplus_kwh)} (Live − 0,9 kWh/h)\n"
         f"Start z cen: {to_hhmm(report.s0)}"
+    )
+
+
+def render_rewind(report: RewindReport) -> str:
+    """Alert text: what charges now, the later start and how to take it."""
+    return (
+        f"Ładowanie z PV trwa od {to_hhmm(report.start)} (SOC {report.soc:.0f}%). "
+        f"Start o {to_hhmm(report.suggestion)} nadal napełni baterię: do pełna "
+        f"{_kwh(report.need_kwh)}, nadwyżka {to_hhmm(report.suggestion)}–"
+        f"{report.window_end_hour}:00 wg Live {_kwh(report.live_kwh)}, "
+        f"wg Extrap {_kwh(report.extrap_kwh)}.\n"
+        f"Żeby przerwać: ustaw ręcznie start {to_hhmm(report.suggestion)} "
+        f"(EMS Battery Charge Start Hour Override).\n"
+        f"Alarm {report.alert_no}/{report.max_alerts} dziś."
     )
 
 

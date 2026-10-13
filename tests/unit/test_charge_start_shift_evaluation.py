@@ -10,6 +10,7 @@ from custom_components.smart_rce.application.battery_charge_service import (
 )
 from custom_components.smart_rce.application.charge_start_shift_service import (
     ChargeStartShiftService,
+    RewindReport,
     ShiftReport,
 )
 from custom_components.smart_rce.domain.battery_charge_policy import BatteryChargePolicy
@@ -20,6 +21,7 @@ from custom_components.smart_rce.domain.pv_surplus import (
 )
 from custom_components.smart_rce.infrastructure.charge_start_shift_notifier import (
     render,
+    render_rewind,
 )
 import pytest
 
@@ -78,7 +80,11 @@ def _setup(soc: float = 20.0, s0: time = time(12, 0)):
         ),
     )
     reports: list[ShiftReport] = []
-    service = ChargeStartShiftService(ems, _Surplus(), reports.append, clock)
+    alerts: list[RewindReport] = []
+    service = ChargeStartShiftService(
+        ems, _Surplus(), reports.append, alerts.append, clock
+    )
+    service.alerts = alerts  # test handle
     return service, charge, clock, reports
 
 
@@ -174,4 +180,56 @@ def test_message_names_the_move_and_the_hand_set_start():
             " (Live − 0,9 kWh/h)"
         ),
         "Start z cen: 12:00",
+    ]
+
+
+def test_locked_start_raises_a_rewind_alert_instead_of_moving():
+    # Charging since 09:00 (locked) at SoC 60% -> 4.81 kWh to full; even S0
+    # 12:00 (window 12-14) gives 6.2 kWh by both forecasts -> pause until 12:00.
+    service, charge, clock, reports = _setup(soc=60.0)
+    shift = charge._repo.policy.forecast_shift_for(DAY, 12 * H)  # noqa: SLF001
+    shift._start, shift._locked = 9 * H, True  # noqa: SLF001
+    _run(service, clock, 9, (6, 11, 16))
+
+    assert reports == []
+    assert len(service.alerts) == 1
+    alert = service.alerts[0]
+    assert (alert.start, alert.suggestion, alert.alert_no) == (9 * H, 12 * H, 1)
+    assert shift.start == 9 * H  # nothing changed automatically
+
+
+def test_no_rewind_alert_under_a_hand_set_start():
+    service, charge, clock, _ = _setup(soc=60.0)
+    shift = charge._repo.policy.forecast_shift_for(DAY, 12 * H)  # noqa: SLF001
+    shift._start, shift._locked = 9 * H, True  # noqa: SLF001
+    charge._repo.policy.set_start_charge_hour_manual(time(9, 0), DAY)  # noqa: SLF001
+    _run(service, clock, 9, (6, 11, 16))
+    assert service.alerts == []
+
+
+def test_rewind_message_says_how_to_pause():
+    text = render_rewind(
+        RewindReport(
+            start=9 * H,
+            soc=45.0,
+            need_kwh=6.1,
+            suggestion=11 * H,
+            live_kwh=7.24,
+            extrap_kwh=8.9,
+            window_end_hour=15,
+            alert_no=1,
+            max_alerts=3,
+        )
+    )
+    assert text.splitlines() == [
+        (
+            "Ładowanie z PV trwa od 09:00 (SOC 45%). Start o 11:00 nadal napełni"
+            " baterię: do pełna 6,1 kWh, nadwyżka 11:00–15:00 wg Live 7,2 kWh,"
+            " wg Extrap 8,9 kWh."
+        ),
+        (
+            "Żeby przerwać: ustaw ręcznie start 11:00 (EMS Battery Charge Start"
+            " Hour Override)."
+        ),
+        "Alarm 1/3 dziś.",
     ]

@@ -137,10 +137,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
 
     # Charge start moved by the PV forecast: evaluated at :01, :06, :11 ... —
     # just after Solcast's :10/:40 refresh has landed.
+    shift_notifier = ChargeStartShiftNotifier(hass, entry)
     charge_start_shift = ChargeStartShiftService(
         ems,
         pv_surplus,
-        ChargeStartShiftNotifier(hass, entry).notify,
+        shift_notifier.notify,
+        shift_notifier.alert_rewind,
         dt_util.now,
     )
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from custom_components.smart_rce.domain.charge_start_shift import (
     Candidate,
     ChargeStartShift,
+    RewindWatch,
     candidate_start,
     find_candidate,
     guarded_candidate,
@@ -63,9 +64,27 @@ class TestCandidate:
 
     def test_never_before_eight_nor_before_the_sun(self):
         profile = _profile(dict.fromkeys(range(6, 16), 4.0))
-        assert candidate_start(profile, PRICES, 7 * H + 41, 50.0, 12 * H) == 8 * H
+        # 9:00 (window 9-15) gives 18.6, 8:00 (8-16) 24.8; sun from 6 changes nothing.
+        assert candidate_start(profile, PRICES, 7 * H + 41, 20.0, 12 * H) == 8 * H
         late_sun = _profile(dict.fromkeys(range(10, 16), 4.0))
-        assert candidate_start(late_sun, PRICES, 7 * H + 41, 50.0, 12 * H) == 10 * H
+        # 10:00 (window 10-15) gives 15.5 — enough, but not before the sun.
+        assert candidate_start(late_sun, PRICES, 7 * H + 41, 15.0, 12 * H) == 10 * H
+
+    def test_short_even_at_the_earliest_start_opens_at_eight(self):
+        # The sun cannot fill the battery: catch whatever there is from 08:00,
+        # whether or not 8:00 itself has sun.
+        late_sun = _profile(dict.fromkeys(range(10, 16), 4.0))
+        assert find_candidate(late_sun, PRICES, 7 * H + 41, 50.0, 12 * H) == (
+            Candidate(8 * H, False)
+        )
+        no_sun_before_s0 = _profile({12: 2.0, 13: 2.0})
+        assert find_candidate(no_sun_before_s0, PRICES, 7 * H + 41, 8.0, 12 * H) == (
+            Candidate(8 * H, False)
+        )
+
+    def test_short_with_s0_before_eight_keeps_s0(self):
+        profile = _profile(dict.fromkeys(range(7, 16), 1.0))
+        assert candidate_start(profile, PRICES, 6 * H, 50.0, 7 * H) == 7 * H
 
     def test_a_start_already_past_means_now(self):
         profile = _profile(dict.fromkeys(range(8, 16), 4.0))
@@ -107,6 +126,39 @@ class TestGuarded:
 
     def test_later_moves_follow_live(self):
         assert guarded_candidate(Candidate(11 * H, True), None, 9 * H, 8 * H) == 11 * H
+
+
+class TestRewindWatch:
+    """Alert (not applied) when a later start would still fill the battery."""
+
+    def test_alerts_after_three_agreeing_evaluations(self):
+        watch = RewindWatch(DAY)
+        live, extrap = Candidate(11 * H, True), Candidate(11 * H + 30, True)
+        assert watch.evaluate(9 * H + 1, live, extrap) is None
+        assert watch.evaluate(9 * H + 6, live, extrap) is None
+        assert watch.evaluate(9 * H + 11, live, extrap) == 11 * H  # earlier of two
+        assert watch.alerts == 1 and watch.recent == ()
+
+    def test_needs_both_to_fill_the_battery(self):
+        watch = RewindWatch(DAY)
+        for i in range(3):
+            short = Candidate(11 * H, False)
+            assert watch.evaluate(9 * H + 5 * i, short, Candidate(11 * H, True)) is None
+        for i in range(3):
+            assert watch.evaluate(10 * H + 5 * i, Candidate(11 * H, True), None) is None
+        assert watch.alerts == 0
+
+    def test_needs_at_least_thirty_minutes(self):
+        watch = RewindWatch(DAY)
+        later = Candidate(9 * H + 30, True)
+        for i in range(3):
+            assert watch.evaluate(9 * H + 1 + 5 * i, later, later) is None
+
+    def test_at_most_three_alerts_a_day(self):
+        watch = RewindWatch(DAY)
+        later = Candidate(12 * H, True)
+        fired = [watch.evaluate(9 * H + 5 * i, later, later) for i in range(15)]
+        assert sum(f is not None for f in fired) == 3
 
 
 class TestConfirmation:

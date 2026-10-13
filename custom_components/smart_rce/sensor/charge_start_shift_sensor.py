@@ -68,6 +68,13 @@ class ChargeStartShiftSensor(SensorEntity):
             "recent": [to_hhmm(c) for c in shift.recent],
             "manual_start": self._service.manual_start_today,
         }
+        rewind = self._service.rewind
+        if rewind is not None:
+            attrs["rewind"] = {
+                "alerts": rewind.alerts,
+                "suggested": _hm_or_none(rewind.last_suggestion),
+                "recent": [_hm_or_none(c) for c in rewind.recent],
+            }
         last = self._service.last
         if last is not None and last.at.date() == shift.day:
             attrs["evaluated_at"] = last.at.isoformat()
