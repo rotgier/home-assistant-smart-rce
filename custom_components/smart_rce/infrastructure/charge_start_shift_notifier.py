@@ -94,7 +94,7 @@ def render(report: ShiftReport) -> str:
         f"{head}\n"
         f"SOC {report.soc:.0f}% — do pełna {_kwh(report.need_kwh)}; "
         f"prognoza nadwyżki {to_hhmm(move.after)}-{report.window_end_hour}:00: "
-        f"{_kwh(report.surplus_kwh)} (Live Soft minus 0,9 kWh/h)\n"
+        f"{_kwh(report.surplus_kwh)} (Live Soft minus mediana zużycia)\n"
         f"Z cen RCE start o {to_hhmm(report.s0)}"
     )
 

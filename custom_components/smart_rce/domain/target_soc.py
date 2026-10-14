@@ -19,7 +19,7 @@ CONSUMPTION_PER_30MIN: Final[float] = 0.45  # kWh (= 0.9 kWh/h / 2)
 BATTERY_CAPACITY_KWH: Final[float] = 10.7
 MIN_SOC_PERCENT: Final[int] = 10
 LOSS_FACTOR: Final[float] = 0.10  # 10% conversion losses
-BUFFER_PERCENT: Final[int] = 12
+BUFFER_PERCENT: Final[int] = 10
 
 
 # --- Per-variant TargetSoc entity --- #
@@ -47,6 +47,8 @@ class TargetSoc:
     variant: PvForecast
     flat: TargetSocResult | None = None
     prev_days: list[TargetSocResult | None] = field(default_factory=list)
+    # Per-bucket median of the prev-workday profiles — drives the T1 reserve.
+    median: TargetSocResult | None = None
     # In-memory cache for matrix reads (NOT exposed in sensor attrs).
     pv_profile: PvProfile | None = None
     cons_view_flat: ConsumptionProfile | None = None
@@ -112,11 +114,21 @@ class TargetSoc:
             self._compute(cv, ctx) if cv is not None else None
             for cv in self.cons_views_prev
         ]
+        # Lazy import: consumption_profiles imports this module at the top.
+        from .consumption_profiles import ConsumptionProfile  # noqa: PLC0415
+
+        median_cons = ConsumptionProfile.median_of(prev_cons)
+        self.median = (
+            self._compute(self._cons_view(median_cons, ctx, apply_now), ctx)
+            if median_cons is not None
+            else None
+        )
 
     def _clear(self, prev_cons: list[ConsumptionProfile | None]) -> None:
         """Drop every derived figure — there is nothing to compute from."""
         self.flat = None
         self.prev_days = [None] * len(prev_cons)
+        self.median = None
         self.pv_profile = None
         self.cons_view_flat = None
         self.cons_views_prev = [None] * len(prev_cons)
@@ -312,7 +324,7 @@ def _calculate_target_soc(
         target = MIN + dip% x (1 + LOSS) + BUFFER, floored at MIN
 
     The buffer always applies; headroom (negative dip) eats into it, so the
-    target reaches MIN only once the tightest point keeps ~1.17 kWh to spare.
+    target reaches MIN only once the tightest point keeps ~0.97 kWh to spare.
 
     `count_from`: first bucket taking part in the minimum (None = 7:00).
     Earlier buckets still appear in the trace; their zeros must not count.

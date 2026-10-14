@@ -181,13 +181,14 @@ class LiveSoftStrategy(LiveStrategy):
     adjusted rate for the period and p50 the Solcast median it started from.
     Live's modifiers (x0.7 / x0.8 / p10) overshoot: over 187 days it
     under-forecast the day by a median 15%, the raw median over-forecast
-    by 6%. ALPHA 0.4 and 0.5 tie on symmetric error; 0.5 over-forecasts
-    less often, which is the costly direction (too little night charge,
-    T1 power bought in the morning). Backtest:
-    home-assistant-ops/research/2026-10-11-backtest-poranne-ladowanie/live_soft_alpha.py
+    by 6%. ALPHA 0.4 and 0.5 tie on symmetric error (backtest:
+    home-assistant-ops/research/2026-10-11-backtest-poranne-ladowanie/live_soft_alpha.py);
+    0.5 ran first, 0.4 since 15.10.2026 — the replay of the archived
+    snapshots scored it better on the decisions themselves (T1 reserve,
+    charge start), see plans/forecast-score-framework.md.
     """
 
-    _ALPHA: Final[float] = 0.5
+    _ALPHA: Final[float] = 0.4
 
     @property
     def pretty_label(self) -> str:

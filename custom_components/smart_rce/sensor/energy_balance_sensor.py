@@ -203,6 +203,11 @@ def _target_soc_attrs(
     # dip_kwh per cell (flat + 8 prev_days) — Historical matrix (Iter 2)
     # reads these directly from sensor history at any past T without
     # recomputing from buckets. 0.0 when PV always covered consumption.
+    # Median prev-workday consumption — the reading the T1 reserve takes.
+    attrs["median"] = entity.median.value if entity.median is not None else None
+    attrs["dip_kwh_median"] = (
+        entity.median.dip_kwh if entity.median is not None else None
+    )
     attrs["dip_kwh_flat"] = entity.flat.dip_kwh if entity.flat is not None else None
     attrs["dip_kwh_prev"] = [
         r.dip_kwh if r is not None else None for r in entity.prev_days

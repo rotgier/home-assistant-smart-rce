@@ -86,26 +86,31 @@ class TestPrevWithoutWorst:
 
 
 class TestFromTargetSoc:
-    def test_max_of_flat_and_prev_without_worst(self):
+    def test_median_reading_drives_the_value(self):
         ts = TargetSoc(
             variant=PvForecast.LIVE,
             flat=_result(25),
             prev_days=[_result(v) for v in (24, 29, 28, 30, 23)] + [None],
+            median=_result(22),
         )
         target = T1SocReserve.from_target_soc(
             DAY, ts, source="live", window=ReserveWindow.FULL
         )
         assert target is not None
-        assert (target.value, target.flat, target.prev_without_worst) == (29, 25, 29)
+        assert (
+            target.value,
+            target.median,
+            target.flat,
+            target.prev_without_worst,
+        ) == (22, 22, 25, 29)
 
-    def test_flat_wins_when_higher(self):
-        ts = TargetSoc(
-            variant=PvForecast.LIVE, flat=_result(36), prev_days=[_result(30)]
-        )
+    def test_flat_without_consumption_history(self):
+        ts = TargetSoc(variant=PvForecast.LIVE, flat=_result(36), prev_days=[None])
         target = T1SocReserve.from_target_soc(
             DAY, ts, source="live", window=ReserveWindow.FULL
         )
-        assert target is not None and target.value == 36
+        assert target is not None
+        assert (target.value, target.median) == (36, None)
 
     def test_capped_at_100(self):
         ts = TargetSoc(variant=PvForecast.LIVE, flat=_result(126), prev_days=[])

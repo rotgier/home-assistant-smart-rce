@@ -63,14 +63,14 @@ def test_large_headroom_returns_min_soc() -> None:
 
 
 def test_small_headroom_only_partly_eats_the_buffer() -> None:
-    """0.55 kWh headroom: 10 + 12 - 0.55 / 0.107 x 1.1 = 16.3 -> 16%."""
+    """0.55 kWh headroom: 10 + 10 - 0.55 / 0.107 x 1.1 = 14.3 -> 14%."""
     result = _calculate_target_soc(_make_profile(2.0), ConsumptionProfile.flat())
     assert result.dip_kwh == -0.55
-    assert result.value == 16
+    assert result.value == 14
 
 
 def test_target_is_continuous_across_zero_dip() -> None:
-    """A Wh either side of break-even moves the target by a point, not by 12."""
+    """A Wh either side of break-even moves the target by a point, not by 10."""
 
     def at(rate: float) -> int:
         return _calculate_target_soc(
@@ -258,3 +258,17 @@ def test_a_forecast_that_ends_yesterday_is_treated_as_no_forecast():
 
     assert result.covers(date(2026, 8, 27))
     assert not result.covers(date(2026, 8, 28))
+
+
+def test_median_of_profiles_is_per_bucket() -> None:
+    """Median per bucket over the present profiles; None entries are skipped."""
+    profiles = [
+        ConsumptionProfile.flat(0.2),
+        ConsumptionProfile.flat(0.5),
+        None,
+        ConsumptionProfile.flat(0.4),
+    ]
+    median = ConsumptionProfile.median_of(profiles)
+    assert median is not None
+    assert median.get(7, 0) == 0.4
+    assert ConsumptionProfile.median_of([None, None]) is None

@@ -210,8 +210,8 @@ def test_forecast_strategy_base_raises_not_implemented() -> None:
     raise AssertionError("ForecastStrategy._compute should raise NotImplementedError")
 
 
-def test_live_soft_is_halfway_between_median_and_live() -> None:
-    """Rate = p50 + 0.5 x (live - p50), per period."""
+def test_live_soft_is_alpha_between_median_and_live() -> None:
+    """Rate = p50 + 0.4 x (live - p50), per period."""
     periods = _solcast_periods()
     cloudy = WeatherConditions(
         conditions=[WeatherConditionAtHour(hour=7, condition_custom="cloudy")]
@@ -229,8 +229,8 @@ def test_live_soft_is_halfway_between_median_and_live() -> None:
     assert soft.result is not None
     # Cloudy → Live takes p10 (0.5, 1.0); median is (1.0, 2.0).
     assert [p.pv_estimate_adjusted for p in live.result.forecast] == [0.5, 1.0]
-    assert [p.pv_estimate_adjusted for p in soft.result.forecast] == [0.75, 1.5]
-    assert soft.result.total_kwh == 1.125
+    assert [p.pv_estimate_adjusted for p in soft.result.forecast] == [0.8, 1.6]
+    assert soft.result.total_kwh == 1.2
 
 
 def test_live_soft_tomorrow_reads_solcast_tomorrow() -> None:

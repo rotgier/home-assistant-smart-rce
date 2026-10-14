@@ -2,8 +2,8 @@
 
 Gathers the inputs (S0 from `ChargeSlots`, today's hourly prices, SoC, the
 LIVE_SOFT surplus per variant, from 09:10 Extrap Proportional), asks the domain for
-a candidate per variant and hands the applied one (GUARDED: 0.9 kWh/h, earlier
-moves held back until Extrap agrees) to `BatteryChargeService`, which owns and
+a candidate per variant and hands the applied one (GUARDED: median consumption
+of earlier days of the same type, earlier moves held back until Extrap agrees) to `BatteryChargeService`, which owns and
 persists the shift. The other variants are only tracked here, in memory, so
 the sensor can show where each of them would have put the start.
 
@@ -42,6 +42,7 @@ from ..domain.charge_start_shift import (
 from ..domain.pv_forecast import PvForecast
 
 if TYPE_CHECKING:
+    from ..domain.pv_surplus import SurplusProfile
     from .battery_charge_service import BatteryChargeService, ForecastShiftMove
     from .ems import Ems
     from .pv_surplus_service import PvSurplusService
@@ -162,7 +163,6 @@ class ChargeStartShiftService:
             self._notify_listeners()
             return
         now_min, s0_min, need = to_minutes(now.time()), to_minutes(s0), kwh_to_full(soc)
-        live = None
         candidates: dict[ShiftVariant, int] = {}
         for variant in ShiftVariant:
             if variant.guarded:
@@ -173,10 +173,10 @@ class ChargeStartShiftService:
             if profile is not None:
                 found = find_candidate(profile, prices, now_min, need, s0_min)
                 candidates[variant] = found.start
-                if variant is ShiftVariant.FLAT:
-                    live = found
-        if live is None:
+        applied = self._applied_profile()
+        if applied is None:
             return
+        live = find_candidate(applied, prices, now_min, need, s0_min)
         found_extrap = self._extrap_candidate(
             prices, now_min, need, s0_min, EXTRAP_FROM
         )
@@ -209,7 +209,7 @@ class ChargeStartShiftService:
         now_min = to_minutes(now.time())
         if now_min < REWIND_FROM or self._charge.start_charge_is_manual_today:
             return
-        profile = self._pv_surplus.today_profile(median=False, pv_scale=1.0)
+        profile = self._applied_profile()
         if profile is None:
             return
         need = kwh_to_full(soc)
@@ -222,9 +222,7 @@ class ChargeStartShiftService:
         if suggestion is None:
             return
         end = price_window_end(suggestion, prices)
-        extrap_profile = self._pv_surplus.today_profile(
-            median=False, pv_scale=1.0, source=PvForecast.EXTRAP_PROPORTIONAL
-        )
+        extrap_profile = self._applied_profile(PvForecast.EXTRAP_PROPORTIONAL)
         _LOGGER.info(
             "Charge rewind alert %d: charging since %d min, later start %d min",
             watch.alerts,
@@ -260,12 +258,29 @@ class ChargeStartShiftService:
         """Extrap Proportional's candidate (flat 0.9), from `since` on."""
         if now_min < since:
             return None
-        profile = self._pv_surplus.today_profile(
-            median=False, pv_scale=1.0, source=PvForecast.EXTRAP_PROPORTIONAL
-        )
+        profile = self._applied_profile(PvForecast.EXTRAP_PROPORTIONAL)
         if profile is None:
             return None
         return find_candidate(profile, prices, now_min, need, s0_min)
+
+    def _applied_profile(
+        self, source: PvForecast = PvForecast.LIVE_SOFT
+    ) -> SurplusProfile | None:
+        """Surplus the applied variant reads.
+
+        Median consumption of earlier days of the same type; flat 0.9 kWh/h
+        until that history is loaded.
+        """
+        profile = self._pv_surplus.today_profile(
+            median=APPLIED_VARIANT.median,
+            pv_scale=APPLIED_VARIANT.pv_scale,
+            source=source,
+        )
+        if profile is None:
+            profile = self._pv_surplus.today_profile(
+                median=False, pv_scale=APPLIED_VARIANT.pv_scale, source=source
+            )
+        return profile
 
     def _today_prices(self, today: date) -> tuple[float, ...] | None:
         rce = self._ems.rce_prices.rce_prices
@@ -304,7 +319,7 @@ class ChargeStartShiftService:
         need: float,
         prices: tuple[float, ...],
     ) -> None:
-        profile = self._pv_surplus.today_profile(median=False, pv_scale=1.0)
+        profile = self._applied_profile()
         end = price_window_end(move.after, prices)
         surplus = profile.total(move.after, end * 60) if profile is not None else 0.0
         _LOGGER.info(

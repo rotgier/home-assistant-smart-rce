@@ -177,7 +177,7 @@ def test_message_names_the_move_and_the_hand_set_start():
         "Start BY SIĘ zmienił: 12:00 na 09:00 (wcześniej), ale obowiązuje ręczny 11:30",
         (
             "SOC 35% — do pełna 7,6 kWh; prognoza nadwyżki 09:00-15:00: 8,1 kWh"
-            " (Live Soft minus 0,9 kWh/h)"
+            " (Live Soft minus mediana zużycia)"
         ),
         "Z cen RCE start o 12:00",
     ]
@@ -255,3 +255,36 @@ def test_no_telegram_line_starts_with_start():
     for text in texts:
         for line in text.splitlines()[1:]:
             assert not line.lower().startswith("start"), line
+
+
+class _MedianSurplus:
+    """Median use eats the surplus: only 2 kWh/h left from 8 to 16, flat 4."""
+
+    def __init__(self, median_loaded: bool = True) -> None:
+        self.median_loaded = median_loaded
+
+    def today_profile(
+        self, *, median: bool, pv_scale: float, source: object = None
+    ) -> SurplusProfile | None:
+        if median and not self.median_loaded:
+            return None
+        rate = 2.0 if median else 4.0
+        pv = slots_from_hourly(dict.fromkeys(range(8, 16), rate))
+        return SurplusProfile.build(DAY, pv, None)
+
+
+def test_applied_variant_reads_the_median_consumption():
+    # SoC 20% -> 9.16 kWh. Flat surplus: 11:00 enough (12.4). With median use
+    # (2 kWh/h) only an earlier start would do, so from 09:11 it is "now".
+    service, charge, clock, _ = _setup()
+    service._pv_surplus = _MedianSurplus()  # noqa: SLF001
+    _run(service, clock, 9, (11, 16, 21))
+    assert charge.start_charge_hour_override == time(9, 21)
+    assert service.observed_start(ShiftVariant.FLAT) == 11 * H
+
+
+def test_applied_variant_falls_back_to_flat_without_history():
+    service, charge, clock, _ = _setup()
+    service._pv_surplus = _MedianSurplus(median_loaded=False)  # noqa: SLF001
+    _run(service, clock, 9, (11, 16, 21))
+    assert charge.start_charge_hour_override == time(11, 0)

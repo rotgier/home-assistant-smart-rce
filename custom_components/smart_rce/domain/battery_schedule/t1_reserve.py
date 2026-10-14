@@ -1,9 +1,11 @@
 """T1SocReserve — SoC the battery should hold for the rest of the T1 window.
 
-Value object resolved from one `TargetSoc` variant: the larger of the flat
-reading (default consumption) and the prev-workday readings without the single
-worst one. Dropping one outlier keeps a freak day (guests, oven, a sick day at
-home) from dictating the figure, while the next-worst still counts.
+Value object resolved from one `TargetSoc` variant: the reading for the
+per-bucket median consumption of the earlier workdays (decision 14.10.2026 —
+replay of 04-14.10: the old max(flat, prev without the worst) overshot by
+~5 pp and protected no better than flat). Without consumption history it falls
+back to the flat reading. The flat and prev-without-worst readings stay as
+components for comparison.
 
 One figure, several readers: before 07:00 it is the night charge target of the
 CHARGE_MORNING_AUTO slot; 07:00-13:00 the reserve still needed for the rest of
@@ -54,6 +56,7 @@ class T1SocReserve:
     dip_kwh: float | None
     source: str
     window: ReserveWindow
+    median: int | None = None
 
     @classmethod
     def from_target_soc(
@@ -69,15 +72,18 @@ class T1SocReserve:
         prev = cls.prev_without_worst_of(
             r.value for r in target_soc.prev_days if r is not None
         )
-        candidates = [v for v in (flat, prev) if v is not None]
-        if not candidates:
+        driving = (
+            target_soc.median if target_soc.median is not None else target_soc.flat
+        )
+        if driving is None:
             return None
         return cls(
             day=day,
-            value=min(100, max(candidates)),
+            value=min(100, driving.value),
             flat=flat,
             prev_without_worst=prev,
-            dip_kwh=target_soc.flat.dip_kwh if target_soc.flat is not None else None,
+            median=target_soc.median.value if target_soc.median is not None else None,
+            dip_kwh=driving.dip_kwh,
             source=source,
             window=window,
         )
@@ -108,6 +114,7 @@ class T1SocReserve:
             "value": self.value,
             "flat": self.flat,
             "prev_without_worst": self.prev_without_worst,
+            "median": self.median,
             "dip_kwh": self.dip_kwh,
             "source": self.source,
             "window": self.window.value,
@@ -121,6 +128,7 @@ class T1SocReserve:
                 value=int(data["value"]),
                 flat=data.get("flat"),
                 prev_without_worst=data.get("prev_without_worst"),
+                median=data.get("median"),
                 dip_kwh=data.get("dip_kwh"),
                 source=str(data.get("source", "")),
                 window=ReserveWindow(data.get("window", ReserveWindow.FULL.value)),

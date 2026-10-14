@@ -17,8 +17,10 @@ Single concept per file:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from statistics import median
 from typing import ClassVar, Final, Protocol
 
 from .bucket import Bucket, Buckets
@@ -64,6 +66,27 @@ class ConsumptionProfile:
     ) -> ConsumptionProfile:
         """Synthetic flat baseline — every bucket = `value` kWh."""
         return cls(buckets=Buckets.flat(value), source_date=source_date)
+
+    @classmethod
+    def median_of(
+        cls, profiles: Iterable[ConsumptionProfile | None]
+    ) -> ConsumptionProfile | None:
+        """Per-bucket median over the given profiles; None when there are none.
+
+        The T1 reserve reads consumption this way (decision 14.10.2026):
+        a typical earlier workday, not the worst ones and not a flat guess.
+        """
+        present = [p for p in profiles if p is not None]
+        if not present:
+            return None
+        return cls(
+            buckets=Buckets(
+                by_bucket={
+                    bucket: median(p.buckets.by_bucket[bucket] for p in present)
+                    for bucket in present[0].buckets
+                }
+            )
+        )
 
     def to_view(
         self,

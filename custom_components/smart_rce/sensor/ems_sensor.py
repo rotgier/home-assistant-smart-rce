@@ -215,10 +215,21 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         icon="mdi:battery-clock-outline",
     ),
     EmsSensorDescription(
+        name="T1 SoC Reserve Median",
+        # Component that drives the reserve: per-bucket median consumption of
+        # the earlier workdays (falls back to flat without history).
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: _reserve_field(
+            ems.battery_schedule_service.t1_reserve, "median"
+        ),
+        icon="mdi:battery-clock-outline",
+    ),
+    EmsSensorDescription(
         name="T1 SoC Reserve Dip",
-        # Signed dip of the flat reading behind the reserve: positive = deficit
-        # at the tightest point, negative = headroom (the buffer fades out by
-        # ~-1.17 kWh). No energy device class — it goes negative.
+        # Signed dip of the reading behind the reserve (median, else flat):
+        # positive = deficit at the tightest point, negative = headroom (the
+        # buffer fades out by ~-0.97 kWh). No energy device class — it goes negative.
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: _reserve_field(
