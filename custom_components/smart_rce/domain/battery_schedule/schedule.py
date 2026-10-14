@@ -496,7 +496,7 @@ class BatterySchedule:
         """Where an auto-target slot's target came from; None for fixed slots."""
         if kind.profile.planned:
             plan = self.morning_discharge_for(day)
-            return plan.branch.value if plan is not None else "no plan"
+            return plan.describe() if plan is not None else "no plan"
         if not kind.profile.auto_target:
             return None
         reserve = self.t1_reserve_for(day)

@@ -135,7 +135,10 @@ class TestSchedule:
         _, events = sch.compute_operation(_at(8, 30), 80.0, is_workday=True)
         engaged = [e for e in events if isinstance(e, SlotEngaged)]
         assert engaged and engaged[0].slot is SlotKind.DISCHARGE_MORNING_AUTO
-        assert (engaged[0].target_soc, engaged[0].target_source) == (35.0, "arbitrage")
+        assert engaged[0].target_soc == 35.0
+        assert engaged[0].target_source == (
+            "arbitrage 08-09, 1300 brutto, reserve 25, sun fills 42"
+        )
 
     def test_not_on_a_day_off(self):
         sch = self._schedule(_auto_discharge())

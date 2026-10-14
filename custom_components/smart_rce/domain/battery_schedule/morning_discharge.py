@@ -121,6 +121,13 @@ class MorningDischargePlan:
     def end(self) -> time:
         return time(self.hour + 1, 0)
 
+    def describe(self) -> str:
+        """One-line source for the slot telegram: branch, hour, gross price."""
+        return (
+            f"{self.branch.value} {self.hour:02d}-{self.hour + 1:02d}, "
+            f"{self.gross_price:.0f} brutto, reserve {self.reserve}, sun fills {self.fill}"
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "day": self.day.isoformat(),
