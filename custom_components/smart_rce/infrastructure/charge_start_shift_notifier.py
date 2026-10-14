@@ -70,9 +70,12 @@ class ChargeStartShiftNotifier:
             _LOGGER.exception("ChargeStartShiftNotifier: %s failed", script)
 
 
-# CallMeBot rejects some characters with an HTML error page — "→", "−" (minus)
-# and "–" (en dash) never got through (13.10: six failed tries), "—" does.
-# Keep the message to plain punctuation.
+# CallMeBot sits behind a web firewall that answers 403 when a line starts with
+# the word "start" — it reads as a shell command after a line break (probed
+# 14.10.2026: "x\nstart 11" fails, "x\nSOC 40%" and "Start z cen: 11:00" on one
+# line pass). Every move telegram of 13-14.10 died on its last line "Start z
+# cen". Characters ("→", "−", ";") were not the cause. No line may begin with
+# "start" — see `tests/unit/test_charge_start_shift_evaluation.py`.
 
 
 def render(report: ShiftReport) -> str:
@@ -92,7 +95,7 @@ def render(report: ShiftReport) -> str:
         f"SOC {report.soc:.0f}% — do pełna {_kwh(report.need_kwh)}; "
         f"prognoza nadwyżki {to_hhmm(move.after)}-{report.window_end_hour}:00: "
         f"{_kwh(report.surplus_kwh)} (Live Soft minus 0,9 kWh/h)\n"
-        f"Start z cen: {to_hhmm(report.s0)}"
+        f"Z cen RCE start o {to_hhmm(report.s0)}"
     )
 
 

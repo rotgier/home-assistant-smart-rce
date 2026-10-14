@@ -225,6 +225,7 @@ class ChargeStartShift:
             return False
         if soc is not None and self._lock_if_charging(now, soc):
             return False
+        candidate = self._as_move(now, candidate)
         self._recent = [*self._recent, candidate][-ChargeStartShift.CONFIRMATIONS :]
         if len(self._recent) < ChargeStartShift.CONFIRMATIONS:
             return False
@@ -233,6 +234,19 @@ class ChargeStartShift:
             return False
         self._start = moved
         return True
+
+    def _as_move(self, now: int, candidate: int) -> int:
+        """Read a candidate of "now" after the start has struck as no move.
+
+        `find_candidate` answers "now" for a start already past (and for a
+        forecast short at any start). Once the start has struck the battery is
+        already open, so "open from now" asks for nothing new — taking it as
+        "later" moved the start to now - 10 min every 5 minutes (14.10.2026),
+        each move re-taking the lock baseline, so the lock never came.
+        """
+        if now >= self._start and candidate <= now:
+            return self._start
+        return candidate
 
     def _lock_if_charging(self, now: int, soc: float) -> bool:
         """Lock once SoC has risen since the start struck; True when locked now.

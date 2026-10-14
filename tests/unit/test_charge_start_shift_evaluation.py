@@ -179,7 +179,7 @@ def test_message_names_the_move_and_the_hand_set_start():
             "SOC 35% — do pełna 7,6 kWh; prognoza nadwyżki 09:00-15:00: 8,1 kWh"
             " (Live Soft minus 0,9 kWh/h)"
         ),
-        "Start z cen: 12:00",
+        "Z cen RCE start o 12:00",
     ]
 
 
@@ -233,3 +233,25 @@ def test_rewind_message_says_how_to_pause():
         ),
         "Alarm 1/3 dziś.",
     ]
+
+
+def test_no_telegram_line_starts_with_start():
+    """CallMeBot's firewall answers 403 to a line beginning with "start"."""
+    texts = [
+        render(
+            ShiftReport(
+                move=ForecastShiftMove(
+                    before=11 * 60, after=8 * 60, manual_start=manual
+                ),
+                s0=11 * 60,
+                soc=40.0,
+                need_kwh=6.9,
+                surplus_kwh=1.4,
+                window_end_hour=16,
+            )
+        )
+        for manual in (None, time(9, 0))
+    ]
+    for text in texts:
+        for line in text.splitlines()[1:]:
+            assert not line.lower().startswith("start"), line

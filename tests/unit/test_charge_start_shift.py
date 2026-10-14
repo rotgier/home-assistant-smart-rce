@@ -209,6 +209,24 @@ class TestLock:
             shift.evaluate(9 * H + 1 + 5 * i, 11 * H, 25.0)
         assert shift.start == 11 * H and not shift.locked
 
+    def test_now_after_the_start_struck_is_no_move(self):
+        """14.10.2026: start 08:00, cloudy, SoC flat, candidate = now each tick.
+
+        Before the fix the start crept to now - 10 min every 5 minutes.
+        """
+        shift = ChargeStartShift(day=DAY, s0=11 * H, start=8 * H)
+        for i in range(12):
+            now = 8 * H + 1 + 5 * i
+            assert not shift.evaluate(now, now, 55.0)
+        assert shift.start == 8 * H
+        assert shift.soc_at_start == 55.0
+
+    def test_a_later_start_ahead_still_moves_after_the_start_struck(self):
+        shift = ChargeStartShift(day=DAY, s0=11 * H, start=8 * H)
+        for i in range(3):
+            shift.evaluate(8 * H + 1 + 5 * i, 10 * H, 55.0)
+        assert shift.start == 10 * H
+
     def test_restart_keeps_a_locked_start(self):
         shift = ChargeStartShift(
             day=DAY, s0=12 * H, start=9 * H, struck_start=9 * H, locked=True
