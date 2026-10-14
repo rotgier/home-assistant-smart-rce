@@ -340,7 +340,9 @@ class SlotKind(Enum):
 
     DISCHARGE_MORNING_AUTO = SlotProfile(
         direction=Direction.DISCHARGE,
-        notification_level=NotificationLevel.NORMAL,
+        # Voice call on purpose (user's wish 15.10.2026): an automatic sale of
+        # the battery is worth hearing about, and 07-S0 nobody is asleep.
+        notification_level=NotificationLevel.EMERGENCY,
         # The hours searched for the dearest one; the plan narrows the window
         # to that hour and also stops it at the charge start.
         default_window=(time(7, 0), time(10, 0)),

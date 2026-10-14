@@ -211,3 +211,12 @@ class TestService:
 
     def test_no_plan_on_a_day_off(self):
         assert _service(6.0, workday=False) is None
+
+
+def test_auto_discharge_calls_the_phone():
+    from custom_components.smart_rce.domain.battery_schedule import NotificationLevel
+
+    assert (
+        SlotKind.DISCHARGE_MORNING_AUTO.profile.notification_level
+        is NotificationLevel.EMERGENCY
+    )
