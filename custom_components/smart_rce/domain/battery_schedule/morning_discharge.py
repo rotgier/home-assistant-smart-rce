@@ -1,11 +1,14 @@
 """MorningDischargePlan — what the automatic morning discharge does today.
 
-Workdays only. The slot covers the dearest whole hour from 07:00 until the
-earlier of its window end (10:00) and the charge start, and discharges
-DELAYED_TO_END: the battery stands on the target when that hour closes
-(settlement is hourly, so when inside the hour it gave the energy away does not
-matter). Before 07:00 the battery is charged for the dear hours, from the charge
-start it takes PV.
+Workdays only. The slot starts at the dearest whole hour from 07:00 until the
+earlier of its window end (10:00) and S0 (the charge start from RCE prices),
+then moves on hour by hour until S0, each hour DELAYED_TO_END: the battery
+stands on the target when the hour closes (settlement is hourly, so when inside
+the hour it gave the energy away does not matter). An hour takes part only when
+it is dearer than every hour the sun charges the battery in afterwards (to T2)
+— otherwise the surplus it makes room for would sell dearer later anyway. S0,
+not a forecast-moved start: an hour dearer than the whole PV window is worth
+selling even when the battery already takes PV.
 
 Target, recomputed every minute (agreed with the user 15.10.2026):
 - the sun fills the battery even from the T1 reserve -> the reserve, at any
@@ -58,6 +61,7 @@ class MorningDischargePlan:
     fill: int
     gross_price: float
     branch: MorningDischargeBranch
+    hours: tuple[int, ...] = ()
 
     @classmethod
     def decide(
@@ -68,6 +72,7 @@ class MorningDischargePlan:
         gross_price: float,
         reserve: int,
         fill: int,
+        hours: tuple[int, ...] = (),
     ) -> MorningDischargePlan:
         """Pick the target from the reserve and the lowest SoC the sun fills."""
         if fill <= reserve:
@@ -85,6 +90,7 @@ class MorningDischargePlan:
             fill=fill,
             gross_price=gross_price,
             branch=branch,
+            hours=hours,
         )
 
     @classmethod
@@ -92,6 +98,20 @@ class MorningDischargePlan:
         """Dearest whole hour h with max(first, 07) <= h and h + 1 <= last."""
         hours = range(max(first, cls.EARLIEST_HOUR), last)
         return max(hours, key=prices.gross_at, default=None)
+
+    @classmethod
+    def hours_from(
+        cls, prices: RceDayPrices, best: int, s0_hour: int, t2_hour: int
+    ) -> tuple[int, ...]:
+        """Hours from the dearest one until S0 that pay off (see the module doc)."""
+        return tuple(
+            hour
+            for hour in range(best, s0_hour)
+            if all(
+                prices.gross_at(hour) > prices.gross_at(later)
+                for later in range(max(hour + 1, s0_hour), t2_hour)
+            )
+        )
 
     @property
     def start(self) -> time:
@@ -110,4 +130,5 @@ class MorningDischargePlan:
             "fill": self.fill,
             "gross_price": round(self.gross_price, 1),
             "branch": self.branch.value,
+            "hours": [f"{h:02d}:00" for h in self.hours],
         }

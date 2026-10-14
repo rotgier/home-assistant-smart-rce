@@ -1,7 +1,7 @@
 """MorningDischargeService — recomputes today's automatic morning discharge.
 
 Every minute, like the target of the auto morning charge: gathers today's
-prices, the charge start, the T1 reserve and the PV surplus (Live Soft, median
+prices, S0, the T1 reserve and the PV surplus (Live Soft, median
 consumption of earlier workdays) and hands `BatterySchedule` a
 `MorningDischargePlan` — or None, which keeps the DISCHARGE_MORNING_AUTO slot
 still. The rule itself lives in the domain (`MorningDischargePlan.decide`,
@@ -18,6 +18,7 @@ from homeassistant.core import callback
 
 from ..domain.battery_schedule import MorningDischargePlan, SlotKind
 from ..domain.charge_start_shift import lowest_soc_the_sun_fills, to_minutes
+from ..domain.pv_surplus import surplus_window_end
 
 if TYPE_CHECKING:
     from ..domain.rce import RceDayPrices
@@ -57,11 +58,18 @@ class MorningDischargeService:
         reserve = schedule.t1_reserve
         if prices is None or s0 is None or reserve is None or reserve.day != now.date():
             return None
-        hour = MorningDischargePlan.best_hour(
+        best = MorningDischargePlan.best_hour(
             prices,
             self._first_hour(entry.start.hour, entry.start.minute),
-            self._last_hour(entry.end.hour, s0.hour),
+            min(entry.end.hour, s0.hour),
         )
+        if best is None:
+            return None
+        hours = MorningDischargePlan.hours_from(
+            prices, best, s0.hour, surplus_window_end(now.date())
+        )
+        # The hour running now or the next one still to come.
+        hour = next((h for h in hours if h >= now.hour), None)
         if hour is None:
             return None
         profile = self._pv_surplus.today_profile(median=True, pv_scale=1.0)
@@ -78,18 +86,13 @@ class MorningDischargeService:
             gross_price=prices.gross_at(hour),
             reserve=reserve.value,
             fill=fill,
+            hours=hours,
         )
 
     @staticmethod
     def _first_hour(hour: int, minute: int) -> int:
         """First whole hour inside the slot's window."""
         return hour + (1 if minute else 0)
-
-    def _last_hour(self, window_end_hour: int, s0_hour: int) -> int:
-        """Hour the discharge must be over by: window end or the charge start."""
-        start = self._ems.battery_charge_service.start_charge_hour_override
-        start_hour = start.hour if start is not None else s0_hour
-        return min(window_end_hour, start_hour)
 
     def _today_prices(self, now: datetime) -> RceDayPrices | None:
         rce = self._ems.rce_prices.rce_prices

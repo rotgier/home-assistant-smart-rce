@@ -159,7 +159,7 @@ class _Surplus:
         return SurplusProfile.build(DAY, pv, None)
 
 
-def _service(rate: float, *, start: time | None = time(11, 0), workday=True):
+def _service(rate: float, *, s0: time = time(11, 0), workday=True, now=None):
     plans: list = []
     entry = _auto_discharge()
     schedule = SimpleNamespace(
@@ -170,13 +170,13 @@ def _service(rate: float, *, start: time | None = time(11, 0), workday=True):
     ems = SimpleNamespace(
         battery_schedule_service=schedule,
         is_workday_today=workday,
-        charge_slots=SimpleNamespace(today_start=time(11, 0)),
-        battery_charge_service=SimpleNamespace(start_charge_hour_override=start),
+        charge_slots=SimpleNamespace(today_start=s0),
         rce_prices=SimpleNamespace(
             rce_prices=SimpleNamespace(today=RceDayPrices(None, DAY, PRICES))
         ),
     )
-    service = MorningDischargeService(ems, _Surplus(rate), lambda: _at(6, 30))
+    clock = now or _at(6, 30)
+    service = MorningDischargeService(ems, _Surplus(rate), lambda: clock)
     service.refresh()
     return plans[-1]
 
@@ -191,13 +191,20 @@ class TestService:
         )
         assert plan.gross_price == pytest.approx(1100 * 1.23)
 
+    def test_moves_on_to_the_next_hour_that_pays_off(self):
+        # 09 (800) is dearer than every PV hour 11-15 (max 700); 10 (600) is not.
+        assert _service(6.0).hours == (8, 9)
+        assert _service(6.0, now=_at(9, 20)).hour == 9
+        assert _service(6.0, now=_at(10, 5)) is None
+
     def test_little_sun_above_the_bar_is_arbitrage(self):
         plan = _service(1.4)
         assert plan.branch is MorningDischargeBranch.ARBITRAGE
         assert plan.target == min(plan.reserve + 10, plan.fill)
 
-    def test_charge_start_at_eight_leaves_only_seven(self):
-        assert _service(6.0, start=time(8, 0)).hour == 7
+    def test_an_hour_cheaper_than_the_pv_window_is_left_alone(self):
+        # S0 08:00: only 07 is searched, and 08 (1100) sells the sun dearer.
+        assert _service(6.0, s0=time(8, 0)) is None
 
     def test_no_plan_on_a_day_off(self):
         assert _service(6.0, workday=False) is None
