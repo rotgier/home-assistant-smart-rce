@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 from custom_components.smart_rce.application.forecast_archive_service import (
@@ -88,22 +89,27 @@ async def test_fetch_writes_one_snapshot_restart_value_writes_none(
     archive = DailyJsonlArchive(tmp_path)
     today = dt_util.now().date()
 
+    # Timestamps relative to the clock: a fetch is only accepted while its
+    # "last API update" is recent (SnapshotSchedule.FETCH_MAX_AGE).
+    restored = (dt_util.utcnow() - timedelta(hours=10)).isoformat()
+    fetched = dt_util.utcnow().isoformat()
+
     # Sensor created at startup: an old value, not a fetch.
-    hass.states.async_set(entity_id, "2026-10-14T05:40:44+00:00")
+    hass.states.async_set(entity_id, restored)
     await _settle(hass)
     assert archive.read_day(today) == []
 
     # Real fetch.
-    hass.states.async_set(entity_id, "2026-10-14T06:10:37+00:00")
+    hass.states.async_set(entity_id, fetched)
     await _settle(hass)
     records = archive.read_day(today)
     assert len(records) == 1
     assert records[0]["trigger"] == "solcast"
-    assert records[0]["solcast_fetched_at"] == "2026-10-14T06:10:37+00:00"
+    assert records[0]["solcast_fetched_at"] == fetched
     assert records[0]["variants"][PvForecast.LIVE.key]["result"] is not None
 
     # Same value again (attribute-only update): no second record.
-    hass.states.async_set(entity_id, "2026-10-14T06:10:37+00:00", {"x": 1})
+    hass.states.async_set(entity_id, fetched, {"x": 1})
     await _settle(hass)
     assert len(archive.read_day(today)) == 1
 
