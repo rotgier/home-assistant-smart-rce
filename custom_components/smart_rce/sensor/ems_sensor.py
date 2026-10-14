@@ -238,6 +238,25 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         icon="mdi:chart-bell-curve",
     ),
     EmsSensorDescription(
+        name="Morning Discharge Plan",
+        # Target of the automatic morning discharge (DISCHARGE_MORNING_AUTO)
+        # for today's dearest hour 07-10; attributes say which hour, reserve,
+        # the lowest SoC the sun fills and which rule branch set it.
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda ems: (
+            plan.target
+            if (plan := ems.battery_schedule_service.morning_discharge) is not None
+            else None
+        ),
+        attr_fn=lambda ems: (
+            plan.to_dict()
+            if (plan := ems.battery_schedule_service.morning_discharge) is not None
+            else None
+        ),
+        icon="mdi:battery-arrow-down-outline",
+    ),
+    EmsSensorDescription(
         name="T1 SoC Reserve Extrap",
         # Highest reserve over today's LIVE + 4 EXTRAP variants, until 16:00
         # (EXTRAP has no tomorrow). Observation only — nothing acts on it yet.

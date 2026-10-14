@@ -46,6 +46,8 @@ from datetime import date, time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
+from .charge_curve import kwh_to_full
+
 if TYPE_CHECKING:
     from .pv_surplus import SurplusProfile
 
@@ -135,6 +137,25 @@ def _starts_latest_first(s0: int, lowest: int) -> list[int]:
     """S0 itself, then the whole hours below it down to `lowest`."""
     whole = range((s0 - 1) // 60, lowest // 60 - 1, -1)
     return [s0, *(hour * 60 for hour in whole if hour * 60 >= lowest)]
+
+
+def lowest_soc_the_sun_fills(
+    profile: SurplusProfile,
+    hour_prices: Sequence[float],
+    now: int,
+    s0: int,
+    floor: int,
+) -> int:
+    """Lowest SoC >= `floor` from which this forecast's start still fills the battery.
+
+    The automatic morning discharge stands on it: below, the battery would end
+    the day short and the afternoon charge would buy the rest from the grid.
+    100 when not even an almost full battery gets topped up.
+    """
+    for soc in range(floor, 100):
+        if find_candidate(profile, hour_prices, now, kwh_to_full(soc), s0).enough:
+            return soc
+    return 100
 
 
 def guarded_candidate(

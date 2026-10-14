@@ -17,7 +17,7 @@ Eight named slots — four per day (today / tomorrow):
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from .commands import OneShotParamsCommand, SlotCommand
 from .direction import Direction
@@ -33,6 +33,9 @@ from .events import (
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
 from .t1_reserve import T1SocReserve
+
+if TYPE_CHECKING:
+    from .morning_discharge import MorningDischargePlan
 
 # Store key of the single evening slot that predates the EARLY/LATE split.
 _LEGACY_EVENING_KEY = "DISCHARGE_EVENING"
@@ -121,6 +124,9 @@ class BatterySchedule:
         # the day, variant or window changes).
         self._t1_reserve_checkpoint = t1_reserve
         self._t1_reserve_checkpoint_at: datetime | None = None
+        # Today's automatic morning discharge — in memory only: it is rebuilt
+        # within a minute of a restart from the forecast and the prices.
+        self._morning_discharge: MorningDischargePlan | None = None
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -264,6 +270,23 @@ class BatterySchedule:
     def t1_reserve(self) -> T1SocReserve | None:
         """Latest remembered reserve, whatever day it is for."""
         return self._t1_reserve
+
+    def set_morning_discharge(self, plan: MorningDischargePlan | None) -> bool:
+        """Remember today's morning discharge plan. True if it changed."""
+        if self._morning_discharge == plan:
+            return False
+        self._morning_discharge = plan
+        return True
+
+    def morning_discharge_for(self, day: date) -> MorningDischargePlan | None:
+        """Return the plan when it is for `day`, else None."""
+        plan = self._morning_discharge
+        return plan if plan is not None and plan.day == day else None
+
+    @property
+    def morning_discharge(self) -> MorningDischargePlan | None:
+        """Latest plan, whatever day it is for."""
+        return self._morning_discharge
 
     def apply_slot_command(self, cmd: SlotCommand) -> bool:
         """Apply a slot Command to the targeted entry. True if entry changed.
@@ -444,7 +467,7 @@ class BatterySchedule:
         candidates = [
             self._effective_entry(k, now.date())
             for k in SlotKind.by_precedence()
-            if not (k.profile.auto_target and is_workday is False)
+            if not (k.profile.workdays_only and is_workday is False)
         ]
         engaging = [e for e in candidates if e.should_apply_now(now, current_soc)]
         return engaging[-1] if engaging else None
@@ -457,6 +480,11 @@ class BatterySchedule:
         predicate — window, DELAYED_TO_END, target reached — is the entry's own.
         """
         entry = self._today[kind]
+        if kind.profile.planned:
+            plan = self.morning_discharge_for(day)
+            if plan is None or not entry.enabled:
+                return entry.with_enabled(False)
+            return entry.with_plan(plan.start, plan.end, float(plan.target))
         if not kind.profile.auto_target:
             return entry
         reserve = self.t1_reserve_for(day)
@@ -466,6 +494,9 @@ class BatterySchedule:
 
     def _target_source(self, kind: SlotKind, day: date) -> str | None:
         """Where an auto-target slot's target came from; None for fixed slots."""
+        if kind.profile.planned:
+            plan = self.morning_discharge_for(day)
+            return plan.branch.value if plan is not None else "no plan"
         if not kind.profile.auto_target:
             return None
         reserve = self.t1_reserve_for(day)

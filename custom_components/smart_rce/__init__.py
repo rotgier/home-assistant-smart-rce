@@ -16,6 +16,7 @@ from homeassistant.util import dt as dt_util
 from .application.charge_start_shift_service import ChargeStartShiftService
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
+from .application.morning_discharge_service import MorningDischargeService
 from .application.pv_surplus_service import PvSurplusService
 from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
@@ -155,6 +156,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
             hass, _evaluate_charge_start_shift, minute=list(range(1, 60, 5)), second=0
         )
     )
+
+    # Automatic morning discharge: plan rebuilt every minute, after the surplus
+    # tick (second 5) has refreshed what is still to come.
+    morning_discharge = MorningDischargeService(ems, pv_surplus, dt_util.now)
+
+    @callback
+    def _refresh_morning_discharge(_now: object) -> None:
+        morning_discharge.refresh()
+
+    entry.async_on_unload(
+        async_track_time_change(hass, _refresh_morning_discharge, second=10)
+    )
+    morning_discharge.refresh()
 
     weather_history_loader = WeatherHistoryLoader(hass)
     weather_table_service = WeatherTableService(

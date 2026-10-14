@@ -120,6 +120,18 @@ class BatteryScheduleEntry:
     def with_behavior(self, value: SlotBehavior) -> BatteryScheduleEntry:
         return dataclasses.replace(self, behavior=value)
 
+    def with_plan(
+        self, start: time, end: time, target_soc: float
+    ) -> BatteryScheduleEntry:
+        """Window and target from a plan, landing on the target at the end."""
+        return dataclasses.replace(
+            self,
+            start=start,
+            end=end,
+            target_soc=target_soc,
+            behavior=SlotBehavior.DELAYED_TO_END,
+        )
+
     # ─── Predicates (window + target + lifecycle) ───
 
     def should_apply_now(self, now: datetime, current_soc: float) -> bool:
@@ -278,6 +290,11 @@ class SlotProfile:
     # Target comes from the morning-charge forecast instead of the slot's own
     # number, which then serves only as the fallback when no forecast exists.
     auto_target: bool = False
+    # Window and target come from today's `MorningDischargePlan`; without a plan
+    # the slot stands still. The slot's own window bounds the hours searched.
+    planned: bool = False
+    # Stays out on a day the workday sensor reports as off.
+    workdays_only: bool = False
     # DELAYED_TO_END starts this many seconds earlier than the rate model asks.
     # Charge slots only: a charge that lands a few minutes early costs nothing,
     # one that misses its deadline buys the shortfall at the next zone's price.
@@ -316,8 +333,23 @@ class SlotKind(Enum):
         # target exists for the day.
         default_target_soc=60.0,
         auto_target=True,
+        workdays_only=True,
         delayed_lead_sec=_CHARGE_LEAD_SEC,
         min_start_gap_pp=3.0,
+    )
+
+    DISCHARGE_MORNING_AUTO = SlotProfile(
+        direction=Direction.DISCHARGE,
+        notification_level=NotificationLevel.NORMAL,
+        # The hours searched for the dearest one; the plan narrows the window
+        # to that hour and also stops it at the charge start.
+        default_window=(time(7, 0), time(10, 0)),
+        # Never discharges by itself: without a plan the slot stands still.
+        default_target_soc=100.0,
+        planned=True,
+        workdays_only=True,
+        # A target moving by a point must not start a one-minute discharge.
+        min_start_gap_pp=2.0,
     )
 
     DISCHARGE_MORNING = SlotProfile(
@@ -388,12 +420,14 @@ class SlotKind(Enum):
         can wait). Evening discharge beats morning (typically higher RCE
         peak). Afternoon charge beats morning charge (closer to use, less
         time wasted holding). The manual morning charge beats the automatic
-        one — it is the fallback the user reaches for when auto misbehaves.
+        one — it is the fallback the user reaches for when auto misbehaves; the
+        same holds for the morning discharge.
         """
         return [
             cls.CHARGE_MORNING_AUTO,
             cls.CHARGE_MORNING,
             cls.CHARGE_AFTERNOON,
+            cls.DISCHARGE_MORNING_AUTO,
             cls.DISCHARGE_MORNING,
             cls.DISCHARGE_EVENING_EARLY,
             cls.DISCHARGE_EVENING_MID,

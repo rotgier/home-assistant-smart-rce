@@ -37,6 +37,7 @@ from ..domain.battery_schedule import (
     BatteryScheduleEntry,
     BatteryScheduleInput,
     Direction,
+    MorningDischargePlan,
     OneShotOperation,
     OneShotParams,
     OneShotParamsCommand,
@@ -258,6 +259,17 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     def t1_reserve(self) -> T1SocReserve | None:
         """Latest remembered LIVE_SOFT reserve (any day)."""
         return self._repo.schedule.t1_reserve
+
+    @callback
+    def set_morning_discharge(self, plan: MorningDischargePlan | None) -> None:
+        """Take today's automatic morning discharge plan (in memory only)."""
+        if self._repo.schedule.set_morning_discharge(plan):
+            self._notify_all()
+
+    @property
+    def morning_discharge(self) -> MorningDischargePlan | None:
+        """Today's automatic morning discharge plan, None when there is none."""
+        return self._repo.schedule.morning_discharge_for(self._clock().date())
 
     @property
     def t1_reserve_extrap(self) -> T1SocReserve | None:
