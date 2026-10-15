@@ -210,6 +210,7 @@ def day_card(score: DayScore) -> dict[str, Any]:
             "earlier_days": len(score.earlier_workdays),
             "buffer": setup.buffer_percent,
             "margin": setup.margin,
+            "margin_live_cap": setup.margin_live_cap,
         },
         "reserve_summary": [
             {

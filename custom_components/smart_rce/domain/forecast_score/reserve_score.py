@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Final
 from ..battery_schedule.t1_reserve import T1SocReserve
 from ..bucket import PV_WINDOW_HOURS
 from ..consumption_profiles import ConsumptionProfile
+from ..pv_forecast import PvForecast
 from ..target_soc import (
     BATTERY_CAPACITY_KWH,
     LOSS_FACTOR,
@@ -171,16 +172,32 @@ def _production(
     reading = rule.on_forecast(result, ctx) if result is not None else None
     if reading is None:
         return None
-    reading = min(100, reading)
-    margin = T1SocReserve.margin_pp_at(ctx.target_date, ctx.now) if setup.margin else 0
+    margin = _margin(snapshot, ctx, setup, rule, reading)
     return ProductionReserve(
         setup=setup.label,
         needed=views.target(views.model(views.cons), rule.buffer).value,
         needed_with_model=rule.on_actual(views),
         asked=min(100, reading + margin),
-        asked_without_margin=reading,
+        asked_without_margin=min(100, reading),
         margin_pp=margin,
     )
+
+
+def _margin(
+    snapshot: ScoredSnapshot,
+    ctx: TargetSocContext,
+    setup: ProductionSetup,
+    rule: _Rule,
+    reading: int,
+) -> int:
+    """Production's own margin at the moment — the same functions it calls."""
+    if not setup.margin:
+        return 0
+    if not setup.margin_live_cap:
+        return T1SocReserve.margin_pp_at(ctx.target_date, ctx.now)
+    live = snapshot.result(PvForecast.LIVE.key)
+    live_reading = rule.on_forecast(live, ctx) if live is not None else None
+    return T1SocReserve.margin_pp_for(ctx.target_date, ctx.now, reading, live_reading)
 
 
 def _score_models(

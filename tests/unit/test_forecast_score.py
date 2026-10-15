@@ -460,3 +460,21 @@ def test_day_actuals_from_now_counts_only_what_came_after(energy):
     assert later.get(8, 0) == 0.0
     assert later.get(9, 0) == whole.get(9, 0)
     assert 0.0 <= later.get(8, 30) <= whole.get(8, 30)
+
+
+def test_the_0809_step_is_capped_by_live(energy, snapshots):
+    """The 08-09 margin is max(0, min(5, Live - Soft)), as production computes it."""
+    day = DAYS[-1]
+    moments, _ = score_reserve(
+        DayActuals(energy[day], TZ),
+        vr.from_archive(snapshots[day]),
+        _earlier_workdays(day, energy),
+        CURRENT,
+    )
+    line = next(m for m in moments if m.label == "08:41")
+    soft, live = line.variant("live_soft"), line.variant("live")
+    assert line.production is not None
+    assert soft is not None
+    assert live is not None
+    assert line.production.margin_pp == max(0, min(5, live.reserve - soft.reserve))
+    assert CURRENT.margin_live_cap
