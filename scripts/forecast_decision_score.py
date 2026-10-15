@@ -282,17 +282,19 @@ def score_d1(d, replayed, energy):
         for i, v in enumerate(en.series["battery_soc_pct"])
         if v is not None and 84 <= i < 156
     ]  # 07:00-13:00
+    # Import counts per HOUR of net balance (net-billing settles hourly): a 5-min
+    # import within an hour that exports overall is not an import.
+    series = en.series["grid_net_export_kwh"]
     grid = [
-        v
-        for i, v in enumerate(en.series["grid_net_export_kwh"])
-        if v is not None and 84 <= i < 156
+        sum(v for v in series[h * 12 : (h + 1) * 12] if v is not None)
+        for h in range(7, 13)
     ]
     prod = (
         d,
         truth_value,
         round(need_raw, 1),
         min(soc) if soc else None,
-        round(-sum(min(g, 0) for g in grid), 2),
+        round(sum(max(-g, 0.0) for g in grid), 2),
         len(prev),
     )
     return rows, cons_rows, prod
