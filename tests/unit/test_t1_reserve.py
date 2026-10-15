@@ -329,10 +329,25 @@ class TestResolveT1Reserve:
         r = self._live(3)
         assert (r.day, r.value, r.source, r.window) == (
             DAY,
-            31,
+            46,
             "live_soft",
             ReserveWindow.FULL,
         )
+        assert (r.value_without_margin, r.margin_pp) == (31, 15)
+
+    def test_margin_steps_down_through_the_morning(self):
+        assert [
+            self._live(h, m).margin_pp
+            for h, m in ((6, 59), (7, 0), (8, 0), (9, 0), (13, 0))
+        ] == [15, 10, 5, 0, 0]
+        assert self._live(8, 30).value == 31 + 5
+
+    def test_extrap_reserve_has_no_margin(self):
+        r = BatteryScheduleService._resolve_extrap_reserve(  # noqa: SLF001
+            _at(6), self._catalog()
+        )
+        assert r is not None
+        assert r.margin_pp == 0
 
     def test_t1_hours_are_what_is_left(self):
         assert self._live(7).window is ReserveWindow.REMAINING
@@ -347,7 +362,7 @@ class TestResolveT1Reserve:
         r = self._live(16)
         assert (r.day, r.value, r.source, r.window) == (
             date(2026, 10, 13),
-            44,
+            59,  # the night charge target: 44 + 15
             "tomorrow_live_soft",
             ReserveWindow.FULL,
         )
@@ -434,3 +449,54 @@ class TestNotification:
 
     def test_fixed_slot_shows_plain_target(self):
         assert self._message(None).endswith("target 40%.")
+
+
+class TestMargin:
+    """Falling margin on top of the reserve (decision 15.10.2026)."""
+
+    def test_steps_on_the_reserve_day(self):
+        steps = [
+            T1SocReserve.margin_pp_at(DAY, _at(h, m))
+            for h, m in (
+                (0, 0),
+                (6, 59),
+                (7, 0),
+                (7, 59),
+                (8, 0),
+                (8, 59),
+                (9, 0),
+                (15, 0),
+            )
+        ]
+        assert steps == [15, 15, 10, 10, 5, 5, 0, 0]
+
+    def test_evening_before_takes_the_first_step_and_a_past_day_none(self):
+        assert (
+            T1SocReserve.margin_pp_at(DAY, _at(18, day=DAY - timedelta(days=1))) == 15
+        )
+        assert T1SocReserve.margin_pp_at(DAY, _at(6, day=DAY + timedelta(days=1))) == 0
+
+    def test_capped_at_100_and_round_trips(self):
+        ts = TargetSoc(variant=PvForecast.LIVE, flat=_result(95), prev_days=[])
+        r = T1SocReserve.from_target_soc(
+            DAY, ts, source="live", window=ReserveWindow.FULL, margin_pp=15
+        )
+        assert r is not None
+        assert (r.value, r.value_without_margin, r.margin_pp) == (100, 95, 15)
+        assert T1SocReserve.from_dict(r.to_dict()) == r
+
+    def test_value_at_reads_the_step_of_the_given_moment(self):
+        ts = TargetSoc(variant=PvForecast.LIVE, flat=_result(25), prev_days=[])
+        r = T1SocReserve.from_target_soc(
+            DAY, ts, source="live", window=ReserveWindow.REMAINING, margin_pp=10
+        )
+        assert r is not None
+        assert r.value == 35  # seen at 07:41
+        assert [r.value_at(_at(h)) for h in (7, 8, 9)] == [35, 30, 25]
+
+    def test_reserve_stored_before_the_margin_reads_as_without(self):
+        old = T1SocReserve.from_dict(
+            {"day": DAY.isoformat(), "value": 31, "source": "live_soft"}
+        )
+        assert old is not None
+        assert (old.margin_pp, old.value_at(_at(8))) == (0, 36)

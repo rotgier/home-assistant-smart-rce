@@ -187,9 +187,10 @@ def _service(rate: float, *, s0: time = time(11, 0), workday=True, now=None):
 class TestService:
     def test_plenty_of_sun_stands_on_the_reserve_in_the_dearest_hour(self):
         plan = _service(6.0)
+        # Reserve 25 without margin; the 08:00 hour stands on the 08 step (+5).
         assert (plan.hour, plan.target, plan.branch) == (
             8,
-            25,
+            30,
             MorningDischargeBranch.SUN_ENOUGH,
         )
         assert plan.gross_price == pytest.approx(1100 * 1.23)

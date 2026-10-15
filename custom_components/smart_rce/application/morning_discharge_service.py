@@ -72,19 +72,24 @@ class MorningDischargeService:
         hour = next((h for h in hours if h >= now.hour), None)
         if hour is None:
             return None
+        # The line the hour stands on: the margin step at the hour's start,
+        # not now's (at 07:41 the plan for 08:00 already takes the 08 step).
+        line = reserve.value_at(
+            now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        )
         profile = self._pv_surplus.today_profile(history=True, pv_scale=1.0)
         if profile is None:
             profile = self._pv_surplus.today_profile(history=False, pv_scale=1.0)
         if profile is None:
             return None
         fill = lowest_soc_the_sun_fills(
-            profile, prices.hour_price, (hour + 1) * 60, to_minutes(s0), reserve.value
+            profile, prices.hour_price, (hour + 1) * 60, to_minutes(s0), line
         )
         return MorningDischargePlan.decide(
             day=now.date(),
             hour=hour,
             gross_price=prices.gross_at(hour),
-            reserve=reserve.value,
+            reserve=line,
             fill=fill,
             hours=hours,
         )

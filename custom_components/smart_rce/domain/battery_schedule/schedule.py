@@ -488,6 +488,8 @@ class BatterySchedule:
         if not kind.profile.auto_target:
             return entry
         reserve = self.t1_reserve_for(day)
+        # Without a reserve the slot's own target (60%) stands — no margin on
+        # it: the fallback is already the generous guess the margin stands in for.
         if reserve is None:
             return entry
         return entry.with_target_soc(float(reserve.value))
