@@ -118,7 +118,13 @@ class ForecastScoreService:
                 spans=self._spans_of(stored),
                 write=False,
             )
-            if checked is not None:
+            if checked is not None and self._degraded(checked, stored):
+                _LOGGER.warning(
+                    "Forecast score: %s rescored from the archive lost a decision"
+                    " (prices or snapshots unavailable?) — the 21:06 final stays",
+                    yesterday,
+                )
+            elif checked is not None:
                 moved = checked.differences(stored)
                 if moved:
                     _LOGGER.warning(
@@ -228,7 +234,10 @@ class ForecastScoreService:
         scored = await self._hass.async_add_executor_job(from_archive, snapshots)
         actuals = DayActuals(energy, self._tz())
         prices = await self._sources.prices(day)
-        s0 = self._sources.s0(day, prices)
+        if start is not None and start.s0 is not None:
+            s0: int | None = start.s0  # the check: S0 as 21:06 saw it
+        else:
+            s0 = self._sources.s0(day, prices)
         if start is None:
             start = await self._start_fact(day, actuals, s0)
         if spans is None:
@@ -264,6 +273,13 @@ class ForecastScoreService:
         rise = start_from_soc_rise(actuals)
         return ChargeStartFact(
             rise, "soc_rise" if rise is not None else "none", s0, locked, manual
+        )
+
+    @staticmethod
+    def _degraded(checked: DayScore, stored: DayScore) -> bool:
+        """Tell a rescore that lost a decision the final has — not a correction."""
+        return (not checked.start and bool(stored.start)) or (
+            not checked.reserve and bool(stored.reserve)
         )
 
     @staticmethod

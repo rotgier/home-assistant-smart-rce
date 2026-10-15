@@ -39,6 +39,7 @@ class _Sources:
         self._energy = DailyJsonlArchive(FIXTURE / "energy")
         self._prices = json.loads((FIXTURE / "rce_prices.json").read_text())
         self.recorder_pv_scale = 1.0
+        self.prices_available = True
 
     async def snapshots(self, day: date) -> list[ForecastSnapshot]:
         return [ForecastSnapshot.from_dict(r) for r in self._forecast.read_day(day)]
@@ -74,6 +75,8 @@ class _Sources:
         return out
 
     async def prices(self, day: date) -> tuple[float, ...] | None:
+        if not self.prices_available:
+            return None
         found = self._prices.get(day.isoformat())
         return tuple(found) if found else None
 
@@ -164,3 +167,22 @@ async def test_catch_up_scores_missed_days_and_rankings_read_finals(
     assert score.status is ScoreStatus.FINAL
     ranking = await service.async_ranking(date(2026, 10, 15))
     assert ranking["days"] == [DAY.isoformat()]
+
+
+async def test_check_without_prices_keeps_the_final(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    sources = _Sources()
+    sources.recorder_pv_scale = 0.5  # would differ — but the check is degraded
+    service, archive = _service(
+        hass, tmp_path, datetime(2026, 10, 14, 21, 6, tzinfo=TZ), sources
+    )
+    await service.async_final()
+    stored = await service.async_day(DAY)
+    assert stored is not None
+    assert stored.start
+    sources.prices_available = False  # the PSE API fails at 00:20
+    service._clock = lambda: datetime(2026, 10, 15, 0, 20, tzinfo=TZ)  # noqa: SLF001
+    await service.async_check()
+    assert len(archive.records(DAY)) == 1
+    assert await service.async_day(DAY) == stored
