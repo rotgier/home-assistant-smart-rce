@@ -39,14 +39,10 @@ if TYPE_CHECKING:
     from ..pv_forecast import ForecastContext
     from ..pv_forecast.forecast_snapshot import ForecastSnapshot
 
-# Production steers by Live Soft (alpha 0.5 on 14.10.2026, 0.4 since 15.10).
+# Production steers by Live Soft (alpha 0.4 since 15.10.2026). Live Soft is
+# always computed here — the archive holds it with the alpha of its day — so a
+# ranking row never mixes alphas; `production_setup` picks the day's variant.
 PRODUCTION_VARIANT: Final = PvForecast.LIVE_SOFT.key
-# The result production actually steered by — the archived Live Soft, whatever
-# its alpha was that day. The variant ranking reads `live_soft` instead, always
-# computed with today's alpha, so a ranking row never mixes alphas. Days rebuilt
-# from the recorder (before 14.10) have no archived Live Soft — production ran
-# plain Live then — and get today's setup, rescored.
-PRODUCTION: Final = "production"
 RAW_SOLCAST: Final = "solcast_p50"
 EXTRA_ALPHAS: Final = (0.3, 0.5, 0.6)
 
@@ -98,9 +94,6 @@ def from_archive(snapshots: Iterable[ForecastSnapshot]) -> list[ScoredSnapshot]:
         computed = extras.update(snapshot.context)
         archived = {key: outcome.result for key, outcome in snapshot.variants.items()}
         results = {key: computed.get(key) for key in _ExtraStrategies.ALWAYS}
-        results[PRODUCTION] = archived.get(PRODUCTION_VARIANT) or computed.get(
-            PRODUCTION_VARIANT
-        )
         for key in SCORED_VARIANTS:
             if key in results:
                 continue
@@ -136,7 +129,6 @@ def replay(snapshots: Iterable[ForecastSnapshot]) -> list[ScoredSnapshot]:
         }
         results |= {key: strategy.result for key, strategy in extras.items()}
         results[RAW_SOLCAST] = raw_solcast(ctx)
-        results[PRODUCTION] = results[PRODUCTION_VARIANT]
         out.append(ScoredSnapshot(snapshot.taken_at, ctx, results, snapshot.source))
     return out
 

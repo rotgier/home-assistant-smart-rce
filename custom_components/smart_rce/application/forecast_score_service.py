@@ -40,6 +40,7 @@ from ..domain.forecast_score.variant_results import from_archive
 from ..domain.pv_surplus import DayType
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import tzinfo
 
     from homeassistant.core import HomeAssistant
@@ -72,6 +73,7 @@ class ForecastScoreService:
         clock: Callable[[], datetime],
         tz: Callable[[], tzinfo],
         code_version: str,
+        publish: Callable[[Sequence[DayScore]], None],
     ) -> None:
         self._hass = hass
         self._sources = sources
@@ -80,6 +82,8 @@ class ForecastScoreService:
         self._clock = clock
         self._tz = tz
         self._code_version = code_version
+        # Final days out as daily long-term statistics (rewrites a day's row).
+        self._publish = publish
         self._cache: dict[date, DayScore | None] = {}
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
 
@@ -158,6 +162,7 @@ class ForecastScoreService:
                 await self.async_final()
         elif now.time() >= self.PRELIMINARY_AT and stored is None:
             await self.async_preliminary()
+        await self._publish_all(today)
 
     # --- reads (sensors) --- #
 
@@ -185,9 +190,17 @@ class ForecastScoreService:
 
     @property
     def latest(self) -> DayScore | None:
-        """The most recent scored day in memory (headline sensors)."""
-        scored = [s for s in self._cache.values() if s is not None]
-        return max(scored, key=lambda s: (s.day, s.computed_at)) if scored else None
+        """The most recent FINAL day in memory (the "last final" sensors).
+
+        A preliminary result never shows here: it would make the sensors jump
+        at 16:06 and back at 21:06.
+        """
+        finals = [
+            s
+            for s in self._cache.values()
+            if s is not None and s.status is ScoreStatus.FINAL
+        ]
+        return max(finals, key=lambda s: (s.day, s.computed_at)) if finals else None
 
     # --- scoring --- #
 
@@ -275,6 +288,18 @@ class ForecastScoreService:
             rise, "soc_rise" if rise is not None else "none", s0, locked, manual
         )
 
+    async def _publish_all(self, today: date) -> None:
+        """Rewrite the daily statistics of every final day (startup)."""
+        finals: list[DayScore] = []
+        day = self.FIRST_DAY
+        while day <= today:
+            score = await self.async_day(day)
+            if score is not None and score.status is ScoreStatus.FINAL:
+                finals.append(score)
+            day += timedelta(days=1)
+        if finals:
+            self._publish(finals)
+
     @staticmethod
     def _degraded(checked: DayScore, stored: DayScore) -> bool:
         """Tell a rescore that lost a decision the final has — not a correction."""
@@ -297,6 +322,8 @@ class ForecastScoreService:
             _LOGGER.exception("Forecast score: writing %s failed", score.day)
             return
         self._cache[score.day] = score
+        if score.status is ScoreStatus.FINAL:
+            self._publish([score])
         _LOGGER.info(
             "Forecast score %s %s: reserve %s pp (PV %s, consumption %s), start %s h",
             score.day,

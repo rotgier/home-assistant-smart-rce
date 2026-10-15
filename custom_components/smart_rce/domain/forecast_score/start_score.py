@@ -34,9 +34,10 @@ from ..charge_start_shift import (
     to_minutes,
 )
 from ..pv_surplus import SLOT_MINUTES, SurplusProfile, minute_of_day
-from .consumption_models import PRODUCTION_MODEL, ConsumptionModel
+from .consumption_models import ConsumptionModel
 from .day_actuals import CONSUMPTION, PV
-from .variant_results import PRODUCTION, SCORED_VARIANTS, consumed
+from .production_setup import CURRENT, ProductionSetup
+from .variant_results import SCORED_VARIANTS, consumed
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -66,8 +67,13 @@ def score_start(  # noqa: PLR0917 — one call site, inputs of one day
     s0: int,
     earlier_same_type: Sequence[Mapping[int, float]],
     actual_start: int | None,
+    setup: ProductionSetup = CURRENT,
 ) -> tuple[MomentStart, ...]:
-    """Every charge-start moment of the day that came before S0."""
+    """Every charge-start moment of the day that came before S0.
+
+    Variants are ranked with today's setup (`CURRENT`); `setup` is the one
+    production ran on that day — its call is the facts panel's.
+    """
     pv = actuals.half_hours(PV)
     cons = actuals.half_hours(CONSUMPTION)
     world = _World(
@@ -77,8 +83,10 @@ def score_start(  # noqa: PLR0917 — one call site, inputs of one day
         pv=pv,
         actual=SurplusProfile.build(actuals.day, pv, cons),
         cons=cons,
-        model=PRODUCTION_MODEL.half_hours(earlier_same_type),
+        model=CURRENT.start_model.half_hours(earlier_same_type),
         earlier=earlier_same_type,
+        setup=setup,
+        setup_model=setup.start_model.half_hours(earlier_same_type),
     )
     moments = [(label, to_minutes(at)) for label, at in PREVIEW_MOMENTS]
     decided = last_evaluation_before(actual_start) if actual_start is not None else None
@@ -127,6 +135,8 @@ class _World:
     cons: dict[int, float]
     model: dict[int, float] | None  # None = flat 0.9 kWh/h (no history yet)
     earlier: Sequence[Mapping[int, float]]
+    setup: ProductionSetup
+    setup_model: dict[int, float] | None
 
     def score(
         self, label: str, now: int, snapshot: ScoredSnapshot, soc: float
@@ -153,17 +163,21 @@ class _World:
                     ),
                 )
             )
-        production_result = snapshot.result(PRODUCTION)
-        production_fc = (
-            forecast_half_hours(production_result, self.day)
-            if production_result is not None
-            else {}
-        )
+        production_fc = self._forecast(snapshot, CURRENT.pv_variant)
+        setup_fc = self._forecast(snapshot, self.setup.pv_variant)
         production = (
-            self._call(
-                self._candidate(production_fc, self.model, now, need), star_actual, need
+            ProductionStart(
+                setup=self.setup.label,
+                call=self._call(
+                    self._candidate(setup_fc, self.setup_model, now, need),
+                    star_actual,
+                    need,
+                ),
+                benchmark_model=self._candidate(
+                    self.pv, self.setup_model, now, need
+                ).start,
             )
-            if production_fc
+            if setup_fc
             else None
         )
         return MomentStart(
@@ -179,6 +193,10 @@ class _World:
             variants=tuple(variants),
             models=self._models(now, need, star_actual, production_fc),
         )
+
+    def _forecast(self, snapshot: ScoredSnapshot, variant: str) -> dict[int, float]:
+        result = snapshot.result(variant)
+        return forecast_half_hours(result, self.day) if result is not None else {}
 
     def _models(
         self,
@@ -354,6 +372,38 @@ class ModelStart:
 
 
 @dataclass(frozen=True)
+class ProductionStart:
+    """Production's call with the setup of the day, and its benchmark with that model.
+
+    Δ = PV part (call − benchmark_model) + consumption part (benchmark_model −
+    benchmark of actual PV and consumption), in hours.
+    """
+
+    setup: str
+    call: StartCall  # against the benchmark of actual PV + actual consumption
+    benchmark_model: int  # the rule on actual PV + the day's consumption model
+
+    @property
+    def pv_part_h(self) -> float:
+        return round((self.call.start - self.benchmark_model) / 60, 3)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "setup": self.setup,
+            "call": self.call.to_dict(),
+            "benchmark_model": self.benchmark_model,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ProductionStart:
+        return cls(
+            setup=str(data["setup"]),
+            call=StartCall.from_dict(data["call"]),
+            benchmark_model=int(data["benchmark_model"]),
+        )
+
+
+@dataclass(frozen=True)
 class MomentStart:
     """The charge start at one moment: benchmarks, production, per variant and model."""
 
@@ -364,8 +414,8 @@ class MomentStart:
     need_kwh: float
     benchmark: int  # the rule on actual PV + actual consumption
     benchmark_enough: bool
-    benchmark_model: int  # the rule on actual PV + production consumption model
-    production: StartCall | None  # production forecast + model vs `benchmark`
+    benchmark_model: int  # the rule on actual PV + today's consumption model
+    production: ProductionStart | None  # the day's setup vs `benchmark`
     variants: tuple[VariantStart, ...]
     models: tuple[ModelStart, ...]
 
@@ -373,11 +423,13 @@ class MomentStart:
     def pv_part_h(self) -> float | None:
         if self.production is None:
             return None
-        return round((self.production.start - self.benchmark_model) / 60, 3)
+        return self.production.pv_part_h
 
     @property
-    def consumption_part_h(self) -> float:
-        return round((self.benchmark_model - self.benchmark) / 60, 3)
+    def consumption_part_h(self) -> float | None:
+        if self.production is None:
+            return None
+        return round((self.production.benchmark_model - self.benchmark) / 60, 3)
 
     def variant(self, key: str) -> VariantStart | None:
         return next((v for v in self.variants if v.variant == key), None)
@@ -411,7 +463,11 @@ class MomentStart:
             benchmark=int(data["benchmark"]),
             benchmark_enough=bool(data["benchmark_enough"]),
             benchmark_model=int(data["benchmark_model"]),
-            production=StartCall.from_dict(raw) if raw is not None else None,
+            production=(
+                ProductionStart.from_dict(raw)
+                if isinstance(raw, dict) and "call" in raw
+                else None
+            ),
             variants=tuple(VariantStart.from_dict(v) for v in data["variants"]),
             models=tuple(ModelStart.from_dict(m) for m in data["models"]),
         )

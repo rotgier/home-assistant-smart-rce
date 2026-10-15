@@ -14,7 +14,9 @@ short), in SoC points.
 The production error splits exactly into two parts:
 - PV part  = R(actual PV, model) − R(forecast PV, model) — the variant ranking;
 - consumption part = R(actual PV, actual cons) − R(actual PV, model);
-where `model` is production's consumption model (p60 of earlier workdays).
+where `model` is production's consumption rule. The ranking uses today's setup
+(p60 of earlier workdays); the facts panel the setup the day ran on
+(`production_setup`: the old max-of rule and buffer 12 until 14.10).
 Next to every PV part: the same with ACTUAL consumption on both sides, and the
 difference — how much the consumption model colours the PV score.
 """
@@ -40,13 +42,15 @@ from ..target_soc import (
     now_aware_consumption,
     target_soc_for,
 )
-from .consumption_models import PRODUCTION_MODEL, ConsumptionModel, window_profile
+from .consumption_models import ConsumptionModel, window_profile
 from .day_actuals import CONSUMPTION, PV
-from .variant_results import PRODUCTION, SCORED_VARIANTS, consumed
+from .production_setup import CURRENT, ProductionSetup
+from .variant_results import SCORED_VARIANTS, consumed
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
+    from ..pv_forecast import PvForecastResult
     from .day_actuals import DayActuals
     from .variant_results import ScoredSnapshot
 
@@ -74,20 +78,28 @@ def score_reserve(
     actuals: DayActuals,
     snapshots: Sequence[ScoredSnapshot],
     earlier_workdays: Sequence[Mapping[int, float]],
+    setup: ProductionSetup = CURRENT,
 ) -> tuple[tuple[MomentReserve, ...], tuple[ModelReserve, ...]]:
-    """Every reserve moment of the day, and the consumption models at 06:11."""
-    model = PRODUCTION_MODEL.reserve_profile(earlier_workdays)
-    if model is None:  # production falls back to flat without history
-        model = ConsumptionProfile.flat()
+    """Every reserve moment of the day, and the consumption models at 06:11.
+
+    Variants are ranked with today's setup (`CURRENT`); `setup` is the one
+    production ran on that day — the facts panel.
+    """
+    ranking_rule = _Rule(
+        CURRENT.reserve_model, earlier_workdays, CURRENT.buffer_percent
+    )
+    production_rule = _Rule(setup.reserve_model, earlier_workdays, setup.buffer_percent)
     moments: list[MomentReserve] = []
     for moment in RESERVE_MOMENTS:
         snapshot = consumed(
             snapshots, datetime.combine(actuals.day, moment.at, actuals.tz)
         )
         if snapshot is not None:
-            scored = _score_moment(moment, snapshot, actuals, model)
-            if scored is not None:
-                moments.append(scored)
+            moments.append(
+                _score_moment(
+                    moment, snapshot, actuals, ranking_rule, setup, production_rule
+                )
+            )
     main = next((m for m in moments if m.label == MAIN_MOMENT.label), None)
     models = (
         _score_models(actuals, snapshots, earlier_workdays, main)
@@ -97,36 +109,34 @@ def score_reserve(
     return tuple(moments), models
 
 
-def _score_moment(
+def _score_moment(  # noqa: PLR0917 — one caller, the moment's whole world
     moment: ReserveMoment,
     snapshot: ScoredSnapshot,
     actuals: DayActuals,
-    model: ConsumptionProfile,
-) -> MomentReserve | None:
+    rule: _Rule,
+    setup: ProductionSetup,
+    production_rule: _Rule,
+) -> MomentReserve:
     ctx = _target_ctx(actuals.day, snapshot)
     views = _ActualViews(actuals, ctx)
-    needed = views.target(views.model(views.cons))
-    with_model = views.target(views.model(model))
-    production_result = snapshot.result(PRODUCTION)
-    production = (
-        target_soc_for(production_result, model, ctx, is_today=True)
-        if production_result is not None
-        else None
-    )
+    needed = views.target(views.model(views.cons), rule.buffer)
+    with_model = rule.on_actual(views)
     variants: list[VariantReserve] = []
     for variant in SCORED_VARIANTS:
         result = snapshot.result(variant)
         if result is None:
             continue
-        on_model = target_soc_for(result, model, ctx, is_today=True)
-        on_actual = target_soc_for(result, views.cons, ctx, is_today=True)
+        on_model = rule.on_forecast(result, ctx)
+        on_actual = target_soc_for(
+            result, views.cons, ctx, is_today=True, buffer_percent=rule.buffer
+        )
         if on_model is None or on_actual is None:
             continue
         variants.append(
             VariantReserve(
                 variant=variant,
-                reserve=on_model.value,
-                pv_error_pp=with_model.value - on_model.value,
+                reserve=on_model,
+                pv_error_pp=with_model - on_model,
                 pv_error_actual_cons_pp=needed.value - on_actual.value,
             )
         )
@@ -136,9 +146,29 @@ def _score_moment(
         start_charge_hour=ctx.start_charge_hour,
         needed=needed.value,
         needed_strict=round(MIN_SOC_PERCENT + soc_points(needed.dip_kwh), 1),
-        needed_with_model=with_model.value,
-        production=production.value if production is not None else None,
+        needed_with_model=with_model,
         variants=tuple(variants),
+        production=_production(snapshot, ctx, views, setup, production_rule),
+    )
+
+
+def _production(
+    snapshot: ScoredSnapshot,
+    ctx: TargetSocContext,
+    views: _ActualViews,
+    setup: ProductionSetup,
+    rule: _Rule,
+) -> ProductionReserve | None:
+    """Score what production asked for that day, with that day's setup."""
+    result = snapshot.result(setup.pv_variant)
+    asked = rule.on_forecast(result, ctx) if result is not None else None
+    if asked is None:
+        return None
+    return ProductionReserve(
+        setup=setup.label,
+        needed=views.target(views.model(views.cons), rule.buffer).value,
+        needed_with_model=rule.on_actual(views),
+        asked=asked,
     )
 
 
@@ -155,27 +185,21 @@ def _score_models(
     assert snapshot is not None  # `main` exists, so it was found
     ctx = _target_ctx(actuals.day, snapshot)
     views = _ActualViews(actuals, ctx)
-    production_result = snapshot.result(PRODUCTION)
+    production_result = snapshot.result(CURRENT.pv_variant)
     out: list[ModelReserve] = []
     for model in ConsumptionModel:
-        if model is ConsumptionModel.OLD_RULE:
-            on_actual_pv = _old_rule(views, earlier)
-            on_forecast = None
-        else:
-            profile = model.reserve_profile(earlier)
-            if profile is None:
-                continue
-            on_actual_pv = views.target(views.model(profile)).value
-            forecast = (
-                target_soc_for(production_result, profile, ctx, is_today=True)
-                if production_result is not None
-                else None
-            )
-            on_forecast = forecast.value if forecast is not None else None
+        if model.is_profile and model.reserve_profile(earlier) is None:
+            continue
+        rule = _Rule(model, earlier, CURRENT.buffer_percent)
+        on_forecast = (
+            rule.on_forecast(production_result, ctx)
+            if production_result is not None
+            else None
+        )
         out.append(
             ModelReserve(
                 model=model.key,
-                error_pp=main.needed - on_actual_pv,
+                error_pp=main.needed - rule.on_actual(views),
                 error_production_pv_pp=(
                     main.needed - on_forecast if on_forecast is not None else None
                 ),
@@ -183,14 +207,6 @@ def _score_models(
             )
         )
     return tuple(out)
-
-
-def _old_rule(views: _ActualViews, earlier: Sequence[Mapping[int, float]]) -> int:
-    """Max of flat and the earlier days without the worst (production until 14.10)."""
-    flat = views.target(views.model(ConsumptionProfile.flat())).value
-    per_day = [views.target(views.model(window_profile(day))).value for day in earlier]
-    without_worst = T1SocReserve.prev_without_worst_of(per_day)
-    return max(flat, without_worst) if without_worst is not None else flat
 
 
 def soc_points(kwh: float) -> float:
@@ -209,6 +225,54 @@ def _target_ctx(day: date, snapshot: ScoredSnapshot) -> TargetSocContext:
         now=ctx.now,
         now_in_window=ctx.now.hour in PV_WINDOW_HOURS and ctx.now.date() == day,
     )
+
+
+@dataclass(frozen=True)
+class _Rule:
+    """A reserve rule: consumption model (or the old max-of rule) and buffer."""
+
+    model: ConsumptionModel
+    earlier: Sequence[Mapping[int, float]]
+    buffer: int
+
+    def on_actual(self, views: _ActualViews) -> int:
+        """Return the reserve this rule asks for with ACTUAL PV."""
+        return self._apply(
+            lambda cons: views.target(views.model(cons), self.buffer).value
+        )
+
+    def on_forecast(
+        self, result: PvForecastResult, ctx: TargetSocContext
+    ) -> int | None:
+        """Return the reserve this rule asks for with a forecast (None: none)."""
+
+        def target(cons: ConsumptionProfile) -> int:
+            found = target_soc_for(
+                result, cons, ctx, is_today=True, buffer_percent=self.buffer
+            )
+            if found is None:
+                raise _NoForecast
+            return found.value
+
+        try:
+            return self._apply(target)
+        except _NoForecast:
+            return None
+
+    def _apply(self, target: Callable[[ConsumptionProfile], int]) -> int:
+        if self.model is ConsumptionModel.OLD_RULE:
+            # Max of flat and the earlier days without the worst (until 14.10).
+            flat = target(ConsumptionProfile.flat())
+            per_day = [target(window_profile(day)) for day in self.earlier]
+            without_worst = T1SocReserve.prev_without_worst_of(per_day)
+            return max(flat, without_worst) if without_worst is not None else flat
+        # Production falls back to flat without history.
+        profile = self.model.reserve_profile(self.earlier) or ConsumptionProfile.flat()
+        return target(profile)
+
+
+class _NoForecast(Exception):
+    """The forecast cannot give a target (does not reach the day, no live signal)."""
 
 
 class _ActualViews:
@@ -230,13 +294,14 @@ class _ActualViews:
             profile, self._ctx, apply_now=self._ctx.now_in_window
         )
 
-    def target(self, cons: ConsumptionProfile) -> TargetSocResult:
+    def target(self, cons: ConsumptionProfile, buffer: int) -> TargetSocResult:
         """Target SOC of ACTUAL PV with `cons` (already a now-aware view)."""
         return _calculate_target_soc(
             self._pv,
             cons,
             start_charge_hour=self._ctx.start_charge_hour,
             count_from=self._count_from,
+            buffer_percent=buffer,
         )
 
 
@@ -277,33 +342,34 @@ class VariantReserve:
 
 @dataclass(frozen=True)
 class MomentReserve:
-    """The reserve at one moment: what was needed, what production asked, per variant."""
+    """The reserve at one moment: what was needed, per variant, what production asked.
+
+    `needed` / `needed_with_model` / variants use today's setup (the ranking);
+    `production` the setup of the day (the facts).
+    """
 
     label: str
     snapshot_at: datetime
     start_charge_hour: int | None
     needed: int  # actual PV + actual consumption, production formula (buffer incl.)
     needed_strict: float  # the same without the buffer: 10% + dip
-    needed_with_model: int  # actual PV + production consumption model
-    production: int | None  # production forecast + production consumption model
+    needed_with_model: int  # actual PV + today's consumption model
     variants: tuple[VariantReserve, ...]
+    production: ProductionReserve | None
 
     @property
     def production_error_pp(self) -> int | None:
-        """Needed − asked: + = production kept too little."""
-        return None if self.production is None else self.needed - self.production
+        return self.production.error_pp if self.production is not None else None
 
     @property
     def pv_part_pp(self) -> int | None:
-        return (
-            None
-            if self.production is None
-            else self.needed_with_model - self.production
-        )
+        return self.production.pv_part_pp if self.production is not None else None
 
     @property
-    def consumption_part_pp(self) -> int:
-        return self.needed - self.needed_with_model
+    def consumption_part_pp(self) -> int | None:
+        return (
+            self.production.consumption_part_pp if self.production is not None else None
+        )
 
     def variant(self, key: str) -> VariantReserve | None:
         return next((v for v in self.variants if v.variant == key), None)
@@ -316,12 +382,15 @@ class MomentReserve:
             "needed": self.needed,
             "needed_strict": self.needed_strict,
             "needed_with_model": self.needed_with_model,
-            "production": self.production,
             "variants": [v.to_dict() for v in self.variants],
+            "production": (
+                self.production.to_dict() if self.production is not None else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> MomentReserve:
+        raw = data.get("production")
         return cls(
             label=str(data["label"]),
             snapshot_at=datetime.fromisoformat(data["snapshot_at"]),
@@ -329,8 +398,53 @@ class MomentReserve:
             needed=int(data["needed"]),
             needed_strict=float(data["needed_strict"]),
             needed_with_model=int(data["needed_with_model"]),
-            production=data.get("production"),
             variants=tuple(VariantReserve.from_dict(v) for v in data["variants"]),
+            production=(
+                ProductionReserve.from_dict(raw) if isinstance(raw, dict) else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ProductionReserve:
+    """What production asked for with the setup of the day (SoC points).
+
+    error = needed − asked = PV part (needed_with_model − asked) + consumption
+    part (needed − needed_with_model); + = production kept too little.
+    """
+
+    setup: str
+    needed: int  # actual PV + actual consumption, the day's buffer
+    needed_with_model: int  # actual PV + the day's consumption rule
+    asked: int  # the day's forecast + the day's consumption rule
+
+    @property
+    def error_pp(self) -> int:
+        return self.needed - self.asked
+
+    @property
+    def pv_part_pp(self) -> int:
+        return self.needed_with_model - self.asked
+
+    @property
+    def consumption_part_pp(self) -> int:
+        return self.needed - self.needed_with_model
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "setup": self.setup,
+            "needed": self.needed,
+            "needed_with_model": self.needed_with_model,
+            "asked": self.asked,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ProductionReserve:
+        return cls(
+            setup=str(data["setup"]),
+            needed=int(data["needed"]),
+            needed_with_model=int(data["needed_with_model"]),
+            asked=int(data["asked"]),
         )
 
 

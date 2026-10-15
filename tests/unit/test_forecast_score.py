@@ -9,6 +9,9 @@ from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.energy_day import EnergyDay
 from custom_components.smart_rce.domain.forecast_score import variant_results as vr
+from custom_components.smart_rce.domain.forecast_score.consumption_models import (
+    ConsumptionModel,
+)
 from custom_components.smart_rce.domain.forecast_score.day_actuals import DayActuals
 from custom_components.smart_rce.domain.forecast_score.day_score import (
     DayInputs,
@@ -21,6 +24,10 @@ from custom_components.smart_rce.domain.forecast_score.production_outcome import
     production_outcome,
     start_from_soc_rise,
     struck_start,
+)
+from custom_components.smart_rce.domain.forecast_score.production_setup import (
+    CURRENT,
+    setup_on,
 )
 from custom_components.smart_rce.domain.forecast_score.ranking import rank
 from custom_components.smart_rce.domain.forecast_score.reserve_score import (
@@ -199,9 +206,10 @@ class TestVariantResults:
         archived = next(s for s in day if s.taken_at == at.taken_at)
         live = archived.variants[PvForecast.LIVE.key].result
         assert at.result(PvForecast.LIVE.key) == live
+        # Live Soft is recomputed per alpha: 0.5 equals what production ran on
+        # 14.10, the ranking's `live_soft` is today's 0.4.
         production = archived.variants[PvForecast.LIVE_SOFT.key].result
-        assert at.result(vr.PRODUCTION) == production
-        # The ranking's Live Soft is today's alpha (0.4), not the archived 0.5.
+        assert at.result("live_soft_0.5") == production
         assert at.result(vr.PRODUCTION_VARIANT) != production
         assert at.result("live_soft_0.3") is not None
         assert at.result(vr.RAW_SOLCAST) is not None
@@ -281,7 +289,9 @@ class TestStart:
         assert start.minute == 8 * 60 + 11
         assert start.production is not None
         # The production error splits exactly into the PV and consumption parts.
-        assert start.production.delta_h == pytest.approx(
+        assert start.pv_part_h is not None
+        assert start.consumption_part_h is not None
+        assert start.production.call.delta_h == pytest.approx(
             start.pv_part_h + start.consumption_part_h
         )
 
@@ -336,6 +346,26 @@ def _day_score(day, energy, snapshots, prices) -> DayScore:
         computed_at=datetime(2026, 10, 15, 21, 6, tzinfo=TZ),
         code_version="test",
     )
+
+
+class TestProductionSetup:
+    def test_a_day_runs_on_the_setup_in_force_at_0611(self):
+        assert setup_on(date(2026, 10, 13), TZ).pv_variant == "live"
+        assert setup_on(date(2026, 10, 14), TZ).pv_variant == "live_soft_0.5"
+        assert setup_on(date(2026, 10, 15), TZ).reserve_model is ConsumptionModel.P50
+        assert setup_on(date(2026, 10, 16), TZ) is CURRENT
+
+    def test_production_panel_uses_the_days_rule_and_buffer(
+        self, energy, snapshots, prices
+    ):
+        score = _day_score(DAYS[-1], energy, snapshots, prices)  # 14.10
+        main = score.reserve_moment("06:11")
+        assert main is not None
+        assert main.production is not None
+        assert main.production.setup == setup_on(DAYS[-1], TZ).label
+        # Buffer 12 that day against today's 10.
+        assert main.production.needed == main.needed + 2
+        assert score.setup == main.production.setup
 
 
 class TestDayScore:

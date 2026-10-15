@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final
 from ..pv_surplus import DayType
 from .day_type import DayTypeFigures, day_type_figures
 from .production_outcome import ChargeStartFact, ProductionOutcome, production_outcome
+from .production_setup import setup_on
 from .reserve_score import (
     DISCHARGE_LINE_MOMENT,
     MAIN_MOMENT,
@@ -39,7 +40,9 @@ if TYPE_CHECKING:
     from .day_actuals import DayActuals
     from .variant_results import ScoredSnapshot
 
-SCHEMA_VERSION: Final = 1
+# 2: production scored with the setup of its day (`production_setup`). Older
+# records are ignored, so the startup catch-up rescores those days.
+SCHEMA_VERSION: Final = 2
 
 
 class ScoreStatus(StrEnum):
@@ -75,11 +78,12 @@ def score_day(
     """Score both decisions of the day and gather its facts."""
     actuals = inputs.actuals
     day = actuals.day
+    setup = setup_on(day, actuals.tz)
     reserve: tuple[MomentReserve, ...] = ()
     models: tuple[ModelReserve, ...] = ()
     if DayType.of(day) is DayType.WORKDAY:  # T1 and its reserve are workday-only
         reserve, models = score_reserve(
-            actuals, inputs.snapshots, list(inputs.earlier_workdays.values())
+            actuals, inputs.snapshots, list(inputs.earlier_workdays.values()), setup
         )
     start: tuple[MomentStart, ...] = ()
     if inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24:
@@ -90,6 +94,7 @@ def score_day(
             inputs.s0,
             list(inputs.earlier_same_type.values()),
             inputs.start.start,
+            setup,
         )
     main = consumed(inputs.snapshots, datetime.combine(day, MAIN_MOMENT.at, actuals.tz))
     return DayScore(
@@ -106,6 +111,7 @@ def score_day(
         earlier_same_type=tuple(sorted(inputs.earlier_same_type)),
         snapshot_sources=tuple(sorted({s.source for s in inputs.snapshots})),
         s0=inputs.s0,
+        setup=setup.label,
     )
 
 
@@ -130,6 +136,8 @@ class DayScore:
     s0: int | None
     # Filled by the 00:20 check when it replaced the 21:06 result: what moved.
     replaced: tuple[str, ...] = ()
+    # The production setup the day ran on (`production_setup`).
+    setup: str = ""
 
     # --- headline figures (the long-term statistics sensors) --- #
 
@@ -167,7 +175,7 @@ class DayScore:
         moment = self.start_moment(START_MOMENT)
         if moment is None or moment.production is None:
             return None
-        return moment.production.delta_h
+        return moment.production.call.delta_h
 
     # --- persistence --- #
 
@@ -189,6 +197,7 @@ class DayScore:
             "snapshot_sources": list(self.snapshot_sources),
             "s0": self.s0,
             "replaced": list(self.replaced),
+            "setup": self.setup,
         }
 
     @classmethod
@@ -214,12 +223,18 @@ class DayScore:
             snapshot_sources=tuple(data.get("snapshot_sources", [])),
             s0=data.get("s0"),
             replaced=tuple(data.get("replaced", [])),
+            setup=str(data.get("setup", "")),
         )
 
     @classmethod
     def latest_of(cls, records: Sequence[Mapping[str, Any]]) -> DayScore | None:
         """Pick the day's score from its records: the last final, else the last one."""
-        scores = [cls.from_dict(r) for r in records if r.get("kind") == cls.KIND]
+        scores = [
+            cls.from_dict(r)
+            for r in records
+            if r.get("kind") == cls.KIND
+            and r.get("schema_version", 1) == SCHEMA_VERSION
+        ]
         finals = [s for s in scores if s.status is ScoreStatus.FINAL]
         if finals:
             return finals[-1]

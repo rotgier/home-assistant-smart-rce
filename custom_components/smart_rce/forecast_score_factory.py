@@ -25,6 +25,7 @@ from .infrastructure.energy_archive_reader import (
 )
 from .infrastructure.forecast_score_archive import ForecastScoreArchive
 from .infrastructure.forecast_score_sources import ForecastScoreSources
+from .infrastructure.forecast_score_statistics import ForecastScoreStatistics
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
 )
@@ -69,6 +70,7 @@ async def create_forecast_score(
         clock=dt_util.now,
         tz=dt_util.get_default_time_zone,
         code_version=await hass.async_add_executor_job(read_code_version),
+        publish=ForecastScoreStatistics(hass, dt_util.get_default_time_zone).publish,
     )
     t = ForecastScoreService
     # Coroutine functions run on the event loop (a plain one would not).

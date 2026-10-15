@@ -1,9 +1,10 @@
 """Forecast scoreboard sensors — headline figures with history, the day card, the ranking.
 
-- Headline sensors (long-term statistics, the trend): one number each of the
-  most recently scored day — production's T1 reserve error at 06:11 and its PV
-  / consumption parts, the reserve line at 08:41, the start error, and the
-  facts (T1 import, min SoC, grid top-up, morning export).
+- Headline sensors: one number each of the last FINAL day — production's T1
+  reserve error at 06:11 and its PV / consumption parts, the reserve line at
+  08:41, the start error, and the facts (T1 import, min SoC, grid top-up,
+  morning export). The clean daily trend is the external statistics
+  `smart_rce:forecast_score_<key>` (`ForecastScoreStatistics`).
 - `sensor.ems_forecast_score_day`: the card of the day picked on the
   dashboard (`input_datetime.energy_chart_date`, shared with the other Energy
   Hub views); today shows the preliminary or final score.
@@ -15,19 +16,19 @@ does not need (and which are too large for it): unrecorded.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
-from homeassistant.const import MATCH_ALL, UnitOfEnergy, UnitOfTime
+from homeassistant.const import MATCH_ALL
 from homeassistant.core import Event, EventStateChangedData, callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from ..const import DOMAIN
 from ..domain.charge_start_shift import to_hhmm
+from ..domain.forecast_score.headlines import HEADLINES, Headline
+from ..domain.forecast_score.ranking import SHORT_WEIGHT
 from ..ems_device import ems_device_info
 
 if TYPE_CHECKING:
@@ -36,88 +37,24 @@ if TYPE_CHECKING:
     from ..domain.forecast_score.day_score import DayScore
 
 DATE_ENTITY: Final = "input_datetime.energy_chart_date"
-SOC_POINTS: Final = "pp"
 
 
-@dataclass(frozen=True)
-class _Headline:
-    key: str
-    name: str
-    unit: str
-    icon: str
-    value: Callable[[DayScore], float | int | None]
-
-
-_HEADLINES: Final = (
-    _Headline(
-        "reserve_error",
-        "T1 reserve error",
-        SOC_POINTS,
-        "mdi:battery-alert-variant-outline",
-        lambda s: s.reserve_error_pp,
-    ),
-    _Headline(
-        "reserve_error_pv",
-        "T1 reserve error PV part",
-        SOC_POINTS,
-        "mdi:solar-power-variant-outline",
-        lambda s: s.reserve_error_pv_pp,
-    ),
-    _Headline(
-        "reserve_error_consumption",
-        "T1 reserve error consumption part",
-        SOC_POINTS,
-        "mdi:home-lightning-bolt-outline",
-        lambda s: s.reserve_error_consumption_pp,
-    ),
-    _Headline(
-        "reserve_line_error",
-        "T1 reserve line error 08:41",
-        SOC_POINTS,
-        "mdi:battery-arrow-down-outline",
-        lambda s: s.reserve_line_error_pp,
-    ),
-    _Headline(
-        "start_delta",
-        "Charge start error",
-        UnitOfTime.HOURS,
-        "mdi:battery-clock-outline",
-        lambda s: s.start_delta_h,
-    ),
-    _Headline(
-        "t1_import",
-        "T1 grid import",
-        UnitOfEnergy.KILO_WATT_HOUR,
-        "mdi:transmission-tower-import",
-        lambda s: s.outcome.t1_import_kwh,
-    ),
-    _Headline(
-        "min_soc_t1",
-        "T1 minimum SoC",
-        "%",
-        "mdi:battery-low",
-        lambda s: s.outcome.min_soc_t1,
-    ),
-    _Headline(
-        "grid_topup",
-        "Afternoon grid top-up",
-        UnitOfEnergy.KILO_WATT_HOUR,
-        "mdi:battery-charging-wireless-outline",
-        lambda s: s.outcome.grid_topup_kwh,
-    ),
-    _Headline(
-        "morning_export",
-        "Morning export 07-10",
-        UnitOfEnergy.KILO_WATT_HOUR,
-        "mdi:transmission-tower-export",
-        lambda s: s.outcome.morning_export_kwh,
-    ),
-)
+_ICONS: Final[dict[str, str]] = {
+    "reserve_error": "mdi:battery-alert-variant-outline",
+    "reserve_error_pv": "mdi:solar-power-variant-outline",
+    "reserve_error_consumption": "mdi:home-lightning-bolt-outline",
+    "reserve_line_error": "mdi:battery-arrow-down-outline",
+    "start_delta": "mdi:battery-clock-outline",
+    "t1_import": "mdi:transmission-tower-import",
+    "min_soc_t1": "mdi:battery-low",
+    "grid_topup": "mdi:battery-charging-wireless-outline",
+    "morning_export": "mdi:transmission-tower-export",
+}
 
 
 def build_forecast_score_sensors(entry: SmartRceConfigEntry) -> list[SensorEntity]:
     sensors: list[SensorEntity] = [
-        ForecastScoreHeadlineSensor(entry, h) for h in _HEADLINES
+        ForecastScoreHeadlineSensor(entry, h) for h in HEADLINES
     ]
     sensors.append(ForecastScoreDaySensor(entry))
     sensors.append(ForecastScoreRankingSensor(entry))
@@ -125,20 +62,20 @@ def build_forecast_score_sensors(entry: SmartRceConfigEntry) -> list[SensorEntit
 
 
 class ForecastScoreHeadlineSensor(SensorEntity):
-    """One headline figure of the most recently scored day."""
+    """One headline figure of the last FINAL day (the daily series: external statistics)."""
 
     _attr_has_entity_name = False
     _attr_should_poll = False
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, entry: SmartRceConfigEntry, headline: _Headline) -> None:
+    def __init__(self, entry: SmartRceConfigEntry, headline: Headline) -> None:
         self._service: ForecastScoreService = entry.runtime_data.forecast_score
         self._headline = headline
         self._attr_unique_id = f"{DOMAIN}_ems_forecast_score_{headline.key}"
         self.entity_id = f"sensor.ems_forecast_score_{headline.key}"
         self._attr_name = f"EMS Forecast Score {headline.name}"
         self._attr_native_unit_of_measurement = headline.unit
-        self._attr_icon = headline.icon
+        self._attr_icon = _ICONS.get(headline.key)
         self._attr_device_info = ems_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
@@ -258,13 +195,15 @@ def day_card(score: DayScore) -> dict[str, Any]:
     return {
         **score.to_dict(),
         "day_kind": score.day_type.kind.value if score.day_type.kind else None,
-        "headline": {h.key: h.value(score) for h in _HEADLINES},
+        "headline": {h.key: h.value(score) for h in HEADLINES},
+        "earlier_workday_count": len(score.earlier_workdays),
+        "short_weight": SHORT_WEIGHT,
         "reserve_summary": [
             {
                 "label": m.label,
-                "needed": m.needed,
+                "needed": m.production.needed if m.production else m.needed,
                 "needed_strict": m.needed_strict,
-                "production": m.production,
+                "production": m.production.asked if m.production else None,
                 "error": m.production_error_pp,
                 "pv_part": m.pv_part_pp,
                 "consumption_part": m.consumption_part_pp,
@@ -279,10 +218,10 @@ def day_card(score: DayScore) -> dict[str, Any]:
                 "benchmark": to_hhmm(m.benchmark),
                 "benchmark_enough": m.benchmark_enough,
                 "production": (
-                    to_hhmm(m.production.start) if m.production is not None else None
+                    to_hhmm(m.production.call.start) if m.production else None
                 ),
-                "verdict": str(m.production.verdict) if m.production else None,
-                "delta_h": m.production.delta_h if m.production else None,
+                "verdict": str(m.production.call.verdict) if m.production else None,
+                "delta_h": m.production.call.delta_h if m.production else None,
                 "pv_part_h": m.pv_part_h,
                 "consumption_part_h": m.consumption_part_h,
             }

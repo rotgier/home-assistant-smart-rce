@@ -155,6 +155,7 @@ def target_soc_for(
     ctx: TargetSocContext,
     *,
     is_today: bool,
+    buffer_percent: int = BUFFER_PERCENT,
 ) -> TargetSocResult | None:
     """Target SOC of one forecast with one consumption profile, as production.
 
@@ -162,6 +163,8 @@ def target_soc_for(
     inside today's window, the in-progress bucket counted from), for readers
     that score a forecast outside the live catalog — the forecast scoreboard.
     None when the forecast does not reach the day or a live signal is missing.
+    `buffer_percent`: another buffer than today's, for days scored with the
+    production setup of their time.
     """
     if not result.covers(ctx.target_date):
         return None
@@ -174,6 +177,7 @@ def target_soc_for(
         now_aware_consumption(consumption, ctx, apply_now=apply_now),
         start_charge_hour=ctx.start_charge_hour,
         count_from=count_from(ctx, is_today=is_today),
+        buffer_percent=buffer_percent,
     )
 
 
@@ -371,6 +375,7 @@ def _calculate_target_soc(
     consumption_profile: ConsumptionProfile,
     start_charge_hour: int | None = None,
     count_from: time | None = None,
+    buffer_percent: int = BUFFER_PERCENT,
 ) -> TargetSocResult:
     """Calculate target battery SOC + per-bucket trace.
 
@@ -454,7 +459,7 @@ def _calculate_target_soc(
 
     dip = -min_balance if min_balance is not None else 0.0
     dip_percent = dip / (BATTERY_CAPACITY_KWH / 100)
-    target = MIN_SOC_PERCENT + dip_percent * (1 + LOSS_FACTOR) + BUFFER_PERCENT
+    target = MIN_SOC_PERCENT + dip_percent * (1 + LOSS_FACTOR) + buffer_percent
 
     return TargetSocResult(
         value=max(round(target), MIN_SOC_PERCENT),

@@ -12,7 +12,10 @@ from custom_components.smart_rce.application.forecast_score_service import (
     ForecastScoreService,
 )
 from custom_components.smart_rce.domain.energy_day import EnergyDay
-from custom_components.smart_rce.domain.forecast_score.day_score import ScoreStatus
+from custom_components.smart_rce.domain.forecast_score.day_score import (
+    DayScore,
+    ScoreStatus,
+)
 from custom_components.smart_rce.domain.pv_forecast.forecast_snapshot import (
     ForecastSnapshot,
 )
@@ -95,9 +98,13 @@ class _Charge:
     start_charge_is_manual_today = False
 
 
+PUBLISHED: list[DayScore] = []
+
+
 def _service(
     hass: HomeAssistant, tmp_path: Path, now: datetime, sources: Any
 ) -> tuple[ForecastScoreService, ForecastScoreArchive]:
+    PUBLISHED.clear()
     archive = ForecastScoreArchive(DailyJsonlArchive(tmp_path))
     service = ForecastScoreService(
         hass,
@@ -107,6 +114,7 @@ def _service(
         clock=lambda: now,
         tz=lambda: TZ,
         code_version="test",
+        publish=PUBLISHED.extend,
     )
     service.FIRST_DAY = DAY  # type: ignore[misc]
     return service, archive
@@ -126,6 +134,7 @@ async def test_final_then_check_keeps_an_unchanged_day(
     assert score.outcome.start.start == 495
     assert score.outcome.start.source == "override"
     assert service.latest == score
+    assert [score] == PUBLISHED  # the final went out as a daily statistic
 
     service._clock = lambda: datetime(2026, 10, 15, 0, 20, tzinfo=TZ)  # noqa: SLF001
     await service.async_check()
@@ -186,3 +195,17 @@ async def test_check_without_prices_keeps_the_final(
     await service.async_check()
     assert len(archive.records(DAY)) == 1
     assert await service.async_day(DAY) == stored
+
+
+async def test_preliminary_is_neither_latest_nor_published(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    service, _archive = _service(
+        hass, tmp_path, datetime(2026, 10, 14, 16, 6, tzinfo=TZ), _Sources()
+    )
+    await service.async_preliminary()
+    score = await service.async_day(DAY)
+    assert score is not None
+    assert score.status is ScoreStatus.PRELIMINARY
+    assert service.latest is None
+    assert PUBLISHED == []
