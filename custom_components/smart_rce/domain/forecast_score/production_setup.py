@@ -35,6 +35,8 @@ class ProductionSetup:
     reserve_model: ConsumptionModel  # T1 reserve (P60, P50 or OLD_RULE)
     start_model: ConsumptionModel  # charge start (P60, P50 or FLAT)
     buffer_percent: int
+    pv_label: str  # dashboard wording
+    model_label: str
 
 
 SETUPS: Final[tuple[ProductionSetup, ...]] = (
@@ -45,6 +47,8 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         ConsumptionModel.OLD_RULE,
         ConsumptionModel.FLAT,
         12,
+        "Live",
+        "max(flat, poprz. dni bez najgorszego)",
     ),
     ProductionSetup(
         datetime(2026, 10, 14, 0, 22, tzinfo=_WARSAW),
@@ -53,6 +57,8 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         ConsumptionModel.OLD_RULE,
         ConsumptionModel.FLAT,
         12,
+        "Live Soft 0,5",
+        "max(flat, poprz. dni bez najgorszego)",
     ),
     ProductionSetup(
         datetime(2026, 10, 15, 0, 3, tzinfo=_WARSAW),
@@ -61,6 +67,8 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         ConsumptionModel.P50,
         ConsumptionModel.P50,
         10,
+        "Live Soft 0,4",
+        "mediana",
     ),
     ProductionSetup(
         datetime(2026, 10, 15, 19, 31, tzinfo=_WARSAW),
@@ -69,6 +77,8 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         ConsumptionModel.P60,
         ConsumptionModel.P60,
         10,
+        "Live Soft 0,4",
+        "p60",
     ),
 )
 # Today's setup — the one the variant ranking scores against.

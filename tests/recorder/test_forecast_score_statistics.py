@@ -43,7 +43,7 @@ def _score(reserve_error: int) -> DayScore:
                     "setup": "test",
                     "needed": 31,
                     "needed_with_model": 27,
-                    "asked": 31 - reserve_error,
+                    "asked": 31 + reserve_error,
                 },
             }
         ],

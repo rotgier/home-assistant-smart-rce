@@ -28,6 +28,7 @@ from homeassistant.util import dt as dt_util
 from ..const import DOMAIN
 from ..domain.charge_start_shift import to_hhmm
 from ..domain.forecast_score.headlines import HEADLINES, Headline
+from ..domain.forecast_score.production_setup import setup_on
 from ..domain.forecast_score.ranking import SHORT_WEIGHT
 from ..ems_device import ems_device_info
 
@@ -191,19 +192,29 @@ class ForecastScoreRankingSensor(_SelectedDaySensor):
 
 
 def day_card(score: DayScore) -> dict[str, Any]:
-    """Return the day's record plus the figures the card reads directly."""
+    """Return the day's record plus the figures the card reads directly.
+
+    Reserve errors are system − actual (− = the system asked for too little);
+    start deltas system − benchmark (+ = too late).
+    """
+    setup = setup_on(score.day, dt_util.get_default_time_zone())
     return {
         **score.to_dict(),
         "day_kind": score.day_type.kind.value if score.day_type.kind else None,
         "headline": {h.key: h.value(score) for h in HEADLINES},
-        "earlier_workday_count": len(score.earlier_workdays),
         "short_weight": SHORT_WEIGHT,
+        "system": {
+            "pv": setup.pv_label,
+            "consumption": setup.model_label,
+            "earlier_days": len(score.earlier_workdays),
+            "buffer": setup.buffer_percent,
+        },
         "reserve_summary": [
             {
                 "label": m.label,
-                "needed": m.production.needed if m.production else m.needed,
-                "needed_strict": m.needed_strict,
-                "production": m.production.asked if m.production else None,
+                "actual_strict": m.needed_strict,
+                "actual": m.production.needed if m.production else m.needed,
+                "system": m.production.asked if m.production else None,
                 "error": m.production_error_pp,
                 "pv_part": m.pv_part_pp,
                 "consumption_part": m.consumption_part_pp,
@@ -217,9 +228,7 @@ def day_card(score: DayScore) -> dict[str, Any]:
                 "soc": round(m.soc),
                 "benchmark": to_hhmm(m.benchmark),
                 "benchmark_enough": m.benchmark_enough,
-                "production": (
-                    to_hhmm(m.production.call.start) if m.production else None
-                ),
+                "system": (to_hhmm(m.production.call.start) if m.production else None),
                 "verdict": str(m.production.call.verdict) if m.production else None,
                 "delta_h": m.production.call.delta_h if m.production else None,
                 "pv_part_h": m.pv_part_h,

@@ -5,8 +5,8 @@ a single day is read on its card, not here. Every table is split by day kind
 (all / cloudy / sunny), since a forecast that wins sunny days can lose cloudy ones.
 
 Per row:
-- D1 (SoC points, + = too little reserve): n, MAE, bias, days > +3 / > +5
-  ("dangerous": the battery would run short), asymmetric loss, and against
+- D1 (SoC points, system − needed; − = too little reserve): n, MAE, bias,
+  days < −3 / < −5 ("dangerous": the battery would run short), asymmetric loss, and against
   raw Solcast p50 on the same days — MAE advantage, wins / ties / losses
   (a tie: |error| within TIE_PP of p50's).
 - D2 (hours, + = too late): n, verdict counts, MAE of Δ, kWh short when late,
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 TIE_PP: Final = 3
 TIE_H: Final = 1.0
 DANGER_PP: Final = (3, 5)
-SHORT_WEIGHT: Final = 2.0  # asymmetric loss: weight of a positive (short) error
+SHORT_WEIGHT: Final = 2.0  # asymmetric loss: weight of a negative (short) error
 _KINDS: Final = ("all", DayKind.CLOUDY.value, DayKind.SUNNY.value)
 _ALL_RESERVE: Final = tuple(m.label for m in RESERVE_MOMENTS)
 _ALL_START: Final = (*(label for label, _ in PREVIEW_MOMENTS), START_MOMENT)
@@ -150,8 +150,8 @@ def _pp_stats(errors: Sequence[int]) -> dict[str, Any]:
         "n": len(errors),
         "mae": _mean(map(abs, errors)),
         "bias": _mean(errors),
-        **{f"over_{t}": sum(e > t for e in errors) for t in DANGER_PP},
-        "asym_loss": _mean(SHORT_WEIGHT * e if e > 0 else -e for e in errors),
+        **{f"short_{t}": sum(e < -t for e in errors) for t in DANGER_PP},
+        "asym_loss": _mean(-SHORT_WEIGHT * e if e < 0 else e for e in errors),
     }
 
 

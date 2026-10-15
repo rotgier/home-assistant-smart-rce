@@ -7,13 +7,15 @@ must not cross. Before 07:00 the whole window counts; inside it production
 reads now-aware views (closed buckets 0, the in-progress one from live power),
 and so does the score (`target_soc_for`, the path `TargetSoc` takes).
 
-Each moment reads the snapshot the decision consumed. Signs: + = the forecast
-asked for LESS reserve than was needed (too optimistic — the battery would be
-short), in SoC points.
+Each moment reads the snapshot the decision consumed. Signs (since 15.10.2026,
+user's choice): error = what the system asked for − what was really needed, in
+SoC points; − = the system asked for TOO LITTLE (the battery could run short —
+the dangerous side), + = too much. The charge start uses the same "system −
+benchmark" convention (there + = too late is the dangerous side).
 
 The production error splits exactly into two parts:
-- PV part  = R(actual PV, model) − R(forecast PV, model) — the variant ranking;
-- consumption part = R(actual PV, actual cons) − R(actual PV, model);
+- PV part  = R(forecast PV, model) − R(actual PV, model) — the variant ranking;
+- consumption part = R(actual PV, model) − R(actual PV, actual cons);
 where `model` is production's consumption rule. The ranking uses today's setup
 (p60 of earlier workdays); the facts panel the setup the day ran on
 (`production_setup`: the old max-of rule and buffer 12 until 14.10).
@@ -136,8 +138,8 @@ def _score_moment(  # noqa: PLR0917 — one caller, the moment's whole world
             VariantReserve(
                 variant=variant,
                 reserve=on_model,
-                pv_error_pp=with_model - on_model,
-                pv_error_actual_cons_pp=needed.value - on_actual.value,
+                pv_error_pp=on_model - with_model,
+                pv_error_actual_cons_pp=on_actual.value - needed.value,
             )
         )
     return MomentReserve(
@@ -199,9 +201,9 @@ def _score_models(
         out.append(
             ModelReserve(
                 model=model.key,
-                error_pp=main.needed - rule.on_actual(views),
+                error_pp=rule.on_actual(views) - main.needed,
                 error_production_pv_pp=(
-                    main.needed - on_forecast if on_forecast is not None else None
+                    on_forecast - main.needed if on_forecast is not None else None
                 ),
                 earlier_days=len(earlier),
             )
@@ -310,7 +312,7 @@ class _ActualViews:
 
 @dataclass(frozen=True)
 class VariantReserve:
-    """One PV forecast at one moment (SoC points; + = too little reserve)."""
+    """One PV forecast at one moment (SoC points; − = too little reserve)."""
 
     variant: str
     reserve: int  # what the forecast asked for, with the production model
@@ -409,8 +411,8 @@ class MomentReserve:
 class ProductionReserve:
     """What production asked for with the setup of the day (SoC points).
 
-    error = needed − asked = PV part (needed_with_model − asked) + consumption
-    part (needed − needed_with_model); + = production kept too little.
+    error = asked − needed = PV part (asked − needed_with_model) + consumption
+    part (needed_with_model − needed); − = the system asked for too little.
     """
 
     setup: str
@@ -420,15 +422,15 @@ class ProductionReserve:
 
     @property
     def error_pp(self) -> int:
-        return self.needed - self.asked
+        return self.asked - self.needed
 
     @property
     def pv_part_pp(self) -> int:
-        return self.needed_with_model - self.asked
+        return self.asked - self.needed_with_model
 
     @property
     def consumption_part_pp(self) -> int:
-        return self.needed - self.needed_with_model
+        return self.needed_with_model - self.needed
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -450,7 +452,7 @@ class ProductionReserve:
 
 @dataclass(frozen=True)
 class ModelReserve:
-    """One consumption model at 06:11 (SoC points; + = model too low)."""
+    """One consumption model at 06:11 (SoC points; − = model too low)."""
 
     model: str
     error_pp: int  # with ACTUAL PV — the ranking

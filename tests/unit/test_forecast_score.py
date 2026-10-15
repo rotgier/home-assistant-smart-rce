@@ -135,24 +135,28 @@ class TestParityWithReferenceScript:
             DayActuals(energy[day], TZ), replayed, _earlier_workdays(day, energy)
         )
         want = expected[day.isoformat()]
+        # The script signed reserve errors needed − system; the domain signs
+        # them system − needed (15.10.2026), hence the minus on its numbers.
         for label, name, with_model, with_actual in want["d1"]:
             moment = next(m for m in moments if m.label == label)
             variant = moment.variant(name)
             assert variant is not None, (label, name)
             assert (variant.pv_error_pp, variant.pv_error_actual_cons_pp) == (
-                with_model,
-                with_actual,
+                -with_model,
+                -with_actual,
             ), (label, name)
         by_model = {m.model: m for m in models}
         for name, error, earlier in want["models"]:
             if name in MODELS:
-                assert by_model[MODELS[name]].error_pp == error, name
+                assert by_model[MODELS[name]].error_pp == -error, name
                 assert by_model[MODELS[name]].earlier_days == earlier
         main = next(m for m in moments if m.label == "06:11")
         production = want["production"]
         assert main.needed == production["needed"]
         assert main.needed_strict == production["needed_strict"]
-        assert [main.pv_part_pp, main.consumption_part_pp] == production["split"]
+        assert [main.pv_part_pp, main.consumption_part_pp] == [
+            -part for part in production["split"]
+        ]
 
     @pytest.mark.parametrize("day", DAYS)
     def test_start_on_actual_consumption(

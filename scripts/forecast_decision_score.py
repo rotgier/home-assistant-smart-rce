@@ -155,7 +155,9 @@ def report(scores: list[DayScore]) -> None:
     print(
         f"Dni: {scores[0].day} … {scores[-1].day}  (ujęcie: decyzje; pp = punkty SOC)"
     )
-    print("\n## Karta dnia: błąd produkcji = część PV + część zużycia")
+    print(
+        "\n## Karta dnia: błąd systemu (system − rzeczywiście) = część PV + część zużycia; − = system za mało"
+    )
     print(
         "  dzień       typ (Live/p50 06:11, rzecz./p50)   rezerwa 06:11 [pp]"
         "        linia 08:41   start [h]   import T1   min SOC   eksport 07-10"
@@ -178,29 +180,29 @@ def report(scores: list[DayScore]) -> None:
             f"   {o.t1_import_kwh}   {o.min_soc_t1}   {o.morning_export_kwh}"
         )
     ranking = rank(scores)
-    print("\n## D1 — rezerwa, część PV [pp]: + = za optymistycznie (za mało rezerwy)")
+    print(
+        "\n## D1 — rezerwa, część PV [pp]: system − rzeczywiście; − = za mało rezerwy (groźne)"
+    )
     for label, rows in ranking["reserve"]["all"].items():
         print(
-            f"\n{label}:  wariant                             n   MAE  bias >3 >5 asym"
+            f"\n{label}:  wariant                             n   MAE  bias <-3 <-5 asym"
             " │ rzecz. zuż.: MAE bias │ vs p50: ΔMAE  W/R/P"
         )
         for r in rows:
             print(
                 f"  {r['variant']:38}{r['n']:>2} {r['mae']:5.1f} {r['bias']:+5.1f}"
-                f" {r['over_3']:>2} {r['over_5']:>2} {r['asym_loss']:4.1f} │"
+                f" {r['short_3']:>2} {r['short_5']:>2} {r['asym_loss']:4.1f} │"
                 f" {r['mae_actual_cons']:5.1f} {r['bias_actual_cons']:+5.1f} │"
                 f" {_signed(r['vs_p50_mae']):>6}  {r['wins']}/{r['ties']}/{r['losses']}"
             )
-    print("\n## D1 — modele zużycia o 06:11 (rzeczywiste PV) [pp]: + = model za niski")
+    print("\n## D1 — modele zużycia o 06:11 (rzeczywiste PV) [pp]: − = model za niski")
     for r in ranking["reserve_models"]["all"]:
         print(
             f"  {r['model']:10}{r['n']:>3}  MAE {r['mae']:5.1f}  bias {r['bias']:+5.1f}"
-            f"  >3 {r['over_3']}  │ z prognozą produkcji: MAE {r['mae_production_pv']}"
+            f"  <-3 {r['short_3']}  │ z prognozą systemu: MAE {r['mae_production_pv']}"
             f" bias {r['bias_production_pv']}"
         )
-    print(
-        "\n## D2 — start ładowania (prognoza z modelem produkcji vs wzorzec z modelem)"
-    )
+    print("\n## D2 — start ładowania (system − wzorzec; + = za późno, groźne)")
     for label, rows in ranking["start"]["all"].items():
         print(f"\n{label}:")
         for r in rows:
@@ -218,7 +220,7 @@ def report(scores: list[DayScore]) -> None:
             print(
                 f"  {r['model']:10}{r['n']:>3}  {verdicts} | niedobór {r['short_kwh']} kWh"
             )
-    print("\n## Produkcja:", json.dumps(ranking["production"], ensure_ascii=False))
+    print("\n## System:", json.dumps(ranking["production"], ensure_ascii=False))
 
 
 def _signed(value: float | None) -> str:

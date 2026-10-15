@@ -40,9 +40,10 @@ if TYPE_CHECKING:
     from .day_actuals import DayActuals
     from .variant_results import ScoredSnapshot
 
-# 2: production scored with the setup of its day (`production_setup`). Older
-# records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 2
+# 2: production scored with the setup of its day (`production_setup`).
+# 3: reserve errors signed system − needed (− = too little), as the charge start.
+# Older records are ignored, so the startup catch-up rescores those days.
+SCHEMA_VERSION: Final = 3
 
 
 class ScoreStatus(StrEnum):
@@ -149,7 +150,7 @@ class DayScore:
 
     @property
     def reserve_error_pp(self) -> int | None:
-        """Production's T1 reserve error at 06:11; + = too little reserve."""
+        """System's T1 reserve error at 06:11 (asked − needed); − = too little."""
         main = self.reserve_moment(MAIN_MOMENT.label)
         return main.production_error_pp if main is not None else None
 
