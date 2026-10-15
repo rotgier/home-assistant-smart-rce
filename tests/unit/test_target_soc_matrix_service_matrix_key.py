@@ -89,3 +89,32 @@ def test_matrix_key_raises_for_non_pv_forecast_input() -> None:
 
     with pytest.raises(AssertionError, match="unreachable"):
         _matrix_key(Fake())  # type: ignore[arg-type]
+
+
+def test_median_column_is_serialized_first_with_its_label() -> None:
+    """The median column carries a label; the card renders it as given."""
+    from custom_components.smart_rce.application.target_soc_matrix_service import (
+        _serialize,
+    )
+    from custom_components.smart_rce.domain.target_soc_matrix import ConsLabel
+
+    payload = _serialize(
+        pv_strategies=("live_soft",),
+        cons_strategies=(
+            ConsLabel(key="median", label="Mediana", sub="steruje"),
+            ConsLabel(key="live"),
+        ),
+        cells_pct={("live_soft", "median"): 23, ("live_soft", "live"): 22},
+        cells_kwh={},
+        pv_sums_kwh={},
+        cons_sums_kwh={},
+        source_day_pv_sums_kwh={},
+        pv_buckets={},
+        cons_buckets={},
+        cons_source_dates={},
+    )
+    assert payload["cons_strategies"] == [
+        {"key": "median", "weekday": None, "label": "Mediana", "sub": "steruje"},
+        {"key": "live", "weekday": None},
+    ]
+    assert payload["cells_pct"]["live_soft|median"] == 23

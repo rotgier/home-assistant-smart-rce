@@ -252,13 +252,19 @@ class PvSurplusService:
         end = surplus_window_end(day)
         if start is None:
             return {}
-        columns: list[tuple[str, dict[int, float] | None, dict[str, Any]]] = [
-            ("flat", None, {"key": "flat", "label": "Flat", "sub": "0,9 kWh/h"}),
-        ]
+        # Median first: the charge start steers by it.
+        columns: list[tuple[str, dict[int, float] | None, dict[str, Any]]] = []
         if median is not None:
             columns.append(
-                ("median", median, {"key": "median", "label": "Mediana", "sub": "prev"})
+                (
+                    "median",
+                    median,
+                    {"key": "median", "label": "Mediana", "sub": "steruje"},
+                )
             )
+        columns.append(
+            ("flat", None, {"key": "flat", "label": "Flat", "sub": "0,9 kWh/h"})
+        )
         for idx, prev_day in enumerate(prev_days, start=1):
             columns.append(
                 (
