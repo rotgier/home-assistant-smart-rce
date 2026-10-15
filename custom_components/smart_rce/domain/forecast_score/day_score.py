@@ -165,6 +165,11 @@ class DayScore:
         return main.consumption_part_pp if main is not None else None
 
     @property
+    def reserve_error_margin_pp(self) -> int | None:
+        main = self.reserve_moment(MAIN_MOMENT.label)
+        return main.margin_part_pp if main is not None else None
+
+    @property
     def reserve_line_error_pp(self) -> int | None:
         """The rest-of-T1 reserve at 08:41 — the morning discharge line."""
         line = self.reserve_moment(DISCHARGE_LINE_MOMENT)

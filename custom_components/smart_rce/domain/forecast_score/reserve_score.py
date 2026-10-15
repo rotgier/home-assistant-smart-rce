@@ -161,16 +161,25 @@ def _production(
     setup: ProductionSetup,
     rule: _Rule,
 ) -> ProductionReserve | None:
-    """Score what production asked for that day, with that day's setup."""
+    """Score what production asked for that day, with that day's setup.
+
+    With a margin setup the reserve carries production's own time-of-day
+    margin (`T1SocReserve.margin_pp_at`) at the moment, capped at 100 as the
+    sensor caps it.
+    """
     result = snapshot.result(setup.pv_variant)
-    asked = rule.on_forecast(result, ctx) if result is not None else None
-    if asked is None:
+    reading = rule.on_forecast(result, ctx) if result is not None else None
+    if reading is None:
         return None
+    reading = min(100, reading)
+    margin = T1SocReserve.margin_pp_at(ctx.target_date, ctx.now) if setup.margin else 0
     return ProductionReserve(
         setup=setup.label,
         needed=views.target(views.model(views.cons), rule.buffer).value,
         needed_with_model=rule.on_actual(views),
-        asked=asked,
+        asked=min(100, reading + margin),
+        asked_without_margin=reading,
+        margin_pp=margin,
     )
 
 
@@ -373,6 +382,10 @@ class MomentReserve:
             self.production.consumption_part_pp if self.production is not None else None
         )
 
+    @property
+    def margin_part_pp(self) -> int | None:
+        return self.production.margin_part_pp if self.production is not None else None
+
     def variant(self, key: str) -> VariantReserve | None:
         return next((v for v in self.variants if v.variant == key), None)
 
@@ -411,14 +424,24 @@ class MomentReserve:
 class ProductionReserve:
     """What production asked for with the setup of the day (SoC points).
 
-    error = asked − needed = PV part (asked − needed_with_model) + consumption
-    part (needed_with_model − needed); − = the system asked for too little.
+    error = asked − needed = PV part (asked without margin − needed_with_model)
+    + consumption part (needed_with_model − needed) + margin part (what the
+    time-of-day margin added); − = the system asked for too little.
     """
 
     setup: str
     needed: int  # actual PV + actual consumption, the day's buffer
     needed_with_model: int  # actual PV + the day's consumption rule
-    asked: int  # the day's forecast + the day's consumption rule
+    asked: int  # the day's forecast + consumption rule + margin (max 100)
+    asked_without_margin: int | None = None  # None = no margin (older records)
+    margin_pp: int = 0  # nominal margin in force at the moment
+
+    @property
+    def reading(self) -> int:
+        """What the forecast and the rule asked for before the margin."""
+        if self.asked_without_margin is None:
+            return self.asked
+        return self.asked_without_margin
 
     @property
     def error_pp(self) -> int:
@@ -426,11 +449,16 @@ class ProductionReserve:
 
     @property
     def pv_part_pp(self) -> int:
-        return self.asked - self.needed_with_model
+        return self.reading - self.needed_with_model
 
     @property
     def consumption_part_pp(self) -> int:
         return self.needed_with_model - self.needed
+
+    @property
+    def margin_part_pp(self) -> int:
+        """What the margin really added (less than nominal when capped at 100)."""
+        return self.asked - self.reading
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -438,6 +466,8 @@ class ProductionReserve:
             "needed": self.needed,
             "needed_with_model": self.needed_with_model,
             "asked": self.asked,
+            "asked_without_margin": self.asked_without_margin,
+            "margin_pp": self.margin_pp,
         }
 
     @classmethod
@@ -447,6 +477,8 @@ class ProductionReserve:
             needed=int(data["needed"]),
             needed_with_model=int(data["needed_with_model"]),
             asked=int(data["asked"]),
+            asked_without_margin=data.get("asked_without_margin"),
+            margin_pp=int(data.get("margin_pp", 0)),
         )
 
 

@@ -7,7 +7,7 @@ it really ran on, not today's. A day belongs to the setup in force at 06:11
 
 Add a row here whenever production changes (deploy time, not commit time).
 Sources: home-assistant-ops `plans/live-soft.md`, smart_rce commits 2321beb,
-1db8b50, 20ada58.
+1db8b50, 20ada58, 1f87ed6 (margin).
 """
 
 from __future__ import annotations
@@ -37,6 +37,8 @@ class ProductionSetup:
     buffer_percent: int
     pv_label: str  # dashboard wording
     model_label: str
+    # The time-of-day margin on top of the reserve (`T1SocReserve.margin_pp_at`).
+    margin: bool = False
 
 
 SETUPS: Final[tuple[ProductionSetup, ...]] = (
@@ -79,6 +81,17 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         10,
         "Live Soft 0,4",
         "p60",
+    ),
+    ProductionSetup(
+        datetime(2026, 10, 15, 22, 53, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15/10/5",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=True,
     ),
 )
 # Today's setup — the one the variant ranking scores against.

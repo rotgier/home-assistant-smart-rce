@@ -44,6 +44,7 @@ _ICONS: Final[dict[str, str]] = {
     "reserve_error": "mdi:battery-alert-variant-outline",
     "reserve_error_pv": "mdi:solar-power-variant-outline",
     "reserve_error_consumption": "mdi:home-lightning-bolt-outline",
+    "reserve_error_margin": "mdi:shield-plus-outline",
     "reserve_line_error": "mdi:battery-arrow-down-outline",
     "start_delta": "mdi:battery-clock-outline",
     "t1_import": "mdi:transmission-tower-import",
@@ -208,6 +209,7 @@ def day_card(score: DayScore) -> dict[str, Any]:
             "consumption": setup.model_label,
             "earlier_days": len(score.earlier_workdays),
             "buffer": setup.buffer_percent,
+            "margin": setup.margin,
         },
         "reserve_summary": [
             {
@@ -218,6 +220,8 @@ def day_card(score: DayScore) -> dict[str, Any]:
                 "error": m.production_error_pp,
                 "pv_part": m.pv_part_pp,
                 "consumption_part": m.consumption_part_pp,
+                "margin_part": m.margin_part_pp,
+                "margin_pp": m.production.margin_pp if m.production else 0,
             }
             for m in score.reserve
         ],

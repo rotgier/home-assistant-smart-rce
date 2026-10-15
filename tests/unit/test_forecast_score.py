@@ -372,6 +372,33 @@ class TestProductionSetup:
         assert score.setup == main.production.setup
 
 
+class TestMargin:
+    def test_the_system_reserve_carries_the_time_of_day_margin(self, energy, snapshots):
+        day = DAYS[-1]
+        assert setup_on(date(2026, 10, 16), TZ).margin
+        moments, _models = score_reserve(
+            DayActuals(energy[day], TZ),
+            vr.from_archive(snapshots[day]),
+            _earlier_workdays(day, energy),
+            CURRENT,  # the margin setup, scored on 14.10's data
+        )
+        margins = {m.label: m.production.margin_pp for m in moments if m.production}
+        assert margins == {
+            "06:11": 15,
+            "06:41": 15,
+            "07:41": 10,
+            "08:41": 5,
+            "09:41": 0,
+        }
+        for m in moments:
+            assert m.production is not None
+            assert m.production_error_pp == (
+                (m.pv_part_pp or 0)
+                + (m.consumption_part_pp or 0)
+                + (m.margin_part_pp or 0)
+            )
+
+
 class TestDayScore:
     def test_round_trips_through_the_archive_form(self, energy, snapshots, prices):
         score = _day_score(DAYS[-1], energy, snapshots, prices)

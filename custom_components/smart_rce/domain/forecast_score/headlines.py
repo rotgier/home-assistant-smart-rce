@@ -39,6 +39,12 @@ HEADLINES: Final[tuple[Headline, ...]] = (
         lambda s: s.reserve_error_consumption_pp,
     ),
     Headline(
+        "reserve_error_margin",
+        "T1 reserve error margin part",
+        "pp",
+        lambda s: s.reserve_error_margin_pp,
+    ),
+    Headline(
         "reserve_line_error",
         "T1 reserve line error 08:41",
         "pp",
