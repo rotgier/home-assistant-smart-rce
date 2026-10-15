@@ -90,15 +90,15 @@ def _soft(alpha: float) -> ForecastStrategy:
 
 
 EXTRA_VARIANTS: Final[dict[str, ForecastStrategy]] = {
-    f"live_soft_{a}": _soft(a) for a in (0.3, 0.4, 0.6)
+    f"live_soft_{a}": _soft(a) for a in (0.3, 0.5, 0.6)
 }
 SHOWN: Final = (
     "solcast_p50",
     "at_6",
     "live",
     "live_soft_0.3",
-    "live_soft_0.4",
-    "live_soft",  # production: alpha 0.5
+    "live_soft",  # production: alpha 0.4 since 15.10.2026
+    "live_soft_0.5",
     "live_soft_0.6",
     "extrapolated_live_proportional",
     "extrapolated_live_blend",

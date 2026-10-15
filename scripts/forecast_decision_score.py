@@ -81,6 +81,7 @@ D1_MOMENTS: Final = (
 D2_MOMENTS: Final = (
     ("07:41", time(7, 41)),
     ("08:41", time(8, 41)),
+    ("09:16", time(9, 16)),
     ("09:41", time(9, 41)),
 )
 D1_VARIANTS: Final = (
@@ -88,8 +89,8 @@ D1_VARIANTS: Final = (
     "at_6",
     "live",
     "live_soft_0.3",
-    "live_soft_0.4",
-    "live_soft",
+    "live_soft",  # production: alpha 0.4 since 15.10.2026
+    "live_soft_0.5",
     "live_soft_0.6",
 )
 D1_EVENING: Final = {
@@ -102,8 +103,8 @@ D2_VARIANTS: Final = (
     "solcast_p50",
     "live",
     "live_soft_0.3",
-    "live_soft_0.4",
-    "live_soft",
+    "live_soft",  # production: alpha 0.4 since 15.10.2026
+    "live_soft_0.5",
     "live_soft_0.6",
     "extrapolated_live_proportional",
     "extrapolated_live_blend",
@@ -180,7 +181,19 @@ def _target(
 def _rule(
     pv: dict[Bucket, float], prev: list[dict[Bucket, float]], sch: int | None
 ) -> int:
-    """Production T1 reserve rule: max(flat, prev workdays without the worst)."""
+    """Production T1 reserve rule since 15.10.2026 (per-slot median).
+
+    Median of the prev workdays per slot; flat when there are none.
+    """
+    if not prev:
+        return _target(pv, FLAT, sch)[0]
+    return _target(pv, _median_profile(prev), sch)[0]
+
+
+def _old_rule(
+    pv: dict[Bucket, float], prev: list[dict[Bucket, float]], sch: int | None
+) -> int:
+    """T1 reserve rule until 14.10.2026: max(flat, prev workdays without the worst)."""
     flat = _target(pv, FLAT, sch)[0]
     values = sorted((_target(pv, c, sch)[0] for c in prev), reverse=True)
     prev_ww = values[1] if len(values) > 1 else (values[0] if values else None)
@@ -246,13 +259,13 @@ def score_d1(d, replayed, energy):
     truth_value, truth_dip = _target(pv_act, cons_act, sch)
     models = {
         "flat 0,9 kWh/h": [FLAT],
-        "poprz. dni: mediana": [_median_profile(prev)] if prev else [],
+        "poprz. dni: mediana (prod od 15.10)": [_median_profile(prev)] if prev else [],
         "poprz. dni: bez najgorszego": None,
-        "prod: max(flat, bez najg.)": "rule",
+        "prod do 14.10: max(flat, bez najg.)": "old_rule",
     }
     for name, profiles in models.items():
-        if profiles == "rule":
-            value = _rule(pv_act, prev, sch)
+        if profiles == "old_rule":
+            value = _old_rule(pv_act, prev, sch)
         elif profiles is None:
             vals = sorted((_target(pv_act, c, sch)[0] for c in prev), reverse=True)
             if not vals:
