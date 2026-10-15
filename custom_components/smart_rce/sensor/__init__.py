@@ -24,6 +24,7 @@ from ..garden.sensor_entities import build_sensors as build_garden_sensors
 from .charge_start_shift_sensor import build_charge_start_shift_sensors
 from .ems_sensor import EMS_SENSOR_DESCRIPTIONS, EmsSensor
 from .energy_balance_sensor import ENERGY_BALANCE_DESCRIPTIONS, EnergyBalanceSensor
+from .forecast_score_sensor import build_forecast_score_sensors
 from .pv_surplus_sensor import build_pv_surplus_sensors
 from .rce_sensor import SENSOR_DESCRIPTIONS, SmartRceSensor
 from .target_soc_matrix_sensor import SmartRceTargetSocMatrixSensor
@@ -95,5 +96,6 @@ async def async_setup_entry(
     sensors.extend(build_deposit_sensors(entry))
     sensors.extend(build_pv_surplus_sensors(entry))
     sensors.extend(build_charge_start_shift_sensors(entry))
+    sensors.extend(build_forecast_score_sensors(entry))
 
     async_add_entities(sensors)

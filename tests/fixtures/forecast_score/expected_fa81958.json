@@ -1,0 +1,1314 @@
+{
+  "days": {
+    "2026-10-12": {
+      "d1": [
+        [
+          "06:11",
+          "solcast_p50",
+          2,
+          2
+        ],
+        [
+          "06:11",
+          "at_6",
+          -6,
+          -5
+        ],
+        [
+          "06:11",
+          "live",
+          -1,
+          0
+        ],
+        [
+          "06:11",
+          "live_soft_0.3",
+          2,
+          2
+        ],
+        [
+          "06:11",
+          "live_soft",
+          2,
+          2
+        ],
+        [
+          "06:11",
+          "live_soft_0.5",
+          2,
+          2
+        ],
+        [
+          "06:11",
+          "live_soft_0.6",
+          1,
+          2
+        ],
+        [
+          "06:41",
+          "solcast_p50",
+          2,
+          2
+        ],
+        [
+          "06:41",
+          "at_6",
+          -6,
+          -5
+        ],
+        [
+          "06:41",
+          "live",
+          -1,
+          0
+        ],
+        [
+          "06:41",
+          "live_soft_0.3",
+          2,
+          2
+        ],
+        [
+          "06:41",
+          "live_soft",
+          2,
+          2
+        ],
+        [
+          "06:41",
+          "live_soft_0.5",
+          2,
+          2
+        ],
+        [
+          "06:41",
+          "live_soft_0.6",
+          1,
+          2
+        ]
+      ],
+      "d2": [
+        [
+          "07:41",
+          "solcast_p50",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live",
+          "nies\u0142usznie nie starczy",
+          -3.0,
+          0.0,
+          4.933
+        ],
+        [
+          "07:41",
+          "live_soft_0.3",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "07:41",
+          "live_soft",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "07:41",
+          "live_soft_0.5",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "07:41",
+          "live_soft_0.6",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "07:41",
+          "extrapolated_live_proportional",
+          "nies\u0142usznie nie starczy",
+          -3.0,
+          0.0,
+          4.933
+        ],
+        [
+          "07:41",
+          "extrapolated_live_blend",
+          "nies\u0142usznie nie starczy",
+          -3.0,
+          0.0,
+          4.933
+        ],
+        [
+          "07:41",
+          "cons: flat",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "cons: mediana poprz. dni",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "solcast_p50",
+          "za p\u00f3\u017ano",
+          1.0,
+          0.313,
+          0.0
+        ],
+        [
+          "08:41",
+          "live",
+          "nies\u0142usznie nie starczy",
+          -1.317,
+          0.0,
+          2.612
+        ],
+        [
+          "08:41",
+          "live_soft_0.3",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft_0.5",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft_0.6",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "extrapolated_live_proportional",
+          "nies\u0142usznie nie starczy",
+          -1.317,
+          0.0,
+          2.612
+        ],
+        [
+          "08:41",
+          "extrapolated_live_blend",
+          "nies\u0142usznie nie starczy",
+          -1.317,
+          0.0,
+          2.612
+        ],
+        [
+          "08:41",
+          "cons: flat",
+          "za p\u00f3\u017ano",
+          1.0,
+          0.313,
+          0.0
+        ],
+        [
+          "08:41",
+          "cons: mediana poprz. dni",
+          "za p\u00f3\u017ano",
+          1.0,
+          0.313,
+          0.0
+        ],
+        [
+          "09:16",
+          "solcast_p50",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live",
+          "za wcze\u015bnie",
+          -1.733,
+          0.0,
+          3.64
+        ],
+        [
+          "09:16",
+          "live_soft_0.3",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "09:16",
+          "live_soft_0.5",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "09:16",
+          "live_soft_0.6",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "09:16",
+          "extrapolated_live_proportional",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "extrapolated_live_blend",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "cons: flat",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "cons: mediana poprz. dni",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "solcast_p50",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live",
+          "nies\u0142usznie nie starczy",
+          -1.317,
+          0.0,
+          2.686
+        ],
+        [
+          "09:41",
+          "live_soft_0.3",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft_0.5",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "09:41",
+          "live_soft_0.6",
+          "za wcze\u015bnie",
+          -1.0,
+          0.0,
+          1.872
+        ],
+        [
+          "09:41",
+          "extrapolated_live_proportional",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "extrapolated_live_blend",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "cons: flat",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "cons: mediana poprz. dni",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "models": [
+        [
+          "flat 0,9 kWh/h",
+          -5,
+          5
+        ],
+        [
+          "poprz. dni: mediana (prod 15.10)",
+          -3,
+          5
+        ],
+        [
+          "poprz. dni: p60 (prod od 15.10 wiecz\u00f3r)",
+          -4,
+          5
+        ],
+        [
+          "poprz. dni: bez najgorszego",
+          -6,
+          5
+        ],
+        [
+          "prod do 14.10: max(flat, bez najg.)",
+          -6,
+          5
+        ]
+      ],
+      "production": {
+        "min_soc": 46.0,
+        "needed": 23,
+        "needed_strict": 13.0,
+        "split": [
+          2,
+          -4
+        ],
+        "t1_import": 0.0
+      }
+    },
+    "2026-10-13": {
+      "d1": [
+        [
+          "06:11",
+          "solcast_p50",
+          1,
+          1
+        ],
+        [
+          "06:11",
+          "at_6",
+          -5,
+          -8
+        ],
+        [
+          "06:11",
+          "live",
+          -2,
+          -5
+        ],
+        [
+          "06:11",
+          "live_soft_0.3",
+          1,
+          1
+        ],
+        [
+          "06:11",
+          "live_soft",
+          0,
+          1
+        ],
+        [
+          "06:11",
+          "live_soft_0.5",
+          0,
+          0
+        ],
+        [
+          "06:11",
+          "live_soft_0.6",
+          0,
+          -1
+        ],
+        [
+          "06:41",
+          "solcast_p50",
+          1,
+          1
+        ],
+        [
+          "06:41",
+          "at_6",
+          -5,
+          -8
+        ],
+        [
+          "06:41",
+          "live",
+          -2,
+          -5
+        ],
+        [
+          "06:41",
+          "live_soft_0.3",
+          1,
+          1
+        ],
+        [
+          "06:41",
+          "live_soft",
+          0,
+          1
+        ],
+        [
+          "06:41",
+          "live_soft_0.5",
+          0,
+          0
+        ],
+        [
+          "06:41",
+          "live_soft_0.6",
+          0,
+          -1
+        ]
+      ],
+      "d2": [
+        [
+          "07:41",
+          "solcast_p50",
+          "za p\u00f3\u017ano",
+          2.0,
+          1.757,
+          0.0
+        ],
+        [
+          "07:41",
+          "live",
+          "nies\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft_0.3",
+          "za p\u00f3\u017ano",
+          1.0,
+          0.197,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft",
+          "nies\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft_0.5",
+          "nies\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft_0.6",
+          "nies\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "cons: flat",
+          "za p\u00f3\u017ano",
+          1.0,
+          0.197,
+          0.0
+        ],
+        [
+          "07:41",
+          "cons: mediana poprz. dni",
+          "za p\u00f3\u017ano",
+          1.0,
+          0.197,
+          0.0
+        ],
+        [
+          "08:41",
+          "solcast_p50",
+          "za p\u00f3\u017ano",
+          1.0,
+          1.248,
+          0.0
+        ],
+        [
+          "08:41",
+          "live",
+          "nies\u0142usznie nie starczy",
+          -0.317,
+          0.0,
+          0.246
+        ],
+        [
+          "08:41",
+          "live_soft_0.3",
+          "za p\u00f3\u017ano",
+          1.0,
+          1.248,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft_0.5",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft_0.6",
+          "nies\u0142usznie nie starczy",
+          -0.317,
+          0.0,
+          0.246
+        ],
+        [
+          "08:41",
+          "extrapolated_live_proportional",
+          "za p\u00f3\u017ano",
+          1.0,
+          1.248,
+          0.0
+        ],
+        [
+          "08:41",
+          "extrapolated_live_blend",
+          "nies\u0142usznie nie starczy",
+          -0.317,
+          0.0,
+          0.246
+        ],
+        [
+          "08:41",
+          "cons: flat",
+          "za p\u00f3\u017ano",
+          1.0,
+          1.248,
+          0.0
+        ],
+        [
+          "08:41",
+          "cons: mediana poprz. dni",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "solcast_p50",
+          "za p\u00f3\u017ano",
+          0.733,
+          2.563,
+          0.0
+        ],
+        [
+          "09:16",
+          "live",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft_0.3",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft_0.5",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft_0.6",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "extrapolated_live_proportional",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "extrapolated_live_blend",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "cons: flat",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "cons: mediana poprz. dni",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "solcast_p50",
+          "na czas",
+          0.317,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft_0.3",
+          "na czas",
+          0.317,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft_0.5",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft_0.6",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "extrapolated_live_proportional",
+          "na czas",
+          0.317,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "extrapolated_live_blend",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "cons: flat",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "cons: mediana poprz. dni",
+          "na czas",
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "models": [
+        [
+          "flat 0,9 kWh/h",
+          -6,
+          6
+        ],
+        [
+          "poprz. dni: mediana (prod 15.10)",
+          -3,
+          6
+        ],
+        [
+          "poprz. dni: p60 (prod od 15.10 wiecz\u00f3r)",
+          -4,
+          6
+        ],
+        [
+          "poprz. dni: bez najgorszego",
+          -7,
+          6
+        ],
+        [
+          "prod do 14.10: max(flat, bez najg.)",
+          -7,
+          6
+        ]
+      ],
+      "production": {
+        "min_soc": 22.0,
+        "needed": 22,
+        "needed_strict": 11.9,
+        "split": [
+          0,
+          -4
+        ],
+        "t1_import": 0.0
+      }
+    },
+    "2026-10-14": {
+      "d1": [
+        [
+          "06:11",
+          "solcast_p50",
+          2,
+          3
+        ],
+        [
+          "06:11",
+          "at_6",
+          -35,
+          -31
+        ],
+        [
+          "06:11",
+          "live",
+          -27,
+          -23
+        ],
+        [
+          "06:11",
+          "live_soft_0.3",
+          -5,
+          -1
+        ],
+        [
+          "06:11",
+          "live_soft",
+          -8,
+          -2
+        ],
+        [
+          "06:11",
+          "live_soft_0.5",
+          -11,
+          -5
+        ],
+        [
+          "06:11",
+          "live_soft_0.6",
+          -14,
+          -9
+        ],
+        [
+          "06:41",
+          "solcast_p50",
+          3,
+          4
+        ],
+        [
+          "06:41",
+          "at_6",
+          -37,
+          -33
+        ],
+        [
+          "06:41",
+          "live",
+          -26,
+          -23
+        ],
+        [
+          "06:41",
+          "live_soft_0.3",
+          -3,
+          1
+        ],
+        [
+          "06:41",
+          "live_soft",
+          -6,
+          0
+        ],
+        [
+          "06:41",
+          "live_soft_0.5",
+          -10,
+          -4
+        ],
+        [
+          "06:41",
+          "live_soft_0.6",
+          -13,
+          -8
+        ]
+      ],
+      "d2": [
+        [
+          "07:41",
+          "solcast_p50",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft_0.3",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft_0.5",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "live_soft_0.6",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "cons: flat",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "07:41",
+          "cons: mediana poprz. dni",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "solcast_p50",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft_0.3",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft_0.5",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "live_soft_0.6",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "extrapolated_live_proportional",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "extrapolated_live_blend",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "cons: flat",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "08:41",
+          "cons: mediana poprz. dni",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "solcast_p50",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft_0.3",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft_0.5",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "live_soft_0.6",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "extrapolated_live_proportional",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "extrapolated_live_blend",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "cons: flat",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:16",
+          "cons: mediana poprz. dni",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "solcast_p50",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft_0.3",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft_0.5",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "live_soft_0.6",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "extrapolated_live_proportional",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "extrapolated_live_blend",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "cons: flat",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          "09:41",
+          "cons: mediana poprz. dni",
+          "s\u0142usznie nie starczy",
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "models": [
+        [
+          "flat 0,9 kWh/h",
+          1,
+          7
+        ],
+        [
+          "poprz. dni: mediana (prod 15.10)",
+          4,
+          7
+        ],
+        [
+          "poprz. dni: p60 (prod od 15.10 wiecz\u00f3r)",
+          -4,
+          7
+        ],
+        [
+          "poprz. dni: bez najgorszego",
+          -25,
+          7
+        ],
+        [
+          "prod do 14.10: max(flat, bez najg.)",
+          -25,
+          7
+        ]
+      ],
+      "production": {
+        "min_soc": 26.7574,
+        "needed": 31,
+        "needed_strict": 21.4,
+        "split": [
+          -8,
+          -4
+        ],
+        "t1_import": 0.08
+      }
+    }
+  },
+  "source": "scripts/forecast_decision_score.py @ fa81958"
+}

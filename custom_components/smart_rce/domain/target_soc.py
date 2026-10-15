@@ -10,7 +10,7 @@ from .bucket import PV_WINDOW_HOURS, Bucket, Buckets
 
 if TYPE_CHECKING:
     from .consumption_profiles import ConsumptionProfile
-    from .pv_forecast import LivePvSignals, PvForecast
+    from .pv_forecast import LivePvSignals, PvForecast, PvForecastResult
 
 
 # --- Constants --- #
@@ -88,23 +88,12 @@ class TargetSoc:
             self._clear(prev_cons)
             return
 
-        # Time-shift only when today AND now is inside the PV window (7-13).
-        # Post-13 → fall back to full-window so the matrix renders sensible
-        # cells (otherwise all today buckets would be past = sum 0).
-        apply_now = self.variant.is_today and ctx.now_in_window
-        if apply_now:
-            if ctx.live_consumption_w is None or ctx.signals.pv_power_w is None:
-                # Fail-hard: today inside window needs both live signals.
-                self._clear(prev_cons)
-                return
-            self.pv_profile = result.to_profile(
-                ctx.target_date,
-                now=ctx.now,
-                pv_power_w_5min=ctx.signals.pv_power_w,
-            )
-        else:
-            self.pv_profile = result.to_profile(ctx.target_date)
-
+        apply_now = now_applies(ctx, is_today=self.variant.is_today)
+        pv_profile = now_aware_pv_profile(result, ctx, apply_now=apply_now)
+        if pv_profile is None:
+            self._clear(prev_cons)
+            return
+        self.pv_profile = pv_profile
         self.cons_view_flat = self._cons_view(flat_cons, ctx, apply_now)
         self.cons_views_prev = [
             self._cons_view(p, ctx, apply_now) if p is not None else None
@@ -142,9 +131,7 @@ class TargetSoc:
         self, cons: ConsumptionProfile, ctx: TargetSocContext, apply_now: bool
     ) -> ConsumptionProfile:
         """Apply now-aware time-shift to consumption profile when in window."""
-        if apply_now:
-            return cons.to_view(now=ctx.now, live_consumption_w=ctx.live_consumption_w)
-        return cons
+        return now_aware_consumption(cons, ctx, apply_now=apply_now)
 
     def _compute(
         self, cons_view: ConsumptionProfile, ctx: TargetSocContext
@@ -155,19 +142,85 @@ class TargetSoc:
             self.pv_profile,
             cons_view,
             start_charge_hour=ctx.start_charge_hour,
-            count_from=self._count_from(ctx),
+            count_from=count_from(ctx, is_today=self.variant.is_today),
         )
 
-    def _count_from(self, ctx: TargetSocContext) -> time | None:
-        """First bucket that still counts — the in-progress one inside the window.
 
-        Closed buckets of a now-aware view are zeroed, not dropped; left in the
-        minimum they would pin the tightest point at 0 and hide a surplus that
-        is still ahead. Outside the window the whole 7:00-12:30 walk counts.
-        """
-        if not (self.variant.is_today and ctx.now_in_window):
-            return None
-        return time(ctx.now.hour, 0 if ctx.now.minute < 30 else 30)
+# --- One variant x one consumption profile, the path TargetSoc takes --- #
+
+
+def target_soc_for(
+    result: PvForecastResult,
+    consumption: ConsumptionProfile,
+    ctx: TargetSocContext,
+    *,
+    is_today: bool,
+) -> TargetSocResult | None:
+    """Target SOC of one forecast with one consumption profile, as production.
+
+    The same steps `TargetSoc.recalculate` takes per profile (now-aware views
+    inside today's window, the in-progress bucket counted from), for readers
+    that score a forecast outside the live catalog — the forecast scoreboard.
+    None when the forecast does not reach the day or a live signal is missing.
+    """
+    if not result.covers(ctx.target_date):
+        return None
+    apply_now = now_applies(ctx, is_today=is_today)
+    pv_profile = now_aware_pv_profile(result, ctx, apply_now=apply_now)
+    if pv_profile is None:
+        return None
+    return _calculate_target_soc(
+        pv_profile,
+        now_aware_consumption(consumption, ctx, apply_now=apply_now),
+        start_charge_hour=ctx.start_charge_hour,
+        count_from=count_from(ctx, is_today=is_today),
+    )
+
+
+def now_applies(ctx: TargetSocContext, *, is_today: bool) -> bool:
+    """Time-shift only when today AND now is inside the PV window (7-13).
+
+    Post-13 → fall back to full-window so the matrix renders sensible
+    cells (otherwise all today buckets would be past = sum 0).
+    """
+    return is_today and ctx.now_in_window
+
+
+def now_aware_pv_profile(
+    result: PvForecastResult, ctx: TargetSocContext, *, apply_now: bool
+) -> PvProfile | None:
+    """PV profile from now on (or the whole window); None without live PV power.
+
+    Fail-hard: today inside the window needs both live signals.
+    """
+    if not apply_now:
+        return result.to_profile(ctx.target_date)
+    if ctx.live_consumption_w is None or ctx.signals.pv_power_w is None:
+        return None
+    return result.to_profile(
+        ctx.target_date, now=ctx.now, pv_power_w_5min=ctx.signals.pv_power_w
+    )
+
+
+def now_aware_consumption(
+    cons: ConsumptionProfile, ctx: TargetSocContext, *, apply_now: bool
+) -> ConsumptionProfile:
+    """Consumption from now on (the in-progress bucket at live power)."""
+    if apply_now:
+        return cons.to_view(now=ctx.now, live_consumption_w=ctx.live_consumption_w)
+    return cons
+
+
+def count_from(ctx: TargetSocContext, *, is_today: bool) -> time | None:
+    """First bucket that still counts — the in-progress one inside the window.
+
+    Closed buckets of a now-aware view are zeroed, not dropped; left in the
+    minimum they would pin the tightest point at 0 and hide a surplus that
+    is still ahead. Outside the window the whole 7:00-12:30 walk counts.
+    """
+    if not (is_today and ctx.now_in_window):
+        return None
+    return time(ctx.now.hour, 0 if ctx.now.minute < 30 else 30)
 
 
 # --- Input VOs --- #

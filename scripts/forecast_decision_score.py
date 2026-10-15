@@ -1,520 +1,236 @@
 #!/usr/bin/env python3
 """Score PV forecast variants and consumption models by the decisions they drive.
 
-Builds on `forecast_replay.replay` (archived contexts through production
-strategies) and uses production functions for both decisions:
-
-D1 — morning reserve until 13:00 (`_calculate_target_soc`, T1 reserve rule
-     max(flat, prev-workdays without the worst)), moments: evening 20:01 of the
-     day before (tomorrow variants), 04:00, 06:10, 06:40. Workdays only.
-     PV part of the error (variant ranking): R(PV_actual) − R(PV_forecast) with
-     the same consumption rule; + = forecast optimistic = battery under-charged.
-     Consumption part (same for every variant): f(PV_act, C_act) − R(PV_act).
-D2 — charge start (`find_candidate`), moments 07:41 / 08:41 / 09:41, actual
-     SOC at the moment, the day's RCE prices, S0 from `ChargeSlots.compute`.
-     Benchmark S* = the same rule on actual PV with flat consumption (as
-     production); + Δ = start too late (battery short), − = too early.
+A thin offline wrapper over `domain.forecast_score` — the code Home Assistant
+runs every evening — on a local copy of the archive. It differs from the HA
+run only in its inputs:
+- variants are REPLAYED on fresh strategy instances (HA reads production's
+  archived results, adding only what the archive lacks) — a variant new in
+  code gets scored on the whole archive;
+- earlier days of consumption come from the archive alone (workdays by
+  `DayType`, not the workday calendar; no hourly fallback before 03.10);
+- the start that struck comes from the SoC rise (no entity history offline),
+  and the afternoon top-up is unknown.
+Model of the score: home-assistant-ops `plans/forecast-score-framework.md`.
 
 Usage:
-    .venv/bin/python scripts/forecast_decision_score.py DATA_DIR FIRST LAST
+    .venv/bin/python scripts/forecast_decision_score.py DATA_DIR FIRST LAST [OUT.json]
 DATA_DIR holds forecast/, energy/ (archive copies) and extra/rce_prices.json.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
-import statistics
 import sys
-from typing import Final
+from typing import Any, Final
+from zoneinfo import ZoneInfo
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import forecast_replay as fr  # noqa: E402
-
-from custom_components.smart_rce.domain.bucket import (  # noqa: E402
-    PV_WINDOW_HOURS,
-    Bucket,
-    Buckets,
-)
-from custom_components.smart_rce.domain.charge_curve import kwh_to_full  # noqa: E402
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots  # noqa: E402
-from custom_components.smart_rce.domain.charge_start_shift import (  # noqa: E402
-    find_candidate,
-    price_window_end,
-)
-from custom_components.smart_rce.domain.consumption_profiles import (  # noqa: E402
-    ConsumptionProfile,
-)
 from custom_components.smart_rce.domain.energy_day import EnergyDay  # noqa: E402
-from custom_components.smart_rce.domain.pv_forecast import (  # noqa: E402
-    AdjustedPeriod,
-    PvForecastResult,
+from custom_components.smart_rce.domain.forecast_score.day_actuals import (  # noqa: E402
+    DayActuals,
+)
+from custom_components.smart_rce.domain.forecast_score.day_score import (  # noqa: E402
+    DayInputs,
+    DayScore,
+    ScoreStatus,
+    score_day,
+)
+from custom_components.smart_rce.domain.forecast_score.production_outcome import (  # noqa: E402
+    ChargeStartFact,
+    start_from_soc_rise,
+)
+from custom_components.smart_rce.domain.forecast_score.ranking import rank  # noqa: E402
+from custom_components.smart_rce.domain.forecast_score.variant_results import (  # noqa: E402
+    replay,
 )
 from custom_components.smart_rce.domain.pv_forecast.forecast_snapshot import (  # noqa: E402
     ForecastSnapshot,
 )
-from custom_components.smart_rce.domain.pv_surplus import SurplusProfile  # noqa: E402
+from custom_components.smart_rce.domain.pv_surplus import DayType  # noqa: E402
 from custom_components.smart_rce.domain.rce import RceDayPrices  # noqa: E402
-from custom_components.smart_rce.domain.target_soc import (  # noqa: E402
-    BATTERY_CAPACITY_KWH,
-    CONSUMPTION_PER_30MIN,
-    LOSS_FACTOR,
-    MIN_SOC_PERCENT,
-    PvProfile,
-    _calculate_target_soc,
-)
 from custom_components.smart_rce.infrastructure.daily_jsonl_archive import (  # noqa: E402
     DailyJsonlArchive,
 )
 
-PREV_WORKDAYS: Final = 8
-PRODUCTION_PERCENTILE: Final = 60
-D1_MOMENTS: Final = (("06:11", time(6, 11)), ("06:41", time(6, 41)))
-D2_MOMENTS: Final = (
-    ("07:41", time(7, 41)),
-    ("08:41", time(8, 41)),
-    ("09:16", time(9, 16)),
-    ("09:41", time(9, 41)),
-)
-D1_VARIANTS: Final = (
-    "solcast_p50",
-    "at_6",
-    "live",
-    "live_soft_0.3",
-    "live_soft",  # production: alpha 0.4 since 15.10.2026
-    "live_soft_0.5",
-    "live_soft_0.6",
-)
-D1_EVENING: Final = {
-    "solcast_p50": "tomorrow_p50",
-    "live": "tomorrow_live",
-    "live_soft": "tomorrow_live_soft",
-    "at_6": "tomorrow_at_6",
-}
-D2_VARIANTS: Final = (
-    "solcast_p50",
-    "live",
-    "live_soft_0.3",
-    "live_soft",  # production: alpha 0.4 since 15.10.2026
-    "live_soft_0.5",
-    "live_soft_0.6",
-    "extrapolated_live_proportional",
-    "extrapolated_live_blend",
-)
+TZ: Final = ZoneInfo("Europe/Warsaw")
+CONSUMPTION: Final = "consumption_minus_water_kwh"
+EARLIER_WORKDAYS: Final = 8
+# How far back earlier days are looked for (the archive starts 03.10.2026).
+LOOKBACK_DAYS: Final = 40
 
 
-def main(root: Path, first: date, last: date) -> None:
+def main(root: Path, first: date, last: date, out: Path | None) -> None:
     forecast = DailyJsonlArchive(root / "forecast")
-    energy_archive = DailyJsonlArchive(root / "energy")
-    prices = json.loads((root / "extra" / "rce_prices.json").read_text())
-    days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
-    energy = {
-        d: EnergyDay.from_dict(rows[0])
-        for d in [first - timedelta(days=14 + i) for i in range(0)]
-        + _all_days(energy_archive, first, last)
-        if (rows := energy_archive.read_day(d))
-    }
-    replayed = {}
-    for d in [first - timedelta(days=1), *days]:
-        snaps = [ForecastSnapshot.from_dict(r) for r in forecast.read_day(d)]
-        if snaps:
-            replayed[d] = fr.replay(snaps)
-    d1, cons_rows, prod_rows = [], [], []
-    d2 = []
-    for d in days:
-        if d not in energy or d not in replayed:
-            continue
-        if d.weekday() < 5:
-            r = score_d1(d, replayed, energy)
-            if r:
-                d1 += r[0]
-                cons_rows += r[1]
-                prod_rows.append(r[2])
-        if d.isoformat() in prices:
-            d2 += score_d2(d, replayed[d], energy, prices[d.isoformat()])
-    report(d1, cons_rows, prod_rows, d2, days)
-
-
-def _all_days(archive: DailyJsonlArchive, first: date, last: date) -> list[date]:
-    out, d = [], first - timedelta(days=20)
-    while d <= last:
-        if archive.has_day(d):
-            out.append(d)
-        d += timedelta(days=1)
-    return out
-
-
-def consumed(replayed, decision: datetime, max_age: timedelta = timedelta(minutes=40)):
-    """Return the snapshot a decision at `decision` used: the latest before it."""
-    before = [
-        r for r in replayed if decision - max_age <= r.snapshot.taken_at <= decision
-    ]
-    return before[-1] if before else None
-
-
-# --- D1: morning reserve ---------------------------------------------------- #
-
-FLAT: Final = {
-    Bucket(h, m): CONSUMPTION_PER_30MIN for h in PV_WINDOW_HOURS for m in (0, 30)
-}
-
-
-def _target(
-    pv: dict[Bucket, float], cons: dict[Bucket, float], sch: int | None
-) -> tuple[int, float]:
-    r = _calculate_target_soc(
-        PvProfile(buckets=Buckets(by_bucket=pv)),
-        ConsumptionProfile(buckets=Buckets(by_bucket=cons)),
-        sch,
+    energy = _energy(DailyJsonlArchive(root / "energy"), first, last)
+    prices: dict[str, list[float]] = json.loads(
+        (root / "extra" / "rce_prices.json").read_text()
     )
-    return r.value, r.dip_kwh
-
-
-def _rule(
-    pv: dict[Bucket, float], prev: list[dict[Bucket, float]], sch: int | None
-) -> int:
-    """Production T1 reserve rule: per-slot PRODUCTION_PERCENTILE of prev workdays.
-
-    Median 15.10.2026, 60th percentile from smart_rce 20ada58; flat when none.
-    """
-    if not prev:
-        return _target(pv, FLAT, sch)[0]
-    return _target(pv, _percentile_profile(prev, PRODUCTION_PERCENTILE), sch)[0]
-
-
-def _old_rule(
-    pv: dict[Bucket, float], prev: list[dict[Bucket, float]], sch: int | None
-) -> int:
-    """T1 reserve rule until 14.10.2026: max(flat, prev workdays without the worst)."""
-    flat = _target(pv, FLAT, sch)[0]
-    values = sorted((_target(pv, c, sch)[0] for c in prev), reverse=True)
-    prev_ww = values[1] if len(values) > 1 else (values[0] if values else None)
-    return max(flat, prev_ww) if prev_ww is not None else flat
-
-
-def _prev_profiles(d: date, energy: dict[date, EnergyDay]) -> list[dict[Bucket, float]]:
-    out, cand = [], d - timedelta(days=1)
-    while len(out) < PREV_WORKDAYS and (d - cand).days <= 20:
-        if cand.weekday() < 5 and cand in energy:
-            out.append(
-                fr.bucket_map(
-                    fr.slots(energy[cand], "consumption_minus_water_kwh"), cand
-                )
-            )
-        cand -= timedelta(days=1)
-    return out
-
-
-def _pp(kwh: float) -> float:
-    return kwh / (BATTERY_CAPACITY_KWH / 100) * (1 + LOSS_FACTOR)
-
-
-def score_d1(d, replayed, energy):
-    en = energy[d]
-    pv_act = fr.bucket_map(fr.slots(en, "pv_kwh"), d)
-    cons_act = fr.bucket_map(fr.slots(en, "consumption_minus_water_kwh"), d)
-    prev = _prev_profiles(d, energy)
-    rows, cons_rows = [], []
-    decomposition: tuple[int, int] | None = None
-    sch_any = None
-    for label, at in D1_MOMENTS:
-        if at is None:  # evening fetch of the day before
-            src = [
-                r
-                for r in replayed.get(d - timedelta(days=1), [])
-                if time(20, 0) <= r.snapshot.taken_at.time() <= time(20, 15)
-            ]
-            snap = src[0] if src else None
-            names = D1_EVENING
+    scores: list[DayScore] = []
+    day = first
+    while day <= last:
+        snapshots = [ForecastSnapshot.from_dict(r) for r in forecast.read_day(day)]
+        if snapshots and day in energy:
+            scores.append(_score(day, snapshots, energy, prices.get(day.isoformat())))
         else:
-            snap = consumed(replayed[d], datetime.combine(d, at, en.start.tzinfo))
-            names = {v: v for v in D1_VARIANTS}
-        if snap is None:
-            continue
-        sch = snap.snapshot.context.start_charge_hour if at is not None else None
-        sch_any = sch if at == time(6, 11) else sch_any
-        r_act = _rule(pv_act, prev, sch)
-        t_act_real = _target(pv_act, cons_act, sch)[0]
-        for name, key in names.items():
-            res = (
-                snap.results.get(key)
-                if key != "tomorrow_p50"
-                else _p50(snap.snapshot.context.solcast_tomorrow)
-            )
-            if res is None:
-                continue
-            fc = fr.forecast_slots(res, d)
-            if not fc:
-                continue
-            pv_fc = fr.bucket_map(fc, d)
-            # Main: PV part with the PRODUCTION consumption model (adds up with the
-            # consumption part to the real production error). Alongside: the same
-            # PV part with actual consumption; the gap is how much the consumption
-            # model colours the PV score.
-            with_model = r_act - _rule(pv_fc, prev, sch)
-            with_actual = t_act_real - _target(pv_fc, cons_act, sch)[0]
-            rows.append((d, label, name, with_model, with_actual))
-            if label == "06:11" and name == "live_soft":  # the variant production uses
-                decomposition = (with_model, t_act_real - r_act)
-    # consumption models, judged with ACTUAL PV against actual consumption
-    sch = sch_any
-    truth_value, truth_dip = _target(pv_act, cons_act, sch)
-    models = {
-        "flat 0,9 kWh/h": [FLAT],
-        "poprz. dni: mediana (prod 15.10)": [_median_profile(prev)] if prev else [],
-        "poprz. dni: p60 (prod od 15.10 wieczór)": (
-            [_percentile_profile(prev, PRODUCTION_PERCENTILE)] if prev else []
-        ),
-        "poprz. dni: bez najgorszego": None,
-        "prod do 14.10: max(flat, bez najg.)": "old_rule",
+            print(f"{day}: missing snapshots or actuals, skipped")
+        day += timedelta(days=1)
+    report(scores)
+    if out is not None:
+        out.write_text(json.dumps([s.to_dict() for s in scores], ensure_ascii=False))
+
+
+def _energy(
+    archive: DailyJsonlArchive, first: date, last: date
+) -> dict[date, EnergyDay]:
+    found: dict[date, EnergyDay] = {}
+    day = first - timedelta(days=LOOKBACK_DAYS)
+    while day <= last:
+        energy = EnergyDay.from_records(archive.read_day(day))
+        if energy is not None:
+            found[day] = energy
+        day += timedelta(days=1)
+    return found
+
+
+def _score(
+    day: date,
+    snapshots: list[ForecastSnapshot],
+    energy: dict[date, EnergyDay],
+    prices: list[float] | None,
+) -> DayScore:
+    actuals = DayActuals(energy[day], TZ)
+    window = (
+        ChargeSlots.compute(RceDayPrices(None, day, tuple(prices))) if prices else None
+    )
+    s0 = round(window.start_hour * 60) if window is not None else None
+    inputs = DayInputs(
+        actuals=actuals,
+        snapshots=replay(snapshots),
+        earlier_workdays=_earlier_workdays(day, energy),
+        earlier_same_type=_half_hours(DayType.of(day).previous_days(day), energy),
+        prices=prices,
+        s0=s0,
+        start=_start(actuals, s0),
+        afternoon_charge=None,
+    )
+    return score_day(
+        inputs,
+        status=ScoreStatus.FINAL,
+        computed_at=datetime.now(TZ),
+        code_version="offline",
+    )
+
+
+def _earlier_workdays(day: date, energy: dict[date, EnergyDay]) -> dict[date, Any]:
+    days, back = [], day - timedelta(days=1)
+    while len(days) < EARLIER_WORKDAYS and (day - back).days <= LOOKBACK_DAYS:
+        if DayType.of(back) is DayType.WORKDAY:
+            days.append(back)
+        back -= timedelta(days=1)
+    return _half_hours(days, energy)
+
+
+def _half_hours(days: list[date], energy: dict[date, EnergyDay]) -> dict[date, Any]:
+    return {
+        d: energy[d].energy_by_half_hour(CONSUMPTION, TZ) for d in days if d in energy
     }
-    for name, profiles in models.items():
-        if profiles == "old_rule":
-            value = _old_rule(pv_act, prev, sch)
-        elif profiles is None:
-            vals = sorted((_target(pv_act, c, sch)[0] for c in prev), reverse=True)
-            if not vals:
-                continue
-            value = vals[1] if len(vals) > 1 else vals[0]
-        elif profiles:
-            value = _target(pv_act, profiles[0], sch)[0]
-        else:
-            continue
-        cons_rows.append((d, name, truth_value - value, len(prev)))
-    need_raw = MIN_SOC_PERCENT + _pp(truth_dip)
-    soc = [
-        v
-        for i, v in enumerate(en.series["battery_soc_pct"])
-        if v is not None and 84 <= i < 156
-    ]  # 07:00-13:00
-    # Import counts per HOUR of net balance (net-billing settles hourly): a 5-min
-    # import within an hour that exports overall is not an import.
-    series = en.series["grid_net_export_kwh"]
-    grid = [
-        sum(v for v in series[h * 12 : (h + 1) * 12] if v is not None)
-        for h in range(7, 13)
-    ]
-    prod = (
-        d,
-        truth_value,
-        round(need_raw, 1),
-        min(soc) if soc else None,
-        round(sum(max(-g, 0.0) for g in grid), 2),
-        len(prev),
-        decomposition,
-    )
-    return rows, cons_rows, prod
 
 
-def _p50(periods) -> PvForecastResult | None:
-    if not periods:
-        return None
-    return PvForecastResult(
-        [AdjustedPeriod(p.period_start, p.pv_estimate) for p in periods], 0.0
-    )
-
-
-def _median_profile(profiles: list[dict[Bucket, float]]) -> dict[Bucket, float]:
-    return {b: statistics.median(p[b] for p in profiles) for b in profiles[0]}
-
-
-def _percentile_profile(
-    profiles: list[dict[Bucket, float]], percentile: float
-) -> dict[Bucket, float]:
-    """Per-slot percentile, linear between sorted values (k = (n-1)*p/100)."""
-    out = {}
-    for b in profiles[0]:
-        values = sorted(p[b] for p in profiles)
-        k = (len(values) - 1) * percentile / 100
-        lo = int(k)
-        hi = min(lo + 1, len(values) - 1)
-        out[b] = values[lo] + (values[hi] - values[lo]) * (k - lo)
-    return out
-
-
-# --- D2: charge start -------------------------------------------------------- #
-
-
-def score_d2(d, replayed, energy, prices):
-    en = energy[d]
-    tz = en.start.tzinfo
-    window = ChargeSlots.compute(RceDayPrices(None, d, tuple(prices)))
-    if window is None:
-        return []
-    s0 = int(window.start_hour * 60)
-    pv = fr.slots(en, "pv_kwh")
-    cons = fr.slots(en, "consumption_minus_water_kwh")
-    actual_real = SurplusProfile.build(d, _by_index(pv), _by_index(cons))
-    prev_cons = [
-        _by_index(fr.slots(energy[p], "consumption_minus_water_kwh"))
-        for p in _prev_days(d, energy)
-    ]
-    median_cons = (
-        {k: statistics.median(c.get(k, 0.45) for c in prev_cons) for k in range(48)}
-        if prev_cons
-        else None
-    )
-    out = []
-    for label, at in D2_MOMENTS:
-        snap = consumed(replayed, datetime.combine(d, at, tz))
-        if snap is None:
-            continue
-        now = at.hour * 60 + at.minute
-        if now >= s0:
-            continue  # production evaluates only before S0
-        idx = (at.hour * 60 + at.minute) // 5
-        soc = next(
-            (
-                en.series["battery_soc_pct"][i]
-                for i in range(idx, idx - 6, -1)
-                if en.series["battery_soc_pct"][i] is not None
-            ),
-            None,
-        )
-        if soc is None:
-            continue
-        need = kwh_to_full(soc)
-        star_real = find_candidate(actual_real, prices, now, need, s0)
-        for name in D2_VARIANTS:
-            res = snap.results.get(name)
-            if res is None:
-                continue
-            fc = fr.forecast_slots(res, d)
-            # PV ranking holds consumption at its ACTUAL value on both sides (as D1).
-            prof = SurplusProfile.build(d, _by_index(fc), _by_index(cons))
-            cand = find_candidate(prof, prices, now, need, s0)
-            out.append(
-                _classify(d, label, name, cand, star_real, actual_real, prices, need)
-            )
-        for cname, cprof in (
-            ("cons: flat", None),
-            ("cons: mediana poprz. dni", median_cons),
-        ):
-            if cname != "cons: flat" and cprof is None:
-                continue
-            cand = find_candidate(
-                SurplusProfile.build(d, _by_index(pv), cprof), prices, now, need, s0
-            )
-            out.append(
-                _classify(d, label, cname, cand, star_real, actual_real, prices, need)
-            )
-    return out
-
-
-def _prev_days(d, energy):
-    out, c = [], d - timedelta(days=1)
-    while len(out) < 5 and (d - c).days <= 20:
-        if c in energy and (c.weekday() < 5) == (d.weekday() < 5):
-            out.append(c)
-        c -= timedelta(days=1)
-    return out
-
-
-def _by_index(slots: dict[datetime, float]) -> dict[int, float]:
-    return {s.hour * 2 + (1 if s.minute >= 30 else 0): v for s, v in slots.items()}
-
-
-def _classify(d, label, name, cand, star, actual, prices, need):  # noqa: PLR0917
-    delta_h = (cand.start - star.start) / 60
-    if not cand.enough and not star.enough:
-        cls = "słusznie nie starczy"
-    elif not cand.enough and star.enough:
-        cls = "niesłusznie nie starczy"
-    elif abs(delta_h) < 0.5:
-        cls = "na czas"
-    elif delta_h > 0:
-        cls = "za późno"
-    else:
-        cls = "za wcześnie"
-    end = price_window_end(cand.start, prices) * 60
-    shortfall = (
-        max(0.0, need - actual.total(cand.start, end)) if cls == "za późno" else 0.0
-    )
-    early = actual.total(cand.start, star.start) if delta_h < 0 else 0.0
-    return (d, label, name, cls, delta_h, shortfall, early)
+def _start(actuals: DayActuals, s0: int | None) -> ChargeStartFact:
+    rise = start_from_soc_rise(actuals)
+    return ChargeStartFact(rise, "soc_rise" if rise is not None else "none", s0)
 
 
 # --- report ------------------------------------------------------------------ #
 
 
-def report(d1, cons_rows, prod_rows, d2, days):
-    print(f"Dni: {days[0]} … {days[-1]}")
+def report(scores: list[DayScore]) -> None:
+    if not scores:
+        return
     print(
-        "\n## D1 — rezerwa do 13:00, część PV błędu [pp]: + = prognoza za optymistyczna (bateria za słabo naładowana)"
+        f"Dni: {scores[0].day} … {scores[-1].day}  (ujęcie: decyzje; pp = punkty SOC)"
     )
-    for label, _ in D1_MOMENTS:
-        rows = [r for r in d1 if r[1] == label]
-        if not rows:
-            continue
-        print(
-            f"\n{label}:  wariant  n │ model zużycia: MAE bias >+3pp │"
-            " rzecz. zużycie: MAE bias │ wpływ modelu zużycia (śr.) │ per dzień: model / rzecz."
-        )
-        for name in dict.fromkeys(r[2] for r in rows):
-            e = [r[3] for r in rows if r[2] == name]
-            a = [r[4] for r in rows if r[2] == name]
-            gap = statistics.fmean(x - y for x, y in zip(e, a, strict=True))
-            print(
-                f"  {name:16}{len(e):>3} │ {statistics.fmean(map(abs, e)):5.1f} {statistics.fmean(e):+5.1f} {sum(x > 3 for x in e):>5} │"
-                f" {statistics.fmean(map(abs, a)):5.1f} {statistics.fmean(a):+5.1f} │ {gap:+6.1f} pp │ "
-                + " ".join(f"{x:+d}/{y:+d}" for x, y in zip(e, a, strict=True))
-            )
+    print("\n## Karta dnia: błąd produkcji = część PV + część zużycia")
     print(
-        "\n## D1 — modele zużycia (z rzeczywistym PV) vs rzeczywiste zużycie bez CWU [pp]: + = model za niski (za mało rezerwy)"
+        "  dzień       typ (Live/p50 06:11, rzecz./p50)   rezerwa 06:11 [pp]"
+        "        linia 08:41   start [h]   import T1   min SOC   eksport 07-10"
     )
-    for name in dict.fromkeys(r[1] for r in cons_rows):
-        e = [r[2] for r in cons_rows if r[1] == name]
-        print(
-            f"  {name:30}{len(e):>3} MAE {statistics.fmean(map(abs, e)):5.1f} bias {statistics.fmean(e):+5.1f}   {' '.join(f'{x:+d}' for x in e)}"
-        )
-    print(
-        "  (poprz. dni dostępnych na dzień: "
-        + ", ".join(
-            f"{r[0]:%d.%m}:{r[3]}" for r in cons_rows if r[1] == "flat 0,9 kWh/h"
-        )
-        + ")"
-    )
-    print("\n## D1 — co się naprawdę stało (rzeczywiste PV i zużycie)")
-    print(
-        "  dzień    potrzebne (z buforem) / bez bufora   min SOC 07-13   import T1 kWh"
-        "   │ błąd produkcji 06:11 = część PV + część zużycia [pp]"
-    )
-    for d, value, raw, min_soc, imp, _n, split in prod_rows:
-        parts = (
-            f"{split[0] + split[1]:+d} = {split[0]:+d} PV {split[1]:+d} zużycie"
-            if split
+    for s in scores:
+        kind = s.day_type.kind.value if s.day_type.kind else "–"
+        split = (
+            f"{s.reserve_error_pp:+d} = {s.reserve_error_pv_pp:+d} PV"
+            f" {s.reserve_error_consumption_pp:+d} zuż."
+            if s.reserve_error_pp is not None
+            and s.reserve_error_pv_pp is not None
+            and s.reserve_error_consumption_pp is not None
             else "–"
         )
+        o = s.outcome
         print(
-            f"  {d:%a %d.%m}   {value:>4}% / {raw:>5}%            {min_soc if min_soc is None else round(min_soc):>4}%        {imp:>5}   │ {parts}"
+            f"  {s.day:%a %d.%m}  {kind:6} ({s.day_type.live_over_p50}, "
+            f"{s.day_type.actual_pv_over_p50})  {split:24} "
+            f"{_signed(s.reserve_line_error_pp):>8}   {_signed(s.start_delta_h):>8}"
+            f"   {o.t1_import_kwh}   {o.min_soc_t1}   {o.morning_export_kwh}"
         )
-    print("\n## D2 — start ładowania vs benchmark (ta sama reguła na rzeczywistym PV)")
-    for label, _ in D2_MOMENTS:
-        rows = [r for r in d2 if r[1] == label]
-        if not rows:
-            continue
-        print(f"\n{label}:")
-        for name in dict.fromkeys(r[2] for r in rows):
-            mine = [r for r in rows if r[2] == name]
-            counts = defaultdict(int)
-            for r in mine:
-                counts[r[3]] += 1
-            short = sum(r[5] for r in mine)
-            early = sum(r[6] for r in mine)
+    ranking = rank(scores)
+    print("\n## D1 — rezerwa, część PV [pp]: + = za optymistycznie (za mało rezerwy)")
+    for label, rows in ranking["reserve"]["all"].items():
+        print(
+            f"\n{label}:  wariant                             n   MAE  bias >3 >5 asym"
+            " │ rzecz. zuż.: MAE bias │ vs p50: ΔMAE  W/R/P"
+        )
+        for r in rows:
             print(
-                f"  {name:32}{len(mine):>3}  "
-                + ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
-                + f" | Σ|Δ| {sum(abs(r[4]) for r in mine):.1f} h, niedobór {short:.1f} kWh, za wcześnie {early:.1f} kWh"
+                f"  {r['variant']:38}{r['n']:>2} {r['mae']:5.1f} {r['bias']:+5.1f}"
+                f" {r['over_3']:>2} {r['over_5']:>2} {r['asym_loss']:4.1f} │"
+                f" {r['mae_actual_cons']:5.1f} {r['bias_actual_cons']:+5.1f} │"
+                f" {_signed(r['vs_p50_mae']):>6}  {r['wins']}/{r['ties']}/{r['losses']}"
             )
+    print("\n## D1 — modele zużycia o 06:11 (rzeczywiste PV) [pp]: + = model za niski")
+    for r in ranking["reserve_models"]["all"]:
+        print(
+            f"  {r['model']:10}{r['n']:>3}  MAE {r['mae']:5.1f}  bias {r['bias']:+5.1f}"
+            f"  >3 {r['over_3']}  │ z prognozą produkcji: MAE {r['mae_production_pv']}"
+            f" bias {r['bias_production_pv']}"
+        )
+    print(
+        "\n## D2 — start ładowania (prognoza z modelem produkcji vs wzorzec z modelem)"
+    )
+    for label, rows in ranking["start"]["all"].items():
+        print(f"\n{label}:")
+        for r in rows:
+            verdicts = ", ".join(f"{k} {v}" for k, v in sorted(r["verdicts"].items()))
+            print(
+                f"  {r['variant']:38}{r['n']:>3}  {verdicts} | MAE {r['mae_h']} h,"
+                f" niedobór {r['short_kwh']} kWh, za wcześnie {r['early_kwh']} kWh"
+                f" | vs p50 W/R/P {r['wins']}/{r['ties']}/{r['losses']}"
+            )
+    print("\n## D2 — modele zużycia (rzeczywiste PV vs wzorzec rzeczywisty)")
+    for label, rows in ranking["start_models"]["all"].items():
+        print(f"\n{label}:")
+        for r in rows:
+            verdicts = ", ".join(f"{k} {v}" for k, v in sorted(r["verdicts"].items()))
+            print(
+                f"  {r['model']:10}{r['n']:>3}  {verdicts} | niedobór {r['short_kwh']} kWh"
+            )
+    print("\n## Produkcja:", json.dumps(ranking["production"], ensure_ascii=False))
+
+
+def _signed(value: float | None) -> str:
+    return "–" if value is None else f"{value:+g}"
 
 
 if __name__ == "__main__":
+    if len(sys.argv) not in (4, 5):
+        sys.exit(__doc__)
     main(
         Path(sys.argv[1]),
         date.fromisoformat(sys.argv[2]),
         date.fromisoformat(sys.argv[3]),
+        Path(sys.argv[4]) if len(sys.argv) == 5 else None,
     )

@@ -63,7 +63,7 @@ from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
 # Inside /config: git-ignored by the config repo, but part of HA's daily backup
 # (which leaves /share out). Long-term copies: Z2 pulls this tree nightly.
 # The energy archive's directory lives with its reader (`ENERGY_ARCHIVE_DIR`).
-_FORECAST_ARCHIVE_DIR: Final = "smart_rce/archive/forecast"
+FORECAST_ARCHIVE_DIR: Final = "smart_rce/archive/forecast"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -225,7 +225,7 @@ async def _wire_forecast_archive(
         hass,
         forecasts=forecasts,
         solcast=solcast,
-        archive=DailyJsonlArchive(Path(hass.config.path(_FORECAST_ARCHIVE_DIR))),
+        archive=DailyJsonlArchive(Path(hass.config.path(FORECAST_ARCHIVE_DIR))),
         code_version=await hass.async_add_executor_job(read_code_version),
     )
     entry.async_on_unload(

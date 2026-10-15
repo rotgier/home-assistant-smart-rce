@@ -3,9 +3,10 @@
 
 Reads `archive/forecast` (snapshots) and `archive/energy` (actuals) — a local
 copy of `/config/smart_rce/archive` — and, per day:
-1. resets the strategies and feeds every snapshot's context through them in
-   order (enum order = production dispatch order), plus extra variants that do
-   not exist in production (e.g. Live Soft with another alpha, raw Solcast);
+1. replays every snapshot's context on fresh strategy instances
+   (`domain.forecast_score.variant_results.replay` — the scoreboard's own code),
+   plus variants production does not run (Live Soft with another alpha, raw
+   Solcast);
 2. picks the snapshot each decision moment consumed;
 3. scores every variant at that moment, in several framings (each number is
    labelled with its framing — window sum, 30-min WAPE, decision variable).
@@ -44,12 +45,11 @@ from custom_components.smart_rce.domain.consumption_profiles import (  # noqa: E
     ConsumptionProfile,
 )
 from custom_components.smart_rce.domain.energy_day import EnergyDay  # noqa: E402
+from custom_components.smart_rce.domain.forecast_score.variant_results import (  # noqa: E402
+    ScoredSnapshot,
+    replay,
+)
 from custom_components.smart_rce.domain.pv_forecast import (  # noqa: E402
-    AdjustedPeriod,
-    ForecastContext,
-    ForecastStrategy,
-    LiveSoftStrategy,
-    PvForecast,
     PvForecastResult,
 )
 from custom_components.smart_rce.domain.pv_forecast.forecast_snapshot import (  # noqa: E402
@@ -83,15 +83,6 @@ MOMENTS: Final = (
 TOLERANCE: Final = timedelta(minutes=15)
 
 
-def _soft(alpha: float) -> ForecastStrategy:
-    """Live Soft with another alpha — a variant production does not run."""
-    cls = type(f"LiveSoft{alpha}", (LiveSoftStrategy,), {"_ALPHA": alpha})
-    return cls(today=True)
-
-
-EXTRA_VARIANTS: Final[dict[str, ForecastStrategy]] = {
-    f"live_soft_{a}": _soft(a) for a in (0.3, 0.5, 0.6)
-}
 SHOWN: Final = (
     "solcast_p50",
     "at_6",
@@ -103,14 +94,6 @@ SHOWN: Final = (
     "extrapolated_live_proportional",
     "extrapolated_live_blend",
 )
-
-
-@dataclass(frozen=True)
-class Replayed:
-    """One snapshot with what every variant computes from its context."""
-
-    snapshot: ForecastSnapshot
-    results: dict[str, PvForecastResult | None]
 
 
 @dataclass(frozen=True)
@@ -143,52 +126,21 @@ def main(root: Path, first: date, last: date) -> None:
     report(scores)
 
 
-def replay(snapshots: list[ForecastSnapshot]) -> list[Replayed]:
-    """Run every snapshot of a day through production + extra strategies."""
-    strategies = [v.strategy for v in PvForecast] + list(EXTRA_VARIANTS.values())
-    for strategy in strategies:  # a day must not inherit the previous one
-        strategy.result = None
-        strategy.remaining_kwh = None
-    replayed = []
-    for snapshot in snapshots:
-        ctx = snapshot.context
-        for variant in PvForecast:
-            variant.strategy.update(ctx)
-        for strategy in EXTRA_VARIANTS.values():
-            strategy.update(ctx)
-        results: dict[str, PvForecastResult | None] = {
-            v.key: v.result for v in PvForecast
-        }
-        results |= {name: s.result for name, s in EXTRA_VARIANTS.items()}
-        results["solcast_p50"] = _raw_solcast(ctx)
-        replayed.append(Replayed(snapshot, results))
-    return replayed
-
-
-def _raw_solcast(ctx: ForecastContext) -> PvForecastResult | None:
-    if not ctx.solcast_today:
-        return None
-    periods = [AdjustedPeriod(p.period_start, p.pv_estimate) for p in ctx.solcast_today]
-    return PvForecastResult(periods, sum(p.pv_estimate for p in ctx.solcast_today) / 2)
-
-
-def score_day(day: date, replayed: list[Replayed], energy: EnergyDay) -> list[Score]:
+def score_day(
+    day: date, replayed: list[ScoredSnapshot], energy: EnergyDay
+) -> list[Score]:
     pv = slots(energy, "pv_kwh")
     cons = slots(energy, "consumption_minus_water_kwh")
     scores = []
     for label, at, kind in MOMENTS:
         moment = datetime.combine(day, at, energy.start.tzinfo)
         chosen = next(
-            (
-                r
-                for r in replayed
-                if moment <= r.snapshot.taken_at <= moment + TOLERANCE
-            ),
+            (r for r in replayed if moment <= r.taken_at <= moment + TOLERANCE),
             None,
         )
         if chosen is None:
             continue
-        taken = chosen.snapshot.taken_at
+        taken = chosen.taken_at
         first_slot = _next_slot(taken)
         window = [s for s in pv if first_slot <= s and s.time() < WINDOW_END]
         for name in SHOWN:
@@ -199,7 +151,7 @@ def score_day(day: date, replayed: list[Replayed], energy: EnergyDay) -> list[Sc
             if not all(s in fc for s in window):
                 continue
             err = (
-                _dip_error(fc, pv, cons, day, chosen.snapshot.context.start_charge_hour)
+                _dip_error(fc, pv, cons, day, chosen.context.start_charge_hour)
                 if kind == "charge"
                 else (_surplus(fc, cons, window) - _surplus(pv, cons, window), None)
             )

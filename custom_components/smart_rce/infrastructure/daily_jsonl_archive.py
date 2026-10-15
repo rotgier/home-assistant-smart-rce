@@ -82,6 +82,12 @@ class DailyJsonlArchive:
     def has_day(self, day: date) -> bool:
         return self._path(day, _PLAIN).exists() or self._path(day, _CLOSED).exists()
 
+    def is_closed(self, day: date) -> bool:
+        """Only the gzipped file exists — appending would hide it from `read_day`."""
+        return (
+            not self._path(day, _PLAIN).exists() and self._path(day, _CLOSED).exists()
+        )
+
     def close_days_before(self, today: date) -> list[date]:
         """Compress every open file of a day before `today`; return those days.
 

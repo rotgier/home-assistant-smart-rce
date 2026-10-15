@@ -42,14 +42,28 @@ class _ExtrapStrategyBase(ForecastStrategy):
     supports_in_progress_patch = False
     is_extrap = True
 
-    def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
-        # Lazy import to break the strategies → forecast_enum → strategies cycle.
-        from .forecast_enum import PvForecast
+    def __init__(self, live: ForecastStrategy | None = None) -> None:
+        """`live`: the LIVE strategy to extrapolate; None = production's enum member.
 
-        pv_forecast_live = PvForecast.LIVE.result
+        A replay passes its own LIVE instance, so replaying never reads (or
+        disturbs) the strategies production dispatches to.
+        """
+        super().__init__()
+        self._live = live
+
+    def _compute(self, ctx: ForecastContext) -> PvForecastResult | None:
+        pv_forecast_live = self._live_result()
         if pv_forecast_live is None or not ctx.solcast_today:
             return None
         return self._run_extrapolation(ctx, pv_forecast_live)
+
+    def _live_result(self) -> PvForecastResult | None:
+        if self._live is not None:
+            return self._live.result
+        # Lazy import to break the strategies → forecast_enum → strategies cycle.
+        from .forecast_enum import PvForecast
+
+        return PvForecast.LIVE.result
 
     def _run_extrapolation(
         self, ctx: ForecastContext, pv_forecast_live: PvForecastResult

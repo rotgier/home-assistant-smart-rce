@@ -16,6 +16,7 @@ from homeassistant.util import dt as dt_util
 from .application.charge_start_shift_service import ChargeStartShiftService
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
+from .application.forecast_score_service import ForecastScoreService
 from .application.morning_discharge_service import MorningDischargeService
 from .application.pv_surplus_service import PvSurplusService
 from .application.target_soc_matrix_service import TargetSocMatrixService
@@ -24,6 +25,7 @@ from .coordinator import SmartRceDataUpdateCoordinator
 from .deposit.factory import Deposit, create_deposit
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
+from .forecast_score_factory import create_forecast_score
 from .garden.factory import Garden, create_garden
 from .infrastructure.charge_start_shift_notifier import ChargeStartShiftNotifier
 from .infrastructure.energy_archive_reader import EnergyArchiveReader
@@ -74,6 +76,7 @@ class SmartRceData:
     deposit: Deposit
     pv_surplus: PvSurplusService
     charge_start_shift: ChargeStartShiftService
+    forecast_score: ForecastScoreService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -192,6 +195,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     # takes any business_date, so historical days come from the same adapter.
     deposit = await create_deposit(hass, entry, rceApi)
 
+    # Forecast scoreboard: each day's forecast decisions scored, 30-day ranking.
+    forecast_score = await create_forecast_score(hass, entry, ems, rceApi)
+
     await rce_coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = SmartRceData(
@@ -206,6 +212,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         deposit,
         pv_surplus,
         charge_start_shift,
+        forecast_score,
     )
 
     # Credentials for the deposit fetch live in options; picking them up needs a

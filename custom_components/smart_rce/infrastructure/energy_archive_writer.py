@@ -85,28 +85,37 @@ class EnergyArchiveWriter:
             return True, None
 
     async def _fetch_day(self, day: date) -> EnergyDay:
-        tz = dt_util.get_default_time_zone()
-        start = datetime.combine(day, time(0), tzinfo=tz)
-        end = datetime.combine(day + timedelta(days=1), time(0), tzinfo=tz)
-        stats = await get_instance(self._hass).async_add_executor_job(
-            statistics_during_period,
-            self._hass,
-            start,
-            end,
-            set(ENERGY_SERIES),
-            "5minute",
-            None,
-            {"change", "mean"},
-        )
-        readings: dict[str, dict[datetime, float | None]] = {
-            name: self._by_slot_start(stats.get(statistic_id, []), field)
-            for statistic_id, (name, field) in ENERGY_SERIES.items()
-        }
-        return EnergyDay.from_readings(day, tz, readings)
+        return await fetch_energy_day(self._hass, day)
 
-    @staticmethod
-    def _by_slot_start(rows: list[Any], field: str) -> dict[datetime, float | None]:
-        return {
-            datetime.fromtimestamp(float(row["start"]), tz=UTC): row.get(field)
-            for row in rows
-        }
+
+async def fetch_energy_day(hass: HomeAssistant, day: date) -> EnergyDay:
+    """`day` from the recorder's 5-minute statistics — as far as they reach now.
+
+    The archive writer stores finished days with it; the forecast scoreboard
+    reads today with it, before the day is archived.
+    """
+    tz = dt_util.get_default_time_zone()
+    start = datetime.combine(day, time(0), tzinfo=tz)
+    end = datetime.combine(day + timedelta(days=1), time(0), tzinfo=tz)
+    stats = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        start,
+        end,
+        set(ENERGY_SERIES),
+        "5minute",
+        None,
+        {"change", "mean"},
+    )
+    readings: dict[str, dict[datetime, float | None]] = {
+        name: _by_slot_start(stats.get(statistic_id, []), field)
+        for statistic_id, (name, field) in ENERGY_SERIES.items()
+    }
+    return EnergyDay.from_readings(day, tz, readings)
+
+
+def _by_slot_start(rows: list[Any], field: str) -> dict[datetime, float | None]:
+    return {
+        datetime.fromtimestamp(float(row["start"]), tz=UTC): row.get(field)
+        for row in rows
+    }
