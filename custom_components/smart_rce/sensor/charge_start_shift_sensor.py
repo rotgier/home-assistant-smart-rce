@@ -88,6 +88,16 @@ class ChargeStartShiftSensor(SensorEntity):
                 }
                 for variant in ShiftVariant
             }
+            # Start per PV forecast with the median consumption: "enough" False
+            # means even the earliest start does not fill the battery.
+            attrs["pv_variants"] = {
+                variant.key: {
+                    "label": variant.pretty_label,
+                    "candidate": to_hhmm(found.start),
+                    "enough": found.enough,
+                }
+                for variant, found in last.by_pv.items()
+            }
         return attrs
 
 

@@ -288,3 +288,14 @@ def test_applied_variant_falls_back_to_flat_without_history():
     service._pv_surplus = _MedianSurplus(median_loaded=False)  # noqa: SLF001
     _run(service, clock, 9, (11, 16, 21))
     assert charge.start_charge_hour_override == time(11, 0)
+
+
+def test_every_today_pv_variant_gets_its_candidate():
+    from custom_components.smart_rce.domain.pv_forecast import PvForecast
+
+    service, _, clock, _ = _setup()
+    _run(service, clock, 8, (1,))
+    assert service.last is not None
+    assert set(service.last.by_pv) == set(PvForecast.today())
+    # Same surplus for every variant here -> same start as the flat variant.
+    assert {c.start for c in service.last.by_pv.values()} == {11 * H}

@@ -17,7 +17,7 @@ decides, nothing is changed automatically.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 import logging
 from typing import TYPE_CHECKING
@@ -86,6 +86,9 @@ class ShiftEvaluation:
     need_kwh: float
     candidates: dict[ShiftVariant, int]
     extrap: int | None
+    # Start each PV forecast asks for with the median consumption — observed
+    # only, to see which forecast would have moved the start when.
+    by_pv: dict[PvForecast, Candidate] = field(default_factory=dict)
 
 
 class ChargeStartShiftService:
@@ -183,7 +186,14 @@ class ChargeStartShiftService:
         extrap = found_extrap.start if found_extrap is not None else None
         current = shift.start if shift is not None else s0_min
         candidates[APPLIED_VARIANT] = guarded_candidate(live, extrap, current, now_min)
-        self.last = ShiftEvaluation(now, soc, need, candidates, extrap)
+        self.last = ShiftEvaluation(
+            now,
+            soc,
+            need,
+            candidates,
+            extrap,
+            self._by_pv_variant(prices, now_min, need, s0_min),
+        )
         self._observe(now.date(), now_min, s0_min, candidates)
         move = self._charge.evaluate_forecast_shift(
             now, s0, candidates[APPLIED_VARIANT], soc
@@ -262,6 +272,17 @@ class ChargeStartShiftService:
         if profile is None:
             return None
         return find_candidate(profile, prices, now_min, need, s0_min)
+
+    def _by_pv_variant(
+        self, prices: tuple[float, ...], now_min: int, need: float, s0_min: int
+    ) -> dict[PvForecast, Candidate]:
+        """Each today PV forecast's candidate with the applied consumption model."""
+        out: dict[PvForecast, Candidate] = {}
+        for variant in PvForecast.today():
+            profile = self._applied_profile(variant)
+            if profile is not None:
+                out[variant] = find_candidate(profile, prices, now_min, need, s0_min)
+        return out
 
     def _applied_profile(
         self, source: PvForecast = PvForecast.LIVE_SOFT
