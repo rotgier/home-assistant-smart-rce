@@ -163,6 +163,9 @@ class ForecastScoreService:
         elif now.time() >= self.PRELIMINARY_AT and stored is None:
             await self.async_preliminary()
         await self._publish_all(today)
+        # Days read back from the archive change what the sensors show even
+        # when nothing was rescored.
+        self._notify()
 
     # --- reads (sensors) --- #
 
@@ -333,5 +336,8 @@ class ForecastScoreService:
             score.reserve_error_consumption_pp,
             score.start_delta_h,
         )
+        self._notify()
+
+    def _notify(self) -> None:
         for update_callback in list(self._listeners.values()):
             update_callback()

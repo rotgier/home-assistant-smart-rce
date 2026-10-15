@@ -209,3 +209,20 @@ async def test_preliminary_is_neither_latest_nor_published(
     assert score.status is ScoreStatus.PRELIMINARY
     assert service.latest is None
     assert PUBLISHED == []
+
+
+async def test_catch_up_wakes_the_sensors_without_rescoring(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    service, _archive = _service(
+        hass, tmp_path, datetime(2026, 10, 15, 10, 0, tzinfo=TZ), _Sources()
+    )
+    await service.async_catch_up()  # scores 14.10
+    restarted, _ = _service(
+        hass, tmp_path, datetime(2026, 10, 15, 10, 5, tzinfo=TZ), _Sources()
+    )
+    calls: list[int] = []
+    restarted.async_add_listener(lambda: calls.append(1))
+    await restarted.async_catch_up()  # nothing to rescore, days read back
+    assert calls
+    assert restarted.latest is not None
