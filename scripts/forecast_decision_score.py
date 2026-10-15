@@ -72,12 +72,8 @@ from custom_components.smart_rce.infrastructure.daily_jsonl_archive import (  # 
 )
 
 PREV_WORKDAYS: Final = 8
-D1_MOMENTS: Final = (
-    ("20:01 dzień przed", None),
-    ("04:01", time(4, 1)),
-    ("06:11", time(6, 11)),
-    ("06:41", time(6, 41)),
-)
+PRODUCTION_PERCENTILE: Final = 60
+D1_MOMENTS: Final = (("06:11", time(6, 11)), ("06:41", time(6, 41)))
 D2_MOMENTS: Final = (
     ("07:41", time(7, 41)),
     ("08:41", time(8, 41)),
@@ -181,13 +177,13 @@ def _target(
 def _rule(
     pv: dict[Bucket, float], prev: list[dict[Bucket, float]], sch: int | None
 ) -> int:
-    """Production T1 reserve rule since 15.10.2026 (per-slot median).
+    """Production T1 reserve rule: per-slot PRODUCTION_PERCENTILE of prev workdays.
 
-    Median of the prev workdays per slot; flat when there are none.
+    Median 15.10.2026, 60th percentile from smart_rce 20ada58; flat when none.
     """
     if not prev:
         return _target(pv, FLAT, sch)[0]
-    return _target(pv, _median_profile(prev), sch)[0]
+    return _target(pv, _percentile_profile(prev, PRODUCTION_PERCENTILE), sch)[0]
 
 
 def _old_rule(
@@ -223,6 +219,7 @@ def score_d1(d, replayed, energy):
     cons_act = fr.bucket_map(fr.slots(en, "consumption_minus_water_kwh"), d)
     prev = _prev_profiles(d, energy)
     rows, cons_rows = [], []
+    decomposition: tuple[int, int] | None = None
     sch_any = None
     for label, at in D1_MOMENTS:
         if at is None:  # evening fetch of the day before
@@ -239,8 +236,9 @@ def score_d1(d, replayed, energy):
         if snap is None:
             continue
         sch = snap.snapshot.context.start_charge_hour if at is not None else None
-        sch_any = sch if at == time(4, 1) else sch_any
+        sch_any = sch if at == time(6, 11) else sch_any
         r_act = _rule(pv_act, prev, sch)
+        t_act_real = _target(pv_act, cons_act, sch)[0]
         for name, key in names.items():
             res = (
                 snap.results.get(key)
@@ -253,13 +251,24 @@ def score_d1(d, replayed, energy):
             if not fc:
                 continue
             pv_fc = fr.bucket_map(fc, d)
-            rows.append((d, label, name, r_act - _rule(pv_fc, prev, sch)))
+            # Main: PV part with the PRODUCTION consumption model (adds up with the
+            # consumption part to the real production error). Alongside: the same
+            # PV part with actual consumption; the gap is how much the consumption
+            # model colours the PV score.
+            with_model = r_act - _rule(pv_fc, prev, sch)
+            with_actual = t_act_real - _target(pv_fc, cons_act, sch)[0]
+            rows.append((d, label, name, with_model, with_actual))
+            if label == "06:11" and name == "live_soft":  # the variant production uses
+                decomposition = (with_model, t_act_real - r_act)
     # consumption models, judged with ACTUAL PV against actual consumption
     sch = sch_any
     truth_value, truth_dip = _target(pv_act, cons_act, sch)
     models = {
         "flat 0,9 kWh/h": [FLAT],
-        "poprz. dni: mediana (prod od 15.10)": [_median_profile(prev)] if prev else [],
+        "poprz. dni: mediana (prod 15.10)": [_median_profile(prev)] if prev else [],
+        "poprz. dni: p60 (prod od 15.10 wieczór)": (
+            [_percentile_profile(prev, PRODUCTION_PERCENTILE)] if prev else []
+        ),
         "poprz. dni: bez najgorszego": None,
         "prod do 14.10: max(flat, bez najg.)": "old_rule",
     }
@@ -296,6 +305,7 @@ def score_d1(d, replayed, energy):
         min(soc) if soc else None,
         round(sum(max(-g, 0.0) for g in grid), 2),
         len(prev),
+        decomposition,
     )
     return rows, cons_rows, prod
 
@@ -310,6 +320,20 @@ def _p50(periods) -> PvForecastResult | None:
 
 def _median_profile(profiles: list[dict[Bucket, float]]) -> dict[Bucket, float]:
     return {b: statistics.median(p[b] for p in profiles) for b in profiles[0]}
+
+
+def _percentile_profile(
+    profiles: list[dict[Bucket, float]], percentile: float
+) -> dict[Bucket, float]:
+    """Per-slot percentile, linear between sorted values (k = (n-1)*p/100)."""
+    out = {}
+    for b in profiles[0]:
+        values = sorted(p[b] for p in profiles)
+        k = (len(values) - 1) * percentile / 100
+        lo = int(k)
+        hi = min(lo + 1, len(values) - 1)
+        out[b] = values[lo] + (values[hi] - values[lo]) * (k - lo)
+    return out
 
 
 # --- D2: charge start -------------------------------------------------------- #
@@ -426,11 +450,18 @@ def report(d1, cons_rows, prod_rows, d2, days):
         rows = [r for r in d1 if r[1] == label]
         if not rows:
             continue
-        print(f"\n{label}:  wariant  n  MAE  bias  dni>+3pp  dni<-3pp   [per dzień]")
+        print(
+            f"\n{label}:  wariant  n │ model zużycia: MAE bias >+3pp │"
+            " rzecz. zużycie: MAE bias │ wpływ modelu zużycia (śr.) │ per dzień: model / rzecz."
+        )
         for name in dict.fromkeys(r[2] for r in rows):
             e = [r[3] for r in rows if r[2] == name]
+            a = [r[4] for r in rows if r[2] == name]
+            gap = statistics.fmean(x - y for x, y in zip(e, a, strict=True))
             print(
-                f"  {name:16}{len(e):>3} {statistics.fmean(map(abs, e)):5.1f} {statistics.fmean(e):+5.1f} {sum(x > 3 for x in e):>6} {sum(x < -3 for x in e):>8}   {' '.join(f'{x:+d}' for x in e)}"
+                f"  {name:16}{len(e):>3} │ {statistics.fmean(map(abs, e)):5.1f} {statistics.fmean(e):+5.1f} {sum(x > 3 for x in e):>5} │"
+                f" {statistics.fmean(map(abs, a)):5.1f} {statistics.fmean(a):+5.1f} │ {gap:+6.1f} pp │ "
+                + " ".join(f"{x:+d}/{y:+d}" for x, y in zip(e, a, strict=True))
             )
     print(
         "\n## D1 — modele zużycia (z rzeczywistym PV) vs rzeczywiste zużycie bez CWU [pp]: + = model za niski (za mało rezerwy)"
@@ -450,10 +481,16 @@ def report(d1, cons_rows, prod_rows, d2, days):
     print("\n## D1 — co się naprawdę stało (rzeczywiste PV i zużycie)")
     print(
         "  dzień    potrzebne (z buforem) / bez bufora   min SOC 07-13   import T1 kWh"
+        "   │ błąd produkcji 06:11 = część PV + część zużycia [pp]"
     )
-    for d, value, raw, min_soc, imp, _n in prod_rows:
+    for d, value, raw, min_soc, imp, _n, split in prod_rows:
+        parts = (
+            f"{split[0] + split[1]:+d} = {split[0]:+d} PV {split[1]:+d} zużycie"
+            if split
+            else "–"
+        )
         print(
-            f"  {d:%a %d.%m}   {value:>4}% / {raw:>5}%            {min_soc if min_soc is None else round(min_soc):>4}%        {imp:>5}"
+            f"  {d:%a %d.%m}   {value:>4}% / {raw:>5}%            {min_soc if min_soc is None else round(min_soc):>4}%        {imp:>5}   │ {parts}"
         )
     print("\n## D2 — start ładowania vs benchmark (ta sama reguła na rzeczywistym PV)")
     for label, _ in D2_MOMENTS:
