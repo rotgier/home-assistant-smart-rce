@@ -185,8 +185,9 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
           night charges to it, and a restart after midnight still has it).
 
         A variant with nothing computed yet leaves the remembered value alone.
-        The LIVE_SOFT reserve carries the falling margin (`margin_pp_at`,
-        recomputed every minute, so its steps drop at 07, 08 and 09). The
+        The LIVE_SOFT reserve carries the falling margin (`margin_pp_for`,
+        recomputed every minute, so its steps drop at 07, 08 and 09; the 08-09
+        step capped by plain LIVE read the same way). The
         LIVE+EXTRAP reserve is observation only — no margin, in-memory, until
         16:00 (EXTRAP variants have no tomorrow).
         """
@@ -207,13 +208,13 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
             target_soc = catalog.target_socs.get(PvForecast.TOMORROW_LIVE_SOFT)
             if target_soc is None:
                 return None
-            tomorrow = now.date() + timedelta(days=1)
             return T1SocReserve.from_target_soc(
-                tomorrow,
+                now.date() + timedelta(days=1),
                 target_soc,
                 source="tomorrow_live_soft",
                 window=ReserveWindow.FULL,
-                margin_pp=T1SocReserve.margin_pp_at(tomorrow, now),
+                margin_at=now,
+                live=catalog.target_socs.get(PvForecast.TOMORROW_LIVE),
             )
         target_soc = catalog.target_socs.get(PvForecast.LIVE_SOFT)
         if target_soc is None:
@@ -223,7 +224,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
             target_soc,
             source="live_soft",
             window=BatteryScheduleService._today_window(now),
-            margin_pp=T1SocReserve.margin_pp_at(now.date(), now),
+            margin_at=now,
+            live=catalog.target_socs.get(PvForecast.LIVE),
         )
 
     @staticmethod

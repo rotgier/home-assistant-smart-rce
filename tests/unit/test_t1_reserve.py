@@ -336,11 +336,13 @@ class TestResolveT1Reserve:
         assert (r.value_without_margin, r.margin_pp) == (31, 15)
 
     def test_margin_steps_down_through_the_morning(self):
+        # Catalog: Soft 31, Live 35 -> the 08-09 step is capped at 35 - 31 = 4.
         assert [
             self._live(h, m).margin_pp
             for h, m in ((6, 59), (7, 0), (8, 0), (9, 0), (13, 0))
-        ] == [15, 10, 5, 0, 0]
-        assert self._live(8, 30).value == 31 + 5
+        ] == [15, 10, 4, 0, 0]
+        assert self._live(8, 30).value == 35
+        assert self._live(8, 30).live_reading == 35
 
     def test_extrap_reserve_has_no_margin(self):
         r = BatteryScheduleService._resolve_extrap_reserve(  # noqa: SLF001
@@ -479,7 +481,7 @@ class TestMargin:
     def test_capped_at_100_and_round_trips(self):
         ts = TargetSoc(variant=PvForecast.LIVE, flat=_result(95), prev_days=[])
         r = T1SocReserve.from_target_soc(
-            DAY, ts, source="live", window=ReserveWindow.FULL, margin_pp=15
+            DAY, ts, source="live", window=ReserveWindow.FULL, margin_at=_at(6)
         )
         assert r is not None
         assert (r.value, r.value_without_margin, r.margin_pp) == (100, 95, 15)
@@ -488,7 +490,7 @@ class TestMargin:
     def test_value_at_reads_the_step_of_the_given_moment(self):
         ts = TargetSoc(variant=PvForecast.LIVE, flat=_result(25), prev_days=[])
         r = T1SocReserve.from_target_soc(
-            DAY, ts, source="live", window=ReserveWindow.REMAINING, margin_pp=10
+            DAY, ts, source="live", window=ReserveWindow.REMAINING, margin_at=_at(7, 41)
         )
         assert r is not None
         assert r.value == 35  # seen at 07:41
@@ -500,3 +502,46 @@ class TestMargin:
         )
         assert old is not None
         assert (old.margin_pp, old.value_at(_at(8))) == (0, 36)
+
+
+class TestLiveCappedStep:
+    """08-09: margin = max(0, min(5, Live - Soft)) (decision 15.10.2026)."""
+
+    @staticmethod
+    def _margin(live: int | None, soft: int = 23, h: int = 8, m: int = 41) -> int:
+        return T1SocReserve.margin_pp_for(DAY, _at(h, m), soft, live)
+
+    def test_sunny_live_equals_soft_no_margin(self):
+        assert self._margin(23) == 0
+
+    def test_very_cloudy_live_far_above_soft_full_step(self):
+        assert self._margin(42) == 5  # 14.10: Live 42 vs Soft 23
+
+    def test_live_in_between_takes_the_difference(self):
+        assert self._margin(26) == 3
+
+    def test_live_below_soft_never_negative(self):
+        assert self._margin(20) == 0
+
+    def test_without_live_the_step_stands(self):
+        assert self._margin(None) == 5
+
+    def test_other_steps_ignore_live(self):
+        assert self._margin(23, h=6, m=11) == 15
+        assert self._margin(23, h=7, m=41) == 10
+        assert self._margin(99, h=9, m=0) == 0
+
+    def test_value_at_eight_uses_the_live_reading_held(self):
+        soft = TargetSoc(variant=PvForecast.LIVE_SOFT, flat=_result(25), prev_days=[])
+        live = TargetSoc(variant=PvForecast.LIVE, flat=_result(27), prev_days=[])
+        r = T1SocReserve.from_target_soc(
+            DAY,
+            soft,
+            source="live_soft",
+            window=ReserveWindow.REMAINING,
+            margin_at=_at(7, 41),
+            live=live,
+        )
+        assert r is not None
+        assert (r.value, r.live_reading) == (35, 27)
+        assert [r.value_at(_at(h)) for h in (7, 8, 9)] == [35, 27, 25]
