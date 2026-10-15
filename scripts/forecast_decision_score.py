@@ -324,7 +324,6 @@ def score_d2(d, replayed, energy, prices):
     s0 = int(window.start_hour * 60)
     pv = fr.slots(en, "pv_kwh")
     cons = fr.slots(en, "consumption_minus_water_kwh")
-    actual_flat = SurplusProfile.build(d, _by_index(pv), None)
     actual_real = SurplusProfile.build(d, _by_index(pv), _by_index(cons))
     prev_cons = [
         _by_index(fr.slots(energy[p], "consumption_minus_water_kwh"))
@@ -355,16 +354,18 @@ def score_d2(d, replayed, energy, prices):
         if soc is None:
             continue
         need = kwh_to_full(soc)
-        star = find_candidate(actual_flat, prices, now, need, s0)
         star_real = find_candidate(actual_real, prices, now, need, s0)
         for name in D2_VARIANTS:
             res = snap.results.get(name)
             if res is None:
                 continue
             fc = fr.forecast_slots(res, d)
-            prof = SurplusProfile.build(d, _by_index(fc), None)
+            # PV ranking holds consumption at its ACTUAL value on both sides (as D1).
+            prof = SurplusProfile.build(d, _by_index(fc), _by_index(cons))
             cand = find_candidate(prof, prices, now, need, s0)
-            out.append(_classify(d, label, name, cand, star, actual_flat, prices, need))
+            out.append(
+                _classify(d, label, name, cand, star_real, actual_real, prices, need)
+            )
         for cname, cprof in (
             ("cons: flat", None),
             ("cons: mediana poprz. dni", median_cons),
