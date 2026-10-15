@@ -16,8 +16,9 @@ stays hourly (hourly long-term statistics reach as far back as needed, the
 Consumption comes from the same kind of day: workday from the last 10 workdays,
 Saturday from the last 5 Saturdays, Sunday — and any other day off, which is
 usually a church holiday that looks like a Sunday — from the last 5 Sundays.
-The per-hour median of those days is the profile: one odd day (guests, oven)
-does not move it, and spikes from different days do not stack.
+The per-hour 60th percentile of those days is the profile (the median until
+15.10.2026, see `consumption_percentile`): one odd day (guests, oven) barely
+moves it, and spikes from different days do not stack.
 """
 
 from __future__ import annotations
@@ -25,13 +26,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from statistics import median
 from typing import TYPE_CHECKING, Any, Final
 
 from ..tariff.zones import evening_peak, is_holiday
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Mapping
 
 # Default consumption when no history is used — the same 0.9 kWh/h the
 # Target SOC flat column assumes (0.45 kWh per 30 min).
@@ -80,15 +80,6 @@ def surplus_window_end(day: date) -> int:
     plan sells in the dearest hours from 16:00), so the same seasonal hour holds.
     """
     return evening_peak(day).start
-
-
-def median_by_hour(profiles: Iterable[Mapping[int, float]]) -> dict[int, float]:
-    """Per-hour median over the given hourly consumption profiles."""
-    by_hour: dict[int, list[float]] = {}
-    for profile in profiles:
-        for hour, kwh in profile.items():
-            by_hour.setdefault(hour, []).append(kwh)
-    return {hour: median(values) for hour, values in by_hour.items()}
 
 
 def slots_from_hourly(by_hour: Mapping[int, float]) -> dict[int, float]:

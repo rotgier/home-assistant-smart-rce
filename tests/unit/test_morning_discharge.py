@@ -157,7 +157,7 @@ class _Surplus:
     def __init__(self, rate: float) -> None:
         self.rate = rate
 
-    def today_profile(self, *, median: bool, pv_scale: float, source=None):
+    def today_profile(self, *, history: bool, pv_scale: float, source=None):
         pv = slots_from_hourly(dict.fromkeys(range(9, 16), self.rate))
         return SurplusProfile.build(DAY, pv, None)
 

@@ -21,7 +21,7 @@ class ConsLabel:
     `key` is the stable identifier used in matrix cell tuples;
     `weekday` is the short English abbreviation (Mon/.../Fri) for Prev*
     columns, or None for the synthetic "Live" baseline. `label` / `sub`
-    name a synthetic column the card renders as given (the median one).
+    name a synthetic column the card renders as given (the p60 one).
     """
 
     key: str

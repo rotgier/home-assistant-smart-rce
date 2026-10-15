@@ -1,4 +1,4 @@
-"""PV surplus sensors — forecast (median / flat consumption), realized, table.
+"""PV surplus sensors — forecast (p60 / flat consumption), realized, table.
 
 All read `PvSurplusService`; the three kWh sensors keep long-term statistics so
 the forecast at 08:00 can be set against the realized figure at the end of the
@@ -86,7 +86,7 @@ class PvSurplusForecastSensor(_PvSurplusSensor):
             "day": forecast.day.isoformat(),
             "source": forecast.source,
             "day_type": forecast.day_type.value,
-            "consumption": "flat 0.9 kWh/h" if self._flat else "median",
+            "consumption": "flat 0.9 kWh/h" if self._flat else "p60",
             "start_hour": forecast.start_hour,
             "end_hour": forecast.end_hour,
             "window_total_kwh": forecast.total(profile),

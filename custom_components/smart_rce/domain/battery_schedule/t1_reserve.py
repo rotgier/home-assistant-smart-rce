@@ -1,9 +1,11 @@
 """T1SocReserve — SoC the battery should hold for the rest of the T1 window.
 
 Value object resolved from one `TargetSoc` variant: the reading for the
-per-bucket median consumption of the earlier workdays (decision 14.10.2026 —
-replay of 04-14.10: the old max(flat, prev without the worst) overshot by
-~5 pp and protected no better than flat). Without consumption history it falls
+per-bucket 60th percentile (p60) of the earlier workdays' consumption. Decision
+14.10.2026 took the median (replay of 04-14.10: the old max(flat, prev without
+the worst) overshot by ~5 pp and protected no better than flat); 15.10.2026 p60,
+since the median left the reserve short on average over 126 workdays
+(`domain/consumption_percentile.py`). Without consumption history it falls
 back to the flat reading. The flat and prev-without-worst readings stay as
 components for comparison.
 
@@ -56,7 +58,7 @@ class T1SocReserve:
     dip_kwh: float | None
     source: str
     window: ReserveWindow
-    median: int | None = None
+    p60: int | None = None
 
     @classmethod
     def from_target_soc(
@@ -72,9 +74,7 @@ class T1SocReserve:
         prev = cls.prev_without_worst_of(
             r.value for r in target_soc.prev_days if r is not None
         )
-        driving = (
-            target_soc.median if target_soc.median is not None else target_soc.flat
-        )
+        driving = target_soc.p60 if target_soc.p60 is not None else target_soc.flat
         if driving is None:
             return None
         return cls(
@@ -82,7 +82,7 @@ class T1SocReserve:
             value=min(100, driving.value),
             flat=flat,
             prev_without_worst=prev,
-            median=target_soc.median.value if target_soc.median is not None else None,
+            p60=target_soc.p60.value if target_soc.p60 is not None else None,
             dip_kwh=driving.dip_kwh,
             source=source,
             window=window,
@@ -114,7 +114,7 @@ class T1SocReserve:
             "value": self.value,
             "flat": self.flat,
             "prev_without_worst": self.prev_without_worst,
-            "median": self.median,
+            "p60": self.p60,
             "dip_kwh": self.dip_kwh,
             "source": self.source,
             "window": self.window.value,
@@ -128,7 +128,7 @@ class T1SocReserve:
                 value=int(data["value"]),
                 flat=data.get("flat"),
                 prev_without_worst=data.get("prev_without_worst"),
-                median=data.get("median"),
+                p60=data.get("p60"),
                 dip_kwh=data.get("dip_kwh"),
                 source=str(data.get("source", "")),
                 window=ReserveWindow(data.get("window", ReserveWindow.FULL.value)),

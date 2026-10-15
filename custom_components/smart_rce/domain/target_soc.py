@@ -47,9 +47,9 @@ class TargetSoc:
     variant: PvForecast
     flat: TargetSocResult | None = None
     prev_days: list[TargetSocResult | None] = field(default_factory=list)
-    # Per-bucket median of the prev-workday profiles — drives the T1 reserve.
-    median: TargetSocResult | None = None
-    cons_view_median: ConsumptionProfile | None = None
+    # Per-bucket p60 of the prev-workday profiles — drives the T1 reserve.
+    p60: TargetSocResult | None = None
+    cons_view_p60: ConsumptionProfile | None = None
     # In-memory cache for matrix reads (NOT exposed in sensor attrs).
     pv_profile: PvProfile | None = None
     cons_view_flat: ConsumptionProfile | None = None
@@ -118,15 +118,13 @@ class TargetSoc:
         # Lazy import: consumption_profiles imports this module at the top.
         from .consumption_profiles import ConsumptionProfile  # noqa: PLC0415
 
-        median_cons = ConsumptionProfile.median_of(prev_cons)
-        self.cons_view_median = (
-            self._cons_view(median_cons, ctx, apply_now)
-            if median_cons is not None
-            else None
+        p60_cons = ConsumptionProfile.p60_of(prev_cons)
+        self.cons_view_p60 = (
+            self._cons_view(p60_cons, ctx, apply_now) if p60_cons is not None else None
         )
-        self.median = (
-            self._compute(self.cons_view_median, ctx)
-            if self.cons_view_median is not None
+        self.p60 = (
+            self._compute(self.cons_view_p60, ctx)
+            if self.cons_view_p60 is not None
             else None
         )
 
@@ -134,8 +132,8 @@ class TargetSoc:
         """Drop every derived figure — there is nothing to compute from."""
         self.flat = None
         self.prev_days = [None] * len(prev_cons)
-        self.median = None
-        self.cons_view_median = None
+        self.p60 = None
+        self.cons_view_p60 = None
         self.pv_profile = None
         self.cons_view_flat = None
         self.cons_views_prev = [None] * len(prev_cons)

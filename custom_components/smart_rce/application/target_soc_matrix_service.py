@@ -107,8 +107,8 @@ _TOMORROW_PV_RESOLVERS: dict[str, PvForecast] = {
 }
 
 _LIVE_CONS_KEY: str = "live"
-# Median of the prev workdays — what the T1 reserve steers by; first column.
-_MEDIAN_CONS_KEY: str = "median"
+# p60 of the prev workdays — what the T1 reserve steers by; first column.
+_P60_CONS_KEY: str = "p60"
 
 # 12-bucket window (7:00..12:30) — strict PvProfile/ConsumptionProfile contract.
 _BUCKET_TIMES: tuple[tuple[int, int], ...] = tuple(
@@ -266,9 +266,9 @@ class TargetSocMatrixService:
             pv_buckets[pv_key] = [
                 round(entity.pv_profile.get(h, m), 4) for h, m in _BUCKET_TIMES
             ]
-            if entity.median is not None:
-                cells_pct[(pv_key, _MEDIAN_CONS_KEY)] = entity.median.value
-                cells_kwh[(pv_key, _MEDIAN_CONS_KEY)] = entity.median.dip_kwh
+            if entity.p60 is not None:
+                cells_pct[(pv_key, _P60_CONS_KEY)] = entity.p60.value
+                cells_kwh[(pv_key, _P60_CONS_KEY)] = entity.p60.dip_kwh
             # Live cons (flat baseline with optional live override)
             cells_pct[(pv_key, _LIVE_CONS_KEY)] = entity.flat.value
             cells_kwh[(pv_key, _LIVE_CONS_KEY)] = entity.flat.dip_kwh
@@ -313,16 +313,14 @@ class TargetSocMatrixService:
             return cons_labels, cons_source_dates, cons_sums_kwh, cons_buckets
 
         assert first_entity.cons_view_flat is not None
-        median_view = first_entity.cons_view_median
-        if median_view is not None:
-            cons_labels[_MEDIAN_CONS_KEY] = ConsLabel(
-                key=_MEDIAN_CONS_KEY, label="Mediana", sub="steruje"
+        p60_view = first_entity.cons_view_p60
+        if p60_view is not None:
+            cons_labels[_P60_CONS_KEY] = ConsLabel(
+                key=_P60_CONS_KEY, label="P60", sub="steruje"
             )
-            cons_sums_kwh[_MEDIAN_CONS_KEY] = round(
-                sum(median_view.buckets.values()), 3
-            )
-            cons_buckets[_MEDIAN_CONS_KEY] = [
-                round(median_view.get(h, m), 4) for h, m in _BUCKET_TIMES
+            cons_sums_kwh[_P60_CONS_KEY] = round(sum(p60_view.buckets.values()), 3)
+            cons_buckets[_P60_CONS_KEY] = [
+                round(p60_view.get(h, m), 4) for h, m in _BUCKET_TIMES
             ]
         cons_labels[_LIVE_CONS_KEY] = ConsLabel(key=_LIVE_CONS_KEY, weekday=None)
         cons_sums_kwh[_LIVE_CONS_KEY] = round(
@@ -367,7 +365,7 @@ class TargetSocMatrixService:
         and `Σ PV per strategy` — automatic apples-to-apples comparison with
         today's column when `now_in_window`.
         """
-        out: dict[str, float | None] = {_MEDIAN_CONS_KEY: None, _LIVE_CONS_KEY: None}
+        out: dict[str, float | None] = {_P60_CONS_KEY: None, _LIVE_CONS_KEY: None}
         if not cons_source_dates:
             return out
         dates = list(set(cons_source_dates.values()))

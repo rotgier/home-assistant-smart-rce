@@ -260,15 +260,16 @@ def test_a_forecast_that_ends_yesterday_is_treated_as_no_forecast():
     assert not result.covers(date(2026, 8, 28))
 
 
-def test_median_of_profiles_is_per_bucket() -> None:
-    """Median per bucket over the present profiles; None entries are skipped."""
+def test_p60_of_profiles_is_per_bucket() -> None:
+    """p60 per bucket over the present profiles; None entries are skipped."""
     profiles = [
         ConsumptionProfile.flat(0.2),
         ConsumptionProfile.flat(0.5),
         None,
         ConsumptionProfile.flat(0.4),
     ]
-    median = ConsumptionProfile.median_of(profiles)
-    assert median is not None
-    assert median.get(7, 0) == 0.4
-    assert ConsumptionProfile.median_of([None, None]) is None
+    p60 = ConsumptionProfile.p60_of(profiles)
+    assert p60 is not None
+    # Sorted 0.2, 0.4, 0.5: k = 2 * 0.6 = 1.2 -> 0.4 + 0.2 * 0.1.
+    assert p60.get(7, 0) == pytest.approx(0.42)
+    assert ConsumptionProfile.p60_of([None, None]) is None

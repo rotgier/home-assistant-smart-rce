@@ -2,7 +2,7 @@
 
 Gathers the inputs (S0 from `ChargeSlots`, today's hourly prices, SoC, the
 LIVE_SOFT surplus per variant, from 09:10 Extrap Proportional), asks the domain for
-a candidate per variant and hands the applied one (GUARDED: median consumption
+a candidate per variant and hands the applied one (GUARDED: p60 consumption
 of earlier days of the same type, earlier moves held back until Extrap agrees) to `BatteryChargeService`, which owns and
 persists the shift. The other variants are only tracked here, in memory, so
 the sensor can show where each of them would have put the start.
@@ -86,7 +86,7 @@ class ShiftEvaluation:
     need_kwh: float
     candidates: dict[ShiftVariant, int]
     extrap: int | None
-    # Start each PV forecast asks for with the median consumption — observed
+    # Start each PV forecast asks for with the p60 consumption — observed
     # only, to see which forecast would have moved the start when.
     by_pv: dict[PvForecast, Candidate] = field(default_factory=dict)
 
@@ -171,7 +171,7 @@ class ChargeStartShiftService:
             if variant.guarded:
                 continue
             profile = self._pv_surplus.today_profile(
-                median=variant.median, pv_scale=variant.pv_scale
+                history=variant.history, pv_scale=variant.pv_scale
             )
             if profile is not None:
                 found = find_candidate(profile, prices, now_min, need, s0_min)
@@ -289,17 +289,17 @@ class ChargeStartShiftService:
     ) -> SurplusProfile | None:
         """Surplus the applied variant reads.
 
-        Median consumption of earlier days of the same type; flat 0.9 kWh/h
+        p60 consumption of earlier days of the same type; flat 0.9 kWh/h
         until that history is loaded.
         """
         profile = self._pv_surplus.today_profile(
-            median=APPLIED_VARIANT.median,
+            history=APPLIED_VARIANT.history,
             pv_scale=APPLIED_VARIANT.pv_scale,
             source=source,
         )
         if profile is None:
             profile = self._pv_surplus.today_profile(
-                median=False, pv_scale=APPLIED_VARIANT.pv_scale, source=source
+                history=False, pv_scale=APPLIED_VARIANT.pv_scale, source=source
             )
         return profile
 

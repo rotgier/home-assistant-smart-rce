@@ -5,7 +5,7 @@ shows what the next day's sun can fill). Window: actual charge start of that
 day .. start of T2 — before the charge starts the battery takes nothing from
 PV, so only those hours make room for sun.
 
-Consumption: per-hour median of the same kind of earlier days (`DayType`),
+Consumption: per-hour p60 of the same kind of earlier days (`DayType`),
 plus the flat 0.9 kWh/h for comparison. PV: the LIVE_SOFT forecast for the sensors;
 every variant of the day for the table.
 
@@ -24,12 +24,12 @@ from typing import TYPE_CHECKING, Any, Final
 from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.util import dt as dt_util
 
+from ..domain.consumption_percentile import percentile_by_key
 from ..domain.pv_forecast import PvForecast
 from ..domain.pv_surplus import (
     SLOT_MINUTES,
     DayType,
     SurplusProfile,
-    median_by_hour,
     minute_of_day,
     slots_from_hourly,
     surplus_window_end,
@@ -45,7 +45,7 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SurplusForecast:
-    """Forecast surplus of one day: LIVE_SOFT with median and flat consumption."""
+    """Forecast surplus of one day: LIVE_SOFT with p60 and flat consumption."""
 
     day: date
     source: str
@@ -183,36 +183,36 @@ class PvSurplusService:
             else inputs.start_charge_hour_tomorrow
         )
         prev_days = tuple(sorted(self._prev_profiles, reverse=True))
-        median = (
-            median_by_hour(self._prev_profiles.values())
+        p60 = (
+            percentile_by_key(self._prev_profiles.values())
             if self._prev_profiles
             else None
         )
         live_pv = self._pv_by_slot(rows[0][1], day)
-        median_slots = slots_from_hourly(median) if median is not None else None
+        p60_slots = slots_from_hourly(p60) if p60 is not None else None
         self.forecast = SurplusForecast(
             day=day,
             source="live_soft" if is_today else "tomorrow_live_soft",
             day_type=DayType.of(day),
             start_hour=start,
             end_hour=surplus_window_end(day),
-            prev=SurplusProfile.build(day, live_pv, median_slots),
+            prev=SurplusProfile.build(day, live_pv, p60_slots),
             flat=SurplusProfile.build(day, live_pv, None),
             prev_days=prev_days,
-            matrix=self._matrix(day, rows, start, median, prev_days, now=now),
+            matrix=self._matrix(day, rows, start, p60, prev_days, now=now),
         )
         self._notify()
 
     def today_profile(
         self,
         *,
-        median: bool,
+        history: bool,
         pv_scale: float,
         source: PvForecast = PvForecast.LIVE_SOFT,
     ) -> SurplusProfile | None:
         """Today's surplus for one charge-start variant, or None without data.
 
-        `median` picks the consumption of earlier days of the same kind
+        `history` picks the p60 consumption of earlier days of the same kind
         (otherwise flat 0.9 kWh/h); `pv_scale` scales the PV forecast of
         `source` (LIVE_SOFT, or an Extrap variant).
         """
@@ -221,10 +221,10 @@ class PvSurplusService:
         if not pv:
             return None
         cons: dict[int, float] | None = None
-        if median:
+        if history:
             if self._profiles_day != today or not self._prev_profiles:
                 return None
-            cons = slots_from_hourly(median_by_hour(self._prev_profiles.values()))
+            cons = slots_from_hourly(percentile_by_key(self._prev_profiles.values()))
         scaled = {slot: kwh * pv_scale for slot, kwh in pv.items()}
         return SurplusProfile.build(today, scaled, cons)
 
@@ -239,7 +239,7 @@ class PvSurplusService:
         day: date,
         rows: tuple[tuple[str, PvForecast], ...],
         start: int | None,
-        median: dict[int, float] | None,
+        p60: dict[int, float] | None,
         prev_days: tuple[date, ...],
         *,
         now: datetime,
@@ -252,15 +252,11 @@ class PvSurplusService:
         end = surplus_window_end(day)
         if start is None:
             return {}
-        # Median first: the charge start steers by it.
+        # p60 first: the charge start steers by it.
         columns: list[tuple[str, dict[int, float] | None, dict[str, Any]]] = []
-        if median is not None:
+        if p60 is not None:
             columns.append(
-                (
-                    "median",
-                    median,
-                    {"key": "median", "label": "Mediana", "sub": "steruje"},
-                )
+                ("p60", p60, {"key": "p60", "label": "P60", "sub": "steruje"})
             )
         columns.append(
             ("flat", None, {"key": "flat", "label": "Flat", "sub": "0,9 kWh/h"})

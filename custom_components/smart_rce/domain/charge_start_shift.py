@@ -29,8 +29,9 @@ under-reads sunny mornings 2-3x; waiting cut the early moves to zero at the
 cost of one start an hour late. Moves later follow Live as before.
 Since 14.10.2026 the PV behind "Live" here is Live Soft (Solcast median +
 0.4 of Live's weather adjustment) and, since 15.10.2026, the consumption is the
-per-hour median of earlier days of the same type instead of a flat 0.9 kWh/h
-(replay 04-14.10: flat started 3-5x too late, the median once, by 0.2-0.3 kWh).
+per-hour p60 of earlier days of the same type instead of a flat 0.9 kWh/h
+(replay 04-14.10: flat started 3-5x too late, the median once, by 0.2-0.3 kWh;
+at 08:41 over 7 days p60 was on time 4x and never late, the median late once).
 The guard was backtested on plain Live with flat consumption.
 
 Backtest of this rule: `research/2026-10-11-backtest-poranne-ladowanie/shift6.py`.
@@ -61,20 +62,20 @@ REWIND_FROM: Final[int] = 9 * 60
 class ShiftVariant(Enum):
     """Forecast variants evaluated side by side; GUARDED is the one applied.
 
-    Value: (key, consumption from the median of earlier days?, PV scale,
-    guarded by Extrap?). Consumption is flat 0.9 kWh/h unless median. The
+    Value: (key, consumption from the p60 of earlier days?, PV scale,
+    guarded by Extrap?). Consumption is flat 0.9 kWh/h unless history. The
     observed ones are kept for 2–3 weeks before choosing on a larger sample.
     """
 
     GUARDED = ("guarded", True, 1.0, True)
     FLAT = ("flat", False, 1.0, False)
-    MEDIAN = ("median", True, 1.0, False)
-    MEDIAN_X12 = ("median_x1_2", True, 1.2, False)
+    P60 = ("p60", True, 1.0, False)
+    P60_X12 = ("p60_x1_2", True, 1.2, False)
     FLAT_X12 = ("flat_x1_2", False, 1.2, False)
 
-    def __init__(self, key: str, median: bool, pv_scale: float, guarded: bool) -> None:
+    def __init__(self, key: str, history: bool, pv_scale: float, guarded: bool) -> None:
         self.key = key
-        self.median = median
+        self.history = history
         self.pv_scale = pv_scale
         self.guarded = guarded
 

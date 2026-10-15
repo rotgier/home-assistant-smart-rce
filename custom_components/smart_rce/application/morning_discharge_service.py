@@ -1,7 +1,7 @@
 """MorningDischargeService — recomputes today's automatic morning discharge.
 
 Every minute, like the target of the auto morning charge: gathers today's
-prices, S0, the T1 reserve and the PV surplus (Live Soft, median
+prices, S0, the T1 reserve and the PV surplus (Live Soft, p60
 consumption of earlier workdays) and hands `BatterySchedule` a
 `MorningDischargePlan` — or None, which keeps the DISCHARGE_MORNING_AUTO slot
 still. The rule itself lives in the domain (`MorningDischargePlan.decide`,
@@ -72,9 +72,9 @@ class MorningDischargeService:
         hour = next((h for h in hours if h >= now.hour), None)
         if hour is None:
             return None
-        profile = self._pv_surplus.today_profile(median=True, pv_scale=1.0)
+        profile = self._pv_surplus.today_profile(history=True, pv_scale=1.0)
         if profile is None:
-            profile = self._pv_surplus.today_profile(median=False, pv_scale=1.0)
+            profile = self._pv_surplus.today_profile(history=False, pv_scale=1.0)
         if profile is None:
             return None
         fill = lowest_soc_the_sun_fills(

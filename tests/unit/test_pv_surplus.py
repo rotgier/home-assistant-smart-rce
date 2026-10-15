@@ -1,4 +1,4 @@
-"""PV surplus — day types, per-hour median, window sums, service day/window."""
+"""PV surplus — day types, window sums, service day/window."""
 
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -8,7 +8,6 @@ from custom_components.smart_rce.domain.pv_forecast import PvForecast
 from custom_components.smart_rce.domain.pv_surplus import (
     DayType,
     SurplusProfile,
-    median_by_hour,
     slots_from_hourly,
     surplus_window_end,
 )
@@ -40,11 +39,6 @@ class TestDayType:
         days = DayType.SUNDAY.previous_days(date(2026, 11, 15))
         assert date(2026, 11, 11) in days
         assert len(days) == 5
-
-
-def test_median_is_per_hour():
-    profiles = [{9: 1.0, 10: 0.2}, {9: 3.0, 10: 0.4}, {9: 2.0, 10: 9.0}]
-    assert median_by_hour(profiles) == {9: 2.0, 10: 0.4}
 
 
 def test_window_end_is_t2_start_by_season():
@@ -162,11 +156,11 @@ class TestService:
             11,
             16,
         )
-        # Hours 11/12/15 carry 4.0/2.0/1.0 kWh; median use 0.5 kWh/h.
+        # Hours 11/12/15 carry 4.0/2.0/1.0 kWh; p60 use 0.5 kWh/h.
         assert f.total(f.prev) == pytest.approx(3.5 + 1.5 + 0.5)
         assert f.total(f.flat) == pytest.approx(3.1 + 1.1 + 0.1)
-        assert f.matrix["cells_surplus_kwh"]["live_soft|median"] == pytest.approx(5.5)
-        assert f.matrix["cells_surplus_kwh"]["live|median"] == pytest.approx(1.5)
+        assert f.matrix["cells_surplus_kwh"]["live_soft|p60"] == pytest.approx(5.5)
+        assert f.matrix["cells_surplus_kwh"]["live|p60"] == pytest.approx(1.5)
         assert len(f.prev_days) == 10
 
     async def test_tomorrow_from_t2(self):

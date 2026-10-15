@@ -91,8 +91,8 @@ def test_matrix_key_raises_for_non_pv_forecast_input() -> None:
         _matrix_key(Fake())  # type: ignore[arg-type]
 
 
-def test_median_column_is_serialized_first_with_its_label() -> None:
-    """The median column carries a label; the card renders it as given."""
+def test_p60_column_is_serialized_first_with_its_label() -> None:
+    """The p60 column carries a label; the card renders it as given."""
     from custom_components.smart_rce.application.target_soc_matrix_service import (
         _serialize,
     )
@@ -101,10 +101,10 @@ def test_median_column_is_serialized_first_with_its_label() -> None:
     payload = _serialize(
         pv_strategies=("live_soft",),
         cons_strategies=(
-            ConsLabel(key="median", label="Mediana", sub="steruje"),
+            ConsLabel(key="p60", label="P60", sub="steruje"),
             ConsLabel(key="live"),
         ),
-        cells_pct={("live_soft", "median"): 23, ("live_soft", "live"): 22},
+        cells_pct={("live_soft", "p60"): 23, ("live_soft", "live"): 22},
         cells_kwh={},
         pv_sums_kwh={},
         cons_sums_kwh={},
@@ -114,7 +114,7 @@ def test_median_column_is_serialized_first_with_its_label() -> None:
         cons_source_dates={},
     )
     assert payload["cons_strategies"] == [
-        {"key": "median", "weekday": None, "label": "Mediana", "sub": "steruje"},
+        {"key": "p60", "weekday": None, "label": "P60", "sub": "steruje"},
         {"key": "live", "weekday": None},
     ]
-    assert payload["cells_pct"]["live_soft|median"] == 23
+    assert payload["cells_pct"]["live_soft|p60"] == 23

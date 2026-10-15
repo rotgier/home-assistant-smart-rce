@@ -20,10 +20,10 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from statistics import median
 from typing import ClassVar, Final, Protocol
 
 from .bucket import Bucket, Buckets
+from .consumption_percentile import percentile_by_key
 from .target_soc import CONSUMPTION_PER_30MIN
 
 # --- Constants --- #
@@ -68,23 +68,21 @@ class ConsumptionProfile:
         return cls(buckets=Buckets.flat(value), source_date=source_date)
 
     @classmethod
-    def median_of(
+    def p60_of(
         cls, profiles: Iterable[ConsumptionProfile | None]
     ) -> ConsumptionProfile | None:
-        """Per-bucket median over the given profiles; None when there are none.
+        """Per-bucket 60th percentile over the given profiles; None when none.
 
-        The T1 reserve reads consumption this way (decision 14.10.2026):
-        a typical earlier workday, not the worst ones and not a flat guess.
+        The T1 reserve reads consumption this way (decision 15.10.2026, the
+        median until then): a typical earlier workday leaning slightly to the
+        heavier ones, not the worst ones and not a flat guess.
         """
         present = [p for p in profiles if p is not None]
         if not present:
             return None
         return cls(
             buckets=Buckets(
-                by_bucket={
-                    bucket: median(p.buckets.by_bucket[bucket] for p in present)
-                    for bucket in present[0].buckets
-                }
+                by_bucket=percentile_by_key(p.buckets.by_bucket for p in present)
             )
         )
 
