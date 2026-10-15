@@ -10,8 +10,9 @@ One list of 30-min slots, two readers summing different windows:
 
 Half-hourly because the PV forecast is: an hour with a dull first half and a
 sunny second one has a surplus the hourly sum would hide. Consumption history
-stays hourly (hourly long-term statistics reach as far back as needed, the
-5-minute ones keep only 10 days) and is spread evenly over the two slots.
+is half-hourly too, from the energy archive (5-minute statistics live 10 days
+in the recorder); a day the archive lacks comes from the hourly long-term
+statistics, spread evenly over the two slots (`slots_from_hourly`).
 
 Consumption comes from the same kind of day: workday from the last 10 workdays,
 Saturday from the last 5 Saturdays, Sunday — and any other day off, which is

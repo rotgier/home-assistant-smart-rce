@@ -5,7 +5,7 @@ shows what the next day's sun can fill). Window: actual charge start of that
 day .. start of T2 — before the charge starts the battery takes nothing from
 PV, so only those hours make room for sun.
 
-Consumption: per-hour p60 of the same kind of earlier days (`DayType`),
+Consumption: per-slot p60 of the same kind of earlier days (`DayType`),
 plus the flat 0.9 kWh/h for comparison. PV: the LIVE_SOFT forecast for the sensors;
 every variant of the day for the table.
 
@@ -31,7 +31,6 @@ from ..domain.pv_surplus import (
     DayType,
     SurplusProfile,
     minute_of_day,
-    slots_from_hourly,
     surplus_window_end,
 )
 
@@ -121,6 +120,7 @@ class PvSurplusService:
         self._clock = clock
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         self._profiles_day: date | None = None
+        # Consumption per 30-min slot of each earlier day of the target's type.
         self._prev_profiles: dict[date, dict[int, float]] = {}
         self.forecast: SurplusForecast | None = None
         self.realized: RealizedSurplus | None = None
@@ -189,14 +189,13 @@ class PvSurplusService:
             else None
         )
         live_pv = self._pv_by_slot(rows[0][1], day)
-        p60_slots = slots_from_hourly(p60) if p60 is not None else None
         self.forecast = SurplusForecast(
             day=day,
             source="live_soft" if is_today else "tomorrow_live_soft",
             day_type=DayType.of(day),
             start_hour=start,
             end_hour=surplus_window_end(day),
-            prev=SurplusProfile.build(day, live_pv, p60_slots),
+            prev=SurplusProfile.build(day, live_pv, p60),
             flat=SurplusProfile.build(day, live_pv, None),
             prev_days=prev_days,
             matrix=self._matrix(day, rows, start, p60, prev_days, now=now),
@@ -224,7 +223,7 @@ class PvSurplusService:
         if history:
             if self._profiles_day != today or not self._prev_profiles:
                 return None
-            cons = slots_from_hourly(percentile_by_key(self._prev_profiles.values()))
+            cons = percentile_by_key(self._prev_profiles.values())
         scaled = {slot: kwh * pv_scale for slot, kwh in pv.items()}
         return SurplusProfile.build(today, scaled, cons)
 
@@ -283,9 +282,7 @@ class PvSurplusService:
                 continue
             pv_strategies.append(key)
             for col_key, cons, _meta in columns:
-                profile = SurplusProfile.build(
-                    day, pv, slots_from_hourly(cons) if cons is not None else None
-                )
+                profile = SurplusProfile.build(day, pv, cons)
                 cells[f"{key}|{col_key}"] = round(
                     profile.remaining(first, last, now), 2
                 )

@@ -2,8 +2,10 @@
 
 Runs nightly and at startup. Each run archives every finished day the recorder
 still holds in full and the archive lacks, so a day missed while HA was down is
-caught up on the next start. A day already archived is never rewritten: the
-recorder's copy only gets shorter with time.
+caught up on the next start. A complete archived day is never rewritten. An
+incomplete one is — but only by a copy that loses nothing (`improves_on`): a
+start just after midnight archives yesterday before its 23:55 statistic is
+compiled, and the 00:15 run then fills it in.
 """
 
 from __future__ import annotations
@@ -54,11 +56,16 @@ class EnergyArchiveWriter:
         written: list[date] = []
         for back in range(_COMPLETE_DAYS_IN_RECORDER, 0, -1):
             day = today - timedelta(days=back)
-            if await self._hass.async_add_executor_job(self._archive.has_day, day):
-                continue
+            exists, archived = await self._hass.async_add_executor_job(
+                self._archived, day
+            )
+            if exists and (archived is None or archived.is_complete()):
+                continue  # complete, or not ours to rewrite
             energy = await self._fetch_day(day)
-            if not any(energy.filled_slots(name) for name in energy.series):
+            if not energy.has_data():
                 continue  # the recorder has nothing for that day
+            if archived is not None and not energy.improves_on(archived):
+                continue
             await self._hass.async_add_executor_job(
                 self._archive.write_day, day, [energy.to_dict()]
             )
@@ -66,6 +73,16 @@ class EnergyArchiveWriter:
         if written:
             _LOGGER.info("Energy archive: wrote %s", [d.isoformat() for d in written])
         return written
+
+    def _archived(self, day: date) -> tuple[bool, EnergyDay | None]:
+        """Whether `day` has a file, and its energy record when it has one."""
+        if not self._archive.has_day(day):
+            return False, None
+        try:
+            return True, EnergyDay.from_records(self._archive.read_day(day))
+        except Exception:  # noqa: BLE001 — leave a broken file for a human
+            _LOGGER.exception("Energy archive: %s unreadable, left as is", day)
+            return True, None
 
     async def _fetch_day(self, day: date) -> EnergyDay:
         tz = dt_util.get_default_time_zone()

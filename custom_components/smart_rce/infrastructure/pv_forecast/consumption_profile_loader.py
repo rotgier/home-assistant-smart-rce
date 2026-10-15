@@ -1,10 +1,12 @@
-"""ConsumptionProfileLoader — driven adapter for HA recorder LTS query.
+"""ConsumptionProfileLoader — driven adapter for prev-workday consumption.
 
-Fetches prev-workday consumption profiles from `sensor.total_consumption_minus_bi_hourly`
-through the recorder LTS API. Walks back PREV_DAYS_COUNT actual workdays
-(holiday-aware — set sourced from `WorkdayCalendarReader`, see
-`walk_back_workdays` in domain/pv_forecast.py), batched in a single
-async query, bucketed per (date, half-hour).
+Walks back PREV_DAYS_COUNT actual workdays (holiday-aware — set sourced from
+`WorkdayCalendarReader`, see `walk_back_workdays` in domain/pv_forecast.py)
+and takes each day's consumption without water heating per half hour from the
+energy archive. Days the archive lacks (today, yesterday before 00:15) come
+from the recorder's 5-minute statistics of
+`sensor.total_consumption_minus_bi_hourly`, batched in a single async query —
+those live 10 days only, which is why the archive goes first.
 
 Hexagonal pattern: **driven adapter (outbound)** — application service dictates
 "give me consumption profiles for the last N workdays", the concrete impl uses
@@ -29,9 +31,12 @@ from ...domain.consumption_profiles import (
     walk_back_workdays,
 )
 from ...domain.target_soc import CONSUMPTION_PER_30MIN
+from ..energy_archive_reader import EnergyArchiveReader
 from ..workday_calendar_reader import WorkdayCalendarReader
 
 _CONSUMPTION_SENSOR_ID: Final = "sensor.total_consumption_minus_bi_hourly"
+# The same meter's series in the energy archive.
+_ARCHIVE_SERIES: Final = "consumption_minus_water_kwh"
 # All 12 buckets covering 7:00..12:30 — used to fill the strict
 # Buckets contract when a workday's recorder data is partial
 # (sensor gaps, restarts, etc.). Domain default `CONSUMPTION_PER_30MIN` is
@@ -44,15 +49,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ConsumptionProfileLoader:
-    """Fetches PREV_DAYS_COUNT prev-workday consumption profiles from HA recorder."""
+    """Fetches PREV_DAYS_COUNT prev-workday consumption profiles."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         workday_reader: WorkdayCalendarReader,
+        archive: EnergyArchiveReader,
     ) -> None:
         self._hass = hass
         self._workday_reader = workday_reader
+        self._archive = archive
 
     async def fetch(self, today: date) -> list[ConsumptionProfile | None]:
         """Fetch profiles for the last PREV_DAYS_COUNT workdays before `today`.
@@ -69,8 +76,8 @@ class ConsumptionProfileLoader:
         """Fetch `count` prev-workday profiles strictly before `anchor` (single LTS query).
 
         Walk back N actual workdays (calendar-driven, holiday-aware) from
-        the given anchor, compute earliest..latest date span, fetch 5-min
-        stats once, bucket per date in memory.
+        the given anchor; read the archived ones, fetch the 5-min stats of
+        the rest once (earliest..latest span), bucket per date in memory.
 
         Used by the target_soc matrix to anchor the "prev workday" walk
         at the date-picker target instead of today — when the user
@@ -93,8 +100,29 @@ class ConsumptionProfileLoader:
             _LOGGER.debug("No valid prev workdays found before %s", anchor)
             return [None] * count
 
-        slots = await self._fetch_5min_slots(valid_dates)
-        return self._bucket_profiles_by_date(slots, dates, valid_dates)
+        by_date = await self._archived_buckets(valid_dates)
+        missing = [d for d in valid_dates if d not in by_date]
+        if missing:
+            slots = await self._fetch_5min_slots(missing)
+            by_date.update(self._recorder_buckets(slots, missing))
+        return self._profiles(by_date, dates)
+
+    async def _archived_buckets(
+        self, valid_dates: list[date]
+    ) -> dict[date, dict[Bucket, float]]:
+        """Window buckets of every archived date that has any in the window."""
+        tz = dt_util.DEFAULT_TIME_ZONE
+        by_date: dict[date, dict[Bucket, float]] = {}
+        for day, energy in (await self._archive.read_days(valid_dates)).items():
+            half_hours = energy.energy_by_half_hour(_ARCHIVE_SERIES, tz)
+            buckets = {
+                Bucket(key // 2, (key % 2) * 30): kwh
+                for key, kwh in half_hours.items()
+                if key // 2 in PV_WINDOW_HOURS
+            }
+            if buckets:
+                by_date[day] = buckets
+        return by_date
 
     async def _fetch_5min_slots(self, valid_dates: list[date]) -> list[dict[Any, Any]]:
         tz = dt_util.DEFAULT_TIME_ZONE
@@ -115,7 +143,7 @@ class ConsumptionProfileLoader:
         )
         # StatisticsRow is a TypedDict — compatible with dict[str, Any] at runtime
         # but mypy strict-checks the literal type. Cast to the more permissive
-        # type for our downstream `_bucket_profiles_by_date` which only reads keys.
+        # type for our downstream `_recorder_buckets` which only reads keys.
         slots: list[dict[Any, Any]] = cast(
             "list[dict[Any, Any]]", list(stats.get(_CONSUMPTION_SENSOR_ID, []))
         )
@@ -129,10 +157,10 @@ class ConsumptionProfileLoader:
         return slots
 
     @staticmethod
-    def _bucket_profiles_by_date(
-        slots: list[dict], dates: list[date | None], valid_dates: list[date]
-    ) -> list[ConsumptionProfile | None]:
-        """Bucket 5-min slots by (date, half-hour) → ConsumptionProfile per date.
+    def _recorder_buckets(
+        slots: list[dict], valid_dates: list[date]
+    ) -> dict[date, dict[Bucket, float]]:
+        """Bucket 5-min slots by (date, half-hour); dates without data stay empty.
 
         Utility_meter resets at :00 and :30 — last pre-reset slot is :25 and :55.
         State value in that slot = total consumption in the 30-min cycle.
@@ -160,7 +188,13 @@ class ConsumptionProfileLoader:
                 by_date[d][Bucket(ts.hour, 0)] = value
             elif ts.minute == 55:
                 by_date[d][Bucket(ts.hour, 30)] = value
+        return by_date
 
+    @staticmethod
+    def _profiles(
+        by_date: dict[date, dict[Bucket, float]], dates: list[date | None]
+    ) -> list[ConsumptionProfile | None]:
+        """One ConsumptionProfile per walk-back date, None where no data."""
         # Strict "no data → None" — the prev_day sensor should surface
         # as `unknown` when the recorder/workday-calendar isn't ready,
         # not be hidden behind a fake flat-baseline profile. Real causes

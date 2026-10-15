@@ -81,3 +81,52 @@ async def test_catch_up_writes_missing_days_and_skips_archived(
         "grid_net_export_kwh",
         "battery_soc_pct",
     }
+
+
+async def test_incomplete_day_is_rewritten_only_by_a_copy_that_loses_nothing(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Yesterday archived before 23:55 was compiled gets the full copy later."""
+    await hass.config.async_set_time_zone("Europe/Warsaw")
+    tz = dt_util.get_default_time_zone()
+    yesterday = _TODAY - timedelta(days=1)
+    archive = DailyJsonlArchive(tmp_path)
+    compiled = {"23:55": False}
+
+    def _whole_day(
+        _hass: HomeAssistant,
+        start: datetime,
+        _end: datetime,
+        statistic_ids: set[str],
+        *_args: Any,
+    ) -> dict[str, list[dict[str, Any]]]:
+        day = start.astimezone(tz).date()
+        midnight = datetime.combine(day, time(0), tzinfo=tz)
+        count = 288 if compiled["23:55"] or day != yesterday else 287
+        rows = [
+            {
+                "start": (midnight + timedelta(minutes=5 * i)).timestamp(),
+                "change": 0.01,
+                "mean": 50.0,
+            }
+            for i in range(count)
+        ]
+        return dict.fromkeys(statistic_ids, rows)
+
+    recorder = MagicMock()
+    recorder.async_add_executor_job = hass.async_add_executor_job
+    with (
+        patch(f"{_MODULE}.get_instance", return_value=recorder),
+        patch(f"{_MODULE}.statistics_during_period", side_effect=_whole_day),
+    ):
+        writer = EnergyArchiveWriter(hass, archive)
+        assert yesterday in await writer.async_catch_up(_TODAY)  # 00:05 restart
+        series = archive.read_day(yesterday)[0]["series"]["consumption_kwh"]
+        assert series[-1] is None
+
+        compiled["23:55"] = True  # the 00:15 run
+        assert await writer.async_catch_up(_TODAY) == [yesterday]
+        series = archive.read_day(yesterday)[0]["series"]["consumption_kwh"]
+        assert series[-1] == 0.01
+
+        assert await writer.async_catch_up(_TODAY) == []  # complete: left alone

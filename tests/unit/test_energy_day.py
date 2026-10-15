@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from custom_components.smart_rce.domain.energy_day import EnergyDay
 import orjson
+import pytest
 
 _TZ = ZoneInfo("Europe/Warsaw")
 
@@ -78,3 +79,64 @@ def test_round_trip_through_json() -> None:
     assert record["kind"] == "energy_day"
     assert record["step_minutes"] == 5
     assert "+ export, - import" in record["units"]["grid_net_export_kwh"]
+
+
+def _full_day(day: date, kwh: float = 0.01) -> EnergyDay:
+    """Every 5-min slot of the day filled with `kwh` (both series)."""
+    start = datetime(day.year, day.month, day.day, tzinfo=_TZ).astimezone(UTC)
+    end = (
+        datetime(day.year, day.month, day.day, tzinfo=_TZ) + timedelta(days=1)
+    ).astimezone(UTC)
+    count = int((end - start) / EnergyDay.STEP)
+    readings = {start + i * EnergyDay.STEP: kwh for i in range(count)}
+    return EnergyDay.from_readings(
+        day, _TZ, {"consumption_kwh": readings, "pv_kwh": readings}
+    )
+
+
+def test_half_hours_sum_six_slots_and_drop_incomplete_ones() -> None:
+    day = date(2026, 10, 12)
+    energy = _full_day(day)
+    energy.series["consumption_kwh"][7 * 12 + 2] = None  # 07:10 missing
+    halves = energy.energy_by_half_hour("consumption_kwh", _TZ)
+    assert len(halves) == 47
+    assert 14 not in halves  # 07:00-07:30 lost a value
+    assert halves[15] == pytest.approx(0.06)  # 07:30-08:00
+    assert energy.energy_by_half_hour("missing_series", _TZ) == {}
+
+
+def test_half_hours_of_an_archived_dst_day_follow_the_zone() -> None:
+    """Read back, `start` keeps a fixed +02:00; the zone moves 03:00 to CET."""
+    day = date(2026, 10, 25)
+    energy = EnergyDay.from_dict(orjson.loads(orjson.dumps(_full_day(day).to_dict())))
+    noon_cet = datetime(2026, 10, 25, 11, 0, tzinfo=UTC)
+    energy.series["consumption_kwh"][
+        int((noon_cet - energy.start.astimezone(UTC)) / EnergyDay.STEP)
+    ] = 1.0
+    halves = energy.energy_by_half_hour("consumption_kwh", _TZ)
+    assert len(halves) == 48
+    assert halves[4] == pytest.approx(0.12)  # 02:00-02:30 happens twice
+    assert halves[24] == pytest.approx(1.05)  # 12:00 CET, not 13:00 (+02:00)
+    assert halves[26] == pytest.approx(0.06)
+
+
+def test_from_records_picks_the_energy_record() -> None:
+    day = date(2026, 10, 12)
+    energy = _full_day(day)
+    assert EnergyDay.from_records([{"kind": "other"}, energy.to_dict()]) is not None
+    assert EnergyDay.from_records([{"kept": True}]) is None
+
+
+def test_completeness_and_improvement() -> None:
+    day = date(2026, 10, 12)
+    full = _full_day(day)
+    late = _full_day(day)
+    late.series["consumption_kwh"][-1] = None  # 23:55 not compiled yet
+    assert full.is_complete()
+    assert not late.is_complete()
+    assert full.improves_on(late)
+    assert not late.improves_on(full)
+    assert not full.improves_on(full)
+    other = _full_day(day)
+    other.series["pv_kwh"][0] = None
+    assert not other.improves_on(late)  # gains consumption, loses pv

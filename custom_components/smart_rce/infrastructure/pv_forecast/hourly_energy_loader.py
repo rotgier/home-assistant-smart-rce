@@ -1,8 +1,10 @@
-"""HourlyEnergyLoader — driven adapter for hourly PV / consumption energy.
+"""HourlyEnergyLoader — driven adapter for PV / consumption energy per 30-min slot.
 
-Two reads from the HA recorder:
-- consumption without water heating per hour for past days, from the hourly
-  long-term statistics (kept indefinitely — any number of days back);
+Two reads:
+- consumption without water heating per 30-min slot for past days: from the
+  energy archive (5-minute resolution kept indefinitely), and for a day it
+  lacks from the hourly long-term statistics, each hour split evenly over its
+  two slots (the shape within the hour is lost there);
 - PV and that consumption per 30-min slot for today, from the 5-minute
   statistics (the hourly ones lag up to an hour behind the clock).
 
@@ -14,21 +16,27 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
 import logging
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from ...domain.pv_surplus import SLOT_MINUTES
+from ...domain.pv_surplus import SLOT_MINUTES, slots_from_hourly
+
+if TYPE_CHECKING:
+    from ..energy_archive_reader import EnergyArchiveReader
 
 _PV_ENTITY: Final = "sensor.total_pv_generation_bi_hourly"
 _CONSUMPTION_ENTITY: Final = "sensor.total_consumption_minus_bi_hourly"
+# The same meter's series in the energy archive.
+_ARCHIVE_SERIES: Final = "consumption_minus_water_kwh"
 # A 5-min or hourly change outside this range is a meter glitch, not energy.
 _MAX_HOURLY_KWH: Final = 15.0
 # A past day with fewer hours than this is a gap in the data, not a profile.
 _MIN_HOURS_PER_DAY: Final = 20
+_MIN_SLOTS_PER_DAY: Final = _MIN_HOURS_PER_DAY * 60 // SLOT_MINUTES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,24 +44,38 @@ _LOGGER = logging.getLogger(__name__)
 class HourlyEnergyLoader:
     """Loads hourly PV and consumption energy (kWh) from the HA recorder."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, archive: EnergyArchiveReader) -> None:
         self._hass = hass
+        self._archive = archive
 
     async def consumption_by_day(
         self, days: list[date]
     ) -> dict[date, dict[int, float]]:
-        """Hourly consumption without water heating for each of `days`.
+        """Consumption without water heating per 30-min slot for each of `days`.
 
-        Days with gaps (fewer than `_MIN_HOURS_PER_DAY` hours) are left out.
+        Days with gaps (fewer than 20 hours' worth of slots) are left out.
         """
         if not days:
             return {}
+        tz = dt_util.DEFAULT_TIME_ZONE
+        found: dict[date, dict[int, float]] = {}
+        for day, energy in (await self._archive.read_days(days)).items():
+            slots = energy.energy_by_half_hour(_ARCHIVE_SERIES, tz)
+            if len(slots) >= _MIN_SLOTS_PER_DAY:
+                found[day] = slots
+        missing = [d for d in days if d not in found]
+        if missing:
+            found.update(await self._hourly_by_day(missing))
+        return found
+
+    async def _hourly_by_day(self, days: list[date]) -> dict[date, dict[int, float]]:
+        """Fallback: hourly long-term statistics, each hour split over two slots."""
         per_day = await self._by_day(
             _CONSUMPTION_ENTITY, min(days), max(days) + timedelta(days=1), "hour", 60
         )
         wanted = set(days)
         return {
-            d: hours
+            d: slots_from_hourly(hours)
             for d, hours in per_day.items()
             if d in wanted and len(hours) >= _MIN_HOURS_PER_DAY
         }

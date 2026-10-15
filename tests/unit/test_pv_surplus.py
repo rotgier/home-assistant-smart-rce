@@ -140,7 +140,7 @@ def _service(now: datetime, start_today=11, start_tomorrow=10):
         ),
     )
     return PvSurplusService(
-        eb, _Loader(dict.fromkeys(range(24), 0.5)), clock=lambda: now
+        eb, _Loader(dict.fromkeys(range(48), 0.25)), clock=lambda: now
     )
 
 

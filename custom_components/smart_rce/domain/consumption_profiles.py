@@ -48,7 +48,7 @@ class ConsumptionProfile:
 
     Strict 12-bucket contract enforced inside `Buckets.__post_init__`.
     Missing buckets are filled with `CONSUMPTION_PER_30MIN` at the
-    infra↔domain boundary (`ConsumptionProfileLoader._bucket_profiles_by_date`)
+    infra↔domain boundary (`ConsumptionProfileLoader._profiles`)
     so callers can rely on `.get(h, m)` returning a non-None float.
     """
 

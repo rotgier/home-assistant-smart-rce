@@ -45,6 +45,10 @@ from .domain.target_soc_catalog import TargetSocCatalog
 from .domain.weather_forecast_history import WeatherForecastHistory
 from .infrastructure.code_version import read_code_version
 from .infrastructure.daily_jsonl_archive import DailyJsonlArchive
+from .infrastructure.energy_archive_reader import (
+    ENERGY_ARCHIVE_DIR,
+    EnergyArchiveReader,
+)
 from .infrastructure.energy_archive_writer import EnergyArchiveWriter
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -58,8 +62,8 @@ from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
 
 # Inside /config: git-ignored by the config repo, but part of HA's daily backup
 # (which leaves /share out). Long-term copies: Z2 pulls this tree nightly.
+# The energy archive's directory lives with its reader (`ENERGY_ARCHIVE_DIR`).
 _FORECAST_ARCHIVE_DIR: Final = "smart_rce/archive/forecast"
-_ENERGY_ARCHIVE_DIR: Final = "smart_rce/archive/energy"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,7 +82,9 @@ async def create_energy_balance_service(
     target_socs = TargetSocCatalog()
     solcast = SolcastReader(hass)
     workday_reader = WorkdayCalendarReader(hass)
-    consumption_loader = ConsumptionProfileLoader(hass, workday_reader)
+    consumption_loader = ConsumptionProfileLoader(
+        hass, workday_reader, EnergyArchiveReader.in_config(hass)
+    )
     live_rates = LiveRateReader(hass)
     realized_pv_loader = RealizedPvLoader(hass)
 
@@ -256,7 +262,7 @@ async def _wire_forecast_archive(
 def _wire_energy_archive(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Archive finished days of 5-minute energy statistics: nightly + on start."""
     writer = EnergyArchiveWriter(
-        hass, DailyJsonlArchive(Path(hass.config.path(_ENERGY_ARCHIVE_DIR)))
+        hass, DailyJsonlArchive(Path(hass.config.path(ENERGY_ARCHIVE_DIR)))
     )
 
     async def _catch_up(_now: datetime | None = None) -> None:

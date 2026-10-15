@@ -26,6 +26,7 @@ from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .garden.factory import Garden, create_garden
 from .infrastructure.charge_start_shift_notifier import ChargeStartShiftNotifier
+from .infrastructure.energy_archive_reader import EnergyArchiveReader
 from .infrastructure.pv_forecast.hourly_energy_loader import HourlyEnergyLoader
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.rce_api import RceApi
@@ -114,7 +115,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     # PV surplus (room for sun): recomputed on every energy-balance update;
     # consumption history reloads when the target day changes, today's measured
     # energy every 5 minutes.
-    pv_surplus = PvSurplusService(pv_forecast, HourlyEnergyLoader(hass))
+    pv_surplus = PvSurplusService(
+        pv_forecast, HourlyEnergyLoader(hass, EnergyArchiveReader.in_config(hass))
+    )
     entry.async_on_unload(pv_forecast.async_add_listener(pv_surplus.recompute))
     await pv_surplus.async_refresh()
 
