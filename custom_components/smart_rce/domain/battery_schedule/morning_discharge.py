@@ -14,7 +14,8 @@ Target, recomputed every minute (agreed with the user 15.10.2026):
 - the sun fills the battery even from the T1 reserve -> the reserve, at any
   price: the energy makes room for the sun and sells dearer than at noon;
 - otherwise, below the export bar -> the lowest SoC the sun still fills;
-- otherwise -> up to ARBITRAGE_PP below that level, never below the reserve:
+- otherwise -> down to ARBITRAGE_PP above the reserve, but no lower than the
+  lowest SoC the sun still fills (target = min(reserve + ARBITRAGE_PP, fill)):
   the afternoon charge buys the rest back in T3 (626 x 1.1 ~ 690 gross break
   even, the bar is 750).
 Backtest: home-assistant-ops research/2026-10-15-poranne-rozladowanie/.
@@ -41,7 +42,7 @@ class MorningDischargeBranch(StrEnum):
     """Price below the bar: only the room the sun refills."""
 
     ARBITRAGE = "arbitrage"
-    """Price at or above the bar: up to ARBITRAGE_PP below what the sun refills."""
+    """Price at or above the bar: ARBITRAGE_PP above the reserve, capped at fill."""
 
 
 @dataclass(frozen=True)
