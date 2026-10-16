@@ -72,6 +72,7 @@ class BatteryScheduleUpdateResult:
 
 
 if TYPE_CHECKING:
+    from ..domain.target_soc import TargetSoc
     from ..domain.target_soc_catalog import TargetSocCatalog
     from ..infrastructure.async_task_runner import AsyncTaskRunner
     from ..infrastructure.battery_schedule_notifier import BatteryScheduleNotifier
@@ -186,8 +187,9 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
         A variant with nothing computed yet leaves the remembered value alone.
         The LIVE_SOFT reserve carries the falling margin (`margin_pp_for`,
-        recomputed every minute, so its steps drop at 07, 08 and 09; the 08-09
-        step capped by plain LIVE read the same way). The
+        recomputed every minute, so its steps drop at 07, 08 and 09; the 07-08
+        step capped by max(LIVE, EXTRAP_PROPORTIONAL, EXTRAP_BLEND), the 08-09
+        one by LIVE, all read the same way). The
         LIVE+EXTRAP reserve is observation only — no margin, in-memory, until
         16:00 (EXTRAP variants have no tomorrow).
         """
@@ -214,7 +216,9 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
                 source="tomorrow_live_soft",
                 window=ReserveWindow.FULL,
                 margin_at=now,
-                live=catalog.target_socs.get(PvForecast.TOMORROW_LIVE),
+                caps=BatteryScheduleService._margin_caps(
+                    catalog, (PvForecast.TOMORROW_LIVE,)
+                ),
             )
         target_soc = catalog.target_socs.get(PvForecast.LIVE_SOFT)
         if target_soc is None:
@@ -225,8 +229,22 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
             source="live_soft",
             window=BatteryScheduleService._today_window(now),
             margin_at=now,
-            live=catalog.target_socs.get(PvForecast.LIVE),
+            caps=BatteryScheduleService._margin_caps(
+                catalog,
+                (
+                    PvForecast.LIVE,
+                    PvForecast.EXTRAP_PROPORTIONAL,
+                    PvForecast.EXTRAP_BLEND,
+                ),
+            ),
         )
+
+    @staticmethod
+    def _margin_caps(
+        catalog: TargetSocCatalog, variants: tuple[PvForecast, ...]
+    ) -> dict[str, TargetSoc | None]:
+        """Variants whose readings cap the margin steps, keyed as the steps expect."""
+        return {v.key: catalog.target_socs.get(v) for v in variants}
 
     @staticmethod
     def _resolve_extrap_reserve(

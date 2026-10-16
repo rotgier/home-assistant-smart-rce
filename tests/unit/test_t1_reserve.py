@@ -336,13 +336,14 @@ class TestResolveT1Reserve:
         assert (r.value_without_margin, r.margin_pp) == (31, 15)
 
     def test_margin_steps_down_through_the_morning(self):
-        # Catalog: Soft 31, Live 35 -> the 08-09 step is capped at 35 - 31 = 4.
+        # Catalog: Soft 31, Live 35, no Extrap Proportional/Blend -> both capped
+        # steps (07-08, 08-09) at 35 - 31 = 4.
         assert [
             self._live(h, m).margin_pp
             for h, m in ((6, 59), (7, 0), (8, 0), (9, 0), (13, 0))
-        ] == [15, 10, 4, 0, 0]
+        ] == [15, 4, 4, 0, 0]
         assert self._live(8, 30).value == 35
-        assert self._live(8, 30).live_reading == 35
+        assert self._live(8, 30).to_dict()["live_reading"] == 35
 
     def test_extrap_reserve_has_no_margin(self):
         r = BatteryScheduleService._resolve_extrap_reserve(  # noqa: SLF001
@@ -509,7 +510,7 @@ class TestLiveCappedStep:
 
     @staticmethod
     def _margin(live: int | None, soft: int = 23, h: int = 8, m: int = 41) -> int:
-        return T1SocReserve.margin_pp_for(DAY, _at(h, m), soft, live)
+        return T1SocReserve.margin_pp_for(DAY, _at(h, m), soft, {"live": live})
 
     def test_sunny_live_equals_soft_no_margin(self):
         assert self._margin(23) == 0
@@ -526,9 +527,8 @@ class TestLiveCappedStep:
     def test_without_live_the_step_stands(self):
         assert self._margin(None) == 5
 
-    def test_other_steps_ignore_live(self):
+    def test_night_and_after_nine_ignore_caps(self):
         assert self._margin(23, h=6, m=11) == 15
-        assert self._margin(23, h=7, m=41) == 10
         assert self._margin(99, h=9, m=0) == 0
 
     def test_value_at_eight_uses_the_live_reading_held(self):
@@ -539,9 +539,69 @@ class TestLiveCappedStep:
             soft,
             source="live_soft",
             window=ReserveWindow.REMAINING,
-            margin_at=_at(7, 41),
-            live=live,
+            margin_at=_at(8, 1),
+            caps={"live": live},
         )
         assert r is not None
-        assert (r.value, r.live_reading) == (35, 27)
-        assert [r.value_at(_at(h)) for h in (7, 8, 9)] == [35, 27, 25]
+        assert (r.value, r.to_dict()["live_reading"]) == (27, 27)
+        assert [r.value_at(_at(h)) for h in (6, 8, 9)] == [40, 27, 25]
+
+
+class TestSevenToEightStep:
+    """07-08: margin = max(0, min(10, max(Live, Extrap Prop, Extrap Blend) - Soft))."""
+
+    _PROP = "extrapolated_live_proportional"
+    _BLEND = "extrapolated_live_blend"
+
+    @staticmethod
+    def _margin(caps: dict, soft: int = 20) -> int:
+        return T1SocReserve.margin_pp_for(DAY, _at(7, 41), soft, caps)
+
+    def test_all_equal_to_soft_no_margin(self):
+        assert self._margin({"live": 20, self._PROP: 20, self._BLEND: 20}) == 0
+
+    def test_extrap_far_above_soft_full_step(self):
+        assert self._margin({"live": 21, self._PROP: 34, self._BLEND: 22}) == 10
+
+    def test_highest_variant_sets_the_margin(self):
+        assert self._margin({"live": 21, self._PROP: 26, self._BLEND: 23}) == 6
+
+    def test_without_extraps_it_is_live(self):
+        assert self._margin({"live": 23, self._PROP: None}) == 3
+        assert self._margin({"live": 23}) == 3
+
+    def test_no_cap_at_all_keeps_the_step(self):
+        assert self._margin({}) == 10
+
+    def test_resolved_reserve_holds_every_cap(self):
+        def ts(v: PvForecast, flat: int | None) -> TargetSoc:
+            return TargetSoc(
+                variant=v,
+                flat=_result(flat) if flat is not None else None,
+                prev_days=[],
+            )
+
+        catalog = SimpleNamespace(
+            target_socs={
+                PvForecast.LIVE_SOFT: ts(PvForecast.LIVE_SOFT, 20),
+                PvForecast.LIVE: ts(PvForecast.LIVE, 21),
+                PvForecast.EXTRAP_PROPORTIONAL: ts(PvForecast.EXTRAP_PROPORTIONAL, 34),
+                PvForecast.EXTRAP_BLEND: ts(PvForecast.EXTRAP_BLEND, None),
+            }
+        )
+        r = BatteryScheduleService._resolve_t1_reserve(_at(7, 41), catalog)  # noqa: SLF001
+        assert r is not None
+        attrs = r.to_dict()
+        assert (r.value, r.margin_pp) == (30, 10)
+        assert (
+            attrs["live_reading"],
+            attrs["extrap_proportional_reading"],
+            attrs["extrap_blend_reading"],
+        ) == (21, 34, None)
+        assert T1SocReserve.from_dict(attrs) == r
+
+
+def test_margin_step_keys_are_pv_forecast_keys():
+    keys = {v.key for v in PvForecast}
+    for _until, _pp, caps in T1SocReserve._MARGIN_STEPS:  # noqa: SLF001
+        assert set(caps) <= keys

@@ -195,9 +195,15 @@ def _margin(
         return 0
     if not setup.margin_live_cap:
         return T1SocReserve.margin_pp_at(ctx.target_date, ctx.now)
+    # a5b711a: only the 08-09 step was capped (by Live); production's steps now
+    # cap 07-08 too, so this setup keeps its own 07-08 uncapped.
+    if ctx.now.date() == ctx.target_date and ctx.now.hour == 7:
+        return T1SocReserve.margin_pp_at(ctx.target_date, ctx.now)
     live = snapshot.result(PvForecast.LIVE.key)
     live_reading = rule.on_forecast(live, ctx) if live is not None else None
-    return T1SocReserve.margin_pp_for(ctx.target_date, ctx.now, reading, live_reading)
+    return T1SocReserve.margin_pp_for(
+        ctx.target_date, ctx.now, reading, {PvForecast.LIVE.key: live_reading}
+    )
 
 
 def _score_models(
