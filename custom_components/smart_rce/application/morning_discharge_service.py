@@ -17,10 +17,18 @@ from typing import TYPE_CHECKING
 from homeassistant.core import callback
 
 from ..domain.battery_schedule import MorningDischargePlan, SlotKind
-from ..domain.charge_start_shift import lowest_soc_the_sun_fills, to_minutes
+from ..domain.charge_start_shift import (
+    full_charge_minute,
+    lowest_soc_the_sun_fills,
+    to_minutes,
+)
 from ..domain.pv_surplus import surplus_window_end
 
 if TYPE_CHECKING:
+    from datetime import time
+
+    from ..domain.battery_schedule import T1SocReserve
+    from ..domain.pv_surplus import SurplusProfile
     from ..domain.rce import RceDayPrices
     from .ems import Ems
     from .pv_surplus_service import PvSurplusService
@@ -67,9 +75,16 @@ class MorningDischargeService:
         )
         if best is None:
             return None
-        hours = MorningDischargePlan.hours_from(
-            prices, best, s0.hour, surplus_window_end(now.date())
-        )
+        profile = self._pv_surplus.today_profile(history=True, pv_scale=1.0)
+        if profile is None:
+            profile = self._pv_surplus.today_profile(history=False, pv_scale=1.0)
+        if profile is None:
+            return None
+        t2 = surplus_window_end(now.date())
+        full = self._full_charge(profile, s0, reserve, t2)
+        # The sun charges the battery until the hour it fills in (inclusive).
+        refill_end = t2 if full is None else min(t2, -(-full // 60))
+        hours = MorningDischargePlan.hours_from(prices, best, s0.hour, refill_end)
         # The hour running now or the next one still to come.
         hour = next((h for h in hours if h >= now.hour), None)
         if hour is None:
@@ -79,11 +94,6 @@ class MorningDischargeService:
         line = reserve.value_at(
             now.replace(hour=hour, minute=0, second=0, microsecond=0)
         )
-        profile = self._pv_surplus.today_profile(history=True, pv_scale=1.0)
-        if profile is None:
-            profile = self._pv_surplus.today_profile(history=False, pv_scale=1.0)
-        if profile is None:
-            return None
         fill = lowest_soc_the_sun_fills(
             profile, prices.hour_price, (hour + 1) * 60, to_minutes(s0), line
         )
@@ -94,7 +104,24 @@ class MorningDischargeService:
             reserve=line,
             fill=fill,
             hours=hours,
+            full_at_minute=full,
         )
+
+    @staticmethod
+    def _full_charge(
+        profile: SurplusProfile, s0: time, reserve: T1SocReserve, t2: int
+    ) -> int | None:
+        """Minute the battery is forecast full charging from S0; None if not by T2.
+
+        Starts from the reading without margin — the lowest the battery can be
+        left at, so the latest full charge (the cautious side).
+        """
+        soc = (
+            reserve.value_without_margin
+            if reserve.value_without_margin is not None
+            else reserve.value
+        )
+        return full_charge_minute(profile, to_minutes(s0), soc, t2 * 60)
 
     @staticmethod
     def _first_hour(hour: int, minute: int) -> int:

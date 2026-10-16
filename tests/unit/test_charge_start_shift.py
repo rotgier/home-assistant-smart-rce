@@ -276,3 +276,50 @@ def test_parity_with_the_backtest(case):
         profile, case["prices"], case["now"], case["need"], case["s0"]
     )
     assert got == case["expected"]
+
+
+class TestFullChargeMinute:
+    """When the battery is forecast full from the charge start (17.10.2026)."""
+
+    @staticmethod
+    def _profile(rate_by_hour: dict[int, float]):
+        from custom_components.smart_rce.domain.pv_surplus import (  # noqa: PLC0415
+            SurplusProfile,
+            slots_from_hourly,
+        )
+
+        return SurplusProfile.build(
+            date(2026, 10, 17),
+            slots_from_hourly(rate_by_hour),
+            dict.fromkeys(range(48), 0.0),
+        )
+
+    def test_17_10_forecast_fills_from_22_percent_around_13_17(self):
+        from custom_components.smart_rce.domain.charge_start_shift import (  # noqa: PLC0415
+            full_charge_minute,
+        )
+
+        surplus = {11: 4.151, 12: 4.925, 13: 3.477, 14: 3.666, 15: 2.456}
+        full = full_charge_minute(self._profile(surplus), 11 * 60, 22.0, 16 * 60)
+        assert full is not None
+        assert 13 * 60 + 10 <= full <= 13 * 60 + 25
+
+    def test_not_full_before_the_end_is_none(self):
+        from custom_components.smart_rce.domain.charge_start_shift import (  # noqa: PLC0415
+            full_charge_minute,
+        )
+
+        weak = dict.fromkeys(range(11, 16), 1.0)
+        assert full_charge_minute(self._profile(weak), 11 * 60, 22.0, 16 * 60) is None
+
+    def test_pace_caps_a_huge_surplus_at_the_charge_rate(self):
+        from custom_components.smart_rce.domain.charge_start_shift import (  # noqa: PLC0415
+            full_charge_minute,
+        )
+
+        huge = dict.fromkeys(range(11, 16), 50.0)
+        full = full_charge_minute(self._profile(huge), 11 * 60, 22.0, 16 * 60)
+        # 22->89 at 75 s/pp + plateau 2 x 390 + top 3 x 40 + 4 x 80 + 2 x 320.
+        expected = 11 * 60 + (67 * 75 + 2 * 390 + 3 * 40 + 4 * 80 + 2 * 320) / 60
+        # Minute steps take the pace of the level they start at: within ~1 step per zone.
+        assert full == pytest.approx(expected, abs=4)

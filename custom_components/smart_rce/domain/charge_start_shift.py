@@ -47,7 +47,9 @@ from datetime import date, time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
-from .charge_curve import kwh_to_full
+from .battery_schedule.direction import Direction
+from .charge_curve import FULL_SOC, kwh_per_pp, kwh_to_full
+from .pv_surplus import SLOT_MINUTES
 
 if TYPE_CHECKING:
     from .pv_surplus import SurplusProfile
@@ -157,6 +159,35 @@ def lowest_soc_the_sun_fills(
         if find_candidate(profile, hour_prices, now, kwh_to_full(soc), s0).enough:
             return soc
     return 100
+
+
+def full_charge_minute(
+    profile: SurplusProfile, start: int, soc: float, end: int
+) -> int | None:
+    """Minute of the day the battery is full charging from `start`; None if not by `end`.
+
+    Minute by minute: the surplus of the slot (spread evenly over its 30
+    minutes) goes in, at most at the charge pace of `Direction.CHARGE` (the
+    same SoC-zone model the charge slots run on: ~75 s/pp up to 89%, then the
+    BMS plateau and the slow top). Energy per pp from the charge curve.
+    """
+    level = soc
+    for minute in range(start, end):
+        if level >= FULL_SOC:
+            return minute
+        slot = profile.slots[minute // SLOT_MINUTES]
+        surplus_pp = slot.surplus_kwh / SLOT_MINUTES / kwh_per_pp(level)
+        pace_pp = 60 / _charge_sec_per_pp(level)
+        level = min(FULL_SOC, level + min(surplus_pp, pace_pp))
+    return end if level >= FULL_SOC else None
+
+
+def _charge_sec_per_pp(soc: float) -> float:
+    return next(
+        z.sec_per_pp
+        for z in Direction.CHARGE.rate_zones
+        if z.soc_from <= soc < z.soc_to
+    )
 
 
 def guarded_candidate(

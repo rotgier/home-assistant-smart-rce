@@ -207,10 +207,23 @@ class TestService:
         assert plan.gross_price == pytest.approx(1100 * 1.23)
 
     def test_moves_on_to_the_next_hour_that_pays_off(self):
-        # 09 (800) is dearer than every PV hour 11-15 (max 700); 10 (600) is not.
-        assert _service(6.0).hours == (8, 9)
+        # Surplus 5.1 kWh/h from 11:00 fills the battery from 25% by ~13:00, so
+        # the sun charges it in 11 (500) and 12 (450) only: 09 (800) and 10
+        # (600) both sell dearer than what refills them. 15:00 (700) no longer
+        # counts — the battery is full by then and exports anyway.
+        assert _service(6.0).hours == (8, 9, 10)
+        assert _service(6.0).to_dict()["full_at"] is not None
         assert _service(6.0, now=_at(9, 20)).hour == 9
-        assert _service(6.0, now=_at(10, 5)) is None
+        assert _service(6.0, now=_at(10, 5)).hour == 10
+        assert _service(6.0, now=_at(11, 5)) is None
+
+    def test_without_a_full_charge_the_pv_window_runs_to_t2(self):
+        # Surplus 1.1 kWh/h never fills the battery by 16:00: every PV hour
+        # 11-15 counts, 15:00 (700) keeps 10 (600) out as before.
+        plan = _service(2.0)
+        assert plan is not None
+        assert plan.hours == (8, 9)
+        assert plan.to_dict()["full_at"] is None
 
     def test_little_sun_above_the_bar_is_arbitrage(self):
         plan = _service(1.4)

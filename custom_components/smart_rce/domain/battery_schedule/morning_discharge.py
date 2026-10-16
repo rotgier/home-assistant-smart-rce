@@ -5,8 +5,11 @@ earlier of its window end (10:00) and S0 (the charge start from RCE prices),
 then moves on hour by hour until S0, each hour DELAYED_TO_END: the battery
 stands on the target when the hour closes (settlement is hourly, so when inside
 the hour it gave the energy away does not matter). An hour takes part only when
-it is dearer than every hour the sun charges the battery in afterwards (to T2)
-— otherwise the surplus it makes room for would sell dearer later anyway. S0,
+it is dearer than every hour the sun charges the battery in afterwards — from
+S0 until the battery is forecast full (`full_charge_minute`), or until T2 when
+it is not: the energy it sells comes back from PV in those hours, and the
+surplus after the battery is full is exported whatever the morning did
+(17.10.2026: full ~13:20, so 09 at 705 sells although 15:00 pays 715). S0,
 not a forecast-moved start: an hour dearer than the whole PV window is worth
 selling even when the battery already takes PV.
 
@@ -63,6 +66,9 @@ class MorningDischargePlan:
     gross_price: float
     branch: MorningDischargeBranch
     hours: tuple[int, ...] = ()
+    # Minute of the day the battery is forecast full from S0 (None: not by T2)
+    # — what `hours` compared against; kept for scoring the forecast.
+    full_at_minute: int | None = None
 
     @classmethod
     def decide(
@@ -74,6 +80,7 @@ class MorningDischargePlan:
         reserve: int,
         fill: int,
         hours: tuple[int, ...] = (),
+        full_at_minute: int | None = None,
     ) -> MorningDischargePlan:
         """Pick the target from the reserve and the lowest SoC the sun fills."""
         if fill <= reserve:
@@ -92,6 +99,7 @@ class MorningDischargePlan:
             gross_price=gross_price,
             branch=branch,
             hours=hours,
+            full_at_minute=full_at_minute,
         )
 
     @classmethod
@@ -102,15 +110,19 @@ class MorningDischargePlan:
 
     @classmethod
     def hours_from(
-        cls, prices: RceDayPrices, best: int, s0_hour: int, t2_hour: int
+        cls, prices: RceDayPrices, best: int, s0_hour: int, refill_end_hour: int
     ) -> tuple[int, ...]:
-        """Hours from the dearest one until S0 that pay off (see the module doc)."""
+        """Hours from the dearest one until S0 that pay off (see the module doc).
+
+        `refill_end_hour`: first hour the sun no longer charges the battery in —
+        the hour after the forecast full charge, or T2.
+        """
         return tuple(
             hour
             for hour in range(best, s0_hour)
             if all(
                 prices.gross_at(hour) > prices.gross_at(later)
-                for later in range(max(hour + 1, s0_hour), t2_hour)
+                for later in range(max(hour + 1, s0_hour), refill_end_hour)
             )
         )
 
@@ -139,4 +151,9 @@ class MorningDischargePlan:
             "gross_price": round(self.gross_price, 1),
             "branch": self.branch.value,
             "hours": [f"{h:02d}:00" for h in self.hours],
+            "full_at": (
+                f"{self.full_at_minute // 60:02d}:{self.full_at_minute % 60:02d}"
+                if self.full_at_minute is not None
+                else None
+            ),
         }

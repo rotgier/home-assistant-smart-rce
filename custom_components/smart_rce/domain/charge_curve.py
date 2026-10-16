@@ -45,6 +45,14 @@ BANDS: Final[tuple[SocBand, ...]] = (
 FULL_SOC: Final[float] = 100.0
 
 
+def kwh_per_pp(soc: float) -> float:
+    """Energy one pp takes at `soc`; the edge bands hold outside 10-100%."""
+    for band in BANDS:
+        if band.soc_from <= soc < band.soc_to:
+            return band.kwh_per_pp
+    return BANDS[0].kwh_per_pp if soc < BANDS[0].soc_from else BANDS[-1].kwh_per_pp
+
+
 def kwh_to_full(soc: float) -> float:
     """Energy the battery still takes from `soc` up to 100%."""
     return sum(band.kwh_between(soc, FULL_SOC) for band in BANDS)
