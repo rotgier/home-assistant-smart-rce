@@ -11,9 +11,14 @@ the other decisions:
   consumption), from the same start (S0) and the same SoC (the reserve without
   margin at that moment) — the forecast's error alone;
 - actual: the first slot the SoC really reached full (the facts panel) — also
-  depends on how the morning really went (discharge depth, the start).
+  depends on how the morning really went (discharge depth, the start);
+- model: the same `full_charge_minute` on what really came, from the ACTUAL
+  charge start with the SoC the battery really had then — against `actual` it
+  isolates the charging model (charge curve, pace of `Direction.CHARGE`, the
+  BMS plateau).
 
-error = system − optimal, in minutes (+ = forecast full later than optimal).
+error = system − optimal (the surplus forecast), model_error = model − actual
+(the charging model); minutes, + = computed full later than the reference.
 `hours` vs `optimal_hours`: the discharge hours each full charge qualifies —
 does the forecast error change what was sold?
 """
@@ -50,27 +55,31 @@ class PlanReading:
     start_soc: float | None  # the reserve without margin the plan charged from
 
 
-def score_full_charge(
+def score_full_charge(  # noqa: PLR0917 — one call site, the day's facts
     actuals: DayActuals,
     plan: PlanReading,
     prices: Sequence[float],
     s0: int,
     actual_full: int | None,
+    actual_start: int | None,
 ) -> FullChargeScore:
     """Score the plan's full charge against the same computation on what came."""
     day = actuals.day
     t2 = surplus_window_end(day) * 60
     day_prices = RceDayPrices(None, day, tuple(prices))
+    came = SurplusProfile.build(
+        day, actuals.half_hours(PV), actuals.half_hours(CONSUMPTION)
+    )
     optimal = (
-        full_charge_minute(
-            SurplusProfile.build(
-                day, actuals.half_hours(PV), actuals.half_hours(CONSUMPTION)
-            ),
-            s0,
-            plan.start_soc,
-            t2,
-        )
+        full_charge_minute(came, s0, plan.start_soc, t2)
         if plan.start_soc is not None
+        else None
+    )
+    start = actual_start if actual_start is not None else s0
+    start_soc = actuals.soc_near(actuals.at(start))
+    model = (
+        full_charge_minute(came, start, start_soc, t2)
+        if start_soc is not None
         else None
     )
     best = MorningDischargePlan.best_hour(
@@ -89,6 +98,10 @@ def score_full_charge(
         hours_recomputed=(
             _hours(day_prices, best, s0, t2, plan.full_at) if best is not None else ()
         ),
+        s0_soc=actuals.soc_near(actuals.at(s0)),
+        actual_start=start,
+        actual_start_soc=start_soc,
+        model=model,
     )
 
 
@@ -114,6 +127,10 @@ class FullChargeScore:
     # The plan's hours recomputed here — equal to `hours` unless the slot
     # window was not the default 07-10 (then `optimal_hours` is approximate).
     hours_recomputed: tuple[int, ...]
+    s0_soc: float | None = None  # what the battery really had at S0
+    actual_start: int | None = None  # the charge start that struck (or S0)
+    actual_start_soc: float | None = None
+    model: int | None = None  # the charging model from the actual start and SoC
 
     @property
     def error_min(self) -> int | None:
@@ -129,6 +146,13 @@ class FullChargeScore:
         return self.system - self.actual
 
     @property
+    def model_error_min(self) -> int | None:
+        """Model − actual; + = the charging model full later than reality."""
+        if self.model is None or self.actual is None:
+            return None
+        return self.model - self.actual
+
+    @property
     def hours_changed(self) -> bool:
         return self.hours_recomputed != self.optimal_hours
 
@@ -142,6 +166,10 @@ class FullChargeScore:
             "hours": list(self.hours),
             "optimal_hours": list(self.optimal_hours),
             "hours_recomputed": list(self.hours_recomputed),
+            "s0_soc": self.s0_soc,
+            "actual_start": self.actual_start,
+            "actual_start_soc": self.actual_start_soc,
+            "model": self.model,
         }
 
     @classmethod
@@ -155,4 +183,8 @@ class FullChargeScore:
             hours=tuple(data.get("hours", [])),
             optimal_hours=tuple(data.get("optimal_hours", [])),
             hours_recomputed=tuple(data.get("hours_recomputed", [])),
+            s0_soc=data.get("s0_soc"),
+            actual_start=data.get("actual_start"),
+            actual_start_soc=data.get("actual_start_soc"),
+            model=data.get("model"),
         )

@@ -57,6 +57,12 @@ HEADLINES: Final[tuple[Headline, ...]] = (
         "min",
         lambda s: s.full_charge_error_min,
     ),
+    Headline(
+        "charge_model_error",
+        "Charging model error",
+        "min",
+        lambda s: s.full_charge.model_error_min if s.full_charge else None,
+    ),
     Headline("t1_import", "T1 grid import", "kWh", lambda s: s.outcome.t1_import_kwh),
     Headline("min_soc_t1", "T1 minimum SoC", "%", lambda s: s.outcome.min_soc_t1),
     Headline(

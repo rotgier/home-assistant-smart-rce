@@ -111,7 +111,12 @@ def score_day(
     outcome = production_outcome(actuals, inputs.start, inputs.afternoon_charge)
     full_charge = (
         score_full_charge(
-            actuals, inputs.morning_plan, inputs.prices, inputs.s0, outcome.full_at
+            actuals,
+            inputs.morning_plan,
+            inputs.prices,
+            inputs.s0,
+            outcome.full_at,
+            inputs.start.start,
         )
         if inputs.morning_plan is not None
         and inputs.prices is not None

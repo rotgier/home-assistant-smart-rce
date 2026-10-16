@@ -48,6 +48,7 @@ _ICONS: Final[dict[str, str]] = {
     "reserve_line_error": "mdi:battery-arrow-down-outline",
     "start_delta": "mdi:battery-clock-outline",
     "full_charge_error": "mdi:battery-charging-100",
+    "charge_model_error": "mdi:chart-bell-curve",
     "t1_import": "mdi:transmission-tower-import",
     "min_soc_t1": "mdi:battery-low",
     "grid_topup": "mdi:battery-charging-wireless-outline",
@@ -279,6 +280,13 @@ def _full_charge_summary(score: DayScore) -> dict[str, Any] | None:
         "actual": hm(fc.actual),
         "error_min": fc.error_min,
         "error_actual_min": fc.error_actual_min,
+        "s0_soc": round(fc.s0_soc) if fc.s0_soc is not None else None,
+        "actual_start": hm(fc.actual_start),
+        "actual_start_soc": (
+            round(fc.actual_start_soc) if fc.actual_start_soc is not None else None
+        ),
+        "model": hm(fc.model),
+        "model_error_min": fc.model_error_min,
         "hours": [f"{h:02d}" for h in fc.hours],
         "optimal_hours": [f"{h:02d}" for h in fc.optimal_hours],
         "hours_changed": fc.hours_changed,

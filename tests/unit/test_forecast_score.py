@@ -545,7 +545,9 @@ def test_full_charge_against_the_same_computation_on_what_came(energy, prices):
         hours=(7,),
         start_soc=30.0,
     )
-    score = score_full_charge(actuals, plan, prices[day.isoformat()], s0, 15 * 60)
+    score = score_full_charge(
+        actuals, plan, prices[day.isoformat()], s0, 15 * 60, 8 * 60 + 15
+    )
     profile = SurplusProfile.build(
         day, actuals.half_hours("pv_kwh"), actuals.half_hours(CONSUMPTION)
     )
@@ -554,5 +556,8 @@ def test_full_charge_against_the_same_computation_on_what_came(energy, prices):
     assert score.error_actual_min == -60
     if score.optimal is not None:
         assert score.error_min == 14 * 60 - score.optimal
+    soc = actuals.soc_near(actuals.at(8 * 60 + 15))
+    assert score.actual_start_soc == soc
+    assert score.model == full_charge_minute(profile, 8 * 60 + 15, soc, t2)
     roundtrip = type(score).from_dict(json.loads(json.dumps(score.to_dict())))
     assert roundtrip == score
