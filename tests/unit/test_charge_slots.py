@@ -47,14 +47,14 @@ class TestBaseWindow:
 
 class TestExtendEarlier:
     def test_extends_earlier_when_prior_hour_marginally_pricier(self):
-        # Base 2h at 12-14 (200). Hour 11 = 240 → 40 above base max (200),
-        # below extend_threshold 45 → take earlier 3h window [11-14).
+        # Base 2h at 12-14 (200). Hour 11 = 240 → 40 net (49.2 gross) above
+        # base max, below extend_threshold 50 (gross) → earlier 3h [11-14).
         prices = [500.0] * 24
         prices[12] = prices[13] = 200.0
         prices[11] = 240.0
         params = ChargeWindowParams(
             initial_hours=2,
-            extend_threshold=45,
+            extend_threshold=50,
             absolute_cheap_price=100,  # 240 not "cheap" → only threshold path
             base_window_shift_minutes=0,
         )
@@ -62,6 +62,35 @@ class TestExtendEarlier:
         assert window is not None
         assert window.start_hour == 11.0
         assert window.end_hour == 14.0
+
+    def test_thresholds_are_gross_17_10_2026(self):
+        # RCE net 17.10.2026. 10:00 (591) is 38 net / 46.7 gross above the
+        # 11-12 base max (553): 45 gross keeps the start at 11:00 — under the
+        # old net reading 45 took 10:00.
+        prices = [
+            700.46, 690.37, 670.1, 640.22, 631.92, 648, 712, 790, 816, 705,
+            591, 553, 551, 554, 598, 715, 801, 974, 1043, 987, 919, 808, 750, 705,
+        ]  # fmt: skip
+        params = ChargeWindowParams(
+            initial_hours=2,
+            extend_threshold=45,
+            absolute_cheap_price=25,
+            base_window_shift_minutes=0,
+        )
+        window = ChargeSlots.compute(_day(prices), params=params)
+        assert window is not None
+        assert window.start_hour == 11.0
+        looser = ChargeSlots.compute(
+            _day(prices),
+            params=ChargeWindowParams(
+                initial_hours=2,
+                extend_threshold=47,
+                absolute_cheap_price=25,
+                base_window_shift_minutes=0,
+            ),
+        )
+        assert looser is not None
+        assert looser.start_hour == 10.0
 
     def test_no_extend_when_above_threshold(self):
         # Same shape, but threshold 30 < 40 gap → stay at base 2h.

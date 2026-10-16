@@ -18,6 +18,7 @@ import logging
 from statistics import mean
 from typing import Final
 
+from ..const import GROSS_MULTIPLIER
 from .rce import TIMEZONE, RceDayPrices, RcePrices
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,6 +72,11 @@ class ChargeWindowParams:
     - `extend_threshold` — take an earlier+longer window when the earlier hour
       is at most this many zł/MWh above the base-window max price.
     - `absolute_cheap_price` — ...or when that earlier hour is cheap outright.
+
+    Both thresholds are GROSS zł/MWh (RCE x 1.23), the unit every other price
+    decision and the dashboard use (since 17.10.2026; before, net — 45 net was
+    ~55 gross). 17.10.2026: 10:00 at 591 net was 38 net / 46.7 gross above
+    the 11-12 window, so 45 gross keeps the start at 11:00.
     - `base_window_shift_minutes` — when the chosen window equals the base
       length, start this many minutes earlier (0 = no shift).
     """
@@ -163,7 +169,9 @@ class ChargeSlots:
         if day_prices is None or not day_prices.hour_price:
             return None
         params = params or ChargeWindowParams()
-        prices: list[float] = list(day_prices.hour_price)
+        # Gross, so the thresholds read in the unit the user sets them in; the
+        # cheapest-window search is scale-free and picks the same hours.
+        prices: list[float] = [p * GROSS_MULTIPLIER for p in day_prices.hour_price]
         start_charge_hours = calculate_start_charge_hours(prices, params.initial_hours)
         # NOTE 2026-05-29: shift_earlier_if_cheap disabled. Anchor-based
         # heuristic (prices[end] as benchmark) misfires on bimodal price

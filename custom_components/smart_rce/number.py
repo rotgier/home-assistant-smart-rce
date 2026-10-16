@@ -67,7 +67,7 @@ class EmsBatteryChargeExtendThresholdNumber(NumberEntity):
     """Threshold (zł/MWh) to extend the charge window earlier.
 
     Take an earlier+longer window when the earlier hour is at most this many
-    zł/MWh above the base-window max price. Higher = more eager to grab earlier
+    zł/MWh (GROSS) above the base-window max price. Higher = more eager to grab earlier
     hours (safer margin if PV forecast under-delivers). Bridge to
     `BatteryChargePolicy.charge_extend_threshold` via Ems (recompute +
     start force-sync on change — see `Ems._apply_charge_param_change`).
@@ -104,7 +104,7 @@ class EmsBatteryChargeExtendThresholdNumber(NumberEntity):
 
 
 class EmsBatteryChargeAbsoluteCheapPriceNumber(NumberEntity):
-    """Absolute-cheap price (zł/MWh) for extending the charge window earlier.
+    """Absolute-cheap price (zł/MWh, GROSS) for extending the charge window earlier.
 
     An earlier hour cheaper than this is always worth grabbing, regardless of
     the relative extend threshold. Bridge to
