@@ -245,6 +245,7 @@ class EnergyBalanceService:
                 start_charge_hour_tomorrow=(
                     int(tomorrow_slot.start_hour) if tomorrow_slot is not None else None
                 ),
+                hour_net_export_kwh=self._live_rates.read_hour_net_export_kwh(),
             )
         )
 

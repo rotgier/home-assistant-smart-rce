@@ -273,3 +273,50 @@ def test_p60_of_profiles_is_per_bucket() -> None:
     # Sorted 0.2, 0.4, 0.5: k = 2 * 0.6 = 1.2 -> 0.4 + 0.2 * 0.1.
     assert p60.get(7, 0) == pytest.approx(0.42)
     assert ConsumptionProfile.p60_of([None, None]) is None
+
+
+class TestHourCredit:
+    """The hour's net export so far nets that hour's points only (net billing)."""
+
+    @staticmethod
+    def _late_in_the_bucket(credit: float):
+        # 08:59: one minute left of 08:30-09:00 with ~3 kW surplus (0.05 kWh),
+        # every later bucket +1 kWh; pre-charge until 11 (hourly clamp).
+        pv = {(h, m): 0.0 for h in range(7, 13) for m in (0, 30)}
+        cons = dict(pv)
+        pv[(8, 30)] = 0.05
+        for h in range(9, 13):
+            for m in (0, 30):
+                pv[(h, m)] = 1.45
+                cons[(h, m)] = 0.45
+        return _calculate_target_soc(
+            PvProfile(buckets=_buckets(pv)),
+            ConsumptionProfile(buckets=_buckets(cons)),
+            start_charge_hour=11,
+            count_from=time(8, 30),
+            hour_credit_kwh=credit,
+        )
+
+    def test_without_credit_the_reserve_saws_up_at_the_bucket_end(self):
+        assert (
+            self._late_in_the_bucket(0.0).value == MIN_SOC_PERCENT + BUFFER_PERCENT - 1
+        )
+
+    def test_exported_energy_this_hour_keeps_it_down(self):
+        result = self._late_in_the_bucket(2.0)
+        # Tightest point now 09:00-09:30 (+1 kWh, credit gone after the hour).
+        assert result.dip_kwh == pytest.approx(-1.0)
+        assert result.value == MIN_SOC_PERCENT  # 20 - 1.0 / 10.7 * 110 -> below 10
+
+    def test_credit_never_covers_a_later_hours_deficit(self):
+        pv = {(h, m): 0.0 for h in range(7, 13) for m in (0, 30)}
+        cons = dict.fromkeys(pv, 0.0)
+        cons[(9, 0)] = 1.0  # deficit next hour
+        result = _calculate_target_soc(
+            PvProfile(buckets=_buckets(pv)),
+            ConsumptionProfile(buckets=_buckets(cons)),
+            start_charge_hour=11,
+            count_from=time(8, 30),
+            hour_credit_kwh=5.0,
+        )
+        assert result.dip_kwh == pytest.approx(1.0)

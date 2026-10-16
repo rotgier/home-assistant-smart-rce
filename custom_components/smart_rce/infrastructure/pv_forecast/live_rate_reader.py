@@ -36,6 +36,8 @@ _PV_POWER_5MIN_ENTITY: Final = "sensor.pv_power_avg_5_minutes"
 _CONSUMPTION_5MIN_ENTITY: Final = "sensor.house_consumption_minus_water_avg_5_minutes"
 _PV_BUCKET_KWH_ENTITY: Final = "sensor.total_pv_generation_bi_hourly"
 _CONSUMPTION_BUCKET_KWH_ENTITY: Final = "sensor.total_consumption_minus_bi_hourly"
+# Net grid energy this hour: + export, - import; utility meter, resets hourly.
+_HOUR_NET_EXPORT_ENTITY: Final = "sensor.total_export_import_hourly"
 _START_CHARGE_HOUR_OVERRIDE_ENTITY: Final = (
     "time.ems_battery_charge_start_hour_override"
 )
@@ -68,6 +70,10 @@ class LiveRateReader:
     def read_consumption_bucket_so_far_kwh(self) -> float | None:
         """KWh accumulated in current 30-min utility meter cycle (minus water heater)."""
         return self._read_float(_CONSUMPTION_BUCKET_KWH_ENTITY)
+
+    def read_hour_net_export_kwh(self) -> float | None:
+        """Net kWh exported to the grid so far this hour (negative = imported)."""
+        return self._read_float(_HOUR_NET_EXPORT_ENTITY)
 
     def read_pv_derivative_w_per_min(self) -> float | None:
         """PV power first derivative (W/min) — input for ramp projection.

@@ -467,7 +467,7 @@ class BatterySchedule:
         candidates = [
             self._effective_entry(k, now.date())
             for k in SlotKind.by_precedence()
-            if not (k.profile.workdays_only and is_workday is False)
+            if k.profile.runs_on(now.date(), is_workday)
         ]
         engaging = [e for e in candidates if e.should_apply_now(now, current_soc)]
         return engaging[-1] if engaging else None

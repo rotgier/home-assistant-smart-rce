@@ -143,6 +143,7 @@ class TargetSoc:
             cons_view,
             start_charge_hour=ctx.start_charge_hour,
             count_from=count_from(ctx, is_today=self.variant.is_today),
+            hour_credit_kwh=ctx.hour_credit_kwh,
         )
 
 
@@ -178,6 +179,7 @@ def target_soc_for(
         start_charge_hour=ctx.start_charge_hour,
         count_from=count_from(ctx, is_today=is_today),
         buffer_percent=buffer_percent,
+        hour_credit_kwh=ctx.hour_credit_kwh,
     )
 
 
@@ -250,6 +252,8 @@ class TargetSocContext:
     start_charge_hour: int | None
     now: datetime
     now_in_window: bool
+    # This hour's net grid export so far (kWh, >= 0) — see `_calculate_target_soc`.
+    hour_credit_kwh: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -265,6 +269,8 @@ class TargetSocInputs:
     live_consumption_w: float | None = None
     start_charge_hour_today: int | None = None
     start_charge_hour_tomorrow: int | None = None
+    # `sensor.total_export_import_hourly`: + export, - import, resets every hour.
+    hour_net_export_kwh: float | None = None
 
 
 # --- Output VOs --- #
@@ -376,6 +382,8 @@ def _calculate_target_soc(
     start_charge_hour: int | None = None,
     count_from: time | None = None,
     buffer_percent: int = BUFFER_PERCENT,
+    *,
+    hour_credit_kwh: float = 0.0,
 ) -> TargetSocResult:
     """Calculate target battery SOC + per-bucket trace.
 
@@ -388,6 +396,14 @@ def _calculate_target_soc(
 
     The buffer always applies; headroom (negative dip) eats into it, so the
     target reaches MIN only once the tightest point keeps ~0.97 kWh to spare.
+
+    `hour_credit_kwh`: the current hour's net grid export so far (>= 0). The
+    grid settles each hour on its net balance, so energy already exported this
+    hour covers a deficit until the hour ends; it is added to the points of
+    the current hour only (now-aware walks). Without it the headroom was the
+    surplus of the rest of the in-progress bucket alone, which shrinks to zero
+    at every bucket end — the reserve sawed 11 -> 19 -> 10% across 08:30-09:00
+    on 16.10.2026 (home-assistant-ops research/2026-10-16-zapas-rezerwy-kroczacy/).
 
     `count_from`: first bucket taking part in the minimum (None = 7:00).
     Earlier buckets still appear in the trace; their zeros must not count.
@@ -431,8 +447,16 @@ def _calculate_target_soc(
             balance = pv_kwh - cons_kwh
             cumulative_balance += balance
             counted = count_from is None or time(hour, minute) >= count_from
-            if counted and (min_balance is None or cumulative_balance < min_balance):
-                min_balance = cumulative_balance
+            # Hourly net billing: what the current hour has already exported
+            # nets a deficit until the hour ends, then it is sold — so it lifts
+            # only the points of the current hour, never the carried balance.
+            point = cumulative_balance + (
+                hour_credit_kwh
+                if count_from is not None and hour == count_from.hour
+                else 0.0
+            )
+            if counted and (min_balance is None or point < min_balance):
+                min_balance = point
                 min_idx = len(buckets)
             buckets.append(
                 TargetSocBucket(

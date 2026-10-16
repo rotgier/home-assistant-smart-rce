@@ -89,6 +89,8 @@ class TargetSocCatalog:
             start_charge_hour=self._inputs.start_charge_hour_today,
             now=now,
             now_in_window=now_in_window,
+            # An import earlier in the hour is already bought — not a credit.
+            hour_credit_kwh=max(0.0, self._inputs.hour_net_export_kwh or 0.0),
         )
         tomorrow_ctx = TargetSocContext(
             target_date=now.date() + timedelta(days=1),

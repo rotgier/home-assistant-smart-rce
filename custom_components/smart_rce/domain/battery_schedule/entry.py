@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Final
 
 from ..ems_operation import EmsOperation
-from .direction import Direction
+from .direction import Direction, RateZone
 from .operation import BatteryOperation
+
+# One-off: the workdays-only slots also run on these days off (user's decision
+# 17.10.2026 — high morning RCE on a Saturday, and a live test of the hourly
+# credit and the morning discharge rate model deployed the night before).
+# Full dates on purpose, not a yearly rule. Remove once the day has passed.
+WORKDAYS_ONLY_EXTRA_DAYS: Final[frozenset[date]] = frozenset({date(2026, 10, 17)})
 
 
 class SlotBehavior(StrEnum):
@@ -195,9 +201,7 @@ class BatteryScheduleEntry:
         """
         if self.soc_target_reached(current_soc):
             return 0.0
-        return self.kind.direction.seconds_for_soc_traversal(
-            current_soc, self.target_soc
-        )
+        return self.kind.profile.seconds_for_soc_traversal(current_soc, self.target_soc)
 
     def disengage_reason(self, now: datetime, soc: float) -> DisengageReason | None:
         """Return None if entry should keep engaging; otherwise the reason to stop.
@@ -279,8 +283,9 @@ class SlotProfile:
     """Per-kind metadata: direction (shared) + slot-specific defaults & policy.
 
     Rate (sec/pp) lives on `direction.rate_zones` — per-direction zones
-    cover non-linear inverter behavior across SoC range. No per-kind rate
-    override (all DISCHARGE slots share same zones).
+    cover non-linear inverter behavior across SoC range. A kind may override
+    them with its own `rate_zones` when its sessions behave differently
+    (the morning auto discharge, see `_MORNING_DISCHARGE_ZONES`).
     """
 
     direction: Direction
@@ -304,6 +309,25 @@ class SlotProfile:
     # Engage only when at least this many pp of work are left — keeps a
     # forecast jittering by a point or two from starting a one-minute charge.
     min_start_gap_pp: float = 0.0
+    # Own SoC-zone rate model; None = the direction's.
+    rate_zones: tuple[RateZone, ...] | None = None
+
+    def runs_on(self, day: date, is_workday: bool | None) -> bool:
+        """Whether the kind takes part on `day` (unknown calendar = workday)."""
+        return not (
+            self.workdays_only
+            and is_workday is False
+            and day not in WORKDAYS_ONLY_EXTRA_DAYS
+        )
+
+    def seconds_for_soc_traversal(self, start_soc: float, end_soc: float) -> float:
+        """Seconds to move SoC start→end at this kind's rate model."""
+        if self.rate_zones is None:
+            return self.direction.seconds_for_soc_traversal(start_soc, end_soc)
+        low, high = min(start_soc, end_soc), max(start_soc, end_soc)
+        if low >= high:
+            return 0.0
+        return sum(z.overlap_seconds(low, high) for z in self.rate_zones)
 
 
 # Lead for a DELAYED_TO_END start: 4 min ~ 3 pp of charge, or of discharge
@@ -312,6 +336,21 @@ class SlotProfile:
 # at 07:59:55: the 30 <-> 31 target wobble had no room; 5 min would only add
 # ~0.8 pp and leave the battery on target longer while the target may rise).
 _DELAYED_LEAD_SEC = 240.0
+
+# Morning discharge pace — after the night top-up the BMS reports SoC
+# differently than after a full day charge (evening: below ~25% twice as fast,
+# which `Direction.DISCHARGE` models). Every morning session 07-16.10.2026
+# (07, 08, 09, 16.10), at a steady ~5.1 kW: ~72 s/pp down to 21%, then 21%
+# holds for 454-537 s, then 21->19 in ~10 s, below ~40-76 s/pp. Rounded up, as
+# for charging: a run that starts early still finishes, one that starts late
+# does not (16.10 08:40: the evening model expected 26->19 in ~5 min, it took
+# ~14). home-assistant-ops research/2026-10-17-tempo-rozladowania-rano/.
+_MORNING_DISCHARGE_ZONES: Final[tuple[RateZone, ...]] = (
+    RateZone(soc_from=21.0, soc_to=100.01, sec_per_pp=75.0),
+    RateZone(soc_from=20.0, soc_to=21.0, sec_per_pp=540.0),
+    RateZone(soc_from=19.0, soc_to=20.0, sec_per_pp=10.0),
+    RateZone(soc_from=0.0, soc_to=19.0, sec_per_pp=60.0),
+)
 
 
 class SlotKind(Enum):
@@ -359,6 +398,7 @@ class SlotKind(Enum):
         # A target moving by a point must not start a one-minute discharge.
         min_start_gap_pp=2.0,
         delayed_lead_sec=_DELAYED_LEAD_SEC,
+        rate_zones=_MORNING_DISCHARGE_ZONES,
     )
 
     DISCHARGE_MORNING = SlotProfile(

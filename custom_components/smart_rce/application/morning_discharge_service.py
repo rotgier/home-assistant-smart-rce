@@ -51,7 +51,9 @@ class MorningDischargeService:
         entry = schedule.slot("today", SlotKind.DISCHARGE_MORNING_AUTO)
         # Computed with the slot switched off too — the sensor then shows what
         # it would do; the schedule runs a plan only for an enabled slot.
-        if not self._ems.is_workday_today:
+        if not SlotKind.DISCHARGE_MORNING_AUTO.profile.runs_on(
+            now.date(), self._ems.is_workday_today
+        ):
             return None
         prices = self._today_prices(now)
         s0 = self._ems.charge_slots.today_start
