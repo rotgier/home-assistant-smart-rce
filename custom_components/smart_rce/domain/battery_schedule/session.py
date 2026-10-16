@@ -3,6 +3,9 @@
 Both are read models for the dashboard: the price chart shades each session
 with the level the battery actually stopped at, and each run still ahead with
 the target it heads for. Neither steers anything.
+
+Timestamps go out to the second: the dashboard parses them in the browser,
+and microsecond fractions are not something every JS engine accepts.
 """
 
 from __future__ import annotations
@@ -52,10 +55,12 @@ class SlotSession:
     def to_dict(self) -> dict[str, Any]:
         return {
             "slot": self.slot.name,
-            "start": self.started_at.isoformat(),
+            "start": self.started_at.isoformat(timespec="seconds"),
             "start_soc": self.start_soc,
             "target": self.target_soc,
-            "end": self.ended_at.isoformat() if self.ended_at is not None else None,
+            "end": self.ended_at.isoformat(timespec="seconds")
+            if self.ended_at is not None
+            else None,
             "end_soc": self.end_soc,
             "reason": self.reason.value if self.reason is not None else None,
         }
@@ -104,9 +109,9 @@ class UpcomingRun:
     def to_dict(self) -> dict[str, Any]:
         return {
             "slot": self.slot.name,
-            "window_start": self.window_start.isoformat(),
-            "start": self.start.isoformat(),
-            "end": self.end.isoformat(),
+            "window_start": self.window_start.isoformat(timespec="seconds"),
+            "start": self.start.isoformat(timespec="seconds"),
+            "end": self.end.isoformat(timespec="seconds"),
             "start_soc": self.start_soc,
             "target": self.target_soc,
         }
