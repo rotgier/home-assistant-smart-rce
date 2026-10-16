@@ -171,6 +171,23 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         icon="mdi:battery-clock",
     ),
     EmsSensorDescription(
+        name="Battery Schedule Sessions",
+        # Number of slot sessions today. Attributes: `sessions` — each with
+        # start/end, the SoC it stopped at and the target then in force (the
+        # price chart shades them); `upcoming` — runs of the auto slots still
+        # ahead today with the expected DELAYED_TO_END start and target.
+        value_fn=lambda ems: len(ems.battery_schedule_service.sessions_today),
+        attr_fn=lambda ems: {
+            "sessions": [
+                s.to_dict() for s in ems.battery_schedule_service.sessions_today
+            ],
+            "upcoming": [
+                r.to_dict() for r in ems.battery_schedule_service.upcoming_runs
+            ],
+        },
+        icon="mdi:battery-sync",
+    ),
+    EmsSensorDescription(
         name="One-Shot Active",
         # One-shot operation summary: "IDLE", "DISCHARGE → 15% until 17:30",
         # or "CHARGE → 80% until 06:00". Etap 2F — surfaces ad-hoc engagement

@@ -45,7 +45,9 @@ from ..domain.battery_schedule import (
     Scope,
     SlotCommand,
     SlotKind,
+    SlotSession,
     T1SocReserve,
+    UpcomingRun,
 )
 from ..domain.evening_plan import EveningPlan
 from ..domain.pv_forecast import PvForecast
@@ -119,6 +121,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         # Today's calendar, refreshed each tick — decides where the evening
         # ends, and so which evening a hand edit is aimed at.
         self._last_is_workday: bool | None = None
+        # Last SoC seen by `update` — the start point of the runs ahead.
+        self._last_soc: float | None = None
         # LIVE+EXTRAP reserve — observation only, nothing acts on it yet.
         self._t1_reserve_extrap: T1SocReserve | None = None
 
@@ -137,6 +141,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         self._last_is_workday = input.is_workday
         if input.battery_soc is None:
             return self._make_result(self._last_op)
+        self._last_soc = input.battery_soc
 
         # ─── Domain logic — aggregate decides operation + emits events ───
         op, events = self._repo.schedule.compute_operation(
@@ -295,6 +300,20 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     def morning_discharge(self) -> MorningDischargePlan | None:
         """Today's automatic morning discharge plan, None when there is none."""
         return self._repo.schedule.morning_discharge_for(self._clock().date())
+
+    @property
+    def sessions_today(self) -> list[SlotSession]:
+        """Today's slot sessions, the open one with its current target."""
+        return self._repo.schedule.sessions_on(self._clock().date())
+
+    @property
+    def upcoming_runs(self) -> list[UpcomingRun]:
+        """Runs of the auto slots still ahead today; empty before the first SoC."""
+        if self._last_soc is None:
+            return []
+        return self._repo.schedule.upcoming_runs(
+            self._clock(), self._last_soc, is_workday=self._last_is_workday
+        )
 
     @property
     def t1_reserve_extrap(self) -> T1SocReserve | None:

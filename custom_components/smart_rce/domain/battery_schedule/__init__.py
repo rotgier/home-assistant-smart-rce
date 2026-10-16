@@ -40,6 +40,7 @@ from .morning_discharge import MorningDischargeBranch, MorningDischargePlan
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation, BatteryScheduleInput
 from .schedule import BatterySchedule
+from .session import SlotSession, UpcomingRun
 from .t1_reserve import ReserveWindow, T1SocReserve
 
 __all__ = [
@@ -78,5 +79,7 @@ __all__ = [
     "SlotKind",
     "T1SocReserve",
     "SlotProfile",
+    "SlotSession",
     "StartOneShotCommand",
+    "UpcomingRun",
 ]
