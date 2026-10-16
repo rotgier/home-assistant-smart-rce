@@ -140,6 +140,17 @@ class TestSchedule:
             "arbitrage 08-09, 1300 brutto, reserve 25, sun fills 42"
         )
 
+    def test_engages_four_minutes_before_the_rate_model(self):
+        # 38 -> 35% = 3 pp x 75 s = 225 s; with the 240 s lead the 08-09 hour
+        # starts at 08:52:15 instead of 08:56:15 (room for a lower target).
+        sch = self._schedule(_auto_discharge())
+        sch.set_morning_discharge(_plan(reserve=25, fill=42, gross=1300.0))
+        _, before = sch.compute_operation(_at(8, 51), 38.0, is_workday=True)
+        assert before == []
+        _, events = sch.compute_operation(_at(8, 53), 38.0, is_workday=True)
+        engaged = [e for e in events if isinstance(e, SlotEngaged)]
+        assert engaged and engaged[0].slot is SlotKind.DISCHARGE_MORNING_AUTO
+
     def test_not_on_a_day_off(self):
         sch = self._schedule(_auto_discharge())
         sch.set_morning_discharge(_plan(reserve=25, fill=42, gross=1300.0))

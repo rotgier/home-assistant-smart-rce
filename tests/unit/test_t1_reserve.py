@@ -187,12 +187,13 @@ class TestDelayedLead:
         _, events = sch.compute_operation(_at(6, 32), 20.0, is_workday=True)
         assert _engaged(events).slot is SlotKind.CHARGE_MORNING
 
-    def test_discharge_slots_have_no_lead(self):
+    def test_only_the_morning_auto_discharge_has_a_lead(self):
         assert all(
             k.profile.delayed_lead_sec == 0.0
             for k in SlotKind
-            if k.direction.is_discharge
+            if k.direction.is_discharge and k is not SlotKind.DISCHARGE_MORNING_AUTO
         )
+        assert SlotKind.DISCHARGE_MORNING_AUTO.profile.delayed_lead_sec == 240.0
         assert all(
             k.profile.delayed_lead_sec == 240.0
             for k in SlotKind

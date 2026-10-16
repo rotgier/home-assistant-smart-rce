@@ -296,16 +296,22 @@ class SlotProfile:
     # Stays out on a day the workday sensor reports as off.
     workdays_only: bool = False
     # DELAYED_TO_END starts this many seconds earlier than the rate model asks.
-    # Charge slots only: a charge that lands a few minutes early costs nothing,
-    # one that misses its deadline buys the shortfall at the next zone's price.
+    # Charge slots: a charge that lands a few minutes early costs nothing, one
+    # that misses its deadline buys the shortfall at the next zone's price.
+    # The planned morning discharge too: its target moves during the hour, and
+    # a run ending at the hour's last second has no room left for a lower one.
     delayed_lead_sec: float = 0.0
     # Engage only when at least this many pp of work are left — keeps a
     # forecast jittering by a point or two from starting a one-minute charge.
     min_start_gap_pp: float = 0.0
 
 
-# Lead for every CHARGE slot's DELAYED_TO_END start (4 min ~ 3 pp of charge).
-_CHARGE_LEAD_SEC = 240.0
+# Lead for a DELAYED_TO_END start: 4 min ~ 3 pp of charge, or of discharge
+# above 25% (75 s/pp; below 25% ~6 pp). Every CHARGE slot and the morning
+# auto discharge (user's decision 16.10.2026 — that morning the 07 hour ended
+# at 07:59:55: the 30 <-> 31 target wobble had no room; 5 min would only add
+# ~0.8 pp and leave the battery on target longer while the target may rise).
+_DELAYED_LEAD_SEC = 240.0
 
 
 class SlotKind(Enum):
@@ -320,7 +326,7 @@ class SlotKind(Enum):
         notification_level=NotificationLevel.NORMAL,
         default_window=(time(2, 0), time(6, 0)),
         default_target_soc=100.0,
-        delayed_lead_sec=_CHARGE_LEAD_SEC,
+        delayed_lead_sec=_DELAYED_LEAD_SEC,
     )
 
     CHARGE_MORNING_AUTO = SlotProfile(
@@ -334,7 +340,7 @@ class SlotKind(Enum):
         default_target_soc=60.0,
         auto_target=True,
         workdays_only=True,
-        delayed_lead_sec=_CHARGE_LEAD_SEC,
+        delayed_lead_sec=_DELAYED_LEAD_SEC,
         min_start_gap_pp=3.0,
     )
 
@@ -352,6 +358,7 @@ class SlotKind(Enum):
         workdays_only=True,
         # A target moving by a point must not start a one-minute discharge.
         min_start_gap_pp=2.0,
+        delayed_lead_sec=_DELAYED_LEAD_SEC,
     )
 
     DISCHARGE_MORNING = SlotProfile(
@@ -371,7 +378,7 @@ class SlotKind(Enum):
         # rewritten from here.
         default_window=(time(13, 0), time(19, 0)),
         default_target_soc=80.0,
-        delayed_lead_sec=_CHARGE_LEAD_SEC,
+        delayed_lead_sec=_DELAYED_LEAD_SEC,
         # 80% leaves headroom for late-afternoon PV surplus.
     )
 
