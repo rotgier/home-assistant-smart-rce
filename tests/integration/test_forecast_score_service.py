@@ -16,6 +16,9 @@ from custom_components.smart_rce.domain.forecast_score.day_score import (
     DayScore,
     ScoreStatus,
 )
+from custom_components.smart_rce.domain.forecast_score.full_charge_score import (
+    PlanReading,
+)
 from custom_components.smart_rce.domain.pv_forecast.forecast_snapshot import (
     ForecastSnapshot,
 )
@@ -92,6 +95,14 @@ class _Sources:
     async def afternoon_spans(self, _day: date) -> list[tuple[int, int]] | None:
         return [(14 * 60, 15 * 60)]
 
+    async def morning_plan(self, _day: date) -> PlanReading | None:
+        return PlanReading(
+            at=datetime(2026, 10, 14, 6, 59, tzinfo=TZ),
+            full_at=13 * 60,
+            hours=(7, 8),
+            start_soc=30.0,
+        )
+
 
 class _Charge:
     forecast_shift = None
@@ -133,6 +144,8 @@ async def test_final_then_check_keeps_an_unchanged_day(
     assert score.status is ScoreStatus.FINAL
     assert score.outcome.start.start == 495
     assert score.outcome.start.source == "override"
+    assert score.full_charge is not None
+    assert score.full_charge.system == 13 * 60
     assert service.latest == score
     assert [score] == PUBLISHED  # the final went out as a daily statistic
 

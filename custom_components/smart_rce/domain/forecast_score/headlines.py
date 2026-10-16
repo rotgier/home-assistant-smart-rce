@@ -51,6 +51,12 @@ HEADLINES: Final[tuple[Headline, ...]] = (
         lambda s: s.reserve_line_error_pp,
     ),
     Headline("start_delta", "Charge start error", "h", lambda s: s.start_delta_h),
+    Headline(
+        "full_charge_error",
+        "Full charge time error",
+        "min",
+        lambda s: s.full_charge_error_min,
+    ),
     Headline("t1_import", "T1 grid import", "kWh", lambda s: s.outcome.t1_import_kwh),
     Headline("min_soc_t1", "T1 minimum SoC", "%", lambda s: s.outcome.min_soc_t1),
     Headline(

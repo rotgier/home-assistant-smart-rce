@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final
 from ..battery_schedule.entry import WORKDAYS_ONLY_EXTRA_DAYS
 from ..pv_surplus import DayType
 from .day_type import DayTypeFigures, day_type_figures
+from .full_charge_score import FullChargeScore, PlanReading, score_full_charge
 from .production_outcome import ChargeStartFact, ProductionOutcome, production_outcome
 from .production_setup import setup_on
 from .reserve_score import (
@@ -74,6 +75,8 @@ class DayInputs:
     start: ChargeStartFact
     # CHARGE_AFTERNOON spans (minutes of the day); None = history unavailable.
     afternoon_charge: Sequence[tuple[int, int]] | None
+    # The morning discharge plan just before its first hour started (D3).
+    morning_plan: PlanReading | None = None
 
 
 def score_day(
@@ -105,6 +108,17 @@ def score_day(
             setup,
         )
     main = consumed(inputs.snapshots, datetime.combine(day, MAIN_MOMENT.at, actuals.tz))
+    outcome = production_outcome(actuals, inputs.start, inputs.afternoon_charge)
+    full_charge = (
+        score_full_charge(
+            actuals, inputs.morning_plan, inputs.prices, inputs.s0, outcome.full_at
+        )
+        if inputs.morning_plan is not None
+        and inputs.prices is not None
+        and inputs.s0 is not None
+        and len(inputs.prices) == 24
+        else None
+    )
     return DayScore(
         day=day,
         status=status,
@@ -114,12 +128,13 @@ def score_day(
         reserve=reserve,
         reserve_models=models,
         start=start,
-        outcome=production_outcome(actuals, inputs.start, inputs.afternoon_charge),
+        outcome=outcome,
         earlier_workdays=tuple(sorted(inputs.earlier_workdays)),
         earlier_same_type=tuple(sorted(inputs.earlier_same_type)),
         snapshot_sources=tuple(sorted({s.source for s in inputs.snapshots})),
         s0=inputs.s0,
         setup=setup.label,
+        full_charge=full_charge,
     )
 
 
@@ -146,6 +161,8 @@ class DayScore:
     replaced: tuple[str, ...] = ()
     # The production setup the day ran on (`production_setup`).
     setup: str = ""
+    # D3: the forecast full charge of the morning discharge (from 17.10.2026).
+    full_charge: FullChargeScore | None = None
 
     # --- headline figures (the long-term statistics sensors) --- #
 
@@ -175,6 +192,11 @@ class DayScore:
     def reserve_error_margin_pp(self) -> int | None:
         main = self.reserve_moment(MAIN_MOMENT.label)
         return main.margin_part_pp if main is not None else None
+
+    @property
+    def full_charge_error_min(self) -> int | None:
+        """Forecast full charge − optimal, minutes (+ = forecast later)."""
+        return self.full_charge.error_min if self.full_charge is not None else None
 
     @property
     def reserve_line_error_pp(self) -> int | None:
@@ -211,6 +233,9 @@ class DayScore:
             "s0": self.s0,
             "replaced": list(self.replaced),
             "setup": self.setup,
+            "full_charge": (
+                self.full_charge.to_dict() if self.full_charge is not None else None
+            ),
         }
 
     @classmethod
@@ -237,6 +262,11 @@ class DayScore:
             s0=data.get("s0"),
             replaced=tuple(data.get("replaced", [])),
             setup=str(data.get("setup", "")),
+            full_charge=(
+                FullChargeScore.from_dict(raw)
+                if isinstance(raw := data.get("full_charge"), dict)
+                else None
+            ),
         )
 
     @classmethod

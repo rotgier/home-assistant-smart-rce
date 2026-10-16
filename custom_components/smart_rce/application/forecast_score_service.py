@@ -272,6 +272,7 @@ class ForecastScoreService:
             s0=s0,
             start=start,
             afternoon_charge=spans,
+            morning_plan=await self._sources.morning_plan(day),
         )
 
     async def _start_fact(

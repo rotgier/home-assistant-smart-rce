@@ -47,6 +47,7 @@ _ICONS: Final[dict[str, str]] = {
     "reserve_error_margin": "mdi:shield-plus-outline",
     "reserve_line_error": "mdi:battery-arrow-down-outline",
     "start_delta": "mdi:battery-clock-outline",
+    "full_charge_error": "mdi:battery-charging-100",
     "t1_import": "mdi:transmission-tower-import",
     "min_soc_t1": "mdi:battery-low",
     "grid_topup": "mdi:battery-charging-wireless-outline",
@@ -242,6 +243,7 @@ def day_card(score: DayScore) -> dict[str, Any]:
             }
             for m in score.start
         ],
+        "full_charge_summary": _full_charge_summary(score),
         "outcome_summary": {
             "start": (
                 to_hhmm(score.outcome.start.start)
@@ -257,4 +259,27 @@ def day_card(score: DayScore) -> dict[str, Any]:
             ),
             "grid_topup_kwh": score.outcome.grid_topup_kwh,
         },
+    }
+
+
+def _full_charge_summary(score: DayScore) -> dict[str, Any] | None:
+    """D3 for the card: forecast vs optimal vs actual full charge, hours."""
+    fc = score.full_charge
+    if fc is None:
+        return None
+
+    def hm(minute: int | None) -> str | None:
+        return to_hhmm(minute) if minute is not None else None
+
+    return {
+        "planned_at": fc.planned_at.strftime("%H:%M"),
+        "start_soc": fc.start_soc,
+        "system": hm(fc.system),
+        "optimal": hm(fc.optimal),
+        "actual": hm(fc.actual),
+        "error_min": fc.error_min,
+        "error_actual_min": fc.error_actual_min,
+        "hours": [f"{h:02d}" for h in fc.hours],
+        "optimal_hours": [f"{h:02d}" for h in fc.optimal_hours],
+        "hours_changed": fc.hours_changed,
     }

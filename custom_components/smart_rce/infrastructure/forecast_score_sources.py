@@ -27,6 +27,7 @@ from homeassistant.util import dt as dt_util
 from ..domain.charge_slots import ChargeSlots
 from ..domain.consumption_profiles import PREV_DAYS_COUNT
 from ..domain.energy_day import EnergyDay
+from ..domain.forecast_score.full_charge_score import PlanReading
 from ..domain.pv_forecast.forecast_snapshot import ForecastSnapshot
 from ..domain.pv_surplus import DayType
 from ..domain.rce import RceDayPrices
@@ -44,6 +45,8 @@ if TYPE_CHECKING:
 
 START_ENTITY: Final = "time.ems_battery_charge_start_hour_override"
 ENGAGING_ENTITY: Final = "sensor.ems_battery_schedule_currently_engaging"
+PLAN_ENTITY: Final = "sensor.ems_morning_discharge_plan"
+RESERVE_ENTITY: Final = "sensor.ems_t1_soc_reserve"
 AFTERNOON_SLOT: Final = "CHARGE_AFTERNOON"
 _SNAPSHOT_KIND: Final = "forecast_snapshot"
 
@@ -142,6 +145,42 @@ class ForecastScoreSources:
             out.append((_minute_on(day, state.last_changed), start))
         return out or None
 
+    async def morning_plan(self, day: date) -> PlanReading | None:
+        """Read the morning discharge plan as it stood before its first hour began.
+
+        The plan is rebuilt every minute; the state in force when the first
+        qualified hour started is the one that decided. Its start SoC is the
+        T1 reserve without margin at that moment (what the plan charged from).
+        """
+        states = await self._history(day, PLAN_ENTITY, attributes=True)
+        decided: tuple[datetime, dict[str, Any]] | None = None
+        for state in states:
+            hours = [_parse_hhmm(h) for h in state.attributes.get("hours", [])]
+            first = next((h for h in hours if h is not None), None)
+            moment = dt_util.as_local(state.last_updated)
+            if first is None or "full_at" not in state.attributes:
+                continue
+            if moment.date() == day and moment.hour * 60 + moment.minute < first:
+                decided = (moment, dict(state.attributes))
+        if decided is None:
+            return None
+        at, attrs = decided
+        reserve = await self._history(day, RESERVE_ENTITY, attributes=True)
+        before = [s for s in reserve if dt_util.as_local(s.last_updated) <= at]
+        start_soc = (
+            before[-1].attributes.get("value_without_margin") if before else None
+        )
+        return PlanReading(
+            at=at,
+            full_at=_parse_hhmm(attrs["full_at"]) if attrs.get("full_at") else None,
+            hours=tuple(
+                h
+                for h in (_parse_hhmm(x) for x in attrs.get("hours", []))
+                if h is not None
+            ),
+            start_soc=float(start_soc) if start_soc is not None else None,
+        )
+
     async def afternoon_spans(self, day: date) -> list[tuple[int, int]] | None:
         """CHARGE_AFTERNOON engagements over `day` (minutes); None = no history."""
         states = await self._history(day, ENGAGING_ENTITY)
@@ -161,14 +200,21 @@ class ForecastScoreSources:
             spans.append((begin, end))
         return spans
 
-    async def _history(self, day: date, entity_id: str) -> list[State]:
+    async def _history(
+        self, day: date, entity_id: str, *, attributes: bool = False
+    ) -> list[State]:
         tz = dt_util.DEFAULT_TIME_ZONE
         start = datetime.combine(day, time(0), tzinfo=tz)
         end = min(start + timedelta(days=1), dt_util.now())
         result: dict[str, list[Any]] = await get_instance(
             self._hass
         ).async_add_executor_job(
-            state_changes_during_period, self._hass, start, end, entity_id, True
+            state_changes_during_period,
+            self._hass,
+            start,
+            end,
+            entity_id,
+            not attributes,
         )
         return [
             s

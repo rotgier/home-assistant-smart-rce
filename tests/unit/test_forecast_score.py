@@ -6,6 +6,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots
+from custom_components.smart_rce.domain.charge_start_shift import full_charge_minute
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.energy_day import EnergyDay
 from custom_components.smart_rce.domain.forecast_score import variant_results as vr
@@ -19,6 +20,10 @@ from custom_components.smart_rce.domain.forecast_score.day_score import (
     ScoreStatus,
     has_morning_reserve,
     score_day,
+)
+from custom_components.smart_rce.domain.forecast_score.full_charge_score import (
+    PlanReading,
+    score_full_charge,
 )
 from custom_components.smart_rce.domain.forecast_score.production_outcome import (
     ChargeStartFact,
@@ -42,6 +47,10 @@ from custom_components.smart_rce.domain.forecast_score.start_score import (
 from custom_components.smart_rce.domain.pv_forecast import PvForecast
 from custom_components.smart_rce.domain.pv_forecast.forecast_snapshot import (
     ForecastSnapshot,
+)
+from custom_components.smart_rce.domain.pv_surplus import (
+    SurplusProfile,
+    surplus_window_end,
 )
 from custom_components.smart_rce.domain.rce import RceDayPrices
 from custom_components.smart_rce.domain.target_soc import (
@@ -523,3 +532,27 @@ def test_extra_days_get_a_morning_reserve():
     assert has_morning_reserve(date(2026, 10, 17))  # Saturday, slots ran by exception
     assert not has_morning_reserve(date(2026, 10, 18))  # Sunday
     assert has_morning_reserve(date(2026, 10, 16))
+
+
+def test_full_charge_against_the_same_computation_on_what_came(energy, prices):
+    """Optimal = full_charge_minute on actual PV and consumption, same start and SoC."""
+    day = DAYS[-1]
+    actuals = DayActuals(energy[day], TZ)
+    s0 = _s0(day, prices)
+    plan = PlanReading(
+        at=datetime(2026, 10, 14, 6, 59, tzinfo=TZ),
+        full_at=14 * 60,
+        hours=(7,),
+        start_soc=30.0,
+    )
+    score = score_full_charge(actuals, plan, prices[day.isoformat()], s0, 15 * 60)
+    profile = SurplusProfile.build(
+        day, actuals.half_hours("pv_kwh"), actuals.half_hours(CONSUMPTION)
+    )
+    t2 = surplus_window_end(day) * 60
+    assert score.optimal == full_charge_minute(profile, s0, 30.0, t2)
+    assert score.error_actual_min == -60
+    if score.optimal is not None:
+        assert score.error_min == 14 * 60 - score.optimal
+    roundtrip = type(score).from_dict(json.loads(json.dumps(score.to_dict())))
+    assert roundtrip == score
