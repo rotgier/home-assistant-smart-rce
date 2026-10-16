@@ -163,9 +163,7 @@ class BatteryScheduleEntry:
             return False
         if not self.is_in_window(now):
             return False
-        if self.soc_target_reached(current_soc):
-            return False
-        if self._gap_to_target(current_soc) < self.kind.profile.min_start_gap_pp:
+        if not self.needs_run_from(current_soc):
             return False
         if self.behavior == SlotBehavior.IMMEDIATE:
             return True
@@ -176,6 +174,13 @@ class BatteryScheduleEntry:
             self._sec_until_end(now)
             <= self.time_to_complete_at(current_soc)
             + self.kind.profile.delayed_lead_sec
+        )
+
+    def needs_run_from(self, current_soc: float) -> bool:
+        """Whether enough work is left from `current_soc` to start a run."""
+        return (
+            not self.soc_target_reached(current_soc)
+            and self._gap_to_target(current_soc) >= self.kind.profile.min_start_gap_pp
         )
 
     def _gap_to_target(self, current_soc: float) -> float:

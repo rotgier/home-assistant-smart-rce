@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from .commands import OneShotParamsCommand, SlotCommand
 from .direction import Direction
-from .entry import BatteryScheduleEntry, SlotKind
+from .entry import BatteryScheduleEntry, DisengageReason, SlotBehavior, SlotKind
 from .events import (
     BatteryScheduleEvent,
     DayRolled,
@@ -32,6 +32,7 @@ from .events import (
 )
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
+from .session import SlotSession, UpcomingRun
 from .t1_reserve import T1SocReserve
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ class BatterySchedule:
         oneshot_params: dict[Direction, OneShotParams] | None = None,
         evening_hand_set_day: date | None = None,
         t1_reserve: T1SocReserve | None = None,
+        sessions: list[SlotSession] | None = None,
     ) -> None:
         self._today: dict[SlotKind, BatteryScheduleEntry] = (
             dict(today)
@@ -127,6 +129,9 @@ class BatterySchedule:
         # Today's automatic morning discharge — in memory only: it is rebuilt
         # within a minute of a restart from the forecast and the prices.
         self._morning_discharge: MorningDischargePlan | None = None
+        # Today's slot engagements, for the dashboard. Persisted so a restart
+        # in the middle of the day — or of a session — keeps what already ran.
+        self._sessions: list[SlotSession] = list(sessions or [])
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -288,6 +293,74 @@ class BatterySchedule:
         """Latest plan, whatever day it is for."""
         return self._morning_discharge
 
+    # ─── Read models for the dashboard ───
+
+    def sessions_on(self, day: date) -> list[SlotSession]:
+        """Sessions started on `day`, plus one still open from before.
+
+        An open session reports the target in force now: auto slots recompute
+        theirs every minute.
+        """
+        return [
+            session.with_target(self._effective_entry(session.slot, day).target_soc)
+            if session.is_open
+            else session
+            for session in self._sessions
+            if session.is_open or session.started_at.date() == day
+        ]
+
+    def upcoming_runs(
+        self, now: datetime, soc: float, *, is_workday: bool | None
+    ) -> list[UpcomingRun]:
+        """List the auto-slot runs still ahead today, in window order.
+
+        Each run starts from the level the previous one heads for — the night
+        charge decides where the morning discharge starts from. A slot engaged
+        right now is a session, not a run, but its target still carries over.
+        """
+        entries = sorted(
+            (
+                self._effective_entry(kind, now.date())
+                for kind in SlotKind
+                if (kind.profile.auto_target or kind.profile.planned)
+                and kind.profile.runs_on(now.date(), is_workday)
+            ),
+            key=lambda entry: entry.start,
+        )
+        runs: list[UpcomingRun] = []
+        for entry in entries:
+            if entry.kind is self._currently_engaging:
+                soc = entry.target_soc
+                continue
+            run = self._upcoming_run(entry, now, soc)
+            if run is not None:
+                runs.append(run)
+                soc = run.target_soc
+        return runs
+
+    @staticmethod
+    def _upcoming_run(
+        entry: BatteryScheduleEntry, now: datetime, soc: float
+    ) -> UpcomingRun | None:
+        if not entry.enabled or not entry.needs_run_from(soc):
+            return None
+        end = datetime.combine(now.date(), entry.end, tzinfo=now.tzinfo)
+        if now >= end:
+            return None
+        window_start = datetime.combine(now.date(), entry.start, tzinfo=now.tzinfo)
+        start = window_start
+        if entry.behavior == SlotBehavior.DELAYED_TO_END:
+            lead = entry.time_to_complete_at(soc) + entry.kind.profile.delayed_lead_sec
+            start = max(window_start, end - timedelta(seconds=lead))
+        return UpcomingRun(
+            slot=entry.kind,
+            window_start=window_start,
+            start=start,
+            end=end,
+            start_soc=soc,
+            target_soc=entry.target_soc,
+        )
+
     def apply_slot_command(self, cmd: SlotCommand) -> bool:
         """Apply a slot Command to the targeted entry. True if entry changed.
 
@@ -399,6 +472,7 @@ class BatterySchedule:
             events.append(DayRolled(from_date=self.last_seen_date, to_date=now.date()))
             # self.roll_day()  # disabled — see TODO above
         self.last_seen_date = now.date()
+        self._drop_sessions_before(now.date())
 
         # 2. One-shot — precedence #0 (beats every scheduled slot).
         # Auto-clears on target_reached/expired; falls through to scheduled
@@ -429,6 +503,13 @@ class BatterySchedule:
                     target_source=self._target_source(entry.kind, now.date()),
                 )
             )
+            self._close_session(
+                self._currently_engaging,
+                now,
+                current_soc,
+                entry.target_soc,
+                disengage_reason,
+            )
             self._currently_engaging = None
             self._last_disengaged_at = now
             # Fall through — another slot might be ready to engage immediately.
@@ -446,9 +527,23 @@ class BatterySchedule:
                 )
             )
             self._currently_engaging = engaging_entry.kind
+            self._sessions.append(
+                SlotSession(
+                    slot=engaging_entry.kind,
+                    started_at=now,
+                    start_soc=current_soc,
+                    target_soc=engaging_entry.target_soc,
+                )
+            )
             return engaging_entry.to_battery_operation(), events
 
         return BatteryOperation.idle(), events
+
+    def _drop_sessions_before(self, day: date) -> None:
+        """Forget sessions from earlier days; an open one stays until it closes."""
+        kept = [s for s in self._sessions if s.is_open or s.started_at.date() >= day]
+        if len(kept) != len(self._sessions):
+            self._sessions = kept
 
     def _oneshot_disengage_reason(
         self, now: datetime, current_soc: float
@@ -460,6 +555,21 @@ class BatterySchedule:
         if self._oneshot.target_reached(current_soc):
             return OneShotDisengageReason.TARGET_REACHED
         return None
+
+    def _close_session(
+        self,
+        slot: SlotKind,
+        at: datetime,
+        soc: float,
+        target_soc: float,
+        reason: DisengageReason,
+    ) -> None:
+        """Close the open session of `slot`; none open (pre-upgrade) = nothing."""
+        for i in range(len(self._sessions) - 1, -1, -1):
+            session = self._sessions[i]
+            if session.slot is slot and session.is_open:
+                self._sessions[i] = session.closed(at, soc, target_soc, reason)
+                return
 
     def _find_engaging_entry(
         self, now: datetime, current_soc: float, is_workday: bool | None
@@ -545,6 +655,7 @@ class BatterySchedule:
             "oneshot_params": {
                 d.name: p.to_dict() for d, p in self._oneshot_params.items()
             },
+            "sessions": [s.to_dict() for s in self._sessions],
         }
 
     @classmethod
@@ -600,6 +711,12 @@ class BatterySchedule:
         if raw_oneshot := data.get("oneshot"):
             oneshot = OneShotOperation.from_dict(raw_oneshot)
 
+        sessions = [
+            session
+            for raw in data.get("sessions") or []
+            if (session := SlotSession.from_dict(raw)) is not None
+        ]
+
         return cls(
             today={k: _entry("today", k) for k in SlotKind},
             tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
@@ -613,4 +730,5 @@ class BatterySchedule:
             oneshot_params=OneShotParams.restore_by_direction(data),
             evening_hand_set_day=evening_hand_set_day,
             t1_reserve=t1_reserve,
+            sessions=sessions,
         )
