@@ -211,6 +211,7 @@ def day_card(score: DayScore) -> dict[str, Any]:
             "buffer": setup.buffer_percent,
             "margin": setup.has_margin,
             "margin_rule": setup.margin.value,
+            "hour_credit": setup.hour_credit,
         },
         "reserve_summary": [
             {

@@ -28,6 +28,7 @@ from ..domain.forecast_score.day_score import (
     DayInputs,
     DayScore,
     ScoreStatus,
+    has_morning_reserve,
     score_day,
 )
 from ..domain.forecast_score.production_outcome import (
@@ -37,7 +38,6 @@ from ..domain.forecast_score.production_outcome import (
 )
 from ..domain.forecast_score.ranking import rank
 from ..domain.forecast_score.variant_results import from_archive
-from ..domain.pv_surplus import DayType
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -260,7 +260,7 @@ class ForecastScoreService:
             spans = await self._sources.afternoon_spans(day)
         workdays = (
             await self._sources.earlier_workdays(day)
-            if DayType.of(day) is DayType.WORKDAY
+            if has_morning_reserve(day)
             else {}
         )
         return DayInputs(

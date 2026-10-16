@@ -26,7 +26,7 @@ difference — how much the consumption model colours the PV score.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import datetime, time
 from typing import TYPE_CHECKING, Any, Final
 
 from ..battery_schedule.t1_reserve import T1SocReserve
@@ -120,7 +120,7 @@ def _score_moment(  # noqa: PLR0917 — one caller, the moment's whole world
     setup: ProductionSetup,
     production_rule: _Rule,
 ) -> MomentReserve:
-    ctx = _target_ctx(actuals.day, snapshot)
+    ctx = _target_ctx(actuals, snapshot, hour_credit=CURRENT.hour_credit)
     views = _ActualViews(actuals, ctx)
     needed = views.target(views.model(views.cons), rule.buffer)
     with_model = rule.on_actual(views)
@@ -151,14 +151,13 @@ def _score_moment(  # noqa: PLR0917 — one caller, the moment's whole world
         needed_strict=round(MIN_SOC_PERCENT + soc_points(needed.dip_kwh), 1),
         needed_with_model=with_model,
         variants=tuple(variants),
-        production=_production(snapshot, ctx, views, setup, production_rule),
+        production=_production(snapshot, actuals, setup, production_rule),
     )
 
 
 def _production(
     snapshot: ScoredSnapshot,
-    ctx: TargetSocContext,
-    views: _ActualViews,
+    actuals: DayActuals,
     setup: ProductionSetup,
     rule: _Rule,
 ) -> ProductionReserve | None:
@@ -168,6 +167,8 @@ def _production(
     margin (`T1SocReserve.margin_pp_at`) at the moment, capped at 100 as the
     sensor caps it.
     """
+    ctx = _target_ctx(actuals, snapshot, hour_credit=setup.hour_credit)
+    views = _ActualViews(actuals, ctx)
     result = snapshot.result(setup.pv_variant)
     reading = rule.on_forecast(result, ctx) if result is not None else None
     if reading is None:
@@ -246,7 +247,7 @@ def _score_models(
         snapshots, datetime.combine(actuals.day, MAIN_MOMENT.at, actuals.tz)
     )
     assert snapshot is not None  # `main` exists, so it was found
-    ctx = _target_ctx(actuals.day, snapshot)
+    ctx = _target_ctx(actuals, snapshot, hour_credit=CURRENT.hour_credit)
     views = _ActualViews(actuals, ctx)
     production_result = snapshot.result(CURRENT.pv_variant)
     out: list[ModelReserve] = []
@@ -277,16 +278,27 @@ def soc_points(kwh: float) -> float:
     return kwh / (BATTERY_CAPACITY_KWH / 100) * (1 + LOSS_FACTOR)
 
 
-def _target_ctx(day: date, snapshot: ScoredSnapshot) -> TargetSocContext:
-    """Rebuild the target-SOC inputs production had when it read this snapshot."""
+def _target_ctx(
+    actuals: DayActuals, snapshot: ScoredSnapshot, *, hour_credit: bool
+) -> TargetSocContext:
+    """Rebuild the target-SOC inputs production had when it read this snapshot.
+
+    The hour credit (net export since the full hour, 0f65863) is rebuilt from
+    the measured 5-minute grid balance — the snapshots do not carry it.
+    """
     ctx = snapshot.context
+    day = actuals.day
+    in_window = ctx.now.hour in PV_WINDOW_HOURS and ctx.now.date() == day
     return TargetSocContext(
         target_date=day,
         signals=ctx.signals,
         live_consumption_w=ctx.consumption_w,
         start_charge_hour=ctx.start_charge_hour,
         now=ctx.now,
-        now_in_window=ctx.now.hour in PV_WINDOW_HOURS and ctx.now.date() == day,
+        now_in_window=in_window,
+        hour_credit_kwh=(
+            actuals.hour_net_export(ctx.now) if hour_credit and in_window else 0.0
+        ),
     )
 
 
@@ -365,6 +377,7 @@ class _ActualViews:
             start_charge_hour=self._ctx.start_charge_hour,
             count_from=self._count_from,
             buffer_percent=buffer,
+            hour_credit_kwh=self._ctx.hour_credit_kwh,
         )
 
 

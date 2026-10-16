@@ -17,6 +17,7 @@ from custom_components.smart_rce.domain.forecast_score.day_score import (
     DayInputs,
     DayScore,
     ScoreStatus,
+    has_morning_reserve,
     score_day,
 )
 from custom_components.smart_rce.domain.forecast_score.production_outcome import (
@@ -505,3 +506,20 @@ def test_the_0708_step_is_capped_by_live_and_extrap(energy, snapshots):
     assert hour7.production is not None
     assert soft is not None
     assert hour7.production.margin_pp == max(0, min(10, max(caps) - soft.reserve))
+
+
+def test_hour_net_export_counts_this_hour_only(energy):
+    """Net export since the full hour, the slot holding `now` in proportion."""
+    actuals = DayActuals(energy[DAYS[-1]], TZ)
+    at = lambda h, m, sec=0: datetime.combine(DAYS[-1], time(h, m, sec), TZ)  # noqa: E731
+    first, second = actuals.series_between("grid_net_export_kwh", at(10, 0), at(10, 10))
+    assert actuals.hour_net_export(at(10, 7, 30)) == pytest.approx(
+        max(0.0, first + second / 2)
+    )
+    assert actuals.hour_net_export(at(10, 0)) == 0.0
+
+
+def test_extra_days_get_a_morning_reserve():
+    assert has_morning_reserve(date(2026, 10, 17))  # Saturday, slots ran by exception
+    assert not has_morning_reserve(date(2026, 10, 18))  # Sunday
+    assert has_morning_reserve(date(2026, 10, 16))

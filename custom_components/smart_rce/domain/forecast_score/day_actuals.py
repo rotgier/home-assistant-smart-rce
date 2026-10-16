@@ -79,6 +79,21 @@ class DayActuals:
         ]
         return sum(values) if values else None
 
+    def hour_net_export(self, now: datetime) -> float:
+        """Net grid export since the full hour up to `now`, never below 0 (kWh).
+
+        The production reads the hourly meter; here the 5-minute slots stand in
+        for it, the one holding `now` in proportion.
+        """
+        hour_start = now.replace(minute=0, second=0, microsecond=0)
+        total = 0.0
+        for start, value in self._slots(GRID_NET_EXPORT):
+            if value is None or start < hour_start or start >= now:
+                continue
+            end = start + self.energy.STEP
+            total += value if end <= now else value * ((now - start) / self.energy.STEP)
+        return max(0.0, total)
+
     def soc_near(self, at: datetime, lookback_slots: int = 6) -> float | None:
         """Mean SoC of the 5-minute slot holding `at`, else of the latest before it."""
         slots = [(s, v) for s, v in self._slots(SOC) if s <= at]

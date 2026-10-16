@@ -8,7 +8,8 @@ it really ran on, not today's. A day belongs to the setup in force at 06:11
 Add a row here whenever production changes (deploy time, not commit time).
 Sources: home-assistant-ops `plans/live-soft.md`, smart_rce commits 2321beb,
 1db8b50, 20ada58, 1f87ed6 (margin), a5b711a (08-09 step capped by Live),
-43d266b (07-08 step capped by max(Live, Extrap Proportional, Extrap Blend)).
+43d266b (07-08 step capped by max(Live, Extrap Proportional, Extrap Blend)),
+0f65863 (hour credit from the grid balance).
 """
 
 from __future__ import annotations
@@ -50,6 +51,8 @@ class ProductionSetup:
     model_label: str
     # The time-of-day margin on top of the reserve and how it was capped.
     margin: MarginRule = field(default_factory=lambda: MarginRule.NONE)
+    # This hour's net grid export counts toward the hour's points (0f65863).
+    hour_credit: bool = False
 
     @property
     def has_margin(self) -> bool:
@@ -130,6 +133,19 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         "Live Soft 0,4",
         "p60",
         margin=MarginRule.CAPPED,
+    ),
+    ProductionSetup(
+        datetime(2026, 10, 17, 0, 45, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Extrap) − Soft)"
+        " / min(5, Live − Soft) + kredyt godzinowy",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=MarginRule.CAPPED,
+        hour_credit=True,
     ),
 )
 # Today's setup — the one the variant ranking scores against.

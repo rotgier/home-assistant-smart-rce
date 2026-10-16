@@ -20,6 +20,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
+from ..battery_schedule.entry import WORKDAYS_ONLY_EXTRA_DAYS
 from ..pv_surplus import DayType
 from .day_type import DayTypeFigures, day_type_figures
 from .production_outcome import ChargeStartFact, ProductionOutcome, production_outcome
@@ -42,13 +43,19 @@ if TYPE_CHECKING:
 
 # 2: production scored with the setup of its day (`production_setup`).
 # 3: reserve errors signed system − needed (− = too little), as the charge start.
+# 4: the variant ranking with the hour credit (0f65863) on every day.
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 3
+SCHEMA_VERSION: Final = 4
 
 
 class ScoreStatus(StrEnum):
     PRELIMINARY = "preliminary"
     FINAL = "final"
+
+
+def has_morning_reserve(day: date) -> bool:
+    """Workdays, and the days the morning auto slots ran by exception."""
+    return DayType.of(day) is DayType.WORKDAY or day in WORKDAYS_ONLY_EXTRA_DAYS
 
 
 @dataclass(frozen=True)
@@ -82,7 +89,7 @@ def score_day(
     setup = setup_on(day, actuals.tz)
     reserve: tuple[MomentReserve, ...] = ()
     models: tuple[ModelReserve, ...] = ()
-    if DayType.of(day) is DayType.WORKDAY:  # T1 and its reserve are workday-only
+    if has_morning_reserve(day):
         reserve, models = score_reserve(
             actuals, inputs.snapshots, list(inputs.earlier_workdays.values()), setup
         )
