@@ -27,6 +27,7 @@ from custom_components.smart_rce.domain.forecast_score.production_outcome import
 )
 from custom_components.smart_rce.domain.forecast_score.production_setup import (
     CURRENT,
+    MarginRule,
     setup_on,
 )
 from custom_components.smart_rce.domain.forecast_score.ranking import rank
@@ -357,7 +358,8 @@ class TestProductionSetup:
         assert setup_on(date(2026, 10, 13), TZ).pv_variant == "live"
         assert setup_on(date(2026, 10, 14), TZ).pv_variant == "live_soft_0.5"
         assert setup_on(date(2026, 10, 15), TZ).reserve_model is ConsumptionModel.P50
-        assert setup_on(date(2026, 10, 16), TZ) is CURRENT
+        assert setup_on(date(2026, 10, 16), TZ).margin is MarginRule.LIVE_CAPS_0809
+        assert setup_on(date(2026, 10, 17), TZ) is CURRENT
 
     def test_production_panel_uses_the_days_rule_and_buffer(
         self, energy, snapshots, prices
@@ -477,4 +479,29 @@ def test_the_0809_step_is_capped_by_live(energy, snapshots):
     assert soft is not None
     assert live is not None
     assert line.production.margin_pp == max(0, min(5, live.reserve - soft.reserve))
-    assert CURRENT.margin_live_cap
+    assert CURRENT.margin is MarginRule.CAPPED
+
+
+def test_the_0708_step_is_capped_by_live_and_extrap(energy, snapshots):
+    """07-08: max(0, min(10, max(Live, Extrap Prop, Extrap Blend) - Soft))."""
+    day = DAYS[-1]
+    moments, _ = score_reserve(
+        DayActuals(energy[day], TZ),
+        vr.from_archive(snapshots[day]),
+        _earlier_workdays(day, energy),
+        CURRENT,
+    )
+    hour7 = next(m for m in moments if m.label == "07:41")
+    soft = hour7.variant("live_soft")
+    caps = [
+        v.reserve
+        for key in (
+            "live",
+            "extrapolated_live_proportional",
+            "extrapolated_live_blend",
+        )
+        if (v := hour7.variant(key)) is not None
+    ]
+    assert hour7.production is not None
+    assert soft is not None
+    assert hour7.production.margin_pp == max(0, min(10, max(caps) - soft.reserve))

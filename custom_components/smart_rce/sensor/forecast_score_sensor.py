@@ -209,8 +209,8 @@ def day_card(score: DayScore) -> dict[str, Any]:
             "consumption": setup.model_label,
             "earlier_days": len(score.earlier_workdays),
             "buffer": setup.buffer_percent,
-            "margin": setup.margin,
-            "margin_live_cap": setup.margin_live_cap,
+            "margin": setup.has_margin,
+            "margin_rule": setup.margin.value,
         },
         "reserve_summary": [
             {

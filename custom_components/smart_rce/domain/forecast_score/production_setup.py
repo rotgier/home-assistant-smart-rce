@@ -7,13 +7,15 @@ it really ran on, not today's. A day belongs to the setup in force at 06:11
 
 Add a row here whenever production changes (deploy time, not commit time).
 Sources: home-assistant-ops `plans/live-soft.md`, smart_rce commits 2321beb,
-1db8b50, 20ada58, 1f87ed6 (margin), a5b711a (08-09 step capped by Live).
+1db8b50, 20ada58, 1f87ed6 (margin), a5b711a (08-09 step capped by Live),
+43d266b (07-08 step capped by max(Live, Extrap Proportional, Extrap Blend)).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, tzinfo
+from enum import Enum
 from typing import Final
 from zoneinfo import ZoneInfo
 
@@ -23,6 +25,15 @@ from .consumption_models import ConsumptionModel
 _WARSAW: Final = ZoneInfo("Europe/Warsaw")
 # The moment a day is assigned to a setup.
 ASSIGNED_AT: Final = time(6, 11)
+
+
+class MarginRule(Enum):
+    """How a setup's time-of-day margin was computed (`T1SocReserve`)."""
+
+    NONE = "none"
+    STEPS = "steps"  # 15/10/5, uncapped (1f87ed6): `margin_pp_at`
+    LIVE_CAPS_0809 = "live_caps_0809"  # 08-09 capped by Live only (a5b711a)
+    CAPPED = "capped"  # production's own caps per step (43d266b): `margin_pp_for`
 
 
 @dataclass(frozen=True)
@@ -37,10 +48,12 @@ class ProductionSetup:
     buffer_percent: int
     pv_label: str  # dashboard wording
     model_label: str
-    # The time-of-day margin on top of the reserve (`T1SocReserve.margin_pp_at`).
-    margin: bool = False
-    # The 08-09 step capped by plain Live (`T1SocReserve.margin_pp_for`).
-    margin_live_cap: bool = False
+    # The time-of-day margin on top of the reserve and how it was capped.
+    margin: MarginRule = field(default_factory=lambda: MarginRule.NONE)
+
+    @property
+    def has_margin(self) -> bool:
+        return self.margin is not MarginRule.NONE
 
 
 SETUPS: Final[tuple[ProductionSetup, ...]] = (
@@ -93,7 +106,7 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         10,
         "Live Soft 0,4",
         "p60",
-        margin=True,
+        margin=MarginRule.STEPS,
     ),
     ProductionSetup(
         datetime(2026, 10, 15, 23, 40, tzinfo=_WARSAW),
@@ -104,8 +117,19 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         10,
         "Live Soft 0,4",
         "p60",
-        margin=True,
-        margin_live_cap=True,
+        margin=MarginRule.LIVE_CAPS_0809,
+    ),
+    ProductionSetup(
+        datetime(2026, 10, 16, 8, 30, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Extrap) − Soft)"
+        " / min(5, Live − Soft)",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=MarginRule.CAPPED,
     ),
 )
 # Today's setup — the one the variant ranking scores against.

@@ -47,7 +47,7 @@ from ..target_soc import (
 )
 from .consumption_models import ConsumptionModel, window_profile
 from .day_actuals import CONSUMPTION, PV
-from .production_setup import CURRENT, ProductionSetup
+from .production_setup import CURRENT, MarginRule, ProductionSetup
 from .variant_results import SCORED_VARIANTS, consumed
 
 if TYPE_CHECKING:
@@ -190,20 +190,49 @@ def _margin(
     rule: _Rule,
     reading: int,
 ) -> int:
-    """Production's own margin at the moment — the same functions it calls."""
-    if not setup.margin:
+    """Production's own margin at the moment — the same functions it calls.
+
+    The caps are readings of the capping variants on the same rule (p60,
+    remaining window, buffer); a variant without a result does not count.
+    """
+    day, now = ctx.target_date, ctx.now
+    if setup.margin is MarginRule.NONE:
         return 0
-    if not setup.margin_live_cap:
-        return T1SocReserve.margin_pp_at(ctx.target_date, ctx.now)
-    # a5b711a: only the 08-09 step was capped (by Live); production's steps now
-    # cap 07-08 too, so this setup keeps its own 07-08 uncapped.
-    if ctx.now.date() == ctx.target_date and ctx.now.hour == 7:
-        return T1SocReserve.margin_pp_at(ctx.target_date, ctx.now)
-    live = snapshot.result(PvForecast.LIVE.key)
-    live_reading = rule.on_forecast(live, ctx) if live is not None else None
+    if setup.margin is MarginRule.STEPS:
+        return T1SocReserve.margin_pp_at(day, now)
+    if setup.margin is MarginRule.LIVE_CAPS_0809:
+        # a5b711a capped only 08-09, by Live; its 07-08 step stays whole.
+        if now.date() == day and now.hour == 7:
+            return T1SocReserve.margin_pp_at(day, now)
+        return T1SocReserve.margin_pp_for(
+            day, now, reading, _caps(snapshot, ctx, rule, (PvForecast.LIVE,))
+        )
     return T1SocReserve.margin_pp_for(
-        ctx.target_date, ctx.now, reading, {PvForecast.LIVE.key: live_reading}
+        day, now, reading, _caps(snapshot, ctx, rule, _CAPPING_VARIANTS)
     )
+
+
+_CAPPING_VARIANTS: Final = (
+    PvForecast.LIVE,
+    PvForecast.EXTRAP_PROPORTIONAL,
+    PvForecast.EXTRAP_BLEND,
+)
+
+
+def _caps(
+    snapshot: ScoredSnapshot,
+    ctx: TargetSocContext,
+    rule: _Rule,
+    variants: Sequence[PvForecast],
+) -> dict[str, int | None]:
+    """Read the capping variants on the same rule, keyed by `PvForecast.key`."""
+    caps: dict[str, int | None] = {}
+    for variant in variants:
+        result = snapshot.result(variant.key)
+        caps[variant.key] = (
+            rule.on_forecast(result, ctx) if result is not None else None
+        )
+    return caps
 
 
 def _score_models(
