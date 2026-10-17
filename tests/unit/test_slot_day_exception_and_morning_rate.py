@@ -28,12 +28,14 @@ class TestDayException:
     @pytest.mark.parametrize(
         "day", [date(2026, 10, 18), date(2025, 10, 17), date(2027, 10, 17)]
     )
-    @pytest.mark.parametrize("kind", AUTO_KINDS)
-    def test_only_that_date_not_the_day_of_any_year(self, kind, day):
-        assert not kind.profile.runs_on(day, is_workday=False)
+    def test_only_that_date_not_the_day_of_any_year(self, day):
+        assert not SlotKind.CHARGE_MORNING_AUTO.profile.runs_on(day, is_workday=False)
 
     def test_exception_concerns_only_the_workdays_only_slots(self):
-        assert {k for k in SlotKind if k.profile.workdays_only} == set(AUTO_KINDS)
+        # The morning discharge runs every day since 17.10.2026.
+        assert {k for k in SlotKind if k.profile.workdays_only} == {
+            SlotKind.CHARGE_MORNING_AUTO
+        }
 
     def test_night_charge_engages_on_the_saturday(self):
         entry = BatteryScheduleEntry(

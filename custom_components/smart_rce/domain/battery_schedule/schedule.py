@@ -21,7 +21,13 @@ from typing import TYPE_CHECKING, Any, Final
 
 from .commands import OneShotParamsCommand, SlotCommand
 from .direction import Direction
-from .entry import BatteryScheduleEntry, DisengageReason, SlotBehavior, SlotKind
+from .entry import (
+    BatteryScheduleEntry,
+    DisengageReason,
+    SlotBehavior,
+    SlotKind,
+    is_day_off,
+)
 from .events import (
     BatteryScheduleEvent,
     DayRolled,
@@ -501,6 +507,7 @@ class BatterySchedule:
                     reason=disengage_reason,
                     target_soc=entry.target_soc,
                     target_source=self._target_source(entry.kind, now.date()),
+                    day_off=is_day_off(now.date(), is_workday),
                 )
             )
             self._close_session(
@@ -524,6 +531,7 @@ class BatterySchedule:
                     at=now,
                     target_soc=engaging_entry.target_soc,
                     target_source=self._target_source(engaging_entry.kind, now.date()),
+                    day_off=is_day_off(now.date(), is_workday),
                 )
             )
             self._currently_engaging = engaging_entry.kind

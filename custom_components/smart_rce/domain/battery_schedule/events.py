@@ -33,6 +33,8 @@ class SlotEngaged(BatteryScheduleEvent):
     # (`live`, `tomorrow_live`, `fallback`) — None source for fixed slots.
     target_soc: float | None = None
     target_source: str | None = None
+    # A day off by the workday sensor — some kinds announce themselves quieter.
+    day_off: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class SlotDisengaged(BatteryScheduleEvent):
     reason: DisengageReason
     target_soc: float | None = None
     target_source: str | None = None
+    day_off: bool = False
 
 
 @dataclass(frozen=True)

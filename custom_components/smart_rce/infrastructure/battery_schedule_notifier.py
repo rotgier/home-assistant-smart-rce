@@ -116,7 +116,7 @@ class BatteryScheduleNotifier:
         event_type = type(event).__name__
         if event_type == "SlotEngaged":
             engaged = cast("SlotEngaged", event)
-            level = engaged.slot.value.notification_level
+            level = engaged.slot.profile.notification_level_on(engaged.day_off)
             return (
                 f"🔋 BatterySchedule: {engaged.slot.name} start",
                 (
@@ -127,7 +127,7 @@ class BatteryScheduleNotifier:
             )
         if event_type == "SlotDisengaged":
             disengaged = cast("SlotDisengaged", event)
-            level = disengaged.slot.value.notification_level
+            level = disengaged.slot.profile.notification_level_on(disengaged.day_off)
             reason_label = _DISENGAGE_REASON_LABEL.get(
                 disengaged.reason, disengaged.reason
             )

@@ -305,6 +305,9 @@ class SlotProfile:
     planned: bool = False
     # Stays out on a day the workday sensor reports as off.
     workdays_only: bool = False
+    # Level on a day off, when it differs from `notification_level` (None:
+    # the same every day).
+    day_off_notification_level: NotificationLevel | None = None
     # DELAYED_TO_END starts this many seconds earlier than the rate model asks.
     # Charge slots: a charge that lands a few minutes early costs nothing, one
     # that misses its deadline buys the shortfall at the next zone's price.
@@ -319,11 +322,13 @@ class SlotProfile:
 
     def runs_on(self, day: date, is_workday: bool | None) -> bool:
         """Whether the kind takes part on `day` (unknown calendar = workday)."""
-        return not (
-            self.workdays_only
-            and is_workday is False
-            and day not in WORKDAYS_ONLY_EXTRA_DAYS
-        )
+        return not (self.workdays_only and is_day_off(day, is_workday))
+
+    def notification_level_on(self, day_off: bool) -> NotificationLevel:
+        """How loudly a session of this kind is announced on such a day."""
+        if day_off and self.day_off_notification_level is not None:
+            return self.day_off_notification_level
+        return self.notification_level
 
     def seconds_for_soc_traversal(self, start_soc: float, end_soc: float) -> float:
         """Seconds to move SoC start→end at this kind's rate model."""
@@ -393,13 +398,17 @@ class SlotKind(Enum):
         # Voice call on purpose (user's wish 15.10.2026): an automatic sale of
         # the battery is worth hearing about, and 07-S0 nobody is asleep.
         notification_level=NotificationLevel.EMERGENCY,
-        # The hours searched for the dearest one; the plan narrows the window
-        # to that hour and also stops it at the charge start.
-        default_window=(time(7, 0), time(10, 0)),
+        # Every day since 17.10.2026 (it took over the "Sunday Morning
+        # Discharge to 10%" automation). A day off searches from 05:00, so
+        # text only — no call at dawn (user's decision 17.10.2026).
+        day_off_notification_level=NotificationLevel.NORMAL,
+        # The hours searched for the dearest one (a day off from 05:00, see
+        # `MorningDischargePlan`); the plan narrows the window to that hour
+        # and also stops it at the charge start.
+        default_window=(time(7, 0), time(13, 0)),
         # Never discharges by itself: without a plan the slot stands still.
         default_target_soc=100.0,
         planned=True,
-        workdays_only=True,
         # A target moving by a point must not start a one-minute discharge.
         min_start_gap_pp=2.0,
         delayed_lead_sec=_DELAYED_LEAD_SEC,
@@ -487,3 +496,11 @@ class SlotKind(Enum):
             cls.DISCHARGE_EVENING_MID,
             cls.DISCHARGE_EVENING_LATE,
         ]
+
+
+def is_day_off(day: date, is_workday: bool | None) -> bool:
+    """Tell whether `day` is off by the workday sensor (unknown = workday).
+
+    `WORKDAYS_ONLY_EXTRA_DAYS` run as workdays.
+    """
+    return is_workday is False and day not in WORKDAYS_ONLY_EXTRA_DAYS
