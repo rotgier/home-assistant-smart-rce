@@ -35,6 +35,8 @@ from ..domain.target_soc import MIN_SOC_PERCENT
 from .energy_archive_writer import fetch_energy_day
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from homeassistant.core import HomeAssistant, State
 
     from ..application.ems import Ems
@@ -172,11 +174,7 @@ class ForecastScoreSources:
         return PlanReading(
             at=at,
             full_at=_parse_hhmm(attrs["full_at"]) if attrs.get("full_at") else None,
-            hours=tuple(
-                h
-                for h in (_parse_hhmm(x) for x in attrs.get("hours", []))
-                if h is not None
-            ),
+            hours=_plan_hours(attrs),
             start_soc=float(start_soc) if start_soc is not None else None,
             day_off=day_off,
         )
@@ -239,6 +237,15 @@ def _minute_on(day: date, moment: datetime) -> int:
     if local.date() < day:
         return 0
     return local.hour * 60 + local.minute
+
+
+def _plan_hours(attrs: Mapping[str, Any]) -> tuple[int, ...]:
+    """Discharge hours of the plan as hours of the day ("08:00" -> 8), like D3's own."""
+    return tuple(
+        minute // 60
+        for minute in (_parse_hhmm(x) for x in attrs.get("hours", []))
+        if minute is not None
+    )
 
 
 def _parse_hhmm(raw: str) -> int | None:
