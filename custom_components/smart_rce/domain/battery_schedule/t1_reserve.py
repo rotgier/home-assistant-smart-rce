@@ -71,7 +71,7 @@ class ReserveWindow(StrEnum):
     """Only what is left of today's window (07:00-13:00, falls over time)."""
 
     PAST = "past"
-    """Today's window replayed in full after it closed (13:00-16:00)."""
+    """Today's window replayed in full after it closed (13:00-14:00)."""
 
 
 @dataclass(frozen=True)
@@ -89,6 +89,12 @@ class T1SocReserve:
     `extrap_blend_buckets` is how many buckets Extrap Blend's score rested on
     (the reason its cap is None on a dawn with a single bucket).
     """
+
+    # From this hour the reserve is tomorrow's (TOMORROW_LIVE_SOFT, whole
+    # window): tomorrow's prices are out by ~14:00, so tomorrow morning's
+    # discharge plan and the hold rule (DodPolicy) need it then — 16:00 until
+    # 17.10.2026, when 13-16 replayed today's window, read by nothing that acts.
+    TOMORROW_FROM_HOUR: ClassVar[int] = 14
 
     # A capped step is at most what the highest of its variants reads above
     # Live Soft (`MarginSteps`; a test keeps the keys in step with the enum,

@@ -45,7 +45,8 @@ Phase classification + decisions:
   - In RESERVE_FLOOR and RELEASED the battery does not discharge while PV is
     exporting anyway (`block_afternoon_dynamic` hysteresis → DoD=0).
   - **NIGHT_PRESERVE**: a workday morning ahead but no reserve known for it
-    (after 16:00) — hold everything, as before 17.10.2026.
+    (from 14:00, `T1SocReserve.TOMORROW_FROM_HOUR`) — hold everything, as
+    before 17.10.2026.
 - **WEEKEND_MORNING** (7:00 → 13:00, weekend): direct DoD=0 — passive PV
   capture (RCE typically flat, no expensive hours to protect surplus).
 - **UNKNOWN** (inputs missing): keep persisted state.
@@ -87,6 +88,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
 from ..tariff import evening_peak
+from .battery_schedule.t1_reserve import T1SocReserve
 from .block_discharge import (
     block_afternoon_dynamic,
     block_post_charge,
@@ -98,11 +100,6 @@ if TYPE_CHECKING:
     from datetime import time
 
     from .input_state import InputState
-
-
-# From this hour a workday morning ahead has its T1 reserve (the reserve moves
-# on to tomorrow at 16:00, `BatteryScheduleService._TOMORROW_FROM_HOUR`).
-_RESERVE_FOR_TOMORROW_FROM_HOUR: Final[int] = 16
 
 
 class Phase(Enum):
@@ -345,7 +342,7 @@ class DodPolicy:
         if morning_is_workday:
             if reserve_floor is not None:
                 return Phase.RESERVE_FLOOR
-            if hour >= _RESERVE_FOR_TOMORROW_FROM_HOUR or hour < PV_WINDOW_HOURS.start:
+            if hour >= T1SocReserve.TOMORROW_FROM_HOUR or hour < PV_WINDOW_HOURS.start:
                 return Phase.NIGHT_PRESERVE
         return Phase.RELEASED
 
