@@ -11,7 +11,7 @@ always cash. Adding a new tariff means adding a row there and nothing else.
 """
 
 from .rates import VAT, Zone, ZoneRates
-from .zones import evening_peak, is_holiday, zone_for
+from .zones import evening_peak, is_holiday, is_winter, zone_for
 
 __all__ = [
     "VAT",
@@ -19,5 +19,6 @@ __all__ = [
     "ZoneRates",
     "evening_peak",
     "is_holiday",
+    "is_winter",
     "zone_for",
 ]
