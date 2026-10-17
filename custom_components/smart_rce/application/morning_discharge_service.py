@@ -6,7 +6,7 @@ day's prices, S0, the T1 reserve (a day off: the 10% floor) and the PV surplus
 `BatterySchedule` a `MorningDischargePlan` — or None, which keeps the
 DISCHARGE_MORNING_AUTO slot still. Both today's and tomorrow's plan, the latter
 as soon as its inputs exist (tomorrow's prices ~14:00; for a workday also
-tomorrow's T1 reserve, from 16:00): the evening preview shows it, and the hold
+tomorrow's T1 reserve, from 14:00): the evening preview shows it, and the hold
 rule (DodPolicy) keeps the battery for a morning sale (user, 17.10.2026). The rule itself lives in the domain (`MorningDischargePlan.decide`,
 `lowest_soc_the_sun_fills`).
 """

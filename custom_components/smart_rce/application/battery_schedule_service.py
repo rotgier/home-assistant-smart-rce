@@ -99,8 +99,6 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     # T1 (expensive zone, workdays) runs 07:00-13:00.
     _T1_START_HOUR: Final[int] = 7
     _T1_END_HOUR: Final[int] = 13
-    # From this hour the reserve moves on to tomorrow's window.
-    _TOMORROW_FROM_HOUR: Final[int] = 16
 
     def __init__(
         self,
@@ -191,10 +189,12 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         - before 07:00 — today's LIVE_SOFT, whole window (the night charge
           target),
         - 07:00-13:00 — today's LIVE_SOFT, what is left of the window (falls),
-        - 13:00-16:00 — today's LIVE_SOFT, whole window replayed after it
+        - 13:00-14:00 — today's LIVE_SOFT, whole window replayed after it
           closed,
-        - from 16:00 — TOMORROW_LIVE_SOFT, whole window (evening preview; the
-          night charges to it, and a restart after midnight still has it).
+        - from 14:00 (`T1SocReserve.TOMORROW_FROM_HOUR`) — TOMORROW_LIVE_SOFT,
+          whole window (tomorrow morning's plan, the hold rule, the evening
+          preview; the night charges to it, and a restart after midnight
+          still has it).
 
         A variant with nothing computed yet leaves the remembered value alone.
         The LIVE_SOFT reserve carries the falling margin (`margin_pp_for`,
@@ -202,7 +202,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         and 08-09 steps capped by max(LIVE, EXTRAP_BLEND), all read the same
         way, EXTRAP_BLEND only from two scored buckets). The
         LIVE+EXTRAP reserve is observation only — no margin, in-memory, until
-        16:00 (EXTRAP variants have no tomorrow).
+        14:00 (EXTRAP variants have no tomorrow).
         """
         now = self._clock()
         self._t1_reserve_extrap = self._resolve_extrap_reserve(now, catalog)
@@ -217,7 +217,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     def _resolve_t1_reserve(
         now: datetime, catalog: TargetSocCatalog
     ) -> T1SocReserve | None:
-        if now.hour >= BatteryScheduleService._TOMORROW_FROM_HOUR:
+        if now.hour >= T1SocReserve.TOMORROW_FROM_HOUR:
             target_soc = catalog.target_socs.get(PvForecast.TOMORROW_LIVE_SOFT)
             if target_soc is None:
                 return None
@@ -272,8 +272,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     def _resolve_extrap_reserve(
         now: datetime, catalog: TargetSocCatalog
     ) -> T1SocReserve | None:
-        """Highest reserve over today's variants except AT_6 (None from 16:00)."""
-        if now.hour >= BatteryScheduleService._TOMORROW_FROM_HOUR:
+        """Highest reserve over today's variants except AT_6 (None from 14:00)."""
+        if now.hour >= T1SocReserve.TOMORROW_FROM_HOUR:
             return None
         window = BatteryScheduleService._today_window(now)
         candidates = [
@@ -364,7 +364,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
     @property
     def morning_discharge_tomorrow(self) -> MorningDischargePlan | None:
-        """Tomorrow's plan, once its inputs exist (prices ~14:00, workday reserve 16:00)."""
+        """Tomorrow's plan, once its inputs exist (prices and reserve from ~14:00)."""
         return self._repo.schedule.morning_discharge_for(
             self._clock().date() + timedelta(days=1)
         )
@@ -398,7 +398,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
     @property
     def t1_reserve_extrap(self) -> T1SocReserve | None:
-        """LIVE+EXTRAP reserve for today, None from 16:00."""
+        """LIVE+EXTRAP reserve for today, None from 14:00."""
         return self._t1_reserve_extrap
 
     def _make_result(self, op: BatteryOperation) -> BatteryScheduleUpdateResult:

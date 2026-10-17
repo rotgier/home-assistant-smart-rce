@@ -360,10 +360,10 @@ class TestResolveT1Reserve:
     def test_early_afternoon_replays_today(self):
         r = self._live(13)
         assert (r.day, r.window) == (DAY, ReserveWindow.PAST)
-        assert self._live(15, 59).day == DAY
+        assert self._live(13, 59).day == DAY
 
-    def test_from_sixteen_targets_tomorrow(self):
-        r = self._live(16)
+    def test_from_fourteen_targets_tomorrow(self):
+        r = self._live(14)
         assert (r.day, r.value, r.source, r.window) == (
             date(2026, 10, 13),
             59,  # the night charge target: 44 + 15

@@ -201,8 +201,8 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         name="T1 SoC Reserve",
         # SoC to hold for the rest of the T1 window (07-13, workdays), LIVE
         # variant. Before 07:00 the whole window ahead — the target of the
-        # CHARGE_MORNING_AUTO slot; 07-13 what is left (falls); 13-16 today's
-        # window replayed in full; from 16:00 tomorrow's window (TOMORROW_LIVE).
+        # CHARGE_MORNING_AUTO slot; 07-13 what is left (falls); 13-14 today's
+        # window replayed in full; from 14:00 tomorrow's window (TOMORROW_LIVE).
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: _reserve_field(
@@ -275,7 +275,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
     ),
     EmsSensorDescription(
         name="T1 SoC Reserve Extrap",
-        # Highest reserve over today's LIVE + 4 EXTRAP variants, until 16:00
+        # Highest reserve over today's LIVE + 4 EXTRAP variants, until 14:00
         # (EXTRAP has no tomorrow). Observation only — nothing acts on it yet.
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,

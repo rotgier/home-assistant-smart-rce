@@ -330,7 +330,6 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.charge_slots"))
     reload(import_module("custom_components.smart_rce.domain.discharge_slots"))
     reload(import_module("custom_components.smart_rce.domain.ems_rce_prices"))
-    reload(import_module("custom_components.smart_rce.domain.dod_policy"))
     # battery_schedule: domain BEFORE application service (service imports domain).
     # Submodules first, in dependency order — reloading only the package would
     # re-run its __init__ while `from .entry import ...` hands back the modules
@@ -363,6 +362,8 @@ def live_reload() -> None:
         import_module("custom_components.smart_rce.domain.battery_schedule.schedule")
     )
     reload(import_module("custom_components.smart_rce.domain.battery_schedule"))
+    # dod_policy imports battery_schedule (T1SocReserve) — after it.
+    reload(import_module("custom_components.smart_rce.domain.dod_policy"))
     # evening_plan keeps SlotKind members in module-level tables (_SLOT_ORDER,
     # _SLOTS_BY_COUNT), so it MUST come after battery_schedule. Reloading it
     # first binds the outgoing SlotKind class while the aggregate is rebuilt

@@ -93,7 +93,7 @@ class TestPhaseDispatch:
 
     def test_afternoon_dynamic_no_peak(self):
         p = DodPolicy()
-        s = _state(now=_at(14))
+        s = _state(now=_at(13, 30))
         assert p._compute_phase(s, sale_planned=False) == Phase.RELEASED
 
     def test_afternoon_rce_should_hold_none_is_unknown(self):
@@ -286,11 +286,11 @@ class TestSeasonalEveningRegion:
         s = _state(now=_winter_at(17), is_workday=None)
         assert p._compute_phase(s, sale_planned=True) == Phase.UNKNOWN
 
-    def test_day_off_afternoon_before_four_ignores_the_workday_morning(self):
-        """Tomorrow's reserve exists from 16:00 — before, a day off releases."""
+    def test_day_off_afternoon_before_two_ignores_the_workday_morning(self):
+        """Tomorrow's reserve exists from 14:00 — before, a day off releases."""
         p = DodPolicy()
         s = _state(
-            now=_winter_weekend_at(14), is_workday=False, is_workday_tomorrow=True
+            now=_winter_weekend_at(13, 30), is_workday=False, is_workday_tomorrow=True
         )
         assert p._compute_phase(s, sale_planned=False) == Phase.RELEASED
 
@@ -424,7 +424,7 @@ class TestDelegatingPhasesDoD:
         """instant_deficit + no hourly_export → RESET → DoD=90."""
         p = DodPolicy(_prev_block=True)
         s = _state(
-            now=_at(14),
+            now=_at(13, 30),
             exported_energy_hourly=0.0,
             pv_available_5min=-100.0,
         )
@@ -629,6 +629,6 @@ class TestWeekendBehavior:
         afternoon) → DoD=90.
         """
         p = DodPolicy()
-        s = _state(now=_weekend_at(15), is_workday=False)
+        s = _state(now=_weekend_at(15), is_workday=False, is_workday_tomorrow=False)
         _update(p, s, sale_planned=False)
         assert p.target_dod == 90
