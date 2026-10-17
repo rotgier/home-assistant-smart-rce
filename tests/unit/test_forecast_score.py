@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from custom_components.smart_rce.domain.battery_schedule.morning_discharge import (
+    MorningDischargePlan,
+)
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.charge_start_shift import full_charge_minute
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
@@ -602,3 +605,27 @@ def test_full_charge_against_the_same_computation_on_what_came(energy, prices):
     assert score.model == full_charge_minute(profile, 8 * 60 + 15, soc, t2)
     roundtrip = type(score).from_dict(json.loads(json.dumps(score.to_dict())))
     assert roundtrip == score
+
+
+def test_full_charge_on_a_day_off_searches_from_five(energy, prices):
+    """A day off (f4ea9ff): the dearest hour is sought from 05:00, as production does."""
+    day = DAYS[-1]
+    actuals = DayActuals(energy[day], TZ)
+    s0 = _s0(day, prices)
+    day_prices = prices[day.isoformat()]
+    plan = PlanReading(
+        at=datetime(2026, 10, 14, 4, 59, tzinfo=TZ),
+        full_at=14 * 60,
+        hours=(5,),
+        start_soc=10.0,
+        day_off=True,
+    )
+    score = score_full_charge(actuals, plan, day_prices, s0, None, None)
+    rce = RceDayPrices(None, day, tuple(day_prices))
+    best = MorningDischargePlan.best_hour(rce, 5, min(10, s0 // 60), day_off=True)
+    assert best is not None
+    refill_end = min(surplus_window_end(day), 14)  # the hour after full_at 14:00
+    assert score.hours_recomputed == MorningDischargePlan.hours_from(
+        rce, best, s0 // 60, refill_end
+    )
+    assert score.start_soc == 10.0

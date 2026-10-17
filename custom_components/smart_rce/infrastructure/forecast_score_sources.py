@@ -31,6 +31,7 @@ from ..domain.forecast_score.full_charge_score import PlanReading
 from ..domain.pv_forecast.forecast_snapshot import ForecastSnapshot
 from ..domain.pv_surplus import DayType
 from ..domain.rce import RceDayPrices
+from ..domain.target_soc import MIN_SOC_PERCENT
 from .energy_archive_writer import fetch_energy_day
 
 if TYPE_CHECKING:
@@ -150,7 +151,8 @@ class ForecastScoreSources:
 
         The plan is rebuilt every minute; the state in force when the first
         qualified hour started is the one that decided. Its start SoC is the
-        T1 reserve without margin at that moment (what the plan charged from).
+        T1 reserve without margin at that moment (what the plan charged from);
+        on a day off there is no T1 and the plan charges from the 10% floor.
         """
         states = await self._history(day, PLAN_ENTITY, attributes=True)
         decided: tuple[datetime, dict[str, Any]] | None = None
@@ -165,11 +167,8 @@ class ForecastScoreSources:
         if decided is None:
             return None
         at, attrs = decided
-        reserve = await self._history(day, RESERVE_ENTITY, attributes=True)
-        before = [s for s in reserve if dt_util.as_local(s.last_updated) <= at]
-        start_soc = (
-            before[-1].attributes.get("value_without_margin") if before else None
-        )
+        day_off = bool(attrs.get("day_off"))
+        start_soc = MIN_SOC_PERCENT if day_off else await self._reserve_before(day, at)
         return PlanReading(
             at=at,
             full_at=_parse_hhmm(attrs["full_at"]) if attrs.get("full_at") else None,
@@ -179,7 +178,14 @@ class ForecastScoreSources:
                 if h is not None
             ),
             start_soc=float(start_soc) if start_soc is not None else None,
+            day_off=day_off,
         )
+
+    async def _reserve_before(self, day: date, at: datetime) -> Any:
+        """T1 reserve without margin in force at `at` (None = no history)."""
+        reserve = await self._history(day, RESERVE_ENTITY, attributes=True)
+        before = [s for s in reserve if dt_util.as_local(s.last_updated) <= at]
+        return before[-1].attributes.get("value_without_margin") if before else None
 
     async def afternoon_spans(self, day: date) -> list[tuple[int, int]] | None:
         """CHARGE_AFTERNOON engagements over `day` (minutes); None = no history."""
