@@ -20,10 +20,10 @@ class BatteryScheduleInput:
     """
 
     battery_soc: float | None
-    # Today's calendar, needed to tell which evening a hand edit is aimed at:
-    # the switchover from "tonight" to "tomorrow night" is the end of today's
-    # window, and that differs between workdays and days off.
+    # Today's calendar: workdays-only slots and the day-off rules.
     is_workday: bool | None = None
+    # Tomorrow's calendar: the evening preview of tomorrow morning's runs.
+    is_workday_tomorrow: bool | None = None
 
 
 @dataclass(frozen=True)

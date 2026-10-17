@@ -24,6 +24,7 @@ from custom_components.smart_rce.domain.charge_start_shift import (
     lowest_soc_the_sun_fills,
 )
 from custom_components.smart_rce.domain.evening_plan import EveningPlan
+from custom_components.smart_rce.domain.pv_forecast import PvForecast
 from custom_components.smart_rce.domain.pv_surplus import (
     SurplusProfile,
     slots_from_hourly,
@@ -93,9 +94,9 @@ def test_lowest_soc_the_sun_fills_walks_up_from_the_floor():
     ).enough
 
 
-def _reserve(value: int) -> T1SocReserve:
+def _reserve(value: int, day: date = DAY) -> T1SocReserve:
     return T1SocReserve(
-        day=DAY,
+        day=day,
         value=value,
         flat=value,
         prev_without_worst=None,
@@ -169,29 +170,47 @@ class _Surplus:
     def __init__(self, rate: float) -> None:
         self.rate = rate
 
-    def today_profile(self, *, history: bool, pv_scale: float, source=None):
+    def profile_for(self, day, *, history: bool, pv_scale: float, source):
+        self.asked = (day, source)
         pv = slots_from_hourly(dict.fromkeys(range(9, 16), self.rate))
-        return SurplusProfile.build(DAY, pv, None)
+        return SurplusProfile.build(day, pv, None)
 
 
-def _service(rate: float, *, s0: time = time(11, 0), workday=True, now=None):
+NEXT = date(2026, 10, 16)  # Friday
+
+
+def _service(
+    rate: float,
+    *,
+    s0: time = time(11, 0),
+    workday=True,
+    now=None,
+    tomorrow: bool = False,
+    surplus: _Surplus | None = None,
+):
+    """Plan for DAY at `now`; with `tomorrow` the evening preview for NEXT."""
     plans: list = []
     entry = _auto_discharge()
     schedule = SimpleNamespace(
         slot=lambda scope, kind: entry,
-        t1_reserve=_reserve(25),
+        t1_reserve=_reserve(25, NEXT if tomorrow else DAY),
         set_morning_discharge=plans.append,
+        plans_tomorrow_at=lambda _now: tomorrow,
     )
     ems = SimpleNamespace(
         battery_schedule_service=schedule,
         is_workday_today=workday,
-        charge_slots=SimpleNamespace(today_start=s0),
+        is_workday_tomorrow=workday,
+        charge_slots=SimpleNamespace(today_start=s0, tomorrow_start=s0),
         rce_prices=SimpleNamespace(
-            rce_prices=SimpleNamespace(today=RceDayPrices(None, DAY, PRICES))
+            rce_prices=SimpleNamespace(
+                today=RceDayPrices(None, DAY, PRICES),
+                tomorrow=RceDayPrices(None, NEXT, PRICES),
+            )
         ),
     )
     clock = now or _at(6, 30)
-    service = MorningDischargeService(ems, _Surplus(rate), lambda: clock)
+    service = MorningDischargeService(ems, surplus or _Surplus(rate), lambda: clock)
     service.refresh()
     return plans[-1]
 
@@ -234,6 +253,28 @@ class TestService:
     def test_an_hour_cheaper_than_the_pv_window_is_left_alone(self):
         # S0 08:00: only 07 is searched, and 08 (1100) sells the sun dearer.
         assert _service(6.0, s0=time(8, 0)) is None
+
+
+class TestEveningPreview:
+    """After the evening switched over, the plan is tomorrow's."""
+
+    def test_plans_tomorrow_from_tomorrows_inputs(self):
+        surplus = _Surplus(6.0)
+        plan = _service(6.0, now=_at(21, 30), tomorrow=True, surplus=surplus)
+        assert plan.day == NEXT
+        assert surplus.asked == (NEXT, PvForecast.TOMORROW_LIVE_SOFT)
+        # The first hour of the run, not the one after `now`.
+        assert plan.hour == plan.hours[0] == 8
+
+    def test_today_keeps_planning_today(self):
+        surplus = _Surplus(6.0)
+        plan = _service(6.0, surplus=surplus)
+        assert plan.day == DAY
+        assert surplus.asked == (DAY, PvForecast.LIVE_SOFT)
+
+    def test_tomorrow_off_plans_from_the_floor(self):
+        plan = _service(6.0, now=_at(21, 30), tomorrow=True, workday=False)
+        assert (plan.day, plan.day_off, plan.reserve) == (NEXT, True, 10)
 
 
 class TestDayOff:

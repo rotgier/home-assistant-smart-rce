@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any, Final
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
-from ..domain.evening_plan import EveningPlan
 from .evening_plan_notifier import notify_evening_plan, notify_evening_plan_failed
 
 if TYPE_CHECKING:
@@ -33,8 +32,9 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 # Attempts, earliest first. 21:05 is the winter switchover (T2 ends at 21:00);
-# 22:05 the summer one; 23:05 covers days off, whose window runs to 23:00. The
-# later hours also serve as retries when an evening is still discharging.
+# 22:05 the summer one; 22:05 / 23:05 also cover a day off whose last evening
+# slot runs past it. The later hours serve as retries when an evening is
+# still discharging.
 # Which day each attempt plans follows `EveningPlan.plans_tomorrow_at`, so an
 # attempt that fires before today's window closes simply re-plans today.
 _EVENING_RUN_HOURS: Final[tuple[int, ...]] = (21, 22, 23, 0)
@@ -131,9 +131,7 @@ class EveningPlanScheduler:
         # be read off today's prices rather than tomorrow's.
         if await self._plan_and_apply(
             now,
-            for_tomorrow=EveningPlan.plans_tomorrow_at(
-                now, is_workday=self._ems.is_workday_today
-            ),
+            for_tomorrow=self._ems.battery_schedule_service.plans_tomorrow_at(now),
         ):
             self._planned_evening_on = target
 
@@ -167,6 +165,6 @@ class EveningPlanScheduler:
         fired before it (or the 00:05 retry) plans today. Naming the target
         rather than the run lets every attempt share one "done" marker.
         """
-        if EveningPlan.plans_tomorrow_at(now, is_workday=self._ems.is_workday_today):
+        if self._ems.battery_schedule_service.plans_tomorrow_at(now):
             return now.date() + timedelta(days=1)
         return now.date()

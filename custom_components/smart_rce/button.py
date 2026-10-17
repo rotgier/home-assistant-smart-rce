@@ -107,8 +107,9 @@ class EveningPlanRecalculateButton(ButtonEntity):
 
     Targets whichever evening comes next: tonight while today's window is
     still open, tomorrow once it has closed. `EveningPlan.plans_tomorrow_at`
-    owns that switchover, which moves with the season — so pressing this
-    mid-evening cannot drop tomorrow's windows into hours still open today.
+    owns that switchover (season, and tonight's last slot) — and the schedule
+    dates the evening, so tomorrow's windows cannot fire in hours still open
+    today.
     """
 
     _attr_has_entity_name = False

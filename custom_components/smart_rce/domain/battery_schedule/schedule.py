@@ -16,7 +16,7 @@ Eight named slots — four per day (today / tomorrow):
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from .commands import OneShotParamsCommand, SlotCommand
@@ -48,8 +48,13 @@ if TYPE_CHECKING:
 _LEGACY_EVENING_KEY = "DISCHARGE_EVENING"
 
 # Slots the evening proposer owns — edits to these are what "hand-set" means.
+# MID joined on 17.10.2026: it was added to the planner (02.10) after this set.
 _EVENING_KINDS = frozenset(
-    {SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE}
+    {
+        SlotKind.DISCHARGE_EVENING_EARLY,
+        SlotKind.DISCHARGE_EVENING_MID,
+        SlotKind.DISCHARGE_EVENING_LATE,
+    }
 )
 
 
@@ -89,6 +94,7 @@ class BatterySchedule:
         evening_hand_set_day: date | None = None,
         t1_reserve: T1SocReserve | None = None,
         sessions: list[SlotSession] | None = None,
+        evening_day: date | None = None,
     ) -> None:
         self._today: dict[SlotKind, BatteryScheduleEntry] = (
             dict(today)
@@ -138,6 +144,11 @@ class BatterySchedule:
         # Today's slot engagements, for the dashboard. Persisted so a restart
         # in the middle of the day — or of a session — keeps what already ran.
         self._sessions: list[SlotSession] = list(sessions or [])
+        # The evening the evening slots describe (plan or hand edit). The slots
+        # are one set for every day, and tomorrow's plan may be written while
+        # today still has evening hours left; a later evening's slots stay
+        # still until their day. None (before 17.10.2026): any day.
+        self._evening_day = evening_day
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -241,7 +252,29 @@ class BatterySchedule:
         changed = self.apply_slot_command(cmd)
         if changed and cmd.scope == "today" and cmd.kind in _EVENING_KINDS:
             self._evening_hand_set_day = today
+            self.stamp_evening(today)
         return changed
+
+    def stamp_evening(self, day: date) -> bool:
+        """Date the evening slots to the evening they now describe. True if changed."""
+        if self._evening_day == day:
+            return False
+        self._evening_day = day
+        return True
+
+    def evening_end_on(self, day: date) -> time | None:
+        """End of the last enabled evening slot set for `day`, None if none.
+
+        Slots dated to a later evening do not count — they are tomorrow's.
+        """
+        if self._evening_day is not None and self._evening_day > day:
+            return None
+        ends = [
+            entry.end
+            for kind, entry in self._today.items()
+            if kind in _EVENING_KINDS and entry.enabled
+        ]
+        return max(ends, default=None)
 
     def evening_is_hand_set_on(self, day: date) -> bool:
         """Tell whether the user edited an evening slot by hand on `day`."""
@@ -316,29 +349,37 @@ class BatterySchedule:
         ]
 
     def upcoming_runs(
-        self, now: datetime, soc: float, *, is_workday: bool | None
+        self,
+        now: datetime,
+        soc: float,
+        *,
+        is_workday: bool | None,
+        day: date | None = None,
     ) -> list[UpcomingRun]:
-        """List the auto-slot runs still ahead today, in window order.
+        """List the auto-slot runs still ahead on `day` (default today), in window order.
 
         Each run starts from the level the previous one heads for — the night
         charge decides where the morning discharge starts from. A slot engaged
         right now is a session, not a run, but its target still carries over.
+        `is_workday` is `day`'s calendar. For tomorrow (the evening preview)
+        the first run starts from the SoC now.
         """
+        day = now.date() if day is None else day
         entries = sorted(
             (
-                self._effective_entry(kind, now.date())
+                self._effective_entry(kind, day)
                 for kind in SlotKind
                 if (kind.profile.auto_target or kind.profile.planned)
-                and kind.profile.runs_on(now.date(), is_workday)
+                and kind.profile.runs_on(day, is_workday)
             ),
             key=lambda entry: entry.start,
         )
         runs: list[UpcomingRun] = []
         for entry in entries:
-            if entry.kind is self._currently_engaging:
+            if day == now.date() and entry.kind is self._currently_engaging:
                 soc = entry.target_soc
                 continue
-            run = self._upcoming_run(entry, now, soc)
+            run = self._upcoming_run(entry, now, day, soc)
             if run is not None:
                 runs.append(run)
                 soc = run.target_soc
@@ -346,14 +387,14 @@ class BatterySchedule:
 
     @staticmethod
     def _upcoming_run(
-        entry: BatteryScheduleEntry, now: datetime, soc: float
+        entry: BatteryScheduleEntry, now: datetime, day: date, soc: float
     ) -> UpcomingRun | None:
         if not entry.enabled or not entry.needs_run_from(soc):
             return None
-        end = datetime.combine(now.date(), entry.end, tzinfo=now.tzinfo)
+        end = datetime.combine(day, entry.end, tzinfo=now.tzinfo)
         if now >= end:
             return None
-        window_start = datetime.combine(now.date(), entry.start, tzinfo=now.tzinfo)
+        window_start = datetime.combine(day, entry.start, tzinfo=now.tzinfo)
         start = window_start
         if entry.behavior == SlotBehavior.DELAYED_TO_END:
             lead = entry.time_to_complete_at(soc) + entry.kind.profile.delayed_lead_sec
@@ -598,6 +639,13 @@ class BatterySchedule:
         predicate — window, DELAYED_TO_END, target reached — is the entry's own.
         """
         entry = self._today[kind]
+        if (
+            kind in _EVENING_KINDS
+            and self._evening_day is not None
+            and self._evening_day > day
+        ):
+            # Tomorrow's evening, written after tonight's last slot ended.
+            return entry.with_enabled(False)
         if kind.profile.planned:
             plan = self.morning_discharge_for(day)
             if plan is None or not entry.enabled:
@@ -664,6 +712,9 @@ class BatterySchedule:
                 d.name: p.to_dict() for d, p in self._oneshot_params.items()
             },
             "sessions": [s.to_dict() for s in self._sessions],
+            "evening_day": (
+                self._evening_day.isoformat() if self._evening_day is not None else None
+            ),
         }
 
     @classmethod
@@ -725,6 +776,13 @@ class BatterySchedule:
             if (session := SlotSession.from_dict(raw)) is not None
         ]
 
+        evening_day: date | None = None
+        if raw := data.get("evening_day"):
+            try:
+                evening_day = date.fromisoformat(raw)
+            except (TypeError, ValueError):
+                evening_day = None
+
         return cls(
             today={k: _entry("today", k) for k in SlotKind},
             tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
@@ -739,4 +797,5 @@ class BatterySchedule:
             evening_hand_set_day=evening_hand_set_day,
             t1_reserve=t1_reserve,
             sessions=sessions,
+            evening_day=evening_day,
         )

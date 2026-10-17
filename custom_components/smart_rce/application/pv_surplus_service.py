@@ -215,17 +215,33 @@ class PvSurplusService:
         (otherwise flat 0.9 kWh/h); `pv_scale` scales the PV forecast of
         `source` (LIVE_SOFT, or an Extrap variant).
         """
-        today = self._clock().date()
-        pv = self._pv_by_slot(source, today)
+        return self.profile_for(
+            self._clock().date(), history=history, pv_scale=pv_scale, source=source
+        )
+
+    def profile_for(
+        self,
+        day: date,
+        *,
+        history: bool,
+        pv_scale: float,
+        source: PvForecast,
+    ) -> SurplusProfile | None:
+        """`day`'s surplus from `source`; history only while it is the target day.
+
+        The consumption history follows the target day (`_target_day`): today
+        until T2, tomorrow after — so tomorrow's profile has it in the evening.
+        """
+        pv = self._pv_by_slot(source, day)
         if not pv:
             return None
         cons: dict[int, float] | None = None
         if history:
-            if self._profiles_day != today or not self._prev_profiles:
+            if self._profiles_day != day or not self._prev_profiles:
                 return None
             cons = percentile_by_key(self._prev_profiles.values())
         scaled = {slot: kwh * pv_scale for slot, kwh in pv.items()}
-        return SurplusProfile.build(today, scaled, cons)
+        return SurplusProfile.build(day, scaled, cons)
 
     def _target_day(self, now: datetime) -> date:
         today = now.date()

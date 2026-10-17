@@ -121,18 +121,42 @@ class EveningPlan:
         self._overruled_by_morning = overruled_by_morning
 
     @classmethod
-    def plans_tomorrow_at(cls, now: datetime, *, is_workday: bool = True) -> bool:
+    def plans_tomorrow_at(
+        cls,
+        now: datetime,
+        *,
+        slots_end: time | None = None,
+    ) -> bool:
         """Tell whether a run at `now` is planning tomorrow evening.
 
-        The switchover is the end of TODAY's window, not a fixed hour: summer
-        T2 ends at 22:00, winter's at 21:00, and a day off runs to 23:00.
-        Writing tomorrow's plan any earlier would drop windows into hours still
-        open today and start a discharge on the spot.
+        The switchover is the end of T2 by the season (winter 21:00, summer
+        22:00) — on a day off too, which has no T2 but whose evening slots may
+        run later (user's decision 17.10.2026; until then a day off waited
+        for 23:00). `slots_end` — the end of the last evening slot still set
+        for today (`BatterySchedule.evening_end_on`) — pushes it back to the
+        full hour that slot ends in: tomorrow's plan rewrites the slots, so it
+        must not land while one of today's is still ahead.
+
+        Tomorrow's windows written early cannot fire tonight: the schedule
+        dates the evening (`BatterySchedule.stamp_evening`) and keeps a later
+        evening's slots still until its day.
 
         The same rule stamps a hand edit, so an evening set by hand and an
         evening planned automatically always mean the same day.
         """
-        return now.hour >= cls._evening_hours(now.date(), is_workday).stop
+        boundary = time(evening_peak(now.date()).stop)
+        if slots_end is not None:
+            boundary = max(boundary, EveningPlan._full_hour_after(slots_end))
+        return now.time() >= boundary
+
+    @staticmethod
+    def _full_hour_after(moment: time) -> time:
+        """`moment` rounded up to a full hour; 23:59 stands in for midnight."""
+        if moment.minute == 0 and moment.second == 0:
+            return moment
+        if moment.hour == 23:
+            return time(23, 59)
+        return time(moment.hour + 1)
 
     @classmethod
     def for_day(
