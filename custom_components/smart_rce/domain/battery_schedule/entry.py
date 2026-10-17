@@ -428,6 +428,9 @@ class SlotKind(Enum):
         default_target_soc=80.0,
         delayed_lead_sec=_DELAYED_LEAD_SEC,
         # 80% leaves headroom for late-afternoon PV surplus.
+        # Workdays only (user's decision 17.10.2026): it fills the battery for
+        # the evening T2, and a day off has no T2 — the whole day is T3.
+        workdays_only=True,
     )
 
     DISCHARGE_EVENING_EARLY = SlotProfile(
