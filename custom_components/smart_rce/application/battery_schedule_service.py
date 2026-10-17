@@ -82,7 +82,11 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 # Slots the evening planner owns — the ones worth diffing and reporting.
-_EVENING = (SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE)
+_EVENING = (
+    SlotKind.DISCHARGE_EVENING_EARLY,
+    SlotKind.DISCHARGE_EVENING_MID,
+    SlotKind.DISCHARGE_EVENING_LATE,
+)
 
 
 class BatteryScheduleService(Service[BatteryScheduleRepository]):
@@ -118,9 +122,10 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         # to downstream consumers (e.g. BatteryChargeService would flip
         # `needs_charge_toggle` False → write Modbus → flicker).
         self._last_op: BatteryOperation = self._repo.schedule.current_operation()
-        # Today's calendar, refreshed each tick — decides where the evening
-        # ends, and so which evening a hand edit is aimed at.
+        # Today's and tomorrow's calendar, refreshed each tick — which auto
+        # runs take part on the plan day.
         self._last_is_workday: bool | None = None
+        self._last_is_workday_tomorrow: bool | None = None
         # Last SoC seen by `update` — the start point of the runs ahead.
         self._last_soc: float | None = None
         # LIVE+EXTRAP reserve — observation only, nothing acts on it yet.
@@ -139,6 +144,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         sensors that will observe `_currently_engaging` state directly.
         """
         self._last_is_workday = input.is_workday
+        self._last_is_workday_tomorrow = input.is_workday_tomorrow
         if input.battery_soc is None:
             return self._make_result(self._last_op)
         self._last_soc = input.battery_soc
@@ -313,17 +319,37 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         return self._repo.schedule.morning_discharge_for(self._clock().date())
 
     @property
+    def morning_discharge_tomorrow(self) -> MorningDischargePlan | None:
+        """Tomorrow's plan — the evening preview, once the evening switched over."""
+        return self._repo.schedule.morning_discharge_for(
+            self._clock().date() + timedelta(days=1)
+        )
+
+    @property
     def sessions_today(self) -> list[SlotSession]:
         """Today's slot sessions, the open one with its current target."""
         return self._repo.schedule.sessions_on(self._clock().date())
 
     @property
     def upcoming_runs(self) -> list[UpcomingRun]:
-        """Runs of the auto slots still ahead today; empty before the first SoC."""
+        """Runs of the auto slots still ahead on the plan day; empty before the first SoC.
+
+        The plan day is tomorrow once the evening switched over (`plan_day`),
+        so the chart previews tomorrow morning together with tomorrow evening.
+        """
         if self._last_soc is None:
             return []
+        now = self._clock()
+        day = self.plan_day
         return self._repo.schedule.upcoming_runs(
-            self._clock(), self._last_soc, is_workday=self._last_is_workday
+            now,
+            self._last_soc,
+            is_workday=(
+                self._last_is_workday
+                if day == now.date()
+                else self._last_is_workday_tomorrow
+            ),
+            day=day,
         )
 
     @property
@@ -429,19 +455,26 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         calendar date would mark the wrong evening as hand-set: the planner
         would then either ignore a deliberate change or defer to a spent one.
         """
+        return self.plan_day
+
+    def plans_tomorrow_at(self, now: datetime) -> bool:
+        """Tell whether the evening has switched over to tomorrow at `now`.
+
+        One rule for the chart, the evening runs, hand edits and the morning
+        preview: `EveningPlan.plans_tomorrow_at` with the end of the last
+        evening slot still set for today.
+        """
+        return EveningPlan.plans_tomorrow_at(
+            now, slots_end=self._repo.schedule.evening_end_on(now.date())
+        )
+
+    @property
+    def plan_day(self) -> date:
+        """The day the slots and plans currently describe: today or tomorrow."""
         now = self._clock()
-        if EveningPlan.plans_tomorrow_at(now, is_workday=self._is_workday_today()):
+        if self.plans_tomorrow_at(now):
             return now.date() + timedelta(days=1)
         return now.date()
-
-    def _is_workday_today(self) -> bool:
-        """Today's calendar from the last tick; assumes workday when unknown.
-
-        A workday's window ends earlier, so assuming one moves the switchover
-        earlier too — which at worst stamps an edit with tomorrow when today
-        still had an hour left, rather than the other way round.
-        """
-        return self._last_is_workday is not False
 
     @property
     def evening_is_hand_set_today(self) -> bool:
@@ -491,6 +524,9 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         changed = False
         for cmd in plan.slot_commands():
             changed |= schedule.apply_slot_command(cmd)
+        # Dated so that tomorrow's windows written tonight stay still until
+        # tomorrow (see `BatterySchedule.stamp_evening`).
+        changed |= schedule.stamp_evening(plan.day)
         if may_override:
             changed |= schedule.release_evening_to_proposer()
         await self._persist_and_notify(changed)

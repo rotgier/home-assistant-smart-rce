@@ -343,12 +343,38 @@ def test_a_winter_workday_switches_over_an_hour_earlier():
     assert EveningPlan.plans_tomorrow_at(datetime(2026, 10, 5, 21, 5))
 
 
-def test_a_day_off_switches_over_latest_of_all():
-    # Its window runs to 23:00, so 22:05 still belongs to tonight.
+def test_with_tonight_done_a_day_off_switches_over_with_the_season():
+    # A day off has no T2, but the switchover follows the season's T2 end
+    # (17.10.2026): winter 21:00, summer 22:00, unless a slot runs later.
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 10, 17, 21, 5))
+    assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 26, 21, 5))
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 26, 22, 5))
+
+
+def test_a_slot_still_set_for_tonight_holds_the_switchover_back():
+    late = time(23, 0)
     assert not EveningPlan.plans_tomorrow_at(
-        datetime(2026, 9, 26, 22, 5), is_workday=False
+        datetime(2026, 10, 17, 22, 59), slots_end=late
     )
-    assert EveningPlan.plans_tomorrow_at(datetime(2026, 9, 26, 23, 5), is_workday=False)
+    assert EveningPlan.plans_tomorrow_at(datetime(2026, 10, 17, 23, 0), slots_end=late)
+
+
+def test_a_slot_ending_mid_hour_holds_it_to_the_next_full_hour():
+    assert not EveningPlan.plans_tomorrow_at(
+        datetime(2026, 10, 17, 21, 45), slots_end=time(21, 30)
+    )
+    assert EveningPlan.plans_tomorrow_at(
+        datetime(2026, 10, 17, 22, 0), slots_end=time(21, 30)
+    )
+
+
+def test_a_slot_ending_before_the_season_hour_changes_nothing():
+    assert not EveningPlan.plans_tomorrow_at(
+        datetime(2026, 10, 17, 20, 30), slots_end=time(20, 0)
+    )
+    assert EveningPlan.plans_tomorrow_at(
+        datetime(2026, 10, 17, 21, 0), slots_end=time(20, 0)
+    )
 
 
 def test_after_midnight_a_run_is_back_to_planning_tonight():

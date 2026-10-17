@@ -20,7 +20,6 @@ from homeassistant.util.dt import now as now_local
 
 from . import SmartRceConfigEntry
 from .application.ems import Ems
-from .domain.evening_plan import EveningPlan
 from .ems_device import ems_device_info
 from .garden.binary_sensor_entities import build_binary_sensors
 
@@ -48,11 +47,12 @@ SENSOR_DESCRIPTIONS: tuple[EmsBinarySensorDescription, ...] = (
     EmsBinarySensorDescription(
         name="Evening Plan Targets Tomorrow",
         # Which day the evening slots currently describe. The rule lives in
-        # EveningPlan; only the clock comes from here, so the dashboard can
-        # chart the right day without restating the switchover in JS — it
-        # moves with the season and with workday/day off.
-        value_fn=lambda ems: EveningPlan.plans_tomorrow_at(
-            now_local(), is_workday=ems.is_workday_today
+        # EveningPlan (via the schedule, which knows tonight's last slot); only
+        # the clock comes from here, so the dashboard can chart the right day
+        # without restating the switchover in JS — it moves with the season
+        # and with an evening slot still running late.
+        value_fn=lambda ems: ems.battery_schedule_service.plans_tomorrow_at(
+            now_local()
         ),
         icon="mdi:calendar-arrow-right",
     ),

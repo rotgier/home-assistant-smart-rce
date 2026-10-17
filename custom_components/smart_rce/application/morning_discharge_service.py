@@ -1,18 +1,18 @@
-"""MorningDischargeService — recomputes today's automatic morning discharge.
+"""MorningDischargeService — recomputes the automatic morning discharge.
 
-Every minute, like the target of the auto morning charge: gathers today's
-prices, S0, the T1 reserve (a day off: the 10% floor) and the PV surplus
+Every minute, like the target of the auto morning charge: gathers the plan
+day's prices, S0, the T1 reserve (a day off: the 10% floor) and the PV surplus
 (Live Soft, p60 consumption of earlier days of the same kind) and hands
-`BatterySchedule` a
-`MorningDischargePlan` — or None, which keeps the DISCHARGE_MORNING_AUTO slot
-still. The rule itself lives in the domain (`MorningDischargePlan.decide`,
+`BatterySchedule` a `MorningDischargePlan` — or None, which keeps the
+DISCHARGE_MORNING_AUTO slot still. The plan day is today, or tomorrow once the
+evening switched over (the evening preview, user's wish 17.10.2026). The rule itself lives in the domain (`MorningDischargePlan.decide`,
 `lowest_soc_the_sun_fills`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
@@ -23,6 +23,7 @@ from ..domain.charge_start_shift import (
     lowest_soc_the_sun_fills,
     to_minutes,
 )
+from ..domain.pv_forecast import PvForecast
 from ..domain.pv_surplus import surplus_window_end
 from ..domain.target_soc import MIN_SOC_PERCENT
 
@@ -53,21 +54,33 @@ class MorningDischargeService:
         )
 
     def _plan(self, now: datetime) -> MorningDischargePlan | None:
+        """Plan for the plan day: today, or tomorrow once the evening switched over.
+
+        Tomorrow's plan is the evening preview — it takes over at midnight and
+        is recomputed every minute like today's, so it follows the forecast.
+        """
         schedule = self._ems.battery_schedule_service
+        tomorrow = schedule.plans_tomorrow_at(now)
+        day = now.date() + timedelta(days=1) if tomorrow else now.date()
+        is_workday = (
+            self._ems.is_workday_tomorrow if tomorrow else self._ems.is_workday_today
+        )
         entry = schedule.slot("today", SlotKind.DISCHARGE_MORNING_AUTO)
         # Computed with the slot switched off too — the sensor then shows what
         # it would do; the schedule runs a plan only for an enabled slot.
-        if not SlotKind.DISCHARGE_MORNING_AUTO.profile.runs_on(
-            now.date(), self._ems.is_workday_today
-        ):
+        if not SlotKind.DISCHARGE_MORNING_AUTO.profile.runs_on(day, is_workday):
             return None
-        day_off = is_day_off(now.date(), self._ems.is_workday_today)
-        prices = self._today_prices(now)
-        s0 = self._ems.charge_slots.today_start
+        day_off = is_day_off(day, is_workday)
+        prices = self._prices_for(day)
+        s0 = (
+            self._ems.charge_slots.tomorrow_start
+            if tomorrow
+            else self._ems.charge_slots.today_start
+        )
         reserve = schedule.t1_reserve
         if prices is None or s0 is None:
             return None
-        if not day_off and (reserve is None or reserve.day != now.date()):
+        if not day_off and (reserve is None or reserve.day != day):
             return None
         # A day off searches from 05:00 whatever the slot's start says: the
         # slot's window is tuned for workdays.
@@ -81,12 +94,15 @@ class MorningDischargeService:
         )
         if best is None:
             return None
-        profile = self._pv_surplus.today_profile(history=True, pv_scale=1.0)
-        if profile is None:
-            profile = self._pv_surplus.today_profile(history=False, pv_scale=1.0)
+        source = PvForecast.TOMORROW_LIVE_SOFT if tomorrow else PvForecast.LIVE_SOFT
+        profile = self._pv_surplus.profile_for(
+            day, history=True, pv_scale=1.0, source=source
+        ) or self._pv_surplus.profile_for(
+            day, history=False, pv_scale=1.0, source=source
+        )
         if profile is None:
             return None
-        t2 = surplus_window_end(now.date())
+        t2 = surplus_window_end(day)
         # Starts from the reading without margin — the lowest the battery can
         # be left at, so the latest full charge (the cautious side).
         start_soc = (
@@ -102,8 +118,8 @@ class MorningDischargeService:
         # The sun charges the battery until the hour it fills in (inclusive).
         refill_end = t2 if full is None else min(t2, -(-full // 60))
         hours = MorningDischargePlan.hours_from(prices, best, s0.hour, refill_end)
-        # The hour running now or the next one still to come.
-        hour = next((h for h in hours if h >= now.hour), None)
+        # The hour running now or the next one still to come (tomorrow: the first).
+        hour = next((h for h in hours if tomorrow or h >= now.hour), None)
         if hour is None:
             return None
         # The line the hour stands on: the margin step at the hour's start,
@@ -112,15 +128,13 @@ class MorningDischargeService:
         line = (
             MIN_SOC_PERCENT
             if day_off or reserve is None
-            else reserve.value_at(
-                now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            )
+            else reserve.value_at(datetime.combine(day, time(hour), tzinfo=now.tzinfo))
         )
         fill = lowest_soc_the_sun_fills(
             profile, prices.hour_price, (hour + 1) * 60, to_minutes(s0), line
         )
         return MorningDischargePlan.decide(
-            day=now.date(),
+            day=day,
             hour=hour,
             gross_price=prices.gross_at(hour),
             reserve=line,
@@ -135,10 +149,14 @@ class MorningDischargeService:
         """First whole hour inside the slot's window."""
         return hour + (1 if minute else 0)
 
-    def _today_prices(self, now: datetime) -> RceDayPrices | None:
+    def _prices_for(self, day: date) -> RceDayPrices | None:
         rce = self._ems.rce_prices.rce_prices
-        if rce is None or rce.today is None or rce.today.day != now.date():
+        if rce is None:
             return None
+        prices = next(
+            (p for p in (rce.today, rce.tomorrow) if p is not None and p.day == day),
+            None,
+        )
         # Positional hour index: a 23/25-hour DST day does not line up with the
         # clock, so the plan stays off then.
-        return rce.today if len(rce.today.hour_price) == 24 else None
+        return prices if prices is not None and len(prices.hour_price) == 24 else None

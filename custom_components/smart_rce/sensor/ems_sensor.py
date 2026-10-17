@@ -268,11 +268,9 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
             if (plan := ems.battery_schedule_service.morning_discharge) is not None
             else None
         ),
-        attr_fn=lambda ems: (
-            plan.to_dict()
-            if (plan := ems.battery_schedule_service.morning_discharge) is not None
-            else None
-        ),
+        # State and attributes stay TODAY's plan (the scoreboard reads them);
+        # `tomorrow` carries tomorrow's once the evening switched over.
+        attr_fn=lambda ems: _morning_plan_attrs(ems),
         icon="mdi:battery-arrow-down-outline",
     ),
     EmsSensorDescription(
@@ -298,6 +296,16 @@ def _reserve_field(reserve: T1SocReserve | None, field_name: str) -> Any:
 
 def _reserve_attrs(reserve: T1SocReserve | None) -> dict[str, Any] | None:
     return reserve.to_dict() if reserve is not None else None
+
+
+def _morning_plan_attrs(ems: Ems) -> dict[str, Any] | None:
+    service = ems.battery_schedule_service
+    attrs: dict[str, Any] = {}
+    if (plan := service.morning_discharge) is not None:
+        attrs |= plan.to_dict()
+    if (tomorrow := service.morning_discharge_tomorrow) is not None:
+        attrs["tomorrow"] = tomorrow.to_dict()
+    return attrs or None
 
 
 def _format_oneshot(op: OneShotOperation | None) -> str:

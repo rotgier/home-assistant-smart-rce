@@ -267,3 +267,25 @@ async def test_an_edit_after_ten_at_night_marks_tomorrow_evening():
 
     assert schedule.evening_is_hand_set_on(late_night.date() + timedelta(days=1))
     assert not schedule.evening_is_hand_set_on(late_night.date())
+
+
+async def test_a_plan_dates_the_evening_it_describes():
+    # The stamp keeps tomorrow's windows written tonight from firing tonight.
+    schedule = BatterySchedule()
+    service = _service(schedule)
+
+    await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+
+    assert schedule.evening_end_on(TODAY) == time(21, 0)
+    assert schedule.evening_end_on(TODAY - timedelta(days=1)) is None
+
+
+async def test_a_reapplied_plan_is_already_current_despite_the_stamp():
+    schedule = BatterySchedule()
+    service = _service(schedule)
+    plan = _plan(_prices(h19=RICH, h20=RICH))
+    await service.adopt_evening_plan(plan, NOW)
+
+    result = await service.adopt_evening_plan(plan, NOW)
+
+    assert result.outcome is PlanOutcome.ALREADY_CURRENT

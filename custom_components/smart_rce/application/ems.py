@@ -127,7 +127,9 @@ class Ems:
         # ─── 1. BatteryScheduleService — atomic snapshot of schedule decisions ───
         schedule_result = self.battery_schedule_service.update(
             BatteryScheduleInput(
-                battery_soc=state.battery_soc, is_workday=state.is_workday
+                battery_soc=state.battery_soc,
+                is_workday=state.is_workday,
+                is_workday_tomorrow=state.is_workday_tomorrow,
             )
         )
 
@@ -329,9 +331,7 @@ class Ems:
         — pressing the button mid-evening must not write tomorrow's windows
         into hours that are open right now.
         """
-        for_tomorrow = EveningPlan.plans_tomorrow_at(
-            now, is_workday=self._is_workday(for_tomorrow=False) is not False
-        )
+        for_tomorrow = self.battery_schedule_service.plans_tomorrow_at(now)
         plan = self.build_evening_plan(for_tomorrow=for_tomorrow)
         if plan is None:
             return None
@@ -355,6 +355,11 @@ class Ems:
         rather than writing into hours that are still open.
         """
         return self._is_workday(for_tomorrow=False) is not False
+
+    @property
+    def is_workday_tomorrow(self) -> bool:
+        """Tomorrow's calendar; assumes workday when the sensor is unavailable."""
+        return self._is_workday(for_tomorrow=True) is not False
 
     def _is_workday(self, *, for_tomorrow: bool) -> bool | None:
         """Workday flag for the planned day, None when the calendar is missing."""
