@@ -151,11 +151,12 @@ class TestSchedule:
         engaged = [e for e in events if isinstance(e, SlotEngaged)]
         assert engaged and engaged[0].slot is SlotKind.DISCHARGE_MORNING_AUTO
 
-    def test_not_on_a_day_off(self):
+    def test_runs_on_a_day_off_and_says_so(self):
         sch = self._schedule(_auto_discharge())
         sch.set_morning_discharge(_plan(reserve=25, fill=42, gross=1300.0))
         _, events = sch.compute_operation(_at(8, 30), 80.0, is_workday=False)
-        assert events == []
+        engaged = [e for e in events if isinstance(e, SlotEngaged)]
+        assert engaged and engaged[0].day_off
 
     def test_disabled_slot_ignores_the_plan(self):
         sch = self._schedule(_auto_discharge(enabled=False))
@@ -234,14 +235,52 @@ class TestService:
         # S0 08:00: only 07 is searched, and 08 (1100) sells the sun dearer.
         assert _service(6.0, s0=time(8, 0)) is None
 
-    def test_no_plan_on_a_day_off(self):
-        assert _service(6.0, workday=False) is None
+
+class TestDayOff:
+    """No T1 on a day off: floor 10%, search from 05:00, arbitrage to the floor."""
+
+    def test_plenty_of_sun_goes_down_to_the_floor(self):
+        plan = _service(6.0, workday=False)
+        assert plan.day_off
+        assert (plan.reserve, plan.target, plan.branch) == (
+            10,
+            10,
+            MorningDischargeBranch.SUN_ENOUGH,
+        )
+
+    def test_above_the_bar_arbitrage_goes_down_to_the_floor(self):
+        plan = _service(1.4, workday=False)
+        assert plan.branch is MorningDischargeBranch.ARBITRAGE
+        assert plan.target == 10
+        assert plan.fill > 10
+
+    def test_below_the_bar_only_the_room_the_sun_refills(self):
+        plan = MorningDischargePlan.decide(
+            day=DAY, hour=6, gross_price=600.0, reserve=10, fill=42, day_off=True
+        )
+        assert (plan.target, plan.branch) == (42, MorningDischargeBranch.ROOM)
+
+    def test_searches_from_five(self):
+        prices = RceDayPrices(None, DAY, PRICES)
+        assert MorningDischargePlan.best_hour(prices, 5, 7, day_off=True) == 6
+        assert MorningDischargePlan.best_hour(prices, 5, 7) is None
+
+    def test_workday_arbitrage_keeps_ten_above_the_reserve(self):
+        plan = MorningDischargePlan.decide(
+            day=DAY, hour=8, gross_price=1300.0, reserve=25, fill=42
+        )
+        assert plan.target == 35
 
 
-def test_auto_discharge_calls_the_phone():
+def test_auto_discharge_calls_the_phone_on_workdays_only():
     from custom_components.smart_rce.domain.battery_schedule import NotificationLevel
 
-    assert (
-        SlotKind.DISCHARGE_MORNING_AUTO.profile.notification_level
-        is NotificationLevel.EMERGENCY
-    )
+    profile = SlotKind.DISCHARGE_MORNING_AUTO.profile
+    assert profile.notification_level_on(False) is NotificationLevel.EMERGENCY
+    assert profile.notification_level_on(True) is NotificationLevel.NORMAL
+    # Every other kind sounds the same on any day.
+    for kind in SlotKind:
+        if kind is not SlotKind.DISCHARGE_MORNING_AUTO:
+            assert kind.profile.notification_level_on(True) is (
+                kind.profile.notification_level
+            )

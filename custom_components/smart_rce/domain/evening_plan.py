@@ -51,11 +51,8 @@ class EveningPlan:
     # Gross PLN/MWh below which the charge is worth more to the house.
     EXPORT_THRESHOLD: Final[float] = 750.0
 
-    # Hours scanned for "does tomorrow morning outbid tonight". Wider than
-    # `discharge_slots.MORNING_DISCHARGE_*` (5-8) on purpose: that constant
-    # picks the hour to discharge INTO before PV starts, whereas here we only
-    # ask whether the morning beats the evening — and from autumn to late
-    # winter 08:00 still produces next to nothing.
+    # Hours scanned for "does tomorrow morning outbid tonight" — from autumn
+    # to late winter 08:00 still produces next to nothing.
     MORNING_LOOKAHEAD: Final[range] = range(5, 9)
 
     # Evening hours considered on days with no expensive zone at all.

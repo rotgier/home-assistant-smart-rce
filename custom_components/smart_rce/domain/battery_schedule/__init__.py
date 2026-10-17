@@ -27,6 +27,7 @@ from .entry import (
     SlotBehavior,
     SlotKind,
     SlotProfile,
+    is_day_off,
 )
 from .events import (
     BatteryScheduleEvent,
@@ -82,4 +83,5 @@ __all__ = [
     "SlotSession",
     "StartOneShotCommand",
     "UpcomingRun",
+    "is_day_off",
 ]

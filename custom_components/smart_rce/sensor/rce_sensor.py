@@ -172,31 +172,6 @@ SENSOR_DESCRIPTIONS: tuple[SmartRceSensorDescription, ...] = (
             else None
         ),
     ),
-    SmartRceSensorDescription(
-        name="Morning Discharge Time",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        icon="mdi:weather-sunset-up",
-        value_fn=lambda ems: (
-            ems.discharge_slots.best_morning_discharge_slot.datetime
-            if ems.discharge_slots.best_morning_discharge_slot
-            else None
-        ),
-    ),
-    SmartRceSensorDescription(
-        name="Morning Discharge Price",
-        native_unit_of_measurement=f"{CURRENCY_PLN}/{UnitOfEnergy.MEGA_WATT_HOUR}",
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:cash-clock",
-        value_fn=lambda ems: (
-            round(
-                ems.discharge_slots.best_morning_discharge_slot.price
-                * GROSS_MULTIPLIER,
-                2,
-            )
-            if ems.discharge_slots.best_morning_discharge_slot
-            else None
-        ),
-    ),
     # --- Today charge slots ---
     SmartRceSensorDescription(
         name="Start Charge Hour Today",

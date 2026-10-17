@@ -1,7 +1,8 @@
 """MorningDischargePlan — what the automatic morning discharge does today.
 
-Workdays only. The slot starts at the dearest whole hour from 07:00 until the
-earlier of its window end (10:00) and S0 (the charge start from RCE prices),
+Every day (days off since 17.10.2026). The slot starts at the dearest whole
+hour from 07:00 (a day off: 05:00) until the earlier of its window end (13:00)
+and S0 (the charge start from RCE prices),
 then moves on hour by hour until S0, each hour DELAYED_TO_END: the battery
 stands on the target when the hour closes (settlement is hourly, so when inside
 the hour it gave the energy away does not matter). An hour takes part only when
@@ -12,6 +13,12 @@ surplus after the battery is full is exported whatever the morning did
 (17.10.2026: full ~13:20, so 09 at 705 sells although 15:00 pays 715). S0,
 not a forecast-moved start: an hour dearer than the whole PV window is worth
 selling even when the battery already takes PV.
+
+A day off has no T1: the whole day is T3, so the reserve is the floor (10%),
+and above the bar the battery goes all the way down — a shortfall is bought
+back at T3 for less than the hour sold it (user's decision 17.10.2026;
+backtest home-assistant-ops research/2026-10-17-rozladowanie-dni-wolne/:
+106 days off, always 10% +1 zł vs this rule +22 zł).
 
 Target, recomputed every minute (agreed with the user 15.10.2026):
 - the sun fills the battery even from the T1 reserve -> the reserve, at any
@@ -57,6 +64,7 @@ class MorningDischargePlan:
     EXPORT_THRESHOLD: ClassVar[float] = 750.0
     ARBITRAGE_PP: ClassVar[int] = 10
     EARLIEST_HOUR: ClassVar[int] = 7
+    EARLIEST_HOUR_DAY_OFF: ClassVar[int] = 5
 
     day: date
     hour: int
@@ -69,6 +77,7 @@ class MorningDischargePlan:
     # Minute of the day the battery is forecast full from S0 (None: not by T2)
     # — what `hours` compared against; kept for scoring the forecast.
     full_at_minute: int | None = None
+    day_off: bool = False
 
     @classmethod
     def decide(
@@ -81,14 +90,19 @@ class MorningDischargePlan:
         fill: int,
         hours: tuple[int, ...] = (),
         full_at_minute: int | None = None,
+        day_off: bool = False,
     ) -> MorningDischargePlan:
-        """Pick the target from the reserve and the lowest SoC the sun fills."""
+        """Pick the target from the reserve and the lowest SoC the sun fills.
+
+        On a day off the arbitrage goes down to the reserve itself: there is no
+        T1 for the ARBITRAGE_PP to protect.
+        """
         if fill <= reserve:
             target, branch = reserve, MorningDischargeBranch.SUN_ENOUGH
         elif gross_price < cls.EXPORT_THRESHOLD:
             target, branch = fill, MorningDischargeBranch.ROOM
         else:
-            target = min(reserve + cls.ARBITRAGE_PP, fill)
+            target = reserve if day_off else min(reserve + cls.ARBITRAGE_PP, fill)
             branch = MorningDischargeBranch.ARBITRAGE
         return cls(
             day=day,
@@ -100,12 +114,16 @@ class MorningDischargePlan:
             branch=branch,
             hours=hours,
             full_at_minute=full_at_minute,
+            day_off=day_off,
         )
 
     @classmethod
-    def best_hour(cls, prices: RceDayPrices, first: int, last: int) -> int | None:
-        """Dearest whole hour h with max(first, 07) <= h and h + 1 <= last."""
-        hours = range(max(first, cls.EARLIEST_HOUR), last)
+    def best_hour(
+        cls, prices: RceDayPrices, first: int, last: int, *, day_off: bool = False
+    ) -> int | None:
+        """Dearest whole hour h with max(first, 07 / 05 off) <= h and h + 1 <= last."""
+        earliest = cls.EARLIEST_HOUR_DAY_OFF if day_off else cls.EARLIEST_HOUR
+        hours = range(max(first, earliest), last)
         return max(hours, key=prices.gross_at, default=None)
 
     @classmethod
@@ -156,4 +174,5 @@ class MorningDischargePlan:
                 if self.full_at_minute is not None
                 else None
             ),
+            "day_off": self.day_off,
         }

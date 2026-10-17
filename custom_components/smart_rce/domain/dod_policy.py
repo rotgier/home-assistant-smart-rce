@@ -390,11 +390,6 @@ class DodPolicy:
         Caller guarantees `state.now is not None` (checked in
         `_compute_phase`); `state.is_workday` / `is_workday_tomorrow` may
         be None → UNKNOWN keeps persisted state.
-
-        Morning RCE-price check (`discharge_slots.best_morning_discharge_slot`)
-        intentionally dropped — that slot is computed for emergency morning
-        discharge only (5:00..7:00 window) and not reliable as preservation
-        trigger.
         """
         assert state.now is not None
         # Which side of midnight we are on. Testing against the morning window

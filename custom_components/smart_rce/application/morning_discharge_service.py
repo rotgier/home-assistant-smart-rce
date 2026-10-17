@@ -1,8 +1,9 @@
 """MorningDischargeService — recomputes today's automatic morning discharge.
 
 Every minute, like the target of the auto morning charge: gathers today's
-prices, S0, the T1 reserve and the PV surplus (Live Soft, p60
-consumption of earlier workdays) and hands `BatterySchedule` a
+prices, S0, the T1 reserve (a day off: the 10% floor) and the PV surplus
+(Live Soft, p60 consumption of earlier days of the same kind) and hands
+`BatterySchedule` a
 `MorningDischargePlan` — or None, which keeps the DISCHARGE_MORNING_AUTO slot
 still. The rule itself lives in the domain (`MorningDischargePlan.decide`,
 `lowest_soc_the_sun_fills`).
@@ -16,19 +17,16 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 
-from ..domain.battery_schedule import MorningDischargePlan, SlotKind
+from ..domain.battery_schedule import MorningDischargePlan, SlotKind, is_day_off
 from ..domain.charge_start_shift import (
     full_charge_minute,
     lowest_soc_the_sun_fills,
     to_minutes,
 )
 from ..domain.pv_surplus import surplus_window_end
+from ..domain.target_soc import MIN_SOC_PERCENT
 
 if TYPE_CHECKING:
-    from datetime import time
-
-    from ..domain.battery_schedule import T1SocReserve
-    from ..domain.pv_surplus import SurplusProfile
     from ..domain.rce import RceDayPrices
     from .ems import Ems
     from .pv_surplus_service import PvSurplusService
@@ -63,15 +61,23 @@ class MorningDischargeService:
             now.date(), self._ems.is_workday_today
         ):
             return None
+        day_off = is_day_off(now.date(), self._ems.is_workday_today)
         prices = self._today_prices(now)
         s0 = self._ems.charge_slots.today_start
         reserve = schedule.t1_reserve
-        if prices is None or s0 is None or reserve is None or reserve.day != now.date():
+        if prices is None or s0 is None:
             return None
+        if not day_off and (reserve is None or reserve.day != now.date()):
+            return None
+        # A day off searches from 05:00 whatever the slot's start says: the
+        # slot's window is tuned for workdays.
+        first = (
+            MorningDischargePlan.EARLIEST_HOUR_DAY_OFF
+            if day_off
+            else self._first_hour(entry.start.hour, entry.start.minute)
+        )
         best = MorningDischargePlan.best_hour(
-            prices,
-            self._first_hour(entry.start.hour, entry.start.minute),
-            min(entry.end.hour, s0.hour),
+            prices, first, min(entry.end.hour, s0.hour), day_off=day_off
         )
         if best is None:
             return None
@@ -81,7 +87,18 @@ class MorningDischargeService:
         if profile is None:
             return None
         t2 = surplus_window_end(now.date())
-        full = self._full_charge(profile, s0, reserve, t2)
+        # Starts from the reading without margin — the lowest the battery can
+        # be left at, so the latest full charge (the cautious side).
+        start_soc = (
+            MIN_SOC_PERCENT
+            if day_off or reserve is None
+            else (
+                reserve.value_without_margin
+                if reserve.value_without_margin is not None
+                else reserve.value
+            )
+        )
+        full = full_charge_minute(profile, to_minutes(s0), start_soc, t2 * 60)
         # The sun charges the battery until the hour it fills in (inclusive).
         refill_end = t2 if full is None else min(t2, -(-full // 60))
         hours = MorningDischargePlan.hours_from(prices, best, s0.hour, refill_end)
@@ -91,8 +108,13 @@ class MorningDischargeService:
             return None
         # The line the hour stands on: the margin step at the hour's start,
         # not now's (at 07:41 the plan for 08:00 already takes the 08 step).
-        line = reserve.value_at(
-            now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        # A day off has no T1 — the floor.
+        line = (
+            MIN_SOC_PERCENT
+            if day_off or reserve is None
+            else reserve.value_at(
+                now.replace(hour=hour, minute=0, second=0, microsecond=0)
+            )
         )
         fill = lowest_soc_the_sun_fills(
             profile, prices.hour_price, (hour + 1) * 60, to_minutes(s0), line
@@ -105,23 +127,8 @@ class MorningDischargeService:
             fill=fill,
             hours=hours,
             full_at_minute=full,
+            day_off=day_off,
         )
-
-    @staticmethod
-    def _full_charge(
-        profile: SurplusProfile, s0: time, reserve: T1SocReserve, t2: int
-    ) -> int | None:
-        """Minute the battery is forecast full charging from S0; None if not by T2.
-
-        Starts from the reading without margin — the lowest the battery can be
-        left at, so the latest full charge (the cautious side).
-        """
-        soc = (
-            reserve.value_without_margin
-            if reserve.value_without_margin is not None
-            else reserve.value
-        )
-        return full_charge_minute(profile, to_minutes(s0), soc, t2 * 60)
 
     @staticmethod
     def _first_hour(hour: int, minute: int) -> int:
