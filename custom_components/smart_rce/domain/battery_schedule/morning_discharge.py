@@ -91,15 +91,17 @@ class MorningDischargePlan:
         hours: tuple[int, ...] = (),
         full_at_minute: int | None = None,
         day_off: bool = False,
+        export_threshold: float = EXPORT_THRESHOLD,
     ) -> MorningDischargePlan:
         """Pick the target from the reserve and the lowest SoC the sun fills.
 
         On a day off the arbitrage goes down to the reserve itself: there is no
-        T1 for the ARBITRAGE_PP to protect.
+        T1 for the ARBITRAGE_PP to protect. `export_threshold` is the user's bar
+        (`number.ems_export_threshold`); EXPORT_THRESHOLD is its default.
         """
         if fill <= reserve:
             target, branch = reserve, MorningDischargeBranch.SUN_ENOUGH
-        elif gross_price < cls.EXPORT_THRESHOLD:
+        elif gross_price < export_threshold:
             target, branch = fill, MorningDischargeBranch.ROOM
         else:
             target = reserve if day_off else min(reserve + cls.ARBITRAGE_PP, fill)

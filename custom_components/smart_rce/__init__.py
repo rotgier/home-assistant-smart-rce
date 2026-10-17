@@ -337,7 +337,7 @@ def live_reload() -> None:
     # already in sys.modules, so edits inside the package would silently not
     # take effect (the same trap garden hit before it was itemised here).
     # Order: direction -> operation -> entry -> oneshot -> commands -> events
-    # -> session -> t1_reserve -> schedule -> package re-exports.
+    # -> session -> t1_reserve -> morning_discharge -> schedule -> package re-exports.
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.direction")
     )
@@ -353,6 +353,11 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.battery_schedule.session"))
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.t1_reserve")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.domain.battery_schedule.morning_discharge"
+        )
     )
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.schedule")

@@ -42,7 +42,6 @@ from custom_components.smart_rce.application.plan_application import PlanApplica
 from custom_components.smart_rce.application.water_heater_reserved_service import (
     WaterHeaterReservedService,
 )
-from custom_components.smart_rce.const import GROSS_MULTIPLIER
 from custom_components.smart_rce.domain.battery_schedule import (
     BatteryOperation,
     BatteryScheduleInput,
@@ -193,7 +192,16 @@ class Ems:
             state,
             ems_interventions_blocked=schedule_result.ems_interventions_blocked,
             start_charge_hour_override=charge_result.start_charge_hour_override,
-            should_hold_for_peak=self._should_hold_for_peak(state),
+            sale_planned=(
+                self.battery_schedule_service.sale_planned_ahead(state.now)
+                if state.now is not None
+                else None
+            ),
+            reserve_floor=(
+                self.battery_schedule_service.reserve_floor(state.now)
+                if state.now is not None
+                else None
+            ),
         )
         self._dod_repository.save_if_changed()
         self._dod_logger.log_if_changed(state)
@@ -321,6 +329,7 @@ class Ems:
             day_prices,
             is_workday=is_workday,
             tomorrow=None if for_tomorrow else prices.tomorrow,
+            export_threshold=self.battery_schedule_service.export_threshold,
         )
 
     async def replan_nearest_evening(self, now: datetime) -> EveningReplan | None:
@@ -460,25 +469,6 @@ class Ems:
         if not schedule_op.is_idle:
             return schedule_op.ems_op
         return grid_op
-
-    def _should_hold_for_peak(self, state: InputState) -> bool | None:
-        """Compare smart_rce-owned max_upcoming_peak vs user threshold.
-
-        Replaces external read of `binary_sensor.rce_should_hold_for_peak`
-        (HA template) — that was a 6-hop round-trip (smart_rce produces
-        `sensor.rce_max_upcoming_peak_gross` → HA template binary_sensor
-        → state_mapper → InputState → DodPolicy) for a value computable
-        locally. Eliminates post-reload partial-input flicker window.
-
-        Returns None when either signal is missing (no RCE prices yet, or
-        input_number threshold sensor transiently unavailable) — DodPolicy
-        guards with Phase.UNKNOWN to keep persisted state.
-        """
-        peak = self.discharge_slots.max_upcoming_peak
-        threshold = state.rce_high_price_threshold_gross
-        if peak is None or threshold is None:
-            return None
-        return peak.price * GROSS_MULTIPLIER > threshold
 
     def _heater_threshold(self) -> float:
         """Read input_number.heater_rce_threshold from last InputState (with fallback).

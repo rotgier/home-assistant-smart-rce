@@ -17,7 +17,7 @@ Eight named slots — four per day (today / tomorrow):
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import Any, Final
 
 from .commands import OneShotParamsCommand, SlotCommand
 from .direction import Direction
@@ -36,13 +36,14 @@ from .events import (
     SlotDisengaged,
     SlotEngaged,
 )
+from .morning_discharge import MorningDischargePlan
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
 from .session import SlotSession, UpcomingRun
 from .t1_reserve import T1SocReserve
 
-if TYPE_CHECKING:
-    from .morning_discharge import MorningDischargePlan
+# Default of the export bar — the planners' long-standing 750 gross.
+DEFAULT_EXPORT_THRESHOLD: Final[float] = MorningDischargePlan.EXPORT_THRESHOLD
 
 # Store key of the single evening slot that predates the EARLY/LATE split.
 _LEGACY_EVENING_KEY = "DISCHARGE_EVENING"
@@ -95,6 +96,7 @@ class BatterySchedule:
         t1_reserve: T1SocReserve | None = None,
         sessions: list[SlotSession] | None = None,
         evening_day: date | None = None,
+        export_threshold: float | None = None,
     ) -> None:
         self._today: dict[SlotKind, BatteryScheduleEntry] = (
             dict(today)
@@ -138,9 +140,10 @@ class BatterySchedule:
         # the day, variant or window changes).
         self._t1_reserve_checkpoint = t1_reserve
         self._t1_reserve_checkpoint_at: datetime | None = None
-        # Today's automatic morning discharge — in memory only: it is rebuilt
-        # within a minute of a restart from the forecast and the prices.
-        self._morning_discharge: MorningDischargePlan | None = None
+        # The automatic morning discharge plans by day — today's, and from the
+        # afternoon tomorrow's (evening preview, hold rule). In memory only:
+        # rebuilt within a minute of a restart from the forecast and prices.
+        self._morning_discharge: dict[date, MorningDischargePlan] = {}
         # Today's slot engagements, for the dashboard. Persisted so a restart
         # in the middle of the day — or of a session — keeps what already ran.
         self._sessions: list[SlotSession] = list(sessions or [])
@@ -149,6 +152,14 @@ class BatterySchedule:
         # today still has evening hours left; a later evening's slots stay
         # still until their day. None (before 17.10.2026): any day.
         self._evening_day = evening_day
+        # The user's bar (gross PLN/MWh) above which selling stored energy beats
+        # keeping it — both planners and the hold rule read it. One knob,
+        # `number.ems_export_threshold` (17.10.2026; was 750 in code twice).
+        self._export_threshold = (
+            export_threshold
+            if export_threshold is not None
+            else DEFAULT_EXPORT_THRESHOLD
+        )
 
     @property
     def ems_interventions_blocked(self) -> bool:
@@ -255,6 +266,17 @@ class BatterySchedule:
             self.stamp_evening(today)
         return changed
 
+    @property
+    def export_threshold(self) -> float:
+        return self._export_threshold
+
+    def set_export_threshold(self, value: float) -> bool:
+        """Set the export bar (gross PLN/MWh). True if changed."""
+        if self._export_threshold == value:
+            return False
+        self._export_threshold = value
+        return True
+
     def stamp_evening(self, day: date) -> bool:
         """Date the evening slots to the evening they now describe. True if changed."""
         if self._evening_day == day:
@@ -315,22 +337,30 @@ class BatterySchedule:
         """Latest remembered reserve, whatever day it is for."""
         return self._t1_reserve
 
-    def set_morning_discharge(self, plan: MorningDischargePlan | None) -> bool:
-        """Remember today's morning discharge plan. True if it changed."""
-        if self._morning_discharge == plan:
+    def set_morning_discharge(
+        self, plan: MorningDischargePlan | None, *, day: date | None = None
+    ) -> bool:
+        """Remember the plan for its day (None + `day`: no plan). True if changed.
+
+        Plans older than the day before are dropped.
+        """
+        key = plan.day if plan is not None else day
+        if key is None:
             return False
-        self._morning_discharge = plan
+        if self._morning_discharge.get(key) == plan:
+            return False
+        if plan is None:
+            del self._morning_discharge[key]
+        else:
+            self._morning_discharge[key] = plan
+        horizon = key - timedelta(days=1)
+        for old in [d for d in self._morning_discharge if d < horizon]:
+            del self._morning_discharge[old]
         return True
 
     def morning_discharge_for(self, day: date) -> MorningDischargePlan | None:
-        """Return the plan when it is for `day`, else None."""
-        plan = self._morning_discharge
-        return plan if plan is not None and plan.day == day else None
-
-    @property
-    def morning_discharge(self) -> MorningDischargePlan | None:
-        """Latest plan, whatever day it is for."""
-        return self._morning_discharge
+        """Return the plan for `day`, None when there is none."""
+        return self._morning_discharge.get(day)
 
     # ─── Read models for the dashboard ───
 
@@ -715,6 +745,7 @@ class BatterySchedule:
             "evening_day": (
                 self._evening_day.isoformat() if self._evening_day is not None else None
             ),
+            "export_threshold": self._export_threshold,
         }
 
     @classmethod
@@ -798,4 +829,9 @@ class BatterySchedule:
             t1_reserve=t1_reserve,
             sessions=sessions,
             evening_day=evening_day,
+            export_threshold=(
+                float(raw_threshold)
+                if (raw_threshold := data.get("export_threshold")) is not None
+                else None
+            ),
         )

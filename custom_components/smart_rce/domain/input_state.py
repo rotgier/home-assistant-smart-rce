@@ -48,13 +48,9 @@ class InputState:
     # (mirrors `ems_interventions_blocked` Etap 0 + `battery_charge_allowed`
     # Etap B patterns).
 
-    # `should_hold_for_peak` REMOVED — was previously read from HA
-    # template `binary_sensor.rce_should_hold_for_peak`, but smart_rce
-    # already owns `discharge_slots.max_upcoming_peak` so it's a 6-hop
-    # round-trip through HA for a value computable locally. Now Ems
-    # computes `peak.price * GROSS_MULTIPLIER > rce_high_price_threshold_gross`
-    # and passes the result as a kwarg to `DodPolicy.update`. The HA
-    # template binary_sensor is kept for legacy automations + dashboards.
+    # `should_hold_for_peak` REMOVED — DodPolicy holds the battery for a
+    # planned sale instead (`BatteryScheduleService.sale_planned_ahead`,
+    # 17.10.2026); the HA template and `input_number` threshold are gone.
 
     is_workday: bool | None = None
     # binary_sensor.workday (HA workday integration, country=PL).
@@ -104,10 +100,6 @@ class InputState:
     # Used by DodPolicy night-preserve phase (22:00..07:00) to decide whether
     # to preserve battery (workday tomorrow → True → preserve) or allow free
     # discharge.
-
-    rce_high_price_threshold_gross: float | None = None
-    # input_number.rce_high_price_threshold_gross (gr/kWh, default ~350) —
-    # threshold above which morning_discharge_price triggers preserve.
 
     now: datetime | None = None
 

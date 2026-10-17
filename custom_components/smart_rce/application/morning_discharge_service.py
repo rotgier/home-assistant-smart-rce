@@ -4,8 +4,10 @@ Every minute, like the target of the auto morning charge: gathers the plan
 day's prices, S0, the T1 reserve (a day off: the 10% floor) and the PV surplus
 (Live Soft, p60 consumption of earlier days of the same kind) and hands
 `BatterySchedule` a `MorningDischargePlan` — or None, which keeps the
-DISCHARGE_MORNING_AUTO slot still. The plan day is today, or tomorrow once the
-evening switched over (the evening preview, user's wish 17.10.2026). The rule itself lives in the domain (`MorningDischargePlan.decide`,
+DISCHARGE_MORNING_AUTO slot still. Both today's and tomorrow's plan, the latter
+as soon as its inputs exist (tomorrow's prices ~14:00; for a workday also
+tomorrow's T1 reserve, from 16:00): the evening preview shows it, and the hold
+rule (DodPolicy) keeps the battery for a morning sale (user, 17.10.2026). The rule itself lives in the domain (`MorningDischargePlan.decide`,
 `lowest_soc_the_sun_fills`).
 """
 
@@ -48,20 +50,21 @@ class MorningDischargeService:
 
     @callback
     def refresh(self) -> None:
-        """Rebuild today's plan and hand it to the schedule."""
-        self._ems.battery_schedule_service.set_morning_discharge(
-            self._plan(self._clock())
-        )
+        """Rebuild today's and tomorrow's plan and hand them to the schedule."""
+        now = self._clock()
+        for day in (now.date(), now.date() + timedelta(days=1)):
+            self._ems.battery_schedule_service.set_morning_discharge(
+                day, self._plan(now, day)
+            )
 
-    def _plan(self, now: datetime) -> MorningDischargePlan | None:
-        """Plan for the plan day: today, or tomorrow once the evening switched over.
+    def _plan(self, now: datetime, day: date) -> MorningDischargePlan | None:
+        """`day`'s plan (today or tomorrow), None while its inputs are missing.
 
-        Tomorrow's plan is the evening preview — it takes over at midnight and
-        is recomputed every minute like today's, so it follows the forecast.
+        Tomorrow's plan takes over at midnight; both are recomputed every
+        minute, so they follow the forecast.
         """
         schedule = self._ems.battery_schedule_service
-        tomorrow = schedule.plans_tomorrow_at(now)
-        day = now.date() + timedelta(days=1) if tomorrow else now.date()
+        tomorrow = day != now.date()
         is_workday = (
             self._ems.is_workday_tomorrow if tomorrow else self._ems.is_workday_today
         )
@@ -134,6 +137,7 @@ class MorningDischargeService:
             profile, prices.hour_price, (hour + 1) * 60, to_minutes(s0), line
         )
         return MorningDischargePlan.decide(
+            export_threshold=schedule.export_threshold,
             day=day,
             hour=hour,
             gross_price=prices.gross_at(hour),

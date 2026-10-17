@@ -308,10 +308,54 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         return self._repo.schedule.t1_reserve
 
     @callback
-    def set_morning_discharge(self, plan: MorningDischargePlan | None) -> None:
-        """Take today's automatic morning discharge plan (in memory only)."""
-        if self._repo.schedule.set_morning_discharge(plan):
+    def set_morning_discharge(
+        self, day: date, plan: MorningDischargePlan | None
+    ) -> None:
+        """Take `day`'s automatic morning discharge plan (in memory only)."""
+        if self._repo.schedule.set_morning_discharge(plan, day=day):
             self._notify_all()
+
+    @property
+    def export_threshold(self) -> float:
+        """Gross PLN/MWh above which selling stored energy beats keeping it."""
+        return self._repo.schedule.export_threshold
+
+    async def set_export_threshold(self, value: float) -> None:
+        """UI write from `number.ems_export_threshold`. Persists + notifies."""
+        await self._persist_and_notify(self._repo.schedule.set_export_threshold(value))
+
+    def sale_planned_ahead(self, now: datetime) -> bool:
+        """Tell whether a sale is planned that the battery should be held for.
+
+        From 13:00 an evening slot still ahead today counts; at any hour the
+        plan of the morning ahead (tomorrow's before midnight, today's after
+        it) counts when its price clears the export bar and there is energy
+        above its target. The evening planner itself only sells above that bar.
+        """
+        schedule = self._repo.schedule
+        today = now.date()
+        if now.hour >= self._T1_END_HOUR:
+            end = schedule.evening_end_on(today)
+            if end is not None and now.time() < end:
+                return True
+        plan = schedule.morning_discharge_for(self._morning_ahead(now))
+        return (
+            plan is not None
+            and plan.gross_price >= schedule.export_threshold
+            and (self._last_soc is None or self._last_soc > plan.target)
+        )
+
+    def reserve_floor(self, now: datetime) -> int | None:
+        """T1 reserve of the morning ahead — how low the house may take the battery."""
+        reserve = self._repo.schedule.t1_reserve_for(self._morning_ahead(now))
+        return reserve.value if reserve is not None else None
+
+    @classmethod
+    def _morning_ahead(cls, now: datetime) -> date:
+        """Return the next morning's date: today before 07:00, tomorrow from then on."""
+        if now.hour < cls._T1_START_HOUR:
+            return now.date()
+        return now.date() + timedelta(days=1)
 
     @property
     def morning_discharge(self) -> MorningDischargePlan | None:
@@ -320,7 +364,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
 
     @property
     def morning_discharge_tomorrow(self) -> MorningDischargePlan | None:
-        """Tomorrow's plan — the evening preview, once the evening switched over."""
+        """Tomorrow's plan, once its inputs exist (prices ~14:00, workday reserve 16:00)."""
         return self._repo.schedule.morning_discharge_for(
             self._clock().date() + timedelta(days=1)
         )

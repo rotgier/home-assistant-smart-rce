@@ -225,7 +225,7 @@ SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
         icon="mdi:cash-refund",
     ),
     DepositSensorDescription(
-        # Gross, to line up with `input_number.rce_high_price_threshold_gross`
+        # Gross, to line up with `number.ems_export_threshold`
         # and the RCE sensors — the whole system quotes RCE x 1.23.
         key="break_even_rce",
         name="Break Even RCE",
