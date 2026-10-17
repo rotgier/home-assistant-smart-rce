@@ -52,7 +52,10 @@ class PlanReading:
     at: datetime
     full_at: int | None  # minute of the day; None = not full before T2
     hours: tuple[int, ...]
-    start_soc: float | None  # the reserve without margin the plan charged from
+    # What the plan charged from: the reserve without margin, the 10% floor
+    # on a day off (f4ea9ff).
+    start_soc: float | None
+    day_off: bool = False
 
 
 def score_full_charge(  # noqa: PLR0917 — one call site, the day's facts
@@ -82,8 +85,14 @@ def score_full_charge(  # noqa: PLR0917 — one call site, the day's facts
         if start_soc is not None
         else None
     )
+    # A day off searches from 05:00, whatever the slot's window (as production).
+    first = (
+        MorningDischargePlan.EARLIEST_HOUR_DAY_OFF
+        if plan.day_off
+        else _WINDOW_FIRST_HOUR
+    )
     best = MorningDischargePlan.best_hour(
-        day_prices, _WINDOW_FIRST_HOUR, min(_WINDOW_END_HOUR, s0 // 60)
+        day_prices, first, min(_WINDOW_END_HOUR, s0 // 60), day_off=plan.day_off
     )
     return FullChargeScore(
         planned_at=plan.at,
