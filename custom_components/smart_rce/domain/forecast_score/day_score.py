@@ -20,7 +20,6 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
-from ..battery_schedule.entry import WORKDAYS_ONLY_EXTRA_DAYS
 from ..pv_surplus import DayType
 from .day_type import DayTypeFigures, day_type_figures
 from .full_charge_score import FullChargeScore, PlanReading, score_full_charge
@@ -54,9 +53,15 @@ class ScoreStatus(StrEnum):
     FINAL = "final"
 
 
+# Days off on which the morning auto slots ran as on a workday — a one-off
+# (17.10.2026: high morning RCE and a live test). History: the exception is gone
+# from the schedule, but those days were run, and are scored, with a reserve.
+_RAN_AS_WORKDAY: Final[frozenset[date]] = frozenset({date(2026, 10, 17)})
+
+
 def has_morning_reserve(day: date) -> bool:
     """Workdays, and the days the morning auto slots ran by exception."""
-    return DayType.of(day) is DayType.WORKDAY or day in WORKDAYS_ONLY_EXTRA_DAYS
+    return DayType.of(day) is DayType.WORKDAY or day in _RAN_AS_WORKDAY
 
 
 @dataclass(frozen=True)

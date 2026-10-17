@@ -29,22 +29,23 @@ Phase classification + decisions:
   with POSITIVE intervention (POSITIVE first line >60 Wh, block_post_charge
   second line >=100 Wh / instant_surplus when POSITIVE cannot absorb, e.g.
   SoC=100% / BMS clamp / sustained surplus).
-- **AFTERNOON_STATIC** (13:00 → evening, peak=True): direct DoD=0 — preserve
-  for evening peak. Battery typically full → POSITIVE entry blocked by
-  `soc_at_entry_ceiling` anyway.
-- **AFTERNOON_DYNAMIC** (13:00 → evening, peak=False): delegates to
-  `block_afternoon_dynamic` — aggressive thresholds (>0 Wh hourly) since
-  past PV peak.
-- **EVENING_DISCHARGE** (evening region, workday today OR weekend without
-  preserve): direct DoD=90. Workday: cover expensive evening consumption;
-  explicit BatterySchedule engagement raises `ems_interventions_blocked` for
-  fast discharge windows. Weekend: free when no peak ahead and tomorrow=weekend.
-- **EVENING_PRESERVE** (evening region, weekend today AND (peak ahead OR
-  workday tomorrow)): direct DoD=0 — protect battery for upcoming load.
-- **NIGHT_PRESERVE** (evening end → 07:00, workday tomorrow): direct DoD=0 —
-  preserve for tomorrow morning load.
-- **NIGHT_FREE** (evening end → 07:00, weekend tomorrow): direct DoD=90 — free
-  discharge.
+- **EVENING_DISCHARGE** (T2 of a workday): direct DoD=90 — the house draws
+  the battery through the expensive zone; the evening slots sell
+  (`ems_interventions_blocked`).
+- Every other hour from 13:00 to 07:00 — afternoon, the night, and on a day
+  off the whole evening — follows one rule (user's decision 17.10.2026,
+  replacing "max upcoming RCE > 700"; the day-off evening 19-22 is gone):
+  - **HOLD_FOR_SALE**: a sale is planned — an evening slot still ahead today,
+    or tomorrow morning's plan at or above the export bar
+    (`number.ems_export_threshold`) with energy above its target. Direct
+    DoD=0: the battery waits for it.
+  - **RESERVE_FLOOR**: a workday morning ahead. The house may draw down to
+    that morning's T1 reserve (DoD = 100 - reserve), no further.
+  - **RELEASED**: otherwise the house may draw down to 10% (DoD=90).
+  - In RESERVE_FLOOR and RELEASED the battery does not discharge while PV is
+    exporting anyway (`block_afternoon_dynamic` hysteresis → DoD=0).
+  - **NIGHT_PRESERVE**: a workday morning ahead but no reserve known for it
+    (after 16:00) — hold everything, as before 17.10.2026.
 - **WEEKEND_MORNING** (7:00 → 13:00, weekend): direct DoD=0 — passive PV
   capture (RCE typically flat, no expensive hours to protect surplus).
 - **UNKNOWN** (inputs missing): keep persisted state.
@@ -56,12 +57,11 @@ Coordination with GridExportManager (POSITIVE / NEGATIVE intervention):
     | INTERVENTIONS_BLOCKED | False (always)     | exits            | exits    |
     | WORKDAY_PRE        | hysteresis            | blocked          | yes      |
     | WORKDAY_POST       | dual-trigger          | yes (1st line)   | yes      |
-    | AFTERNOON_STATIC   | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
-    | AFTERNOON_DYNAMIC  | dual-trigger          | yes (1st line)   | yes      |
+    | HOLD_FOR_SALE      | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
+    | RESERVE_FLOOR      | dual-trigger          | yes (1st line)   | yes      |
+    | RELEASED           | dual-trigger          | yes (1st line)   | yes      |
     | EVENING_DISCHARGE  | False (DoD=90 direct) | rare             | yes      |
-    | EVENING_PRESERVE   | False (DoD=0 direct)  | rare             | yes      |
     | NIGHT_PRESERVE     | False (DoD=0 direct)  | rare             | yes      |
-    | NIGHT_FREE         | False (DoD=90 direct) | rare             | yes      |
     | WEEKEND_MORNING    | False (DoD=0 direct)  | yes              | yes      |
 
 GridExport intervention thresholds (hourly net export, Wh; details in
@@ -95,16 +95,14 @@ from .block_discharge import (
 from .bucket import PV_WINDOW_HOURS
 
 if TYPE_CHECKING:
-    from datetime import date, time
+    from datetime import time
 
     from .input_state import InputState
 
 
-# Evening region on a day that has no T2 at all — days off, and days where
-# `is_workday` has not arrived yet. Not a tariff boundary: on those days the
-# question is only "is an expensive RCE hour ahead", and this is the window
-# that heuristic was built around.
-_OFF_PEAK_EVENING: Final[range] = range(19, 22)
+# From this hour a workday morning ahead has its T1 reserve (the reserve moves
+# on to tomorrow at 16:00, `BatteryScheduleService._TOMORROW_FROM_HOUR`).
+_RESERVE_FOR_TOMORROW_FROM_HOUR: Final[int] = 16
 
 
 class Phase(Enum):
@@ -118,12 +116,11 @@ class Phase(Enum):
     # can drive discharge through. Renamed from EMS_ALLOW_DISCHARGE (Etap 0).
     WORKDAY_PRE_CHARGE = "workday_pre_charge"  # 7:00..start_charge, workday
     WORKDAY_POST_CHARGE = "workday_post_charge"  # start_charge..13:00, workday
-    AFTERNOON_STATIC = "afternoon_static"  # 13:00..evening, peak=True (any day)
-    AFTERNOON_DYNAMIC = "afternoon_dynamic"  # 13:00..evening, peak=False (any day)
-    EVENING_DISCHARGE = "evening_discharge"  # evening, workday OR weekend free
-    EVENING_PRESERVE = "evening_preserve"  # evening, weekend with peak/preserve
-    NIGHT_PRESERVE = "night_preserve"  # evening end..07:00, workday tomorrow
-    NIGHT_FREE = "night_free"  # evening end..07:00, weekend tomorrow
+    EVENING_DISCHARGE = "evening_discharge"  # T2 of a workday
+    HOLD_FOR_SALE = "hold_for_sale"  # 13:00..07:00 off T2, a sale planned
+    RESERVE_FLOOR = "reserve_floor"  # 13:00..07:00 off T2, workday morning ahead
+    RELEASED = "released"  # 13:00..07:00 off T2, otherwise
+    NIGHT_PRESERVE = "night_preserve"  # workday morning ahead, reserve unknown
     WEEKEND_MORNING = "weekend_morning"  # 7:00..13:00, weekend
     UNKNOWN = "unknown"  # fallback (missing inputs)
 
@@ -134,7 +131,8 @@ DELEGATING_PHASES: frozenset[Phase] = frozenset(
     {
         Phase.WORKDAY_PRE_CHARGE,
         Phase.WORKDAY_POST_CHARGE,
-        Phase.AFTERNOON_DYNAMIC,
+        Phase.RESERVE_FLOOR,
+        Phase.RELEASED,
     }
 )
 
@@ -142,11 +140,9 @@ DELEGATING_PHASES: frozenset[Phase] = frozenset(
 DIRECT_PHASE_DOD: dict[Phase, int] = {
     Phase.INTERVENTIONS_BLOCKED: 90,  # smart_rce interventions blocked — DoD=90 so
     # explicit schedule/user override can discharge through.
-    Phase.AFTERNOON_STATIC: 0,  # peak today — preserve for evening
-    Phase.EVENING_DISCHARGE: 90,  # workday evening (cover peak) OR weekend free
-    Phase.EVENING_PRESERVE: 0,  # weekend evening — peak ahead OR workday tomorrow
-    Phase.NIGHT_PRESERVE: 0,  # workday tomorrow — preserve for morning load
-    Phase.NIGHT_FREE: 90,  # weekend tomorrow — battery free
+    Phase.EVENING_DISCHARGE: 90,  # workday T2 — the house draws the battery
+    Phase.HOLD_FOR_SALE: 0,  # a sale planned — keep it for that
+    Phase.NIGHT_PRESERVE: 0,  # workday morning ahead, reserve unknown
     Phase.WEEKEND_MORNING: 0,  # weekend rano — passive PV capture
 }
 
@@ -156,7 +152,8 @@ DEFAULT_DOD: int = 90  # safe fallback when inputs incomplete
 _PHASE_TO_BLOCK_FN = {
     Phase.WORKDAY_PRE_CHARGE: block_pre_charge,
     Phase.WORKDAY_POST_CHARGE: block_post_charge,
-    Phase.AFTERNOON_DYNAMIC: block_afternoon_dynamic,
+    Phase.RESERVE_FLOOR: block_afternoon_dynamic,
+    Phase.RELEASED: block_afternoon_dynamic,
 }
 
 
@@ -187,20 +184,19 @@ class DodPolicy:
         *,
         ems_interventions_blocked: bool = False,
         start_charge_hour_override: time | None = None,
-        should_hold_for_peak: bool | None = None,
+        sale_planned: bool | None = None,
+        reserve_floor: int | None = None,
     ) -> None:
         """Compute target_dod for this tick.
 
-        Reads InputState (time, peak, exported_energy, pv_5min, is_workday,
+        Reads InputState (time, exported_energy, pv_5min, is_workday,
         is_workday_tomorrow) plus kwargs from Ems:
         - `ems_interventions_blocked` from BatteryScheduleService
         - `start_charge_hour_override` from BatteryChargeService (Etap B'-2)
-        - `should_hold_for_peak` computed by Ems from smart_rce-owned
-          `discharge_slots.max_upcoming_peak` vs user threshold
-          (`state.rce_high_price_threshold_gross`) — was previously read back
-          from `binary_sensor.rce_should_hold_for_peak` HA template via
-          state_mapper, but that 6-hop round-trip introduced post-reload
-          partial-input flicker (TODO 6). None when either input is missing.
+        - `sale_planned` — BatteryScheduleService.sale_planned_ahead (an
+          evening slot still ahead today, or the morning ahead's plan at or
+          above the export bar); None while unknown
+        - `reserve_floor` — the T1 reserve of the morning ahead, None if none
 
         Mutates target_dod + current_phase + _override_set_phase + _prev_block.
 
@@ -212,7 +208,8 @@ class DodPolicy:
             state,
             ems_interventions_blocked,
             start_charge_hour_override,
-            should_hold_for_peak,
+            sale_planned,
+            reserve_floor,
         )
 
         if new_phase == Phase.UNKNOWN:
@@ -236,7 +233,9 @@ class DodPolicy:
             block_fn = _PHASE_TO_BLOCK_FN[new_phase]
             new_block = block_fn(state, self._prev_block)
             self._prev_block = new_block
-            self.target_dod = 0 if new_block else 90
+            self.target_dod = (
+                0 if new_block else self._released_dod(new_phase, reserve_floor)
+            )
         elif new_phase in DIRECT_PHASE_DOD:
             self.target_dod = DIRECT_PHASE_DOD[new_phase]
             # Sync hysteresis state to direct rule — when next delegating phase
@@ -245,6 +244,13 @@ class DodPolicy:
         else:
             self.target_dod = DEFAULT_DOD
             self._prev_block = False
+
+    @staticmethod
+    def _released_dod(phase: Phase, reserve_floor: int | None) -> int:
+        """DoD when a delegating phase lets the house draw the battery."""
+        if phase is Phase.RESERVE_FLOOR and reserve_floor is not None:
+            return max(0, min(DEFAULT_DOD, 100 - reserve_floor))
+        return DEFAULT_DOD
 
     def _is_override_active(self, state: InputState, current_phase: Phase) -> bool:
         """Check if user override applies right now.
@@ -265,7 +271,8 @@ class DodPolicy:
         state: InputState,
         ems_interventions_blocked: bool = False,
         start_charge_hour_override: time | None = None,
-        should_hold_for_peak: bool | None = None,
+        sale_planned: bool | None = None,
+        reserve_floor: int | None = None,
     ) -> Phase:
         """Dispatch to phase by priority — first match wins.
 
@@ -281,38 +288,25 @@ class DodPolicy:
             return Phase.UNKNOWN
 
         hour = state.now.hour
-        evening = self._evening_region(state.now.date(), state.is_workday)
-
-        # Night — from the end of the evening region to the morning window.
-        if hour >= evening.stop or hour < PV_WINDOW_HOURS.start:
-            return self._night_phase(state)
-
-        # Evening — workday vs weekend distinction
-        if hour in evening:
-            return self._evening_phase(state, should_hold_for_peak)
-
-        # Afternoon — peak preserve OR dynamic hysteresis
-        if PV_WINDOW_HOURS.stop <= hour < evening.start:
-            if should_hold_for_peak is None:
-                # Either max_upcoming_peak hasn't been computed yet
-                # (discharge_slots.update not yet called after reload) or the
-                # user threshold sensor (state.rce_high_price_threshold_gross)
-                # is unavailable. Fall through to UNKNOWN so update() keeps
-                # persisted phase + target_dod instead of arbitrarily picking
-                # DYNAMIC (which then runs block_afternoon_dynamic on
-                # potentially partial exported_wh / pv_5min and may flip
-                # target_dod 0↔90).
+        if hour in PV_WINDOW_HOURS:
+            return self._morning_phase(state, start_charge_hour_override)
+        if hour >= PV_WINDOW_HOURS.stop:
+            if state.is_workday is None:
                 return Phase.UNKNOWN
-            if should_hold_for_peak is True:
-                return Phase.AFTERNOON_STATIC
-            return Phase.AFTERNOON_DYNAMIC
+            if state.is_workday and hour in evening_peak(state.now.date()):
+                return Phase.EVENING_DISCHARGE
+        return self._hold_phase(state, sale_planned, reserve_floor)
 
-        # Morning region 7:00..13:00 — weekend or workday
+    @staticmethod
+    def _morning_phase(
+        state: InputState, start_charge_hour_override: time | None
+    ) -> Phase:
+        """Morning region 7:00..13:00 — weekend or workday."""
+        assert state.now is not None
         if state.is_workday is None:
             return Phase.UNKNOWN
         if state.is_workday is False:
             return Phase.WEEKEND_MORNING
-
         # Workday morning — pre-charge or post-charge based on start_charge_hour
         if start_charge_hour_override is None:
             return Phase.UNKNOWN
@@ -321,91 +315,39 @@ class DodPolicy:
         return Phase.WORKDAY_POST_CHARGE
 
     @staticmethod
-    def _evening_region(day: date, is_workday: bool | None) -> range:
-        """Hours the evening phase owns — and so where night and afternoon end.
+    def _hold_phase(
+        state: InputState, sale_planned: bool | None, reserve_floor: int | None
+    ) -> Phase:
+        """13:00..07:00 outside a workday's T2 — hold for a sale, floor, or release.
 
-        On a workday this is the T2 block, which moves with the season (19-22
-        in summer, 16-21 in winter). Tying it to the tariff rather than to a
-        literal is what makes the house draw from the battery through the
-        expensive hours instead of buying them from the grid: in winter 16:00
-        is already T2 at 1496 PLN/MWh, and leaving it to the afternoon phase
-        would hold the battery at DoD=0 right through it. The same tie moves
-        NIGHT_PRESERVE to 21:00, where the expensive zone actually ends.
+        "The morning ahead" is tomorrow's before midnight and today's after it
+        (`binary_sensor.workday` reflects the date that started at midnight —
+        bug fixed 2026-05-29: reading `is_workday_tomorrow` after midnight
+        pointed at day+2).
 
-        Days off have no T2, so they keep the fixed evening region — there the
-        phase asks about RCE prices, not about zones. `is_workday` missing is
-        treated the same way: it is transient after a restart, and the branches
-        that need the flag answer UNKNOWN on their own.
-        """
-        if is_workday is not True:
-            return _OFF_PEAK_EVENING
-        return evening_peak(day)
-
-    @staticmethod
-    def _evening_phase(state: InputState, should_hold_for_peak: bool | None) -> Phase:
-        """Evening region — workday discharge OR weekend preserve/free.
-
-        - Workday today → DISCHARGE (DoD=90): cover expensive evening peak load.
-          Other automations (`Battery Discharge in the evening`) flip
-          `ems_interventions_blocked=True` for explicit fast discharge windows;
-          when off, smart_rce keeps DoD=90 so battery can serve consumption.
-        - Weekend today + hold_for_peak=True → PRESERVE (DoD=0): peak ahead
-          (today evening or tomorrow morning).
-        - Weekend today + workday_tomorrow=True → PRESERVE: morning load ahead.
-        - Weekend today + weekend_tomorrow + no peak → DISCHARGE.
-        """
-        if state.is_workday is None:
-            return Phase.UNKNOWN
-        if state.is_workday is True:
-            return Phase.EVENING_DISCHARGE
-        # Weekend today
-        if should_hold_for_peak is True:
-            return Phase.EVENING_PRESERVE
-        if state.is_workday_tomorrow is True:
-            return Phase.EVENING_PRESERVE
-        if state.is_workday_tomorrow is None:
-            return Phase.UNKNOWN
-        return Phase.EVENING_DISCHARGE
-
-    @staticmethod
-    def _night_phase(state: InputState) -> Phase:
-        """Evening end..07:00 — preserve when a workday morning is ahead.
-
-        "Morning ahead" depends on which half of the night phase we're in:
-        - Pre-midnight: morning ahead = tomorrow → check
-          `is_workday_tomorrow`.
-        - Post-midnight (hour < 7): morning ahead = today → check
-          `is_workday`. HA's `binary_sensor.workday` reflects the calendar
-          date that started at midnight, which AT 02:00 IS the morning we
-          care about — so it's the right signal here.
-
-        Bug fixed 2026-05-29: previously `_night_phase` always read
-        `is_workday_tomorrow`. From midnight onwards that signal points to
-        day+2 instead of "morning ahead". The specific failure observed:
-        Thu 23:00 → tomorrow=Fri workday → preserve (DoD=0); Fri 00:00 →
-        tomorrow=Sat weekend → NIGHT_FREE (DoD=90) — but Friday morning is
-        still a workday, so we should have stayed preserved through to
-        07:00.
-
-        Caller guarantees `state.now is not None` (checked in
-        `_compute_phase`); `state.is_workday` / `is_workday_tomorrow` may
-        be None → UNKNOWN keeps persisted state.
+        `sale_planned` None (plans or prices not in yet, e.g. right after a
+        restart) keeps the persisted phase rather than releasing the battery
+        on partial inputs.
         """
         assert state.now is not None
-        # Which side of midnight we are on. Testing against the morning window
-        # rather than against 22:00: the night now starts wherever the evening
-        # region ends (21:00 in winter), and every pre-midnight hour is above
-        # 07:00 while every post-midnight one is below it.
+        if sale_planned is None:
+            return Phase.UNKNOWN
+        if sale_planned:
+            return Phase.HOLD_FOR_SALE
+        hour = state.now.hour
         morning_is_workday = (
             state.is_workday_tomorrow
-            if state.now.hour >= PV_WINDOW_HOURS.start
+            if hour >= PV_WINDOW_HOURS.start
             else state.is_workday
         )
-        if morning_is_workday is True:
-            return Phase.NIGHT_PRESERVE
         if morning_is_workday is None:
             return Phase.UNKNOWN
-        return Phase.NIGHT_FREE
+        if morning_is_workday:
+            if reserve_floor is not None:
+                return Phase.RESERVE_FLOOR
+            if hour >= _RESERVE_FOR_TOMORROW_FROM_HOUR or hour < PV_WINDOW_HOURS.start:
+                return Phase.NIGHT_PRESERVE
+        return Phase.RELEASED
 
     # --- Persistence (cross HA restart) --- #
 
@@ -433,9 +375,18 @@ class DodPolicy:
         )
 
 
+# Phases retired on 17.10.2026 (hold rule replaced the peak heuristic). A
+# stored one restores as UNKNOWN; the next tick computes the phase afresh.
+_RETIRED_PHASES: Final[frozenset[str]] = frozenset(
+    {"afternoon_static", "afternoon_dynamic", "evening_preserve", "night_free"}
+)
+
+
 def _parse_phase(value: str) -> Phase:
     """Parse stored phase string. Migrates legacy values (Etap 0 rename)."""
     # Legacy storage: "ems_allow_discharge" → INTERVENTIONS_BLOCKED.
     if value == "ems_allow_discharge":
         return Phase.INTERVENTIONS_BLOCKED
+    if value in _RETIRED_PHASES:
+        return Phase.UNKNOWN
     return Phase(value)

@@ -42,7 +42,7 @@ class DepositReport:
     """Net PLN/MWh above which exporting a stored kWh beats keeping it for the night.
 
     Net because that is what the tariff is quoted in. Everything the user reads —
-    `input_number.rce_high_price_threshold_gross`, the RCE sensors — is gross, so
+    `number.ems_export_threshold`, the RCE sensors — is gross, so
     `break_even_rce_gross` is the headline; this stays for comparing against raw
     PSE quotes, which are net.
     """
@@ -65,7 +65,7 @@ class DepositReport:
 
     @property
     def break_even_rce_gross(self) -> float:
-        """Gross PLN/MWh — directly comparable with `rce_high_price_threshold_gross`.
+        """Gross PLN/MWh — directly comparable with `number.ems_export_threshold`.
 
         Equals the gross retail cost of the kWh re-bought at night, because the
         1.23 factor applies to both sides: earn RCE x 1.23 on export, pay

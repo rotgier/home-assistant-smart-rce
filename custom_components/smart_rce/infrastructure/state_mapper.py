@@ -159,10 +159,6 @@ def set_is_workday_tomorrow(entity: str, i: InputState, state: str) -> None:
     i.is_workday_tomorrow = map_on_off(entity, state)
 
 
-def set_rce_high_price_threshold_gross(entity: str, i: InputState, state: str) -> None:
-    i.rce_high_price_threshold_gross = map_float(entity, state)
-
-
 # --- dispatch table: entity_id → setter --- #
 
 HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
@@ -187,9 +183,9 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     # REMOVED — BALANCED is now the only mode (ASAP/WASTED dropped). Replaced
     # by `switch.ems_water_heater_prefer_battery_first` (smart_rce-owned, backed
     # by `WaterHeaterReservedPolicy.prefer_battery_first`).
-    # `binary_sensor.rce_should_hold_for_peak` REMOVED — smart_rce computes
-    # this internally from `discharge_slots.max_upcoming_peak` + threshold.
-    # The HA template lives on for legacy automations + dashboards.
+    # `binary_sensor.rce_should_hold_for_peak` and
+    # `input_number.rce_high_price_threshold_gross` REMOVED (17.10.2026) — the
+    # hold rule follows planned sales, the bar is `number.ems_export_threshold`.
     "binary_sensor.workday": set_is_workday,
     "sensor.pv_power": set_pv_power,
     "sensor.pv_power_avg_2_minutes": set_pv_power_avg_2_minutes,
@@ -198,7 +194,6 @@ HASS_STATE_MAPPER: dict[str, Callable[[str, InputState, str], None]] = {
     "input_number.heater_rce_threshold": set_heater_rce_threshold,
     "input_number.ems_dod_override": set_dod_override,
     "binary_sensor.workday_tomorrow": set_is_workday_tomorrow,
-    "input_number.rce_high_price_threshold_gross": set_rce_high_price_threshold_gross,
 }
 
 

@@ -16,12 +16,6 @@ from ..ems_operation import EmsOperation
 from .direction import Direction, RateZone
 from .operation import BatteryOperation
 
-# One-off: the workdays-only slots also run on these days off (user's decision
-# 17.10.2026 — high morning RCE on a Saturday, and a live test of the hourly
-# credit and the morning discharge rate model deployed the night before).
-# Full dates on purpose, not a yearly rule. Remove once the day has passed.
-WORKDAYS_ONLY_EXTRA_DAYS: Final[frozenset[date]] = frozenset({date(2026, 10, 17)})
-
 
 class SlotBehavior(StrEnum):
     """When inside `[start, end)` window, when to actually engage EMS."""
@@ -499,8 +493,5 @@ class SlotKind(Enum):
 
 
 def is_day_off(day: date, is_workday: bool | None) -> bool:
-    """Tell whether `day` is off by the workday sensor (unknown = workday).
-
-    `WORKDAYS_ONLY_EXTRA_DAYS` run as workdays.
-    """
-    return is_workday is False and day not in WORKDAYS_ONLY_EXTRA_DAYS
+    """Tell whether `day` is off by the workday sensor (unknown = workday)."""
+    return is_workday is False

@@ -188,14 +188,14 @@ def _service(
     tomorrow: bool = False,
     surplus: _Surplus | None = None,
 ):
-    """Plan for DAY at `now`; with `tomorrow` the evening preview for NEXT."""
-    plans: list = []
+    """Plan for DAY at `now`; with `tomorrow` the plan for NEXT (same inputs)."""
+    plans: dict = {}
     entry = _auto_discharge()
     schedule = SimpleNamespace(
         slot=lambda scope, kind: entry,
         t1_reserve=_reserve(25, NEXT if tomorrow else DAY),
-        set_morning_discharge=plans.append,
-        plans_tomorrow_at=lambda _now: tomorrow,
+        set_morning_discharge=plans.__setitem__,
+        export_threshold=MorningDischargePlan.EXPORT_THRESHOLD,
     )
     ems = SimpleNamespace(
         battery_schedule_service=schedule,
@@ -212,7 +212,7 @@ def _service(
     clock = now or _at(6, 30)
     service = MorningDischargeService(ems, surplus or _Surplus(rate), lambda: clock)
     service.refresh()
-    return plans[-1]
+    return plans[NEXT if tomorrow else DAY]
 
 
 class TestService:

@@ -112,6 +112,7 @@ class EveningPlan:
         windows: tuple[EveningWindow, ...] = (),
         max_morning_price: float = 0.0,
         overruled_by_morning: bool = False,
+        export_threshold: float = EXPORT_THRESHOLD,
     ) -> None:
         self._day = day
         self._prices = prices
@@ -119,6 +120,7 @@ class EveningPlan:
         self._windows = windows
         self._max_morning_price = max_morning_price
         self._overruled_by_morning = overruled_by_morning
+        self._export_threshold = export_threshold
 
     @classmethod
     def plans_tomorrow_at(
@@ -166,18 +168,22 @@ class EveningPlan:
         *,
         is_workday: bool,
         tomorrow: RceDayPrices | None = None,
+        export_threshold: float = EXPORT_THRESHOLD,
     ) -> EveningPlan:
         """Build the plan for `day`. `tomorrow` absent = morning filter off.
 
         Before tomorrow's prices are published there is nothing to compare
         against, so the evening is judged on its own merits and the later run
-        of the day revisits it.
+        of the day revisits it. `export_threshold` is the user's bar
+        (`number.ems_export_threshold`); EXPORT_THRESHOLD is its default.
         """
         max_morning_price = (
             tomorrow.max_gross_in(cls.MORNING_LOOKAHEAD) if tomorrow else 0.0
         )
-        windows = cls._windows_for(day, prices, is_workday, max_morning_price)
-        unfiltered = cls._windows_for(day, prices, is_workday, 0.0)
+        windows = cls._windows_for(
+            day, prices, is_workday, max_morning_price, export_threshold
+        )
+        unfiltered = cls._windows_for(day, prices, is_workday, 0.0, export_threshold)
         return cls(
             day,
             prices,
@@ -185,6 +191,7 @@ class EveningPlan:
             windows=windows,
             max_morning_price=max_morning_price,
             overruled_by_morning=len(windows) < len(unfiltered),
+            export_threshold=export_threshold,
         )
 
     @property
@@ -223,10 +230,10 @@ class EveningPlan:
             return f"windows: {hours}"
         if self._max_morning_price > 0:
             return (
-                f"no evening hour clears {self.EXPORT_THRESHOLD:.0f} "
+                f"no evening hour clears {self._export_threshold:.0f} "
                 f"and tomorrow morning's {self._max_morning_price:.0f} (gross PLN/MWh)"
             )
-        return f"no evening hour clears {self.EXPORT_THRESHOLD:.0f} gross PLN/MWh"
+        return f"no evening hour clears {self._export_threshold:.0f} gross PLN/MWh"
 
     def slot_commands(self) -> list[SlotCommand]:
         """Commands putting this plan into the two evening slots.
@@ -258,11 +265,12 @@ class EveningPlan:
         prices: RceDayPrices,
         is_workday: bool,
         max_morning_price: float,
+        export_threshold: float,
     ) -> tuple[EveningWindow, ...]:
         """Qualifying hours → grouped runs → at most two windows."""
         candidates = prices.hours_clearing(
             cls._evening_hours(day, is_workday),
-            at_least=cls.EXPORT_THRESHOLD,
+            at_least=export_threshold,
             above=max_morning_price,
         )
         if is_workday:
