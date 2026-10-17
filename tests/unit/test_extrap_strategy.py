@@ -22,6 +22,7 @@ from custom_components.smart_rce.domain.pv_forecast import (
     ForecastContext,
     LivePvSignals,
     PvForecast,
+    PvForecastResult,
     SolcastPeriod,
     WeatherConditionAtHour,
     WeatherConditions,
@@ -228,3 +229,56 @@ def test_blend_sits_between_capped_and_live_far_ahead() -> None:
         < rate["b"][far]
         < max(rate["l"][far], rate["c"][far])
     )
+
+
+@pytest.mark.parametrize(
+    ("now", "realized", "buckets"),
+    [
+        # Dawn: only the bucket just started has a score.
+        (datetime(2026, 1, 15, 7, 5), {}, 1),
+        (datetime(2026, 1, 15, 7, 35), {(7, 0): 0.4}, 2),
+        # A past bucket without a realized value does not count.
+        (datetime(2026, 1, 15, 8, 5), {(7, 30): 0.6}, 2),
+        (datetime(2026, 1, 15, 9, 0), {(7, 0): 0.5, (7, 30): 0.8, (8, 30): 1.2}, 4),
+    ],
+)
+@pytest.mark.parametrize(
+    "strategy_cls",
+    [ExtrapProportionalStrategy, ExtrapProportionalCappedStrategy, ExtrapBlendStrategy],
+)
+def test_result_counts_the_buckets_its_score_rests_on(
+    strategy_cls, now, realized, buckets
+) -> None:
+    """`scored_buckets` = scored buckets, the current one included (17.10.2026)."""
+    _populate_live()
+    strategy = strategy_cls()
+    strategy.update(
+        ForecastContext(
+            now=now,
+            signals=LivePvSignals(pv_power_w=1500.0, bucket_so_far_kwh=0.1),
+            weather=_weather(),
+            solcast_today=_solcast_today(),
+            realized_pv_today=realized,
+            consumption_w=400.0,
+        )
+    )
+    assert strategy.result is not None
+    assert strategy.result.scored_buckets == buckets
+    assert strategy.result.can_cap_margin() is (buckets >= 2)
+
+
+def test_bucket_count_survives_the_archive_and_live_has_none() -> None:
+    _populate_live()
+    strategy = ExtrapBlendStrategy()
+    strategy.update(_ctx_with_live())
+    result, live = strategy.result, PvForecast.LIVE.result
+    assert result is not None
+    assert live is not None
+    assert PvForecastResult.from_dict(result.to_dict()) == result
+    # Live never extrapolates: no count, not archived, always caps.
+    assert live.scored_buckets is None
+    assert "scored_buckets" not in live.to_dict()
+    assert live.can_cap_margin()
+    # Archived before the counter existed: reads as no count.
+    old = {k: v for k, v in result.to_dict().items() if k != "scored_buckets"}
+    assert PvForecastResult.from_dict(old).scored_buckets is None

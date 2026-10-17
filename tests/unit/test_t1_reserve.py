@@ -17,7 +17,7 @@ from custom_components.smart_rce.domain.battery_schedule import (
     SlotKind,
     T1SocReserve,
 )
-from custom_components.smart_rce.domain.pv_forecast import PvForecast
+from custom_components.smart_rce.domain.pv_forecast import PvForecast, PvForecastResult
 from custom_components.smart_rce.domain.target_soc import TargetSoc, TargetSocResult
 
 TZ = timezone.utc
@@ -548,33 +548,54 @@ class TestLiveCappedStep:
         assert [r.value_at(_at(h)) for h in (6, 8, 9)] == [40, 27, 25]
 
 
-class TestSevenToEightStep:
-    """07-08: margin = max(0, min(10, max(Live, Extrap Prop, Extrap Blend) - Soft))."""
+class TestBlendCappedSteps:
+    """07-08 and 08-09: margin = max(0, min(step, max(Live, Extrap Blend) - Soft)).
+
+    Decision 17.10.2026: Extrap Proportional no longer caps; Blend only once
+    its score rests on two buckets (gated where the caps are built).
+    """
 
     _PROP = "extrapolated_live_proportional"
     _BLEND = "extrapolated_live_blend"
 
     @staticmethod
-    def _margin(caps: dict, soft: int = 20) -> int:
-        return T1SocReserve.margin_pp_for(DAY, _at(7, 41), soft, caps)
+    def _margin(caps: dict, soft: int = 20, h: int = 7, m: int = 41) -> int:
+        return T1SocReserve.margin_pp_for(DAY, _at(h, m), soft, caps)
 
     def test_all_equal_to_soft_no_margin(self):
-        assert self._margin({"live": 20, self._PROP: 20, self._BLEND: 20}) == 0
+        assert self._margin({"live": 20, self._BLEND: 20}) == 0
 
-    def test_extrap_far_above_soft_full_step(self):
-        assert self._margin({"live": 21, self._PROP: 34, self._BLEND: 22}) == 10
+    def test_blend_far_above_soft_full_step(self):
+        assert self._margin({"live": 21, self._BLEND: 34}) == 10
+        assert self._margin({"live": 21, self._BLEND: 34}, h=8) == 5
 
     def test_highest_variant_sets_the_margin(self):
-        assert self._margin({"live": 21, self._PROP: 26, self._BLEND: 23}) == 6
+        assert self._margin({"live": 23, self._BLEND: 26}) == 6
+        assert self._margin({"live": 23, self._BLEND: 22}, h=8) == 3
 
-    def test_without_extraps_it_is_live(self):
-        assert self._margin({"live": 23, self._PROP: None}) == 3
+    def test_proportional_no_longer_caps(self):
+        # 17.10 07:30: Proportional 43 from one foggy bucket, Live and Blend 17.
+        assert self._margin({"live": 17, self._PROP: 43, self._BLEND: 17}, 17) == 0
+
+    def test_without_blend_it_is_live(self):
+        assert self._margin({"live": 23, self._BLEND: None}) == 3
         assert self._margin({"live": 23}) == 3
 
     def test_no_cap_at_all_keeps_the_step(self):
         assert self._margin({}) == 10
 
-    def test_resolved_reserve_holds_every_cap(self):
+    def test_an_earlier_step_table_still_scores(self):
+        # The scoreboard passes the table a day ran (43d266b: Prop capped 07-08).
+        steps = (
+            (time(7), 15, ()),
+            (time(8), 10, ("live", self._PROP, self._BLEND)),
+            (time(9), 5, ("live",)),
+        )
+        caps = {"live": 17, self._PROP: 43, self._BLEND: 17}
+        assert T1SocReserve.margin_pp_for(DAY, _at(7, 41), 17, caps, steps) == 10
+
+    @staticmethod
+    def _catalog(blend: int | None) -> SimpleNamespace:
         def ts(v: PvForecast, flat: int | None) -> TargetSoc:
             return TargetSoc(
                 variant=v,
@@ -582,24 +603,53 @@ class TestSevenToEightStep:
                 prev_days=[],
             )
 
-        catalog = SimpleNamespace(
+        return SimpleNamespace(
             target_socs={
                 PvForecast.LIVE_SOFT: ts(PvForecast.LIVE_SOFT, 20),
                 PvForecast.LIVE: ts(PvForecast.LIVE, 21),
                 PvForecast.EXTRAP_PROPORTIONAL: ts(PvForecast.EXTRAP_PROPORTIONAL, 34),
-                PvForecast.EXTRAP_BLEND: ts(PvForecast.EXTRAP_BLEND, None),
+                PvForecast.EXTRAP_BLEND: ts(PvForecast.EXTRAP_BLEND, blend),
             }
         )
-        r = BatteryScheduleService._resolve_t1_reserve(_at(7, 41), catalog)  # noqa: SLF001
+
+    @staticmethod
+    def _blend_rests_on(monkeypatch, buckets: int | None) -> None:
+        result = (
+            PvForecastResult(forecast=[], total_kwh=0.0, scored_buckets=buckets)
+            if buckets is not None
+            else None
+        )
+        monkeypatch.setattr(PvForecast.EXTRAP_BLEND.strategy, "result", result)
+
+    def test_resolved_reserve_holds_every_cap(self, monkeypatch):
+        self._blend_rests_on(monkeypatch, 3)
+        r = BatteryScheduleService._resolve_t1_reserve(_at(7, 41), self._catalog(26))  # noqa: SLF001
         assert r is not None
         attrs = r.to_dict()
-        assert (r.value, r.margin_pp) == (30, 10)
+        assert (r.value, r.margin_pp) == (26, 6)
         assert (
             attrs["live_reading"],
-            attrs["extrap_proportional_reading"],
             attrs["extrap_blend_reading"],
-        ) == (21, 34, None)
+            attrs["extrap_blend_buckets"],
+        ) == (21, 26, 3)
+        assert "extrap_proportional_reading" not in attrs
+        assert dict(r.caps).keys() == {"live", self._BLEND}
         assert T1SocReserve.from_dict(attrs) == r
+
+    def test_blend_on_one_bucket_does_not_cap(self, monkeypatch):
+        self._blend_rests_on(monkeypatch, 1)
+        r = BatteryScheduleService._resolve_t1_reserve(_at(7, 41), self._catalog(34))  # noqa: SLF001
+        assert r is not None
+        assert (r.margin_pp, r.to_dict()["extrap_blend_reading"]) == (1, None)
+        assert r.extrap_blend_buckets == 1
+        # The 08:00 line planned at 07:41 stands on the caps held then.
+        assert r.value_at(_at(8)) == 21
+
+    def test_blend_on_two_buckets_caps(self, monkeypatch):
+        self._blend_rests_on(monkeypatch, 2)
+        r = BatteryScheduleService._resolve_t1_reserve(_at(7, 41), self._catalog(34))  # noqa: SLF001
+        assert r is not None
+        assert r.margin_pp == 10
 
 
 def test_margin_step_keys_are_pv_forecast_keys():

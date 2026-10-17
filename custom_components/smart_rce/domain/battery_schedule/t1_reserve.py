@@ -23,18 +23,25 @@ all of them. The morning discharge hands the margin back step by step, one
 hour at a time (`value_at`). To be recalibrated from the scoreboard after
 ~30 days.
 
-The 08-09 step is capped by plain Live (decision 15.10.2026, evening): the
-line is min(Soft + 5, Live), i.e. the margin is max(0, min(5, Live - Soft)).
-By 08:41 Live has seen most of the morning, so on an ordinary day it agrees
-with Soft and the margin goes; it stays on very cloudy days (14.10: Live 42 vs
-Soft 23). Scoreboard 05-15.10 at 08:41: Soft + 5 overshot by 4-10 pp, the
-capped line by 1-6. The 07-08 step is capped the same way by the highest of
-Live, Extrap Proportional and Extrap Blend (decision 16.10.2026; an Extrap
-without a result yet is left out): at 07:41 05-15.10 Soft + 10 overshot by
-10-14 pp, the capped line by 0-14, typically 1-2, never short. The night step
-stays whole — there the margin guards the consumption model, which no PV
-variant sees (`margin_pp_for`). Backtest behind the rule: home-assistant-ops
-`research/2026-10-11-backtest-poranne-ladowanie/`.
+The 07-08 and 08-09 steps are capped by the highest of Live and Extrap
+Blend: the margin is max(0, min(step, max(Live, Blend) - Soft)). By 08:41
+Live has seen most of the morning, so on an ordinary day it agrees with Soft
+and the margin goes; it stays on very cloudy days (14.10: Live 42 vs Soft 23).
+Blend counts only once its score rests on at least two buckets, the current
+one included (`PvForecastResult.can_cap_margin`, applied where the caps are
+built); before that, or without a result, it is left out and Live caps alone.
+History: 15.10 evening the 08-09 step got capped by Live (scoreboard 05-15.10
+at 08:41: Soft + 5 overshot by 4-10 pp, the capped line by 1-6); 16.10 the
+07-08 step by max(Live, Extrap Proportional, Extrap Blend) (at 07:41 Soft + 10
+overshot by 10-14 pp, the capped line typically by 1-2, never short); 17.10
+one rule for both steps, Proportional out (at dawn it multiplies every future
+bucket by the ratio of one just-started bucket: 17.10 07:30 it read 43 against
+Live's 17 and opened the whole +10; over 05-16.10 it cost 0.8 pp on average
+and prevented no shortfall), Blend gated. The night step stays whole — there
+the margin guards the consumption model, which no PV variant sees
+(`margin_pp_for`). Backtests behind the rules: home-assistant-ops
+`research/2026-10-11-backtest-poranne-ladowanie/`,
+`research/2026-10-17-margines-07-extrap/`.
 """
 
 from __future__ import annotations
@@ -48,6 +55,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from ..target_soc import TargetSoc, TargetSocResult
+
+# (until, pp, variants capping the step): the margin in force before `until`
+# on the reserve's day. Keys = `PvForecast.key`.
+MarginSteps = tuple[tuple[time, int, tuple[str, ...]], ...]
 
 
 class ReserveWindow(StrEnum):
@@ -73,21 +84,19 @@ class T1SocReserve:
 
     `value` includes `margin_pp`; `value_without_margin` is the reading alone.
     `caps` holds the readings of the variants that cap a step (`_MARGIN_STEPS`),
-    keyed by `PvForecast.key`, same path as the reading (p60, window, buffer).
+    keyed by `PvForecast.key`, same path as the reading (p60, window, buffer);
+    None where the variant had no result or did not qualify to cap yet.
+    `extrap_blend_buckets` is how many buckets Extrap Blend's score rested on
+    (the reason its cap is None on a dawn with a single bucket).
     """
 
-    # (until, pp, variants capping the step): the margin in force before
-    # `until` on the reserve's day. A capped step is at most what the highest
-    # of those variants reads above Live Soft. Keys = `PvForecast.key` (a test
-    # keeps them in step with the enum; this module stays free of pv_forecast).
-    _MARGIN_STEPS: ClassVar[tuple[tuple[time, int, tuple[str, ...]], ...]] = (
+    # A capped step is at most what the highest of its variants reads above
+    # Live Soft (`MarginSteps`; a test keeps the keys in step with the enum,
+    # this module stays free of pv_forecast).
+    _MARGIN_STEPS: ClassVar[MarginSteps] = (
         (time(7), 15, ()),
-        (
-            time(8),
-            10,
-            ("live", "extrapolated_live_proportional", "extrapolated_live_blend"),
-        ),
-        (time(9), 5, ("live",)),
+        (time(8), 10, ("live", "extrapolated_live_blend")),
+        (time(9), 5, ("live", "extrapolated_live_blend")),
     )
 
     day: date
@@ -102,6 +111,7 @@ class T1SocReserve:
     value_without_margin: int | None = None
     # (PvForecast.key, reading) — a tuple, the VO stays hashable.
     caps: tuple[tuple[str, int | None], ...] = ()
+    extrap_blend_buckets: int | None = None
 
     @classmethod
     def from_target_soc(
@@ -113,12 +123,14 @@ class T1SocReserve:
         window: ReserveWindow,
         margin_at: datetime | None = None,
         caps: Mapping[str, TargetSoc | None] | None = None,
+        extrap_blend_buckets: int | None = None,
     ) -> T1SocReserve | None:
         """Resolve the reserve from one variant; None when it has nothing yet.
 
         With `margin_at` the margin in force then goes on top of the reading
         (`margin_pp_for`, capped by the `caps` variants' readings); without it
-        there is none (observation-only reserves).
+        there is none (observation-only reserves). `caps` come already gated:
+        a variant that may not cap yet is None.
         """
         flat = target_soc.flat.value if target_soc.flat is not None else None
         prev = cls.prev_without_worst_of(
@@ -142,6 +154,7 @@ class T1SocReserve:
             margin_pp=margin_pp,
             value_without_margin=min(100, driving.value),
             caps=tuple(cap_readings.items()),
+            extrap_blend_buckets=extrap_blend_buckets,
             flat=flat,
             prev_without_worst=prev,
             p60=target_soc.p60.value if target_soc.p60 is not None else None,
@@ -162,16 +175,18 @@ class T1SocReserve:
         moment: datetime,
         reading: int,
         caps: Mapping[str, int | None],
+        steps: MarginSteps | None = None,
     ) -> int:
         """Margin on top of `reading` (Live Soft) for `day`, seen at `moment`.
 
         `caps`: readings by `PvForecast.key`; a missing key or None (an Extrap
-        before the PV ramps up) does not take part. In a capped step the margin
-        is at most the highest present cap above `reading`, never negative;
-        with no cap present the step stands whole. The scoreboard calls this
-        too, 1:1.
+        before the PV ramps up, or before it may cap) does not take part. In a
+        capped step the margin is at most the highest present cap above
+        `reading`, never negative; with no cap present the step stands whole.
+        `steps`: an earlier step table (default: today's `_MARGIN_STEPS`). The
+        scoreboard calls this too, 1:1, with the table of the day it scores.
         """
-        pp, keys = cls._step_at(day, moment)
+        pp, keys = cls._step_at(day, moment, steps)
         present = [v for k in keys if (v := caps.get(k)) is not None]
         if not present:
             return pp
@@ -183,22 +198,21 @@ class T1SocReserve:
         return cls._step_at(day, moment)[0]
 
     @classmethod
-    def _step_at(cls, day: date, moment: datetime) -> tuple[int, tuple[str, ...]]:
+    def _step_at(
+        cls, day: date, moment: datetime, steps: MarginSteps | None = None
+    ) -> tuple[int, tuple[str, ...]]:
         """(pp, capping variants) in force at `moment` (local time).
 
         Before that day (the evening preview, the night) the first step holds.
         """
+        table = cls._MARGIN_STEPS if steps is None else steps
         if moment.date() < day:
-            _until, pp, keys = cls._MARGIN_STEPS[0]
+            _until, pp, keys = table[0]
             return pp, keys
         if moment.date() > day:
             return 0, ()
         return next(
-            (
-                (pp, keys)
-                for until, pp, keys in cls._MARGIN_STEPS
-                if moment.time() < until
-            ),
+            ((pp, keys) for until, pp, keys in table if moment.time() < until),
             (0, ()),
         )
 
@@ -245,8 +259,8 @@ class T1SocReserve:
             "value_without_margin": self.value_without_margin,
             # Flat names for the dashboard; `caps` keeps the keys for restore.
             "live_reading": self._cap("live", "tomorrow_live"),
-            "extrap_proportional_reading": self._cap("extrapolated_live_proportional"),
             "extrap_blend_reading": self._cap("extrapolated_live_blend"),
+            "extrap_blend_buckets": self.extrap_blend_buckets,
             "caps": dict(self.caps),
             "flat": self.flat,
             "prev_without_worst": self.prev_without_worst,
@@ -273,6 +287,7 @@ class T1SocReserve:
                 margin_pp=int(data.get("margin_pp", 0)),
                 value_without_margin=data.get("value_without_margin"),
                 caps=tuple((data.get("caps") or {}).items()),
+                extrap_blend_buckets=data.get("extrap_blend_buckets"),
                 dip_kwh=data.get("dip_kwh"),
                 source=str(data.get("source", "")),
                 window=ReserveWindow(data.get("window", ReserveWindow.FULL.value)),
