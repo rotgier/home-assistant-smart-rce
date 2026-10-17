@@ -243,10 +243,36 @@ class TestSeasonalEveningRegion:
         s = _state(now=_winter_at(16), is_workday=True)
         assert p._compute_phase(s) == Phase.EVENING_DISCHARGE
 
-    def test_winter_afternoon_ends_at_16(self):
+    def test_winter_workday_afternoon_holds_for_t2_without_a_sale(self):
+        """Winter: T3 now (~626), T2 at 16 (~1496) — keep the battery, whatever RCE."""
         p = DodPolicy()
-        s = _state(now=_winter_at(15), is_workday=True)
+        for hour in (13, 15):
+            s = _state(now=_winter_at(hour), is_workday=True)
+            assert (
+                p._compute_phase(s, sale_planned=False, reserve_floor=40)
+                == Phase.HOLD_FOR_T2
+            )
+
+    def test_hold_for_t2_is_dod_zero(self):
+        p = DodPolicy()
+        _update(
+            p, _state(now=_winter_at(14), is_workday=True, exported_energy_hourly=-0.5)
+        )
+        assert (p.current_phase, p.target_dod) == (Phase.HOLD_FOR_T2, 0)
+
+    def test_summer_workday_afternoon_follows_the_hold_rule(self):
+        """Summer T2 is three hours and the sun is longer: hold only for a sale."""
+        p = DodPolicy()
+        s = _state(now=_at(15), is_workday=True, is_workday_tomorrow=False)
+        assert p._compute_phase(s, sale_planned=False) == Phase.RELEASED
         assert p._compute_phase(s, sale_planned=True) == Phase.HOLD_FOR_SALE
+
+    def test_winter_day_off_afternoon_has_no_hold_for_t2(self):
+        p = DodPolicy()
+        s = _state(
+            now=_winter_weekend_at(15), is_workday=False, is_workday_tomorrow=False
+        )
+        assert p._compute_phase(s, sale_planned=False) == Phase.RELEASED
 
     def test_winter_night_starts_at_21(self):
         """21:00 is past T2 — the hold rule, not the evening discharge."""

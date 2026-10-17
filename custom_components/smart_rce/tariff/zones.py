@@ -31,6 +31,11 @@ def evening_peak(day: datetime.date) -> range:
     return _SUMMER_EVENING_PEAK if day.month in _SUMMER_MONTHS else _WINTER_EVENING_PEAK
 
 
+def is_winter(day: datetime.date) -> bool:
+    """Winter tariff season (October-March): T2 16-21, five hours."""
+    return day.month not in _SUMMER_MONTHS
+
+
 def zone_for(moment: datetime.datetime) -> Zone:
     """Zone of the hour starting at `moment` (local time)."""
     if moment.weekday() >= 5 or is_holiday(moment.date()):

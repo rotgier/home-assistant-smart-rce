@@ -29,11 +29,19 @@ Phase classification + decisions:
   with POSITIVE intervention (POSITIVE first line >60 Wh, block_post_charge
   second line >=100 Wh / instant_surplus when POSITIVE cannot absorb, e.g.
   SoC=100% / BMS clamp / sustained surplus).
+- **HOLD_FOR_T2** (winter workday, 13:00 → 16:00): direct DoD=0 — the house
+  buys T3 (~626 gross) in the afternoon and keeps the battery for the five
+  hours of T2 (~1496), whatever RCE does. Summer (T2 19-22, three hours, more
+  sun) follows the hold rule below instead (user's decision 17.10.2026). Until
+  then this held whenever the upcoming RCE peak cleared 700 — in practice
+  nearly always in winter; the first version of the hold rule dropped it by
+  mistake, restored the same evening.
 - **EVENING_DISCHARGE** (T2 of a workday): direct DoD=90 — the house draws
   the battery through the expensive zone; the evening slots sell
   (`ems_interventions_blocked`).
-- Every other hour from 13:00 to 07:00 — afternoon, the night, and on a day
-  off the whole evening — follows one rule (user's decision 17.10.2026,
+- Every other hour from 13:00 to 07:00 — a summer workday's afternoon, after
+  a workday's T2, the night, and on a day off the afternoon and the evening —
+  follows one rule (user's decision 17.10.2026,
   replacing "max upcoming RCE > 700"; the day-off evening 19-22 is gone):
   - **HOLD_FOR_SALE**: a sale is planned — an evening slot still ahead today,
     or tomorrow morning's plan at or above the export bar
@@ -58,6 +66,8 @@ Coordination with GridExportManager (POSITIVE / NEGATIVE intervention):
     | INTERVENTIONS_BLOCKED | False (always)     | exits            | exits    |
     | WORKDAY_PRE        | hysteresis            | blocked          | yes      |
     | WORKDAY_POST       | dual-trigger          | yes (1st line)   | yes      |
+    | HOLD_FOR_T2        | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
+    | HOLD_FOR_T2        | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
     | HOLD_FOR_SALE      | False (DoD=0 direct)  | rare (SoC ceil)  | yes      |
     | RESERVE_FLOOR      | dual-trigger          | yes (1st line)   | yes      |
     | RELEASED           | dual-trigger          | yes (1st line)   | yes      |
@@ -87,7 +97,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
-from ..tariff import evening_peak
+from ..tariff import evening_peak, is_winter
 from .battery_schedule.t1_reserve import T1SocReserve
 from .block_discharge import (
     block_afternoon_dynamic,
@@ -113,6 +123,7 @@ class Phase(Enum):
     # can drive discharge through. Renamed from EMS_ALLOW_DISCHARGE (Etap 0).
     WORKDAY_PRE_CHARGE = "workday_pre_charge"  # 7:00..start_charge, workday
     WORKDAY_POST_CHARGE = "workday_post_charge"  # start_charge..13:00, workday
+    HOLD_FOR_T2 = "hold_for_t2"  # winter workday 13:00-16:00, keep it for T2
     EVENING_DISCHARGE = "evening_discharge"  # T2 of a workday
     HOLD_FOR_SALE = "hold_for_sale"  # 13:00..07:00 off T2, a sale planned
     RESERVE_FLOOR = "reserve_floor"  # 13:00..07:00 off T2, workday morning ahead
@@ -137,6 +148,7 @@ DELEGATING_PHASES: frozenset[Phase] = frozenset(
 DIRECT_PHASE_DOD: dict[Phase, int] = {
     Phase.INTERVENTIONS_BLOCKED: 90,  # smart_rce interventions blocked — DoD=90 so
     # explicit schedule/user override can discharge through.
+    Phase.HOLD_FOR_T2: 0,  # winter workday afternoon — T3 now, battery for T2
     Phase.EVENING_DISCHARGE: 90,  # workday T2 — the house draws the battery
     Phase.HOLD_FOR_SALE: 0,  # a sale planned — keep it for that
     Phase.NIGHT_PRESERVE: 0,  # workday morning ahead, reserve unknown
@@ -290,8 +302,12 @@ class DodPolicy:
         if hour >= PV_WINDOW_HOURS.stop:
             if state.is_workday is None:
                 return Phase.UNKNOWN
-            if state.is_workday and hour in evening_peak(state.now.date()):
-                return Phase.EVENING_DISCHARGE
+            if state.is_workday:
+                t2 = evening_peak(state.now.date())
+                if hour < t2.start and is_winter(state.now.date()):
+                    return Phase.HOLD_FOR_T2
+                if hour in t2:
+                    return Phase.EVENING_DISCHARGE
         return self._hold_phase(state, sale_planned, reserve_floor)
 
     @staticmethod
