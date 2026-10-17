@@ -81,12 +81,40 @@ def weighted_score_over_buckets(
 
     Shared core of all four `_compute_weighted_*_score` methods — they
     differ only in `score_fn` (4-zone, proportional, band) and `max_age`
-    (24 for full-history, 1 for band_recent).
+    (24 for full-history, 1 for band_recent). The walk itself is
+    `bucket_scores`; this is its weighted mean.
+    """
+    return weighted_mean(
+        bucket_scores(
+            solcast_by_bucket,
+            now,
+            realized_pv_today=realized_pv_today,
+            pv_bucket_so_far_kwh=pv_bucket_so_far_kwh,
+            pv_power_w_5min=pv_power_w_5min,
+            score_fn=score_fn,
+            max_age=max_age,
+        )
+    )
+
+
+def bucket_scores(
+    solcast_by_bucket: dict[tuple[int, int], SolcastPeriod],
+    now: datetime,
+    *,
+    realized_pv_today: dict[tuple[int, int], float],
+    pv_bucket_so_far_kwh: float,
+    pv_power_w_5min: float,
+    score_fn: Callable[[float, SolcastPeriod], float | None],
+    max_age: int,
+) -> list[tuple[float, float]]:
+    """(score, weight) of every bucket that got a score, current bucket first.
 
     Current bucket realized rate uses `_current_bucket_realized_rate`
     (uniform with chart + target_soc). Past buckets use
     `realized_pv_today[(h, m)] × 2`. Buckets with
-    `pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH` skipped.
+    `pv_estimate / 2 < PATTERN_MIN_FORECAST_KWH` skipped, as are those
+    `score_fn` returns None for. The length is how many buckets an
+    extrapolation rests on (`PvForecastResult.scored_buckets`).
     """
     current_hour = now.hour
     current_minute = 0 if now.minute < 30 else 30
@@ -121,11 +149,7 @@ def weighted_score_over_buckets(
         h, m, age, weight = _step_back(h, m, age, weight)
         if age > max_age:
             break
-
-    if not scores:
-        return None
-    total_weight = sum(w for _, w in scores)
-    return sum(s * w for s, w in scores) / total_weight
+    return scores
 
 
 def _current_bucket_realized_rate(
@@ -145,3 +169,11 @@ def _step_back(h: int, m: int, age: int, weight: float) -> tuple[int, int, int, 
     if m == 30:
         return h, 0, age + 1, weight * PATTERN_DECAY
     return (h - 1) if h > 0 else 0, 30, age + 1, weight * PATTERN_DECAY
+
+
+def weighted_mean(scores: list[tuple[float, float]]) -> float | None:
+    """Weighted mean of `bucket_scores`; None when no bucket got a score."""
+    if not scores:
+        return None
+    total_weight = sum(w for _, w in scores)
+    return sum(s * w for s, w in scores) / total_weight

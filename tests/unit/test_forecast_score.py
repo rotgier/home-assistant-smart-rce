@@ -369,7 +369,9 @@ class TestProductionSetup:
         assert setup_on(date(2026, 10, 14), TZ).pv_variant == "live_soft_0.5"
         assert setup_on(date(2026, 10, 15), TZ).reserve_model is ConsumptionModel.P50
         assert setup_on(date(2026, 10, 16), TZ).margin is MarginRule.LIVE_CAPS_0809
-        assert setup_on(date(2026, 10, 17), TZ) is CURRENT
+        assert setup_on(date(2026, 10, 17), TZ).margin is MarginRule.CAPPED
+        assert setup_on(date(2026, 10, 18), TZ) is CURRENT
+        assert CURRENT.margin is MarginRule.BLEND_CAPS
 
     def test_production_panel_uses_the_days_rule_and_buffer(
         self, energy, snapshots, prices
@@ -474,14 +476,18 @@ def test_day_actuals_from_now_counts_only_what_came_after(energy):
     assert 0.0 <= later.get(8, 30) <= whole.get(8, 30)
 
 
-def test_the_0809_step_is_capped_by_live(energy, snapshots):
-    """The 08-09 margin is max(0, min(5, Live - Soft)), as production computes it."""
+# 16-17.10: 07-08 capped by max(Live, Prop, Blend), 08-09 by Live (43d266b).
+_CAPPED = setup_on(date(2026, 10, 17), TZ)
+
+
+def test_the_0809_step_was_capped_by_live(energy, snapshots):
+    """CAPPED, 08-09: max(0, min(5, Live - Soft)), as production computed it."""
     day = DAYS[-1]
     moments, _ = score_reserve(
         DayActuals(energy[day], TZ),
         vr.from_archive(snapshots[day]),
         _earlier_workdays(day, energy),
-        CURRENT,
+        _CAPPED,
     )
     line = next(m for m in moments if m.label == "08:41")
     soft, live = line.variant("live_soft"), line.variant("live")
@@ -489,17 +495,17 @@ def test_the_0809_step_is_capped_by_live(energy, snapshots):
     assert soft is not None
     assert live is not None
     assert line.production.margin_pp == max(0, min(5, live.reserve - soft.reserve))
-    assert CURRENT.margin is MarginRule.CAPPED
+    assert _CAPPED.margin is MarginRule.CAPPED
 
 
-def test_the_0708_step_is_capped_by_live_and_extrap(energy, snapshots):
-    """07-08: max(0, min(10, max(Live, Extrap Prop, Extrap Blend) - Soft))."""
+def test_the_0708_step_was_capped_by_live_and_extrap(energy, snapshots):
+    """CAPPED, 07-08: max(0, min(10, max(Live, Extrap Prop, Extrap Blend) - Soft))."""
     day = DAYS[-1]
     moments, _ = score_reserve(
         DayActuals(energy[day], TZ),
         vr.from_archive(snapshots[day]),
         _earlier_workdays(day, energy),
-        CURRENT,
+        _CAPPED,
     )
     hour7 = next(m for m in moments if m.label == "07:41")
     soft = hour7.variant("live_soft")
@@ -515,6 +521,41 @@ def test_the_0708_step_is_capped_by_live_and_extrap(energy, snapshots):
     assert hour7.production is not None
     assert soft is not None
     assert hour7.production.margin_pp == max(0, min(10, max(caps) - soft.reserve))
+
+
+@pytest.mark.parametrize(
+    ("label", "step", "buckets"), [("07:41", 10, 1), ("08:41", 5, 3)]
+)
+def test_both_steps_are_capped_by_live_and_a_settled_blend(
+    energy, snapshots, label, step, buckets
+):
+    """BLEND_CAPS: max(0, min(step, max(Live, Blend) - Soft)), Blend from 2 buckets.
+
+    On a replay every Extrap result carries its bucket count, so the gate is
+    exercised the way production builds its caps: 12.10 at 07:41 the decision
+    read the 07:10 snapshot, Blend resting on one bucket — Live caps alone.
+    """
+    day = DAYS[0]
+    scored = vr.replay(snapshots[day])
+    moments, _ = score_reserve(
+        DayActuals(energy[day], TZ),
+        scored,
+        _earlier_workdays(day, energy),
+        CURRENT,
+    )
+    line = next(m for m in moments if m.label == label)
+    snapshot = next(s for s in scored if s.taken_at == line.snapshot_at)
+    blend = snapshot.result("extrapolated_live_blend")
+    assert blend is not None
+    assert blend.scored_buckets == buckets
+    soft, live = line.variant("live_soft"), line.variant("live")
+    blend_reading = line.variant("extrapolated_live_blend")
+    assert soft is not None
+    assert live is not None
+    assert blend_reading is not None
+    caps = [live.reserve] + ([blend_reading.reserve] if buckets >= 2 else [])
+    assert line.production is not None
+    assert line.production.margin_pp == max(0, min(step, max(caps) - soft.reserve))
 
 
 def test_hour_net_export_counts_this_hour_only(energy):

@@ -193,8 +193,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         A variant with nothing computed yet leaves the remembered value alone.
         The LIVE_SOFT reserve carries the falling margin (`margin_pp_for`,
         recomputed every minute, so its steps drop at 07, 08 and 09; the 07-08
-        step capped by max(LIVE, EXTRAP_PROPORTIONAL, EXTRAP_BLEND), the 08-09
-        one by LIVE, all read the same way). The
+        and 08-09 steps capped by max(LIVE, EXTRAP_BLEND), all read the same
+        way, EXTRAP_BLEND only from two scored buckets). The
         LIVE+EXTRAP reserve is observation only — no margin, in-memory, until
         16:00 (EXTRAP variants have no tomorrow).
         """
@@ -235,12 +235,12 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
             window=BatteryScheduleService._today_window(now),
             margin_at=now,
             caps=BatteryScheduleService._margin_caps(
-                catalog,
-                (
-                    PvForecast.LIVE,
-                    PvForecast.EXTRAP_PROPORTIONAL,
-                    PvForecast.EXTRAP_BLEND,
-                ),
+                catalog, (PvForecast.LIVE, PvForecast.EXTRAP_BLEND)
+            ),
+            extrap_blend_buckets=(
+                blend.scored_buckets
+                if (blend := PvForecast.EXTRAP_BLEND.result) is not None
+                else None
             ),
         )
 
@@ -248,8 +248,19 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     def _margin_caps(
         catalog: TargetSocCatalog, variants: tuple[PvForecast, ...]
     ) -> dict[str, TargetSoc | None]:
-        """Variants whose readings cap the margin steps, keyed as the steps expect."""
-        return {v.key: catalog.target_socs.get(v) for v in variants}
+        """Variants whose readings cap the margin steps, keyed as the steps expect.
+
+        A variant whose result may not cap yet (an Extrap resting on fewer than
+        two buckets, `PvForecastResult.can_cap_margin`) is None, as if absent.
+        """
+        return {
+            v.key: (
+                catalog.target_socs.get(v)
+                if v.result is None or v.result.can_cap_margin()
+                else None
+            )
+            for v in variants
+        }
 
     @staticmethod
     def _resolve_extrap_reserve(

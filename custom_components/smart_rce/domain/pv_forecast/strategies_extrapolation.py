@@ -10,13 +10,16 @@ per-variant algorithm details are `@staticmethod` on each class below.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import math
 from typing import Final
 
 from .extrapolation_utils import (
     assemble,
+    bucket_scores,
     index_solcast_by_bucket,
+    weighted_mean,
     weighted_score_over_buckets,
 )
 from .strategy_base import (
@@ -207,9 +210,9 @@ class ExtrapProportionalStrategy(_ExtrapStrategyBase):
         if ctx.signals.bucket_so_far_kwh is None or ctx.signals.pv_power_w is None:
             return None
         solcast_by_bucket = index_solcast_by_bucket(ctx.solcast_today, ctx.now)
-        cum_s = weighted_score_over_buckets(
-            solcast_by_bucket=solcast_by_bucket,
-            now=ctx.now,
+        scores = bucket_scores(
+            solcast_by_bucket,
+            ctx.now,
             realized_pv_today=ctx.realized_pv_today,
             pv_bucket_so_far_kwh=ctx.signals.bucket_so_far_kwh,
             pv_power_w_5min=ctx.signals.pv_power_w,
@@ -218,18 +221,21 @@ class ExtrapProportionalStrategy(_ExtrapStrategyBase):
             ),
             max_age=24,
         )
+        cum_s = weighted_mean(scores)
         if cum_s is None:
             return None
         future_overrides = self._future_overrides(
             solcast_by_bucket, ctx.now, cum_s, pv_forecast_live
         )
-        return assemble(
+        result = assemble(
             pv_forecast_live=pv_forecast_live,
             now=ctx.now,
             pv_bucket_so_far_kwh=ctx.signals.bucket_so_far_kwh,
             pv_power_w_5min=ctx.signals.pv_power_w,
             future_overrides=future_overrides,
         )
+        # How many buckets cum_s rests on — gates the T1 margin caps.
+        return replace(result, scored_buckets=len(scores))
 
     @staticmethod
     def _compute_score(realized_rate: float, est_rate: float) -> float | None:

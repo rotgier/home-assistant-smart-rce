@@ -9,7 +9,8 @@ Add a row here whenever production changes (deploy time, not commit time).
 Sources: home-assistant-ops `plans/live-soft.md`, smart_rce commits 2321beb,
 1db8b50, 20ada58, 1f87ed6 (margin), a5b711a (08-09 step capped by Live),
 43d266b (07-08 step capped by max(Live, Extrap Proportional, Extrap Blend)),
-0f65863 (hour credit from the grid balance).
+0f65863 (hour credit from the grid balance), 17.10 (both steps capped by
+max(Live, Extrap Blend), Blend from two scored buckets).
 """
 
 from __future__ import annotations
@@ -17,11 +18,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, tzinfo
 from enum import Enum
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from zoneinfo import ZoneInfo
 
 from ..pv_forecast import PvForecast
 from .consumption_models import ConsumptionModel
+
+if TYPE_CHECKING:
+    from ..battery_schedule.t1_reserve import MarginSteps
 
 _WARSAW: Final = ZoneInfo("Europe/Warsaw")
 # The moment a day is assigned to a setup.
@@ -29,12 +33,59 @@ ASSIGNED_AT: Final = time(6, 11)
 
 
 class MarginRule(Enum):
-    """How a setup's time-of-day margin was computed (`T1SocReserve`)."""
+    """How a setup's time-of-day margin was computed (`T1SocReserve`).
+
+    Every rule but NONE goes through production's `margin_pp_for`, the earlier
+    ones with the step table they ran (`steps`), so a day keeps its margin
+    after production moves on.
+    """
 
     NONE = "none"
-    STEPS = "steps"  # 15/10/5, uncapped (1f87ed6): `margin_pp_at`
+    STEPS = "steps"  # 15/10/5, uncapped (1f87ed6)
     LIVE_CAPS_0809 = "live_caps_0809"  # 08-09 capped by Live only (a5b711a)
-    CAPPED = "capped"  # production's own caps per step (43d266b): `margin_pp_for`
+    CAPPED = "capped"  # 07-08 by max(Live, Prop, Blend), 08-09 by Live (43d266b)
+    # 07-08 and 08-09 by max(Live, Blend), Blend from two scored buckets (17.10).
+    BLEND_CAPS = "blend_caps"
+
+    @property
+    def steps(self) -> MarginSteps | None:
+        """Step table the rule ran; None = production's current one."""
+        return _STEPS_OF.get(self)
+
+    @property
+    def gates_extrap(self) -> bool:
+        """Tell whether an Extrap caps only once it may (`can_cap_margin`)."""
+        return self is MarginRule.BLEND_CAPS
+
+
+_NO_CAPS: Final = ()
+_LIVE: Final = (PvForecast.LIVE.key,)
+# Superseded step tables, as each commit had `T1SocReserve._MARGIN_STEPS`.
+_STEPS_OF: Final[dict[MarginRule, MarginSteps]] = {
+    MarginRule.STEPS: (
+        (time(7), 15, _NO_CAPS),
+        (time(8), 10, _NO_CAPS),
+        (time(9), 5, _NO_CAPS),
+    ),
+    MarginRule.LIVE_CAPS_0809: (
+        (time(7), 15, _NO_CAPS),
+        (time(8), 10, _NO_CAPS),
+        (time(9), 5, _LIVE),
+    ),
+    MarginRule.CAPPED: (
+        (time(7), 15, _NO_CAPS),
+        (
+            time(8),
+            10,
+            (
+                PvForecast.LIVE.key,
+                PvForecast.EXTRAP_PROPORTIONAL.key,
+                PvForecast.EXTRAP_BLEND.key,
+            ),
+        ),
+        (time(9), 5, _LIVE),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -145,6 +196,19 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         "Live Soft 0,4",
         "p60",
         margin=MarginRule.CAPPED,
+        hour_credit=True,
+    ),
+    ProductionSetup(
+        datetime(2026, 10, 17, 9, 45, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Blend) − Soft)"
+        " / min(5, max(Live, Blend) − Soft), Blend od 2 przedziałów + kredyt godzinowy",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=MarginRule.BLEND_CAPS,
         hour_credit=True,
     ),
 )

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..bucket import PV_WINDOW_HOURS, Bucket, Buckets
 from ..target_soc import PvProfile
@@ -323,8 +323,31 @@ class SolcastPeriod:
 
 @dataclass
 class PvForecastResult:
+    # An extrapolation resting on fewer buckets does not cap the T1 reserve
+    # margin (decision 17.10.2026, `can_cap_margin`).
+    _MIN_BUCKETS_TO_CAP: ClassVar[int] = 2
+
     forecast: list[AdjustedPeriod]
     total_kwh: float  # sum of (adjusted rate / 2) = actual kWh
+    # Buckets an extrapolation's score rests on, the current one included
+    # (`extrapolation_utils.bucket_scores`); None for variants that do not
+    # extrapolate.
+    scored_buckets: int | None = None
+
+    def can_cap_margin(self) -> bool:
+        """Tell whether this reading may cap a T1 reserve margin step.
+
+        A variant that does not extrapolate always may. An extrapolation only
+        once its score rests on at least two buckets: at dawn a single, just
+        started bucket is a proportion of the first minutes, not a forecast
+        (17.10.2026 07:30: Extrap Proportional 43 from one foggy bucket, Live
+        17). Production (`BatteryScheduleService`) and the scoreboard
+        (`forecast_score.reserve_score`) both gate on this.
+        """
+        return (
+            self.scored_buckets is None
+            or self.scored_buckets >= PvForecastResult._MIN_BUCKETS_TO_CAP
+        )
 
     def to_profile(
         self,
@@ -537,13 +560,17 @@ class PvForecastResult:
         return cls(
             forecast=[AdjustedPeriod.from_dict(p) for p in data.get("periods", [])],
             total_kwh=float(data["total_kwh"]),
+            scored_buckets=data.get("scored_buckets"),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "total_kwh": self.total_kwh,
             "periods": [p.to_dict() for p in self.forecast],
         }
+        if self.scored_buckets is not None:
+            out["scored_buckets"] = self.scored_buckets
+        return out
 
 
 # --- AdjustedPeriod: PvForecastResult.forecast list element --- #

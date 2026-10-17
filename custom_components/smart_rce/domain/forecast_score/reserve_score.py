@@ -191,28 +191,25 @@ def _margin(
     rule: _Rule,
     reading: int,
 ) -> int:
-    """Production's own margin at the moment — the same functions it calls.
+    """Production's own margin at the moment — the same function it calls.
 
-    The caps are readings of the capping variants on the same rule (p60,
-    remaining window, buffer); a variant without a result does not count.
+    With the step table of the day's rule (`MarginRule.steps`). The caps are
+    readings of the capping variants on the same rule (p60, remaining window,
+    buffer); a variant without a result does not count, nor, under a gating
+    rule, an Extrap that may not cap yet. The step table picks which caps count.
     """
-    day, now = ctx.target_date, ctx.now
     if setup.margin is MarginRule.NONE:
         return 0
-    if setup.margin is MarginRule.STEPS:
-        return T1SocReserve.margin_pp_at(day, now)
-    if setup.margin is MarginRule.LIVE_CAPS_0809:
-        # a5b711a capped only 08-09, by Live; its 07-08 step stays whole.
-        if now.date() == day and now.hour == 7:
-            return T1SocReserve.margin_pp_at(day, now)
-        return T1SocReserve.margin_pp_for(
-            day, now, reading, _caps(snapshot, ctx, rule, (PvForecast.LIVE,))
-        )
     return T1SocReserve.margin_pp_for(
-        day, now, reading, _caps(snapshot, ctx, rule, _CAPPING_VARIANTS)
+        ctx.target_date,
+        ctx.now,
+        reading,
+        _caps(snapshot, ctx, rule, gated=setup.margin.gates_extrap),
+        steps=setup.margin.steps,
     )
 
 
+# Every variant any step table capped by.
 _CAPPING_VARIANTS: Final = (
     PvForecast.LIVE,
     PvForecast.EXTRAP_PROPORTIONAL,
@@ -221,17 +218,21 @@ _CAPPING_VARIANTS: Final = (
 
 
 def _caps(
-    snapshot: ScoredSnapshot,
-    ctx: TargetSocContext,
-    rule: _Rule,
-    variants: Sequence[PvForecast],
+    snapshot: ScoredSnapshot, ctx: TargetSocContext, rule: _Rule, *, gated: bool
 ) -> dict[str, int | None]:
-    """Read the capping variants on the same rule, keyed by `PvForecast.key`."""
+    """Read the capping variants on the same rule, keyed by `PvForecast.key`.
+
+    `gated`: a result that may not cap yet (`can_cap_margin`) reads None, as
+    production builds its caps. Results archived before the counter existed
+    carry none and so always may — they belong to days under earlier rules.
+    """
     caps: dict[str, int | None] = {}
-    for variant in variants:
+    for variant in _CAPPING_VARIANTS:
         result = snapshot.result(variant.key)
         caps[variant.key] = (
-            rule.on_forecast(result, ctx) if result is not None else None
+            rule.on_forecast(result, ctx)
+            if result is not None and (not gated or result.can_cap_margin())
+            else None
         )
     return caps
 
