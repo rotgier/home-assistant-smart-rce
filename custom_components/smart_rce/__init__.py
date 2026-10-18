@@ -13,6 +13,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util import dt as dt_util
 
+from .application.battery_day_service import BatteryDayService
 from .application.charge_start_shift_service import ChargeStartShiftService
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
@@ -28,6 +29,7 @@ from .domain.weather_forecast_history import WeatherForecastHistory
 from .ems_factory import create_ems
 from .forecast_score_factory import create_forecast_score
 from .garden.factory import Garden, create_garden
+from .infrastructure.battery_day_history import BatteryDayHistory
 from .infrastructure.charge_start_shift_notifier import ChargeStartShiftNotifier
 from .infrastructure.energy_archive_reader import EnergyArchiveReader
 from .infrastructure.pv_forecast.hourly_energy_loader import HourlyEnergyLoader
@@ -79,6 +81,7 @@ class SmartRceData:
     charge_start_shift: ChargeStartShiftService
     forecast_score: ForecastScoreService
     pv_charge: PvChargeService
+    battery_day: BatteryDayService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -189,6 +192,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     entry.async_on_unload(async_track_time_change(hass, _refresh_pv_charge, second=15))
     pv_charge.refresh()
 
+    # The battery bands of the day picked on the dashboard (past days from the
+    # recorder) — refreshed by the day sensor itself.
+    battery_day = BatteryDayService(
+        ems, pv_charge, BatteryDayHistory(hass), dt_util.now
+    )
+
     weather_history_loader = WeatherHistoryLoader(hass)
     weather_table_service = WeatherTableService(
         hass, weather_history_loader, weather_listener
@@ -227,6 +236,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         charge_start_shift,
         forecast_score,
         pv_charge,
+        battery_day,
     )
 
     # Credentials for the deposit fetch live in options; picking them up needs a

@@ -381,10 +381,13 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         The plan day is tomorrow once the evening switched over (`plan_day`),
         so the chart previews tomorrow morning together with tomorrow evening.
         """
+        return self.upcoming_runs_on(self.plan_day)
+
+    def upcoming_runs_on(self, day: date) -> list[UpcomingRun]:
+        """List the auto-slot runs still ahead on `day` (today or tomorrow)."""
         if self._last_soc is None:
             return []
         now = self._clock()
-        day = self.plan_day
         return self._repo.schedule.upcoming_runs(
             now,
             self._last_soc,
@@ -395,6 +398,10 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
             ),
             day=day,
         )
+
+    def evening_windows_on(self, day: date) -> list[BatteryScheduleEntry]:
+        """Evening slots that run on `day`, as set now (today or tomorrow)."""
+        return self._repo.schedule.evening_windows_on(day)
 
     @property
     def t1_reserve_extrap(self) -> T1SocReserve | None:

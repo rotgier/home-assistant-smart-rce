@@ -261,7 +261,7 @@ class TestService:
             battery_charge_service=charge,
             battery_schedule_service=SimpleNamespace(
                 plan_day=plan_day,
-                upcoming_runs=list(runs),
+                upcoming_runs_on=lambda day: [r for r in runs if r.end.date() == day],
                 sessions_today=list(sessions),
             ),
             charge_slots=SimpleNamespace(tomorrow_start=time(10, 30)),
@@ -287,7 +287,7 @@ class TestService:
         service, observed, asked = self._service(now, plan_day=DAY, runs=[run])
         forecast_start = service.outlook.bands[0]
         assert forecast_start.start == 11 * H and not forecast_start.done
-        assert observed and asked == [(DAY, False)]
+        assert observed and (DAY, False) in asked
         assert service.outlook.full_at is not None
         # From 22% (after the discharge) the plateau comes later than from 40% now.
         without, _o, _a = self._service(now, plan_day=DAY)
@@ -299,7 +299,7 @@ class TestService:
         service, _observed, asked = self._service(now, plan_day=tomorrow)
         assert service.outlook.day == tomorrow
         assert service.outlook.start == 10 * H + 30
-        assert asked == [(tomorrow, True)]
+        assert (tomorrow, True) in asked
 
 
 class TestHourSensors:

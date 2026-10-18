@@ -298,6 +298,15 @@ class BatterySchedule:
         ]
         return max(ends, default=None)
 
+    def evening_windows_on(self, day: date) -> list[BatteryScheduleEntry]:
+        """Evening slots that run on `day` as the orchestrator would, in window order.
+
+        The slots are one set for every day: a later-dated evening stands until
+        its day, otherwise tonight's hours repeat.
+        """
+        entries = (self._effective_entry(kind, day) for kind in _EVENING_KINDS)
+        return sorted((e for e in entries if e.enabled), key=lambda e: e.start)
+
     def evening_is_hand_set_on(self, day: date) -> bool:
         """Tell whether the user edited an evening slot by hand on `day`."""
         return self._evening_hand_set_day == day

@@ -12,13 +12,18 @@ Times are minutes of the day, as in `charge_start_shift`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from .charge_curve import FULL_SOC
 from .charge_start_shift import PLATEAU_SOC, ChargeMilestones, to_time
+
+# The time gate blocks charging from 06:00 to the start; before it the night
+# stands open by default, so a PV run is looked for from 06:00 only.
+OPENS_FROM: Final[int] = 6 * 60
 
 
 class PvChargeRun:
@@ -44,6 +49,33 @@ class PvChargeRun:
         self.full_at = full_at
         # SoC at the end of the PV window — the level an unfinished charge stopped at.
         self.end_soc = end_soc
+
+    @classmethod
+    def replay(
+        cls,
+        day: date,
+        *,
+        gate_open: Callable[[int], bool],
+        soc_at: Callable[[int], float | None],
+        window_end: int,
+    ) -> PvChargeRun:
+        """Rebuild a past day's run minute by minute — the rule `observe` applies live.
+
+        `gate_open(minute)`: the time gate let the battery take PV (a charge
+        slot from the grid excluded); `soc_at(minute)`: the reading in force.
+        """
+        run = cls(day=day)
+        for minute in range(OPENS_FROM, window_end + 1):
+            soc = soc_at(minute)
+            if soc is not None:
+                run.observe(
+                    minute,
+                    soc,
+                    opened=gate_open(minute),
+                    start_in_force=None,
+                    window_end=window_end,
+                )
+        return run
 
     def observe(
         self,
