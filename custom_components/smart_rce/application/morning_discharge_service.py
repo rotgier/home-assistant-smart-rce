@@ -25,7 +25,6 @@ from ..domain.charge_start_shift import (
     lowest_soc_the_sun_fills,
     to_minutes,
 )
-from ..domain.pv_forecast import PvForecast
 from ..domain.pv_surplus import surplus_window_end
 from ..domain.target_soc import MIN_SOC_PERCENT
 
@@ -97,12 +96,7 @@ class MorningDischargeService:
         )
         if best is None:
             return None
-        source = PvForecast.TOMORROW_LIVE_SOFT if tomorrow else PvForecast.LIVE_SOFT
-        profile = self._pv_surplus.profile_for(
-            day, history=True, pv_scale=1.0, source=source
-        ) or self._pv_surplus.profile_for(
-            day, history=False, pv_scale=1.0, source=source
-        )
+        profile = self._pv_surplus.live_soft_profile(day, tomorrow=tomorrow)
         if profile is None:
             return None
         t2 = surplus_window_end(day)

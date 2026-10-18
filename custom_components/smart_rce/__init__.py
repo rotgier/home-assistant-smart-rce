@@ -18,6 +18,7 @@ from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
 from .application.forecast_score_service import ForecastScoreService
 from .application.morning_discharge_service import MorningDischargeService
+from .application.pv_charge_service import PvChargeService
 from .application.pv_surplus_service import PvSurplusService
 from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
@@ -77,6 +78,7 @@ class SmartRceData:
     pv_surplus: PvSurplusService
     charge_start_shift: ChargeStartShiftService
     forecast_score: ForecastScoreService
+    pv_charge: PvChargeService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -176,6 +178,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     )
     morning_discharge.refresh()
 
+    # PV charge on the price chart: today's run recorded and the plan day's
+    # forecast rebuilt every minute, after the morning plan (second 10).
+    pv_charge = PvChargeService(ems, pv_surplus, dt_util.now)
+
+    @callback
+    def _refresh_pv_charge(_now: object) -> None:
+        pv_charge.refresh()
+
+    entry.async_on_unload(async_track_time_change(hass, _refresh_pv_charge, second=15))
+    pv_charge.refresh()
+
     weather_history_loader = WeatherHistoryLoader(hass)
     weather_table_service = WeatherTableService(
         hass, weather_history_loader, weather_listener
@@ -213,6 +226,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         pv_surplus,
         charge_start_shift,
         forecast_score,
+        pv_charge,
     )
 
     # Credentials for the deposit fetch live in options; picking them up needs a
@@ -374,6 +388,8 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.evening_plan"))
     # battery_charge_policy imports ChargeStartShift — reload the shift first.
     reload(import_module("custom_components.smart_rce.domain.charge_start_shift"))
+    # pv_charge imports from charge_start_shift; battery_charge_policy imports it.
+    reload(import_module("custom_components.smart_rce.domain.pv_charge"))
     # battery_charge_policy imports BatteryOperation from battery_schedule —
     # reload AFTER battery_schedule.
     reload(import_module("custom_components.smart_rce.domain.battery_charge_policy"))

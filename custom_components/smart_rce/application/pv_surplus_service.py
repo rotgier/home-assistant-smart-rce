@@ -243,6 +243,17 @@ class PvSurplusService:
         scaled = {slot: kwh * pv_scale for slot, kwh in pv.items()}
         return SurplusProfile.build(day, scaled, cons)
 
+    def live_soft_profile(self, day: date, *, tomorrow: bool) -> SurplusProfile | None:
+        """`day`'s Live Soft surplus, p60 consumption when there is one, else flat.
+
+        The profile the planners charge the battery on: the morning discharge
+        plan and the PV charge outlook.
+        """
+        source = PvForecast.TOMORROW_LIVE_SOFT if tomorrow else PvForecast.LIVE_SOFT
+        return self.profile_for(
+            day, history=True, pv_scale=1.0, source=source
+        ) or self.profile_for(day, history=False, pv_scale=1.0, source=source)
+
     def _target_day(self, now: datetime) -> date:
         today = now.date()
         if now.hour < surplus_window_end(today):

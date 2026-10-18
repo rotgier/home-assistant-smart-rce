@@ -40,7 +40,8 @@ from .charge_slots import (
     DEFAULT_INITIAL_HOURS,
     ChargeWindowParams,
 )
-from .charge_start_shift import ChargeStartShift
+from .charge_start_shift import ChargeStartShift, to_minutes
+from .pv_charge import PvChargeRun
 
 if TYPE_CHECKING:
     from .battery_schedule import BatteryOperation
@@ -99,6 +100,7 @@ class BatteryChargePolicy:
         start_charge_manual_day: date | None = None,
         tomorrow_plan: ChargeStartPlan | None = None,
         forecast_shift: ChargeStartShift | None = None,
+        pv_charge_run: PvChargeRun | None = None,
         initial_charge_hours: int = DEFAULT_INITIAL_HOURS,
         charge_extend_threshold: float = DEFAULT_EXTEND_THRESHOLD,
         charge_absolute_cheap_price: float = DEFAULT_ABSOLUTE_CHEAP_PRICE,
@@ -131,6 +133,9 @@ class BatteryChargePolicy:
         # Pinned to its day like `tomorrow_plan`; a hand-set start for today
         # still wins — the shift keeps being evaluated, only not applied.
         self.forecast_shift = forecast_shift
+        # Today's PV charge as it happened (opened, 90%, full) — read model for
+        # the price chart, persisted so a restart mid-day keeps it.
+        self.pv_charge_run = pv_charge_run
         # User-tunable inputs to the charge-window selection algorithm (consumed
         # by `ChargeSlots.compute` cross-aggregate via Ems on recompute). Kept
         # here because this policy already owns a crash-safe Store and groups the
@@ -185,6 +190,10 @@ class BatteryChargePolicy:
         if schedule_op.needs_charge_toggle:
             return True
         # Schedule says no — defer to time-gate.
+        return self._time_gate_open(now)
+
+    def _time_gate_open(self, now: datetime) -> bool:
+        """Tell whether the start-hour gate alone is open (steps 4-6 above)."""
         start = self.start_charge_hour_override
         if start is None:
             return False
@@ -277,6 +286,39 @@ class BatteryChargePolicy:
             self.forecast_shift = ChargeStartShift(day=today, s0=s0)
         return self.forecast_shift
 
+    def observe_pv_charge(self, now: datetime, soc: float, window_end: int) -> bool:
+        """Record today's PV charge (start, 90%, full) — True when anything changed.
+
+        The battery takes PV from the moment the time gate opens after 06:00 (or
+        the user forces charging on); a charge slot from the grid does not count,
+        nor the night, when the gate stands open by default.
+        """
+        today = now.date()
+        changed = False
+        if self.pv_charge_run is None or self.pv_charge_run.day != today:
+            self.pv_charge_run = PvChargeRun(day=today)
+            changed = True
+        start = self.start_charge_hour_override
+        return (
+            self.pv_charge_run.observe(
+                to_minutes(now.time()),
+                soc,
+                opened=self._opens_to_pv(now),
+                start_in_force=to_minutes(start) if start is not None else None,
+                window_end=window_end,
+            )
+            or changed
+        )
+
+    def _opens_to_pv(self, now: datetime) -> bool:
+        if self.charge_allowed_override == OverrideMode.DISALLOWED:
+            return False
+        if now.time() < BLOCK_WINDOW_START:
+            return False
+        if self.charge_allowed_override == OverrideMode.ALLOWED:
+            return True
+        return self._time_gate_open(now)
+
     def drop_stale_forecast_shift(self, today: date) -> bool:
         """Forget a shift from an earlier day — it must not move today's start."""
         if self.forecast_shift is None or self.forecast_shift.day == today:
@@ -351,6 +393,9 @@ class BatteryChargePolicy:
                 if self.forecast_shift is not None
                 else None
             ),
+            "pv_charge_run": (
+                self.pv_charge_run.to_dict() if self.pv_charge_run is not None else None
+            ),
             "initial_charge_hours": self.initial_charge_hours,
             "charge_extend_threshold": self.charge_extend_threshold,
             "charge_absolute_cheap_price": self.charge_absolute_cheap_price,
@@ -424,6 +469,7 @@ class BatteryChargePolicy:
             start_charge_manual_day=manual_day,
             tomorrow_plan=tomorrow_plan,
             forecast_shift=ChargeStartShift.from_dict(data.get("forecast_shift")),
+            pv_charge_run=PvChargeRun.from_dict(data.get("pv_charge_run")),
             initial_charge_hours=initial_hours,
             charge_extend_threshold=extend_threshold,
             charge_absolute_cheap_price=absolute_cheap_price,

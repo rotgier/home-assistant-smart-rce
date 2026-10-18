@@ -59,6 +59,9 @@ EARLIEST_START: Final[int] = 8 * 60
 MIN_SUN_KWH_PER_H: Final[float] = 0.2
 EXTRAP_FROM: Final[int] = 9 * 60 + 10
 REWIND_FROM: Final[int] = 9 * 60
+# The BMS holds SoC here for ~10 minutes before the fast top (17.10.2026:
+# 90% from 12:56 to 13:06); the chart splits the PV charge at it.
+PLATEAU_SOC: Final[float] = 90.0
 
 
 class ShiftVariant(Enum):
@@ -83,6 +86,18 @@ class ShiftVariant(Enum):
 
 
 APPLIED_VARIANT: Final = ShiftVariant.GUARDED
+
+
+@dataclass(frozen=True)
+class ChargeMilestones:
+    """Minutes of the day a charge reaches the plateau and full; None = not by the end.
+
+    `end_soc` is the level at the end of the window (100 when full before it).
+    """
+
+    plateau_at: int | None
+    full_at: int | None
+    end_soc: float
 
 
 @dataclass(frozen=True)
@@ -164,7 +179,14 @@ def lowest_soc_the_sun_fills(
 def full_charge_minute(
     profile: SurplusProfile, start: int, soc: float, end: int
 ) -> int | None:
-    """Minute of the day the battery is full charging from `start`; None if not by `end`.
+    """Minute of the day the battery is full charging from `start`; None if not by `end`."""
+    return charge_milestones(profile, start, soc, end).full_at
+
+
+def charge_milestones(
+    profile: SurplusProfile, start: int, soc: float, end: int
+) -> ChargeMilestones:
+    """When the battery reaches the plateau level and full charging from `start`.
 
     Minute by minute: the surplus of the slot (spread evenly over its 30
     minutes) goes in, at most at the charge pace of `Direction.CHARGE` (the
@@ -172,14 +194,18 @@ def full_charge_minute(
     BMS plateau and the slow top). Energy per pp from the charge curve.
     """
     level = soc
+    plateau_at: int | None = start if soc >= PLATEAU_SOC else None
     for minute in range(start, end):
         if level >= FULL_SOC:
-            return minute
+            return ChargeMilestones(plateau_at, minute, FULL_SOC)
         slot = profile.slots[minute // SLOT_MINUTES]
         surplus_pp = slot.surplus_kwh / SLOT_MINUTES / kwh_per_pp(level)
         pace_pp = 60 / _charge_sec_per_pp(level)
         level = min(FULL_SOC, level + min(surplus_pp, pace_pp))
-    return end if level >= FULL_SOC else None
+        if plateau_at is None and level >= PLATEAU_SOC:
+            plateau_at = minute + 1
+    full_at = end if level >= FULL_SOC else None
+    return ChargeMilestones(plateau_at, full_at, level)
 
 
 def _charge_sec_per_pp(soc: float) -> float:

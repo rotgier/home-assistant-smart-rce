@@ -40,6 +40,7 @@ from ..domain.battery_charge_policy import (
 from ..domain.battery_schedule import BatteryOperation
 from ..domain.charge_slots import ChargeWindowParams
 from ..domain.charge_start_shift import ChargeStartShift, to_hhmm, to_minutes, to_time
+from ..domain.pv_charge import PvChargeRun
 from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 from .service import Service
 
@@ -142,6 +143,11 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         if shift is None or shift.day != self._clock().date():
             return None
         return shift
+
+    @property
+    def pv_charge_run(self) -> PvChargeRun | None:
+        """Today's PV charge as it happened (None before the first reading)."""
+        return self._repo.policy.pv_charge_run
 
     @property
     def start_charge_source(self) -> ChargeStartSource:
@@ -366,6 +372,13 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
             before=old_start,
             after=shift.start,
             manual_start=policy.start_charge_hour_override if manual else None,
+        )
+
+    @callback
+    def observe_pv_charge(self, now: datetime, soc: float, window_end: int) -> None:
+        """Record today's PV charge (start, 90%, full) from one SoC reading."""
+        self._save_if_changed_and_notify(
+            self._repo.policy.observe_pv_charge(now, soc, window_end)
         )
 
     @callback

@@ -170,7 +170,8 @@ class _Surplus:
     def __init__(self, rate: float) -> None:
         self.rate = rate
 
-    def profile_for(self, day, *, history: bool, pv_scale: float, source):
+    def live_soft_profile(self, day, *, tomorrow: bool):
+        source = PvForecast.TOMORROW_LIVE_SOFT if tomorrow else PvForecast.LIVE_SOFT
         self.asked = (day, source)
         pv = slots_from_hourly(dict.fromkeys(range(9, 16), self.rate))
         return SurplusProfile.build(day, pv, None)
