@@ -4,9 +4,15 @@ A day is scored several times and checked once:
 - PRELIMINARY during the day (from 18.10.2026): at the charge start, at S0, when
   the battery reaches 100%, at 13:06, on the button, and at 16:06. Such a run
   sees the data only up to its `cutoff`, so a part that needs more waits
-  (`pending`): D1 until the T1 window closes (13:00), D2 until T2 starts (its
-  benchmark is the latest start still full by T2, read on the surplus to T2;
-  16:00 in winter), D3 until its full charges are measured.
+  (`pending`): D1 until the T1 window closes (13:00); D2 until more data
+  cannot move it — scored under the worst rest of the day (no sun, a large
+  consumption) and the best, it must come out the same: typically once the
+  system started at S0 and the surplus since covers the need (about when the
+  battery is full); at the latest at T2 (16:00 in winter), as the 16:06 run
+  always did. Its diagnostics (forecast PV with the ACTUAL consumption, the
+  consumption models) read the data to the end of the price window, so they
+  wait for T2 even when the rest has settled (`START_DIAGNOSTICS`). D3 until its full
+  charges are measured.
   The accuracy so far (`so_far`) is there from the first run;
 - FINAL at 21:06 — after sunset nothing that matters moves (the D2 windows and
   the afternoon top-up close before the evening T2);
@@ -20,16 +26,17 @@ calendar are the adapters' business.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, time
+from dataclasses import dataclass, replace
+from datetime import date, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
+from ..charge_start_shift import to_minutes
 from ..pv_surplus import DayType, minute_of_day, surplus_window_end
 from .day_type import DayTypeFigures, day_type_figures
 from .full_charge_score import FullChargeScore, PlanReading, score_full_charge
 from .production_outcome import ChargeStartFact, ProductionOutcome, production_outcome
-from .production_setup import setup_on
+from .production_setup import ProductionSetup, setup_on
 from .reserve_score import (
     DISCHARGE_LINE_MOMENT,
     MAIN_MOMENT,
@@ -38,7 +45,7 @@ from .reserve_score import (
     score_reserve,
 )
 from .so_far_score import WINDOW_END, MomentSoFar, score_so_far
-from .start_score import START_MOMENT, MomentStart, score_start
+from .start_score import PREVIEW_MOMENTS, START_MOMENT, MomentStart, score_start
 from .variant_results import consumed
 
 if TYPE_CHECKING:
@@ -55,6 +62,10 @@ if TYPE_CHECKING:
 # Older records are ignored, so the startup catch-up rescores those days.
 SCHEMA_VERSION: Final = 5
 
+# Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
+# the D2 settlement test).
+_LARGE_KWH: Final = 1.0
+
 
 class ScoreStatus(StrEnum):
     PRELIMINARY = "preliminary"
@@ -65,7 +76,8 @@ class Pending(StrEnum):
     """A part of the day a run before the day's end cannot score yet."""
 
     RESERVE = "reserve"  # until the T1 window closes (13:00)
-    START = "start"  # until T2 starts (16:00 in winter)
+    START = "start"  # until more data cannot move it (see the module doc)
+    START_DIAGNOSTICS = "start_diagnostics"  # actual-use calls, models: until T2
     FULL_CHARGE = "full_charge"  # until its full charges are measured, or T2
     DAY_TYPE = "day_type"  # the actual PV of 07-13 is still coming
 
@@ -142,24 +154,14 @@ def score_day(
         cutoff,
     )
     start: tuple[MomentStart, ...] = ()
-    has_prices = (
-        inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24
-    )
-    t2 = datetime.combine(day, time(surplus_window_end(day)), actuals.tz)
-    if has_prices and cutoff is not None and cutoff < t2:
-        pending.append(Pending.START)
-    elif has_prices:
-        assert inputs.prices is not None  # has_prices
-        assert inputs.s0 is not None
-        start = score_start(
-            actuals,
-            inputs.snapshots,
-            inputs.prices,
-            inputs.s0,
-            list(inputs.earlier_same_type.values()),
-            inputs.start.start,
-            setup,
-        )
+    if inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24:
+        settled = _settled_start(inputs, setup, inputs.prices, inputs.s0)
+        if settled is None:
+            pending.append(Pending.START)
+        else:
+            start, diagnostics_settled = settled
+            if not diagnostics_settled:
+                pending.append(Pending.START_DIAGNOSTICS)
     main = consumed(inputs.snapshots, datetime.combine(day, MAIN_MOMENT.at, actuals.tz))
     outcome = production_outcome(actuals, inputs.start, inputs.afternoon_charge)
     full_charge = (
@@ -204,6 +206,71 @@ def score_day(
         trigger=trigger,
         cutoff=cutoff,
         pending=tuple(pending),
+    )
+
+
+def _settled_start(
+    inputs: DayInputs, setup: ProductionSetup, prices: Sequence[float], s0: int
+) -> tuple[tuple[MomentStart, ...], bool] | None:
+    """D2 as far as the data settles it, and whether its diagnostics are settled too.
+
+    None while more data could move the score itself. Every moment has to be
+    behind the cutoff (the start among them), and the score has to come out
+    the same under the worst rest of the day (no sun, a large consumption) and
+    the best (much sun, no consumption) — then nothing still to come can change
+    it. From T2 on it stands as it is: the afternoon after T2 adds little and
+    the evening none.
+    """
+    actuals, cutoff = inputs.actuals, inputs.cutoff
+
+    def score(on: DayActuals) -> tuple[MomentStart, ...]:
+        return score_start(
+            on,
+            inputs.snapshots,
+            prices,
+            s0,
+            list(inputs.earlier_same_type.values()),
+            inputs.start.start,
+            setup,
+        )
+
+    if (
+        cutoff is None
+        or minute_of_day(cutoff) >= surplus_window_end(cutoff.date()) * 60
+    ):
+        return score(actuals), True
+    struck = inputs.start.start
+    now = minute_of_day(cutoff)
+    if struck is None or struck > now:
+        return None
+    if any(now < m < s0 for m in (to_minutes(at) for _label, at in PREVIEW_MOMENTS)):
+        return None  # a preview moment still to come
+    worst = score(
+        actuals.with_future(cutoff, pv_kwh_per_slot=0.0, cons_kwh_per_slot=_LARGE_KWH)
+    )
+    best = score(
+        actuals.with_future(cutoff, pv_kwh_per_slot=_LARGE_KWH, cons_kwh_per_slot=0.0)
+    )
+    if worst == best:
+        return worst, True
+    if _without_diagnostics(worst) == _without_diagnostics(best):
+        return worst, False
+    return None
+
+
+def _without_diagnostics(moments: tuple[MomentStart, ...]) -> tuple[MomentStart, ...]:
+    """Return the moments without the diagnostics.
+
+    That is the variants' actual-use calls and the consumption models (each
+    judged on its own surplus to its price window).
+    """
+    return tuple(
+        replace(
+            m,
+            variants=tuple(replace(v, call_actual_cons=v.call) for v in m.variants),
+            models=(),
+        )
+        for m in moments
     )
 
 

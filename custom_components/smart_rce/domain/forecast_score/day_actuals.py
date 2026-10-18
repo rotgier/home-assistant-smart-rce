@@ -8,7 +8,7 @@ lines up with the clock the decisions ran on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import TYPE_CHECKING, Final
 
@@ -113,6 +113,30 @@ class DayActuals:
             total += value * (overlap / self.energy.STEP)
             found = True
         return total if found else None
+
+    def with_future(
+        self, cutoff: datetime, *, pv_kwh_per_slot: float, cons_kwh_per_slot: float
+    ) -> DayActuals:
+        """Return the day as measured up to `cutoff`, then an assumed future.
+
+        Every 5-minute slot not over by `cutoff` gets the given PV and
+        consumption. No PV and a large consumption is the worst rest of the day,
+        a large PV and no consumption the best: the battery's surplus,
+        max(0, PV - use), lies between them whatever comes — also where a
+        forecast PV meets the actual consumption. A result the same under both
+        cannot be moved by what is still to come.
+        """
+        complete = [start + self.energy.STEP <= cutoff for start, _ in self._slots(PV)]
+        future = {PV: pv_kwh_per_slot, CONSUMPTION: cons_kwh_per_slot}
+        series = {
+            name: [
+                value if done or name not in future else future[name]
+                for done, value in zip(complete, values, strict=False)
+            ]
+            for name, values in self.energy.series.items()
+        }
+        energy = replace(self.energy, series=series)
+        return DayActuals(energy, self.tz)
 
     def soc_near(self, at: datetime, lookback_slots: int = 6) -> float | None:
         """Mean SoC of the 5-minute slot holding `at`, else of the latest before it."""

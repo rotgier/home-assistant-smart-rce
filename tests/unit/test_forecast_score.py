@@ -22,6 +22,7 @@ from custom_components.smart_rce.domain.forecast_score.day_score import (
     DayScore,
     Pending,
     ScoreStatus,
+    _without_diagnostics,
     has_morning_reserve,
     score_day,
 )
@@ -345,7 +346,9 @@ class TestProductionOutcome:
         assert 7 * 60 <= rise < 16 * 60
 
 
-def _day_score(day, energy, snapshots, prices, *, cutoff=None, plan=None) -> DayScore:
+def _day_score(
+    day, energy, snapshots, prices, *, cutoff=None, plan=None, s0=None
+) -> DayScore:
     actuals = DayActuals(energy[day], TZ)
     earlier = {
         d: energy[d].energy_by_half_hour(CONSUMPTION, TZ)
@@ -359,7 +362,7 @@ def _day_score(day, energy, snapshots, prices, *, cutoff=None, plan=None) -> Day
             earlier_workdays=dict(list(earlier.items())[-8:]),
             earlier_same_type=dict(list(earlier.items())[-10:]),
             prices=prices[day.isoformat()],
-            s0=_s0(day, prices),
+            s0=_s0(day, prices) if s0 is None else s0,
             start=ChargeStartFact(start_from_soc_rise(actuals), "soc_rise"),
             afternoon_charge=None,
             morning_plan=plan,
@@ -674,6 +677,26 @@ class TestDuringTheDay:
         assert at_1606.pending == ()
         whole = _day_score(DAYS[-1], energy, snapshots, prices)
         assert at_1606.reserve == whole.reserve
+
+    def test_d2_settles_once_the_rest_of_the_day_cannot_move_it(
+        self, energy, snapshots, prices
+    ):
+        """12.10 run as if started at S0: full at 11:30, D2 settled by 12:00."""
+        day = DAYS[0]
+        actuals = DayActuals(energy[day], TZ)
+        start = start_from_soc_rise(actuals)
+        at_noon = datetime.combine(day, time(12, 0), TZ)
+        early = _day_score(day, energy, snapshots, prices, cutoff=at_noon, s0=start)
+        whole = _day_score(day, energy, snapshots, prices, s0=start)
+        assert early.start
+        assert Pending.START not in early.pending
+        assert Pending.START_DIAGNOSTICS in early.pending
+        assert _without_diagnostics(early.start) == _without_diagnostics(whole.start)
+        # Started before S0 (11:00): whether 11:00 would still fill needs the
+        # afternoon — the score waits.
+        real = _day_score(day, energy, snapshots, prices, cutoff=at_noon)
+        assert real.start == ()
+        assert Pending.START in real.pending
 
     def test_so_far_is_what_was_promised_against_what_came(
         self, energy, snapshots, prices
