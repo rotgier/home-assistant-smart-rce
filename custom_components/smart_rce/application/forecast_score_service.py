@@ -39,6 +39,7 @@ from ..domain.forecast_score.day_score import (
     has_morning_reserve,
     score_day,
 )
+from ..domain.forecast_score.full_charge_score import decided_plan
 from ..domain.forecast_score.production_outcome import (
     ChargeStartFact,
     start_from_soc_rise,
@@ -359,6 +360,7 @@ class ForecastScoreService:
             if has_morning_reserve(day)
             else {}
         )
+        readings = await self._sources.morning_plan_readings(day)
         return DayInputs(
             actuals=actuals,
             snapshots=scored,
@@ -368,7 +370,8 @@ class ForecastScoreService:
             s0=s0,
             start=start,
             afternoon_charge=spans,
-            morning_plan=await self._sources.morning_plan(day),
+            morning_plan=decided_plan(readings, day),
+            plan_readings=readings,
             cutoff=cutoff,
         )
 

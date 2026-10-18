@@ -169,42 +169,41 @@ class ForecastScoreSources:
             out.append((_minute_on(day, state.last_changed), start))
         return out or None
 
-    async def morning_plan(self, day: date) -> PlanReading | None:
-        """Read the morning discharge plan as it stood before its first hour began.
+    async def morning_plan_readings(self, day: date) -> list[PlanReading]:
+        """Read the morning discharge plan as it stood over `day`, oldest first.
 
-        The plan is rebuilt every minute; the state in force when the first
-        qualified hour started is the one that decided. Its start SoC is the
-        T1 reserve without margin at that moment (what the plan charged from);
-        on a day off there is no T1 and the plan charges from the 10% floor.
+        The plan is rebuilt every minute until the charge start. Each reading's
+        start SoC is what the plan charged from: the T1 reserve without margin
+        in force then; on a day off there is no T1 and the plan charges from
+        the 10% floor.
         """
         states = await self._history(day, PLAN_ENTITY, attributes=True)
-        decided: tuple[datetime, dict[str, Any]] | None = None
+        reserve: list[State] | None = None
+        out: list[PlanReading] = []
         for state in states:
-            hours = [_parse_hhmm(h) for h in state.attributes.get("hours", [])]
-            first = next((h for h in hours if h is not None), None)
+            attrs = state.attributes
             moment = dt_util.as_local(state.last_updated)
-            if first is None or "full_at" not in state.attributes:
+            if "full_at" not in attrs or moment.date() != day:
                 continue
-            if moment.date() == day and moment.hour * 60 + moment.minute < first:
-                decided = (moment, dict(state.attributes))
-        if decided is None:
-            return None
-        at, attrs = decided
-        day_off = bool(attrs.get("day_off"))
-        start_soc = MIN_SOC_PERCENT if day_off else await self._reserve_before(day, at)
-        return PlanReading(
-            at=at,
-            full_at=_parse_hhmm(attrs["full_at"]) if attrs.get("full_at") else None,
-            hours=_plan_hours(attrs),
-            start_soc=float(start_soc) if start_soc is not None else None,
-            day_off=day_off,
-        )
-
-    async def _reserve_before(self, day: date, at: datetime) -> Any:
-        """T1 reserve without margin in force at `at` (None = no history)."""
-        reserve = await self._history(day, RESERVE_ENTITY, attributes=True)
-        before = [s for s in reserve if dt_util.as_local(s.last_updated) <= at]
-        return before[-1].attributes.get("value_without_margin") if before else None
+            day_off = bool(attrs.get("day_off"))
+            if day_off:
+                start_soc: Any = MIN_SOC_PERCENT
+            else:
+                if reserve is None:
+                    reserve = await self._history(day, RESERVE_ENTITY, attributes=True)
+                start_soc = _in_force(reserve, moment, "value_without_margin")
+            out.append(
+                PlanReading(
+                    at=moment,
+                    full_at=_parse_hhmm(attrs["full_at"])
+                    if attrs.get("full_at")
+                    else None,
+                    hours=_plan_hours(attrs),
+                    start_soc=float(start_soc) if start_soc is not None else None,
+                    day_off=day_off,
+                )
+            )
+        return out
 
     async def afternoon_spans(self, day: date) -> list[tuple[int, int]] | None:
         """CHARGE_AFTERNOON engagements over `day` (minutes); None = no history."""
@@ -278,6 +277,12 @@ def _minute_on(day: date, moment: datetime) -> int:
     if local.date() < day:
         return 0
     return local.hour * 60 + local.minute
+
+
+def _in_force(states: list[State], at: datetime, attribute: str) -> Any:
+    """Return the attribute of the last state at or before `at` (None = none yet)."""
+    before = [s for s in states if dt_util.as_local(s.last_updated) <= at]
+    return before[-1].attributes.get(attribute) if before else None
 
 
 def _plan_hours(attrs: Mapping[str, Any]) -> tuple[int, ...]:

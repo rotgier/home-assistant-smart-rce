@@ -7,6 +7,9 @@ from typing import Any
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
+from custom_components.smart_rce.domain.forecast_score.full_charge_score import (
+    decided_plan,
+)
 from custom_components.smart_rce.infrastructure.forecast_score_sources import (
     PLAN_ENTITY,
     RESERVE_ENTITY,
@@ -87,7 +90,8 @@ async def test_the_plan_that_decided_is_the_last_one_before_its_first_hour(
     freezer.move_to(datetime(2026, 10, 19, 9, 0, tzinfo=TZ))
     await async_wait_recording_done(hass)
 
-    plan = await _sources(hass).morning_plan(DAY)
+    readings = await _sources(hass).morning_plan_readings(DAY)
+    plan = decided_plan(readings, DAY)
 
     assert plan is not None
     assert plan.at == datetime(2026, 10, 19, 4, 41, tzinfo=TZ)
@@ -95,3 +99,6 @@ async def test_the_plan_that_decided_is_the_last_one_before_its_first_hour(
     assert plan.hours == (7, 8)
     # The reserve's attribute-only change at 06:30 is after the plan: not it.
     assert plan.start_soc == 25.0
+    # Every reading of the day, each with the reserve in force then.
+    assert [r.full_at for r in readings] == [12 * 60 + 54, 12 * 60 + 56, 13 * 60 + 30]
+    assert readings[-1].start_soc == 27.0

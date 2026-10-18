@@ -325,4 +325,17 @@ def _full_charge_summary(score: DayScore) -> dict[str, Any] | None:
         "hours": [f"{h:02d}" for h in fc.hours],
         "optimal_hours": [f"{h:02d}" for h in fc.optimal_hours],
         "hours_changed": fc.hours_changed,
+        "moments": [
+            {
+                "label": m.label,
+                "at": hm(m.at),
+                "start_soc": m.start_soc,
+                "system": hm(m.system),
+                "optimal": hm(m.optimal),
+                "error_min": m.error_min,
+                "pv_part_min": m.pv_part_min,
+                "consumption_part_min": m.consumption_part_min,
+            }
+            for m in fc.moments
+        ],
     }

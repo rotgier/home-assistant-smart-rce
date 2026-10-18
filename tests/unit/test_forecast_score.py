@@ -34,6 +34,7 @@ from custom_components.smart_rce.domain.forecast_score.day_score import (
 )
 from custom_components.smart_rce.domain.forecast_score.full_charge_score import (
     PlanReading,
+    decided_plan,
     score_full_charge,
 )
 from custom_components.smart_rce.domain.forecast_score.production_outcome import (
@@ -366,8 +367,8 @@ class TestProductionOutcome:
         assert 7 * 60 <= rise < 16 * 60
 
 
-def _day_score(
-    day, energy, snapshots, prices, *, cutoff=None, plan=None, s0=None
+def _day_score(  # noqa: PLR0913 — test helper
+    day, energy, snapshots, prices, *, cutoff=None, plan=None, s0=None, readings=()
 ) -> DayScore:
     actuals = DayActuals(energy[day], TZ)
     earlier = {
@@ -386,6 +387,7 @@ def _day_score(
             start=ChargeStartFact(start_from_soc_rise(actuals), "soc_rise"),
             afternoon_charge=None,
             morning_plan=plan,
+            plan_readings=readings,
             cutoff=cutoff,
         ),
         status=ScoreStatus.FINAL if cutoff is None else ScoreStatus.PRELIMINARY,
@@ -671,6 +673,91 @@ def test_full_charge_on_a_day_off_searches_from_five(energy, prices):
         rce, best, s0 // 60, refill_end
     )
     assert score.start_soc == 10.0
+
+
+class TestFullChargeMoments:
+    """D3 at the moments before the charge start (18.10.2026)."""
+
+    @staticmethod
+    def _reading(h: int, m: int, full_at: int, soc: float = 30.0) -> PlanReading:
+        return PlanReading(
+            at=datetime.combine(DAYS[-1], time(h, m, 12), TZ),
+            full_at=full_at,
+            hours=(7, 8),
+            start_soc=soc,
+        )
+
+    def _readings(self) -> list[PlanReading]:
+        return [
+            self._reading(4, 41, 13 * 60),
+            self._reading(6, 11, 13 * 60 + 5, 32.0),
+            self._reading(6, 55, 12 * 60 + 50),
+            self._reading(8, 55, 12 * 60 + 43),
+        ]
+
+    def test_the_plan_in_force_at_each_moment_up_to_the_start(self, energy, prices):
+        day = DAYS[-1]
+        actuals = DayActuals(energy[day], TZ)
+        s0 = _s0(day, prices)
+        readings = self._readings()
+        plan = decided_plan(readings, day)
+        assert plan == readings[2]  # the last one before the first hour (07:00)
+        score = score_full_charge(
+            actuals, plan, prices[day.isoformat()], s0, None, 9 * 60, None, readings
+        )
+        rows = [(m.label, m.at, m.system, m.start_soc) for m in score.moments]
+        assert rows == [
+            ("06:11", 6 * 60 + 11, 13 * 60 + 5, 32.0),
+            ("06:41", 6 * 60 + 41, 13 * 60 + 5, 32.0),
+            ("07:41", 7 * 60 + 41, 12 * 60 + 50, 30.0),
+            ("08:41", 8 * 60 + 41, 12 * 60 + 50, 30.0),
+            ("start", 8 * 60 + 56, 12 * 60 + 43, 30.0),
+        ]
+        profile = SurplusProfile.build(
+            day, actuals.half_hours("pv_kwh"), actuals.half_hours(CONSUMPTION)
+        )
+        t2 = surplus_window_end(day) * 60
+        first = score.moments[0]
+        assert first.optimal == full_charge_minute(profile, s0, 32.0, t2)
+        if first.optimal is not None and first.with_model is not None:
+            assert first.pv_part_min + first.consumption_part_min == first.error_min
+        roundtrip = type(score).from_dict(json.loads(json.dumps(score.to_dict())))
+        assert roundtrip == score
+
+    def test_no_moments_after_the_start(self, energy, prices):
+        day = DAYS[-1]
+        actuals = DayActuals(energy[day], TZ)
+        readings = self._readings()
+        score = score_full_charge(
+            actuals,
+            readings[2],
+            prices[day.isoformat()],
+            _s0(day, prices),
+            None,
+            7 * 60,
+            None,
+            readings,
+        )
+        # The shift evaluates from 07:41 on: a 07:00 start has no "start" row.
+        assert [m.label for m in score.moments] == ["06:11", "06:41"]
+
+    def test_a_run_waits_for_every_moments_full_charge(self, energy, snapshots, prices):
+        readings = self._readings()
+        late = _day_score(
+            DAYS[-1],
+            energy,
+            snapshots,
+            prices,
+            cutoff=datetime.combine(DAYS[-1], time(16, 6), TZ),
+            plan=readings[2],
+            readings=readings,
+        )
+        assert late.full_charge is not None
+        assert late.full_charge.moments
+        from custom_components.smart_rce.sensor.forecast_score_sensor import day_card
+
+        card = day_card(late)
+        assert card["full_charge_summary"]["moments"][0]["label"] == "06:11"
 
 
 class TestDuringTheDay:

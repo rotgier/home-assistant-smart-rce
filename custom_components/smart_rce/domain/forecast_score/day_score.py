@@ -65,8 +65,9 @@ if TYPE_CHECKING:
 # 7: the accuracy so far in kWh and %, no points; on days off its consumption
 #    model is p60 of earlier days of the same type.
 # 8: D3's surplus error split into PV and consumption (`with_model`).
+# 9: D3 at the moments before the charge start (06:11 … the last evaluation).
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 8
+SCHEMA_VERSION: Final = 9
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
@@ -117,6 +118,8 @@ class DayInputs:
     afternoon_charge: Sequence[tuple[int, int]] | None
     # The morning discharge plan just before its first hour started (D3).
     morning_plan: PlanReading | None = None
+    # The plan as it stood over the morning, oldest first (D3 moments).
+    plan_readings: Sequence[PlanReading] = ()
     # How far the measured data reaches (a run during the day); None = whole day.
     cutoff: datetime | None = None
 
@@ -191,6 +194,7 @@ def score_day(
             percentile_by_key(inputs.earlier_same_type.values())
             if inputs.earlier_same_type
             else None,
+            inputs.plan_readings,
         )
         if inputs.morning_plan is not None
         and inputs.prices is not None
@@ -303,9 +307,18 @@ def _full_charge_settled(score: FullChargeScore, cutoff: datetime) -> bool:
     now = int(minute_of_day(cutoff))
     if now >= surplus_window_end(cutoff.date()) * 60:
         return True
+    moments = [
+        m for moment in score.moments for m in (moment.optimal, moment.with_model)
+    ]
     return all(
         minute is not None and minute <= now
-        for minute in (score.actual, score.optimal, score.model)
+        for minute in (
+            score.actual,
+            score.optimal,
+            score.model,
+            score.with_model,
+            *moments,
+        )
     )
 
 
