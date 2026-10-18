@@ -1,7 +1,14 @@
 """ForecastScoreService — scores each day's forecast decisions and keeps the results.
 
-Schedule (decision 16.10.2026):
-- 16:06 PRELIMINARY — today from the recorder; all of D1 is final by then;
+Schedule (decision 16.10.2026; runs during the day from 18.10.2026):
+- during the day, PRELIMINARY with the data up to then (`DayInputs.cutoff`;
+  parts it cannot settle yet wait, `DayScore.pending`), once per trigger:
+  the charge start (the clock reaches today's start, by the cheapest hours or
+  shifted by the forecast — the morning forecasts against what came so far),
+  S0, the battery at 100% (the full-charge estimate), 13:06 (D1 complete).
+  A minute tick checks them; triggers due together make one run;
+- the button: the same, now (FINAL after 21:06);
+- 16:06 PRELIMINARY — today from the recorder; D1 and D2 complete;
 - 21:06 FINAL — today from the recorder; nothing that matters moves later;
 - 00:20 CHECK — yesterday again, from the energy archive (00:15): the same
   result is expected; a different one (a gap in the statistics) replaces the
@@ -59,6 +66,12 @@ class ForecastScoreService:
     PRELIMINARY_AT: Final = time(16, 6)
     FINAL_AT: Final = time(21, 6)
     CHECK_AT: Final = time(0, 20)
+    INTERIM_AT: Final = time(13, 6)
+    # The triggers during the day: from the start of the charge block (06:00)
+    # until the 16:06 preliminary takes over.
+    TRIGGERS_FROM: Final = time(6, 0)
+    # The battery is full (the D3 trigger).
+    FULL_SOC: Final = 100.0
     # First day with both archives (snapshots from 03.10 04:15, energy from 03.10).
     FIRST_DAY: Final = date(2026, 10, 4)
     RANKING_DAYS: Final = 30
@@ -86,6 +99,9 @@ class ForecastScoreService:
         self._publish = publish
         self._cache: dict[date, DayScore | None] = {}
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
+        # Triggers already run today (in memory: after a restart the due ones
+        # make one run together).
+        self._fired: tuple[date, set[str]] | None = None
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
         def remove_listener() -> None:
@@ -96,11 +112,60 @@ class ForecastScoreService:
 
     # --- scheduled runs --- #
 
+    async def async_tick(self, _now: datetime | None = None) -> None:
+        """Score today once for the triggers that came due since the last run."""
+        now = self._clock()
+        if not self.TRIGGERS_FROM <= now.time() < self.PRELIMINARY_AT:
+            return
+        if self._fired is None or self._fired[0] != now.date():
+            self._fired = (now.date(), set())
+        fired = self._fired[1]
+        due = [t for t in self._due(now) if t not in fired]
+        if not due:
+            return
+        fired.update(due)
+        await self._score_today(
+            ScoreStatus.PRELIMINARY, trigger="+".join(due), cutoff=now
+        )
+
+    def _due(self, now: datetime) -> list[str]:
+        """Triggers whose moment has come today (in the order of the day)."""
+        minute = now.hour * 60 + now.minute
+        due: list[str] = []
+        start = self._charge.start_charge_hour_override
+        if start is not None and minute >= start.hour * 60 + start.minute:
+            due.append("charge_start")
+        s0 = self._sources.live_s0()
+        if s0 is not None and minute >= s0:
+            due.append("s0")
+        soc = self._sources.battery_soc()
+        if soc is not None and soc >= self.FULL_SOC:
+            due.append("full_charge")
+        if now.time() >= self.INTERIM_AT:
+            due.append(self.INTERIM_AT.strftime("%H:%M"))
+        return due
+
+    async def async_manual(self) -> None:
+        """Score today now (the button): with the data so far, FINAL after 21:06."""
+        now = self._clock()
+        if now.time() >= self.FINAL_AT:
+            await self._score_today(ScoreStatus.FINAL, trigger="manual")
+        else:
+            await self._score_today(
+                ScoreStatus.PRELIMINARY, trigger="manual", cutoff=now
+            )
+
     async def async_preliminary(self, _now: datetime | None = None) -> None:
-        await self._score_today(ScoreStatus.PRELIMINARY)
+        await self._score_today(
+            ScoreStatus.PRELIMINARY,
+            trigger=self.PRELIMINARY_AT.strftime("%H:%M"),
+            cutoff=self._clock(),
+        )
 
     async def async_final(self, _now: datetime | None = None) -> None:
-        await self._score_today(ScoreStatus.FINAL)
+        await self._score_today(
+            ScoreStatus.FINAL, trigger=self.FINAL_AT.strftime("%H:%M")
+        )
 
     async def async_check(self, _now: datetime | None = None) -> None:
         """Rescore yesterday from the energy archive; replace the final if it moved."""
@@ -112,12 +177,13 @@ class ForecastScoreService:
             return
         stored = await self.async_day(yesterday)
         if stored is None or stored.status is not ScoreStatus.FINAL:
-            await self._score(yesterday, energy, ScoreStatus.FINAL)
+            await self._score(yesterday, energy, ScoreStatus.FINAL, trigger="check")
         else:
             checked = await self._score(
                 yesterday,
                 energy,
                 ScoreStatus.FINAL,
+                trigger="check",
                 start=stored.outcome.start,
                 spans=self._spans_of(stored),
                 write=False,
@@ -154,7 +220,9 @@ class ForecastScoreService:
                 if energy is None and (today - day).days <= 1:
                     energy = await self._sources.recorder_energy(day)
                 if energy is not None:
-                    await self._score(day, energy, ScoreStatus.FINAL)
+                    await self._score(
+                        day, energy, ScoreStatus.FINAL, trigger="catch_up"
+                    )
             day += timedelta(days=1)
         stored = await self.async_day(today)
         if now.time() >= self.FINAL_AT:
@@ -207,29 +275,34 @@ class ForecastScoreService:
 
     # --- scoring --- #
 
-    async def _score_today(self, status: ScoreStatus) -> None:
+    async def _score_today(
+        self, status: ScoreStatus, *, trigger: str, cutoff: datetime | None = None
+    ) -> None:
         today = self._clock().date()
         energy = await self._sources.recorder_energy(today)
-        await self._score(today, energy, status)
+        await self._score(today, energy, status, trigger=trigger, cutoff=cutoff)
 
-    async def _score(
+    async def _score(  # noqa: PLR0913 — the runs differ in these knobs only
         self,
         day: date,
         energy: EnergyDay,
         status: ScoreStatus,
         *,
+        trigger: str,
+        cutoff: datetime | None = None,
         start: ChargeStartFact | None = None,
         spans: list[tuple[int, int]] | None = None,
         write: bool = True,
     ) -> DayScore | None:
         try:
-            inputs = await self._inputs(day, energy, start, spans)
+            inputs = await self._inputs(day, energy, start, spans, cutoff)
             score = await self._hass.async_add_executor_job(
                 lambda: score_day(
                     inputs,
                     status=status,
                     computed_at=self._clock(),
                     code_version=self._code_version,
+                    trigger=trigger,
                 )
             )
         except Exception:  # noqa: BLE001 — a failed day must not stop the others
@@ -245,6 +318,7 @@ class ForecastScoreService:
         energy: EnergyDay,
         start: ChargeStartFact | None,
         spans: list[tuple[int, int]] | None,
+        cutoff: datetime | None,
     ) -> DayInputs:
         snapshots = await self._sources.snapshots(day)
         scored = await self._hass.async_add_executor_job(from_archive, snapshots)
@@ -273,6 +347,7 @@ class ForecastScoreService:
             start=start,
             afternoon_charge=spans,
             morning_plan=await self._sources.morning_plan(day),
+            cutoff=cutoff,
         )
 
     async def _start_fact(
@@ -329,9 +404,11 @@ class ForecastScoreService:
         if score.status is ScoreStatus.FINAL:
             self._publish([score])
         _LOGGER.info(
-            "Forecast score %s %s: reserve %s pp (PV %s, consumption %s), start %s h",
+            "Forecast score %s %s (%s): reserve %s pp (PV %s, consumption %s),"
+            " start %s h",
             score.day,
             score.status,
+            score.trigger,
             score.reserve_error_pp,
             score.reserve_error_pv_pp,
             score.reserve_error_consumption_pp,

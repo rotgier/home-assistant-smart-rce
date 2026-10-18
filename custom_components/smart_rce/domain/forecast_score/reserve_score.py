@@ -1,9 +1,11 @@
 """D1 — the T1 reserve: how much SoC to keep for 07:00-13:00, scored per moment.
 
-Moments: 06:11 (the main one — first Solcast fetch of the day, the morning
-charge has its target), 06:41 (last chance to charge less), and 07:41 / 08:41
-/ 09:41 — the reserve for the REST of the window, the line a morning discharge
-must not cross. Before 07:00 the whole window counts; inside it production
+Moments: 04:41 (the 04:40 Solcast fetch, from 17.10.2026 — what the night
+charge knew as its window opened), 06:11 (the main one — first fetch of the
+morning, the charge has its target), 06:41 (last chance to charge less), and
+07:41 / 08:41 / 09:41 — the reserve for the REST of the window, the line a
+morning discharge must not cross. A day without a snapshot then (before the
+04:40 fetch) has no 04:41 row. Before 07:00 the whole window counts; inside it production
 reads now-aware views (closed buckets 0, the in-progress one from live power),
 and so does the score (`target_soc_for`, the path `TargetSoc` takes).
 
@@ -68,6 +70,7 @@ class ReserveMoment:
 
 MAIN_MOMENT: Final = ReserveMoment("06:11", time(6, 11))
 RESERVE_MOMENTS: Final = (
+    ReserveMoment("04:41", time(4, 41)),
     MAIN_MOMENT,
     ReserveMoment("06:41", time(6, 41)),
     ReserveMoment("07:41", time(7, 41)),

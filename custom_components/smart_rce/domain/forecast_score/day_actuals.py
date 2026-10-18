@@ -94,6 +94,26 @@ class DayActuals:
             total += value if end <= now else value * ((now - start) / self.energy.STEP)
         return max(0.0, total)
 
+    def energy_between(
+        self, series: str, first: datetime, end: datetime
+    ) -> float | None:
+        """Sum `series` over [first, end), edge slots in proportion.
+
+        None when no slot overlapping the span has data (nothing measured yet).
+        """
+        total = 0.0
+        found = False
+        for start, value in self._slots(series):
+            slot_end = start + self.energy.STEP
+            if value is None or slot_end <= first or start >= end:
+                continue
+            overlap = min(slot_end, end) - max(start, first)
+            if overlap <= timedelta(0):
+                continue
+            total += value * (overlap / self.energy.STEP)
+            found = True
+        return total if found else None
+
     def soc_near(self, at: datetime, lookback_slots: int = 6) -> float | None:
         """Mean SoC of the 5-minute slot holding `at`, else of the latest before it."""
         slots = [(s, v) for s, v in self._slots(SOC) if s <= at]

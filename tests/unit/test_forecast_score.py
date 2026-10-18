@@ -20,6 +20,7 @@ from custom_components.smart_rce.domain.forecast_score.day_actuals import DayAct
 from custom_components.smart_rce.domain.forecast_score.day_score import (
     DayInputs,
     DayScore,
+    Pending,
     ScoreStatus,
     has_morning_reserve,
     score_day,
@@ -42,8 +43,10 @@ from custom_components.smart_rce.domain.forecast_score.production_setup import (
 from custom_components.smart_rce.domain.forecast_score.ranking import rank
 from custom_components.smart_rce.domain.forecast_score.reserve_score import (
     score_reserve,
+    soc_points,
 )
 from custom_components.smart_rce.domain.forecast_score.start_score import (
+    forecast_half_hours,
     last_evaluation_before,
     score_start,
 )
@@ -342,7 +345,7 @@ class TestProductionOutcome:
         assert 7 * 60 <= rise < 16 * 60
 
 
-def _day_score(day, energy, snapshots, prices) -> DayScore:
+def _day_score(day, energy, snapshots, prices, *, cutoff=None, plan=None) -> DayScore:
     actuals = DayActuals(energy[day], TZ)
     earlier = {
         d: energy[d].energy_by_half_hour(CONSUMPTION, TZ)
@@ -359,9 +362,11 @@ def _day_score(day, energy, snapshots, prices) -> DayScore:
             s0=_s0(day, prices),
             start=ChargeStartFact(start_from_soc_rise(actuals), "soc_rise"),
             afternoon_charge=None,
+            morning_plan=plan,
+            cutoff=cutoff,
         ),
-        status=ScoreStatus.FINAL,
-        computed_at=datetime(2026, 10, 15, 21, 6, tzinfo=TZ),
+        status=ScoreStatus.FINAL if cutoff is None else ScoreStatus.PRELIMINARY,
+        computed_at=cutoff or datetime(2026, 10, 15, 21, 6, tzinfo=TZ),
         code_version="test",
     )
 
@@ -629,3 +634,122 @@ def test_full_charge_on_a_day_off_searches_from_five(energy, prices):
         rce, best, s0 // 60, refill_end
     )
     assert score.start_soc == 10.0
+
+
+class TestDuringTheDay:
+    """Runs before the day closes (18.10.2026): accuracy so far, pending parts."""
+
+    @staticmethod
+    def _at(h: int, m: int = 0) -> datetime:
+        return datetime.combine(DAYS[-1], time(h, m), TZ)
+
+    def test_a_run_at_the_charge_start_waits_for_d1_and_d2(
+        self, energy, snapshots, prices
+    ):
+        score = _day_score(DAYS[-1], energy, snapshots, prices, cutoff=self._at(9))
+        assert score.reserve == ()
+        assert score.reserve_models == ()
+        assert score.start == ()
+        assert set(score.pending) >= {
+            Pending.RESERVE,
+            Pending.START,
+            Pending.DAY_TYPE,
+        }
+        assert [m.label for m in score.so_far] == ["06:11", "06:41", "07:41", "08:41"]
+        assert DayScore.from_dict(json.loads(json.dumps(score.to_dict()))) == score
+
+    def test_d1_complete_once_the_window_closed_and_d2_at_four(
+        self, energy, snapshots, prices
+    ):
+        at_1306 = _day_score(
+            DAYS[-1], energy, snapshots, prices, cutoff=self._at(13, 6)
+        )
+        assert at_1306.reserve
+        assert at_1306.start == ()
+        assert at_1306.pending == (Pending.START,)
+        at_1606 = _day_score(
+            DAYS[-1], energy, snapshots, prices, cutoff=self._at(16, 6)
+        )
+        assert at_1606.start
+        assert at_1606.pending == ()
+        whole = _day_score(DAYS[-1], energy, snapshots, prices)
+        assert at_1606.reserve == whole.reserve
+
+    def test_so_far_is_what_was_promised_against_what_came(
+        self, energy, snapshots, prices
+    ):
+        day = DAYS[-1]
+        score = _day_score(day, energy, snapshots, prices, cutoff=self._at(10))
+        row = next(m for m in score.so_far if m.label == "06:11")
+        actuals = DayActuals(energy[day], TZ)
+        assert (row.since, row.until) == (self._at(7), self._at(10))
+        assert row.pv_actual_kwh == round(
+            actuals.energy_between("pv_kwh", self._at(7), self._at(10)) or 0, 3
+        )
+        snapshot = vr.consumed(vr.from_archive(snapshots[day]), self._at(6, 11))
+        assert snapshot is not None
+        system = snapshot.result(row.system_variant)
+        assert system is not None
+        slots = forecast_half_hours(system, day)
+        promised = sum(slots.get(slot, 0.0) for slot in range(14, 20))
+        variant = row.variant(row.system_variant)
+        assert variant is not None
+        assert variant.pv_kwh == pytest.approx(promised, abs=1e-3)
+        error = row.pv_error_kwh(row.system_variant)
+        assert error is not None
+        # More PV promised than came -> less reserve: the PV part is negative.
+        assert row.pv_part_pp(row.system_variant) == -round(soc_points(error))
+        assert row.system_part_pp == (
+            row.pv_part_pp(row.system_variant) + row.consumption_part_pp
+        )
+
+    def test_a_moment_inside_the_window_counts_from_itself(
+        self, energy, snapshots, prices
+    ):
+        score = _day_score(DAYS[-1], energy, snapshots, prices, cutoff=self._at(10))
+        row = next(m for m in score.so_far if m.label == "08:41")
+        assert row.since == self._at(8, 41)
+
+    def test_a_closed_day_covers_the_whole_window(self, energy, snapshots, prices):
+        score = _day_score(DAYS[-1], energy, snapshots, prices)
+        assert all(m.until == self._at(13) for m in score.so_far)
+
+    def test_full_charge_waits_until_every_full_charge_is_measured(
+        self, energy, snapshots, prices
+    ):
+        plan = PlanReading(
+            at=self._at(6, 59), full_at=14 * 60, hours=(7,), start_soc=30.0
+        )
+        early = _day_score(
+            DAYS[-1], energy, snapshots, prices, cutoff=self._at(10), plan=plan
+        )
+        assert early.full_charge is None
+        assert Pending.FULL_CHARGE in early.pending
+        late = _day_score(
+            DAYS[-1], energy, snapshots, prices, cutoff=self._at(16, 6), plan=plan
+        )
+        assert late.full_charge is not None
+
+
+def test_energy_between_takes_edge_slots_in_proportion(energy):
+    actuals = DayActuals(energy[DAYS[-1]], TZ)
+    at = lambda h, m, sec=0: datetime.combine(DAYS[-1], time(h, m, sec), TZ)  # noqa: E731
+    first, second = actuals.series_between("pv_kwh", at(10, 0), at(10, 10))
+    assert actuals.energy_between("pv_kwh", at(10, 2, 30), at(10, 10)) == (
+        pytest.approx(first / 2 + second)
+    )
+    assert actuals.energy_between("pv_kwh", at(23, 59), at(23, 59)) is None
+
+
+def test_day_card_carries_accuracy_so_far_and_pending(energy, snapshots, prices):
+    from custom_components.smart_rce.sensor.forecast_score_sensor import day_card
+
+    cutoff = datetime.combine(DAYS[-1], time(10, 0), TZ)
+    card = day_card(_day_score(DAYS[-1], energy, snapshots, prices, cutoff=cutoff))
+    json.dumps(card)  # attributes must serialise
+    row = card["so_far_summary"][0]
+    assert row["label"] == "06:11"
+    assert row["total_part"] == row["pv_part"] + row["cons_part"]
+    assert "live_soft" in row["variants"]
+    assert set(card["pending"]) >= {"reserve", "start"}
+    assert card["cutoff_hm"] is not None

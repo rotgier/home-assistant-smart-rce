@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from .. import SmartRceConfigEntry
     from ..application.forecast_score_service import ForecastScoreService
     from ..domain.forecast_score.day_score import DayScore
+    from ..domain.forecast_score.so_far_score import MomentSoFar
 
 DATE_ENTITY: Final = "input_datetime.energy_chart_date"
 
@@ -168,8 +169,9 @@ class ForecastScoreDaySensor(_SelectedDaySensor):
             self._attr_native_value = "missing"
             self._attrs = {
                 "day": day.isoformat(),
-                "message": "Brak wyniku dla tego dnia (ocena od 04.10.2026, "
-                "wstępna o 16:06, ostateczna o 21:06).",
+                "message": "Brak wyniku dla tego dnia (ocena od 04.10.2026; "
+                "w ciągu dnia przy starcie ładowania, S0, 100% SOC i o 13:06, "
+                "wstępna o 16:06, ostateczna o 21:06, przycisk „przelicz”).",
             }
             return
         self._attr_native_value = str(score.status)
@@ -245,6 +247,12 @@ def day_card(score: DayScore) -> dict[str, Any]:
             for m in score.start
         ],
         "full_charge_summary": _full_charge_summary(score),
+        "so_far_summary": [_so_far_row(m) for m in score.so_far],
+        "cutoff_hm": (
+            dt_util.as_local(score.cutoff).strftime("%H:%M")
+            if score.cutoff is not None
+            else None
+        ),
         "outcome_summary": {
             "start": (
                 to_hhmm(score.outcome.start.start)
@@ -259,6 +267,29 @@ def day_card(score: DayScore) -> dict[str, Any]:
                 else None
             ),
             "grid_topup_kwh": score.outcome.grid_topup_kwh,
+        },
+    }
+
+
+def _so_far_row(moment: MomentSoFar) -> dict[str, Any]:
+    """Accuracy so far of one moment, the system's variant up front."""
+    system = moment.variant(moment.system_variant)
+    return {
+        "label": moment.label,
+        "since": dt_util.as_local(moment.since).strftime("%H:%M"),
+        "until": dt_util.as_local(moment.until).strftime("%H:%M"),
+        "pv_actual": moment.pv_actual_kwh,
+        "pv_system": system.pv_kwh if system is not None else None,
+        "pv_error_kwh": moment.pv_error_kwh(moment.system_variant),
+        "pv_part": moment.pv_part_pp(moment.system_variant),
+        "cons_actual": moment.consumption_actual_kwh,
+        "cons_model": moment.consumption_model_kwh,
+        "cons_error_kwh": moment.consumption_error_kwh,
+        "cons_part": moment.consumption_part_pp,
+        "total_part": moment.system_part_pp,
+        "flat_model": moment.flat_model,
+        "variants": {
+            v.variant: moment.pv_error_kwh(v.variant) for v in moment.variants
         },
     }
 

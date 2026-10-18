@@ -50,6 +50,7 @@ START_ENTITY: Final = "time.ems_battery_charge_start_hour_override"
 ENGAGING_ENTITY: Final = "sensor.ems_battery_schedule_currently_engaging"
 PLAN_ENTITY: Final = "sensor.ems_morning_discharge_plan"
 RESERVE_ENTITY: Final = "sensor.ems_t1_soc_reserve"
+SOC_ENTITY: Final = "sensor.battery_state_of_charge"
 AFTERNOON_SLOT: Final = "CHARGE_AFTERNOON"
 _SNAPSHOT_KIND: Final = "forecast_snapshot"
 
@@ -136,6 +137,22 @@ class ForecastScoreSources:
             params=self._ems.battery_charge_service.charge_window_params,
         )
         return round(window.start_hour * 60) if window is not None else None
+
+    def live_s0(self) -> int | None:
+        """Return today's S0 now (minute of the day): the shift's, else the window's."""
+        shift = self._ems.battery_charge_service.forecast_shift
+        if shift is not None:
+            return shift.s0
+        start = self._ems.charge_slots.today_start
+        return start.hour * 60 + start.minute if start is not None else None
+
+    def battery_soc(self) -> float | None:
+        """Read the battery's SoC now (None when unavailable)."""
+        state = self._hass.states.get(SOC_ENTITY)
+        try:
+            return float(state.state) if state is not None else None
+        except ValueError:
+            return None
 
     async def start_changes(self, day: date) -> list[tuple[int, int]] | None:
         """(minute set, start minute) of the start entity over `day`; None = no history."""

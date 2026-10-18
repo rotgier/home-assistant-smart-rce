@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 import json
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ from custom_components.smart_rce.application.forecast_score_service import (
 from custom_components.smart_rce.domain.energy_day import EnergyDay
 from custom_components.smart_rce.domain.forecast_score.day_score import (
     DayScore,
+    Pending,
     ScoreStatus,
 )
 from custom_components.smart_rce.domain.forecast_score.full_charge_score import (
@@ -46,6 +47,7 @@ class _Sources:
         self._prices = json.loads((FIXTURE / "rce_prices.json").read_text())
         self.recorder_pv_scale = 1.0
         self.prices_available = True
+        self.soc: float | None = 50.0
 
     async def snapshots(self, day: date) -> list[ForecastSnapshot]:
         return [ForecastSnapshot.from_dict(r) for r in self._forecast.read_day(day)]
@@ -89,6 +91,12 @@ class _Sources:
     def s0(self, _day: date, prices: tuple[float, ...] | None) -> int | None:
         return 660 if prices else None
 
+    def live_s0(self) -> int | None:
+        return 660
+
+    def battery_soc(self) -> float | None:
+        return self.soc
+
     async def start_changes(self, _day: date) -> list[tuple[int, int]] | None:
         return [(0, 540), (1, 660), (480, 495)]
 
@@ -107,6 +115,7 @@ class _Sources:
 class _Charge:
     forecast_shift = None
     start_charge_is_manual_today = False
+    start_charge_hour_override: time | None = time(8, 15)
 
 
 PUBLISHED: list[DayScore] = []
@@ -239,3 +248,80 @@ async def test_catch_up_wakes_the_sensors_without_rescoring(
     await restarted.async_catch_up()  # nothing to rescore, days read back
     assert calls
     assert restarted.latest is not None
+
+
+def _at(h: int, m: int = 0) -> datetime:
+    return datetime.combine(DAY, time(h, m), TZ)
+
+
+async def test_each_trigger_scores_once_during_the_day(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    sources = _Sources()
+    service, archive = _service(hass, tmp_path, _at(8, 10), sources)
+    await service.async_tick()
+    assert archive.records(DAY) == []  # before the charge start
+    runs = [
+        (_at(8, 15), "charge_start"),
+        (_at(11, 0), "s0"),
+        (_at(12, 40), "full_charge"),
+        (_at(13, 6), "13:06"),
+    ]
+    for now, trigger in runs:
+        if trigger == "full_charge":
+            sources.soc = 100.0
+        service._clock = lambda now=now: now  # noqa: SLF001
+        await service.async_tick()
+        await service.async_tick()  # the same minute again: nothing new
+        latest = await service.async_day(DAY)
+        assert latest is not None
+        assert (latest.trigger, latest.cutoff) == (trigger, now)
+        assert latest.status is ScoreStatus.PRELIMINARY
+    assert len(archive.records(DAY)) == len(runs)
+    service._clock = lambda: _at(16, 10)  # noqa: SLF001
+    await service.async_tick()  # the 16:06 preliminary has taken over
+    assert len(archive.records(DAY)) == len(runs)
+
+
+async def test_triggers_due_together_make_one_run(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    sources = _Sources()
+    sources.soc = 100.0
+    service, archive = _service(hass, tmp_path, _at(14, 0), sources)  # a restart
+    await service.async_tick()
+    records = archive.records(DAY)
+    assert len(records) == 1
+    assert records[0]["trigger"] == "charge_start+s0+full_charge+13:06"
+
+
+async def test_the_charge_start_run_shows_accuracy_so_far(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    service, _archive = _service(hass, tmp_path, _at(9, 0), _Sources())
+    await service.async_tick()
+    score = await service.async_day(DAY)
+    assert score is not None
+    assert score.reserve == ()
+    assert Pending.RESERVE in score.pending
+    assert score.so_far
+    assert all(m.until == _at(9, 0) for m in score.so_far)
+
+
+async def test_the_button_scores_now_and_final_after_nine(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    service, _archive = _service(hass, tmp_path, _at(10, 30), _Sources())
+    await service.async_manual()
+    score = await service.async_day(DAY)
+    assert score is not None
+    assert (score.status, score.trigger, score.cutoff) == (
+        ScoreStatus.PRELIMINARY,
+        "manual",
+        _at(10, 30),
+    )
+    service._clock = lambda: _at(21, 30)  # noqa: SLF001
+    await service.async_manual()
+    score = await service.async_day(DAY)
+    assert score is not None
+    assert (score.status, score.cutoff) == (ScoreStatus.FINAL, None)

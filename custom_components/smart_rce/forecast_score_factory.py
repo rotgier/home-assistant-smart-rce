@@ -1,5 +1,6 @@
 """Wires the forecast scoreboard: sources, archive, service, schedule.
 
+A minute tick for the runs during the day (charge start, S0, 100%, 13:06),
 16:06 preliminary, 21:06 final, 00:20 check of yesterday (after the energy
 archive's 00:15), and a catch-up once HA has started (recorder up) — a little
 later than the energy archive's own catch-up, which it reads.
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
 # After start: let the energy archive catch up first (it runs on start too).
 _CATCH_UP_DELAY_SEC: Final = 120
+_TICK_SECOND: Final = 37
 
 
 async def create_forecast_score(
@@ -82,6 +84,10 @@ async def create_forecast_score(
         entry.async_on_unload(
             async_track_time_change(hass, run, hour=at.hour, minute=at.minute, second=0)
         )
+    # Every minute, off the full minute the schedule itself recomputes on.
+    entry.async_on_unload(
+        async_track_time_change(hass, service.async_tick, second=_TICK_SECOND)
+    )
 
     async def _catch_up(_now: datetime) -> None:
         await service.async_catch_up()

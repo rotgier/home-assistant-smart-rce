@@ -1,8 +1,12 @@
 """DayScore — one day of the forecast scoreboard: decisions scored, facts kept.
 
-A day is scored twice and checked once:
-- PRELIMINARY at 16:06 — everything up to 13:00 is final already; a charge-start
-  window reaching past 16:00 is not;
+A day is scored several times and checked once:
+- PRELIMINARY during the day (from 18.10.2026): at the charge start, at S0, when
+  the battery reaches 100%, at 13:06, on the button, and at 16:06. Such a run
+  sees the data only up to its `cutoff`, so a part that needs more waits
+  (`pending`): D1 until the T1 window closes (13:00), D2 until 16:00 (its
+  benchmark reads the surplus to T2), D3 until its full charges are measured.
+  The accuracy so far (`so_far`) is there from the first run;
 - FINAL at 21:06 — after sunset nothing that matters moves (the D2 windows and
   the afternoon top-up close before the evening T2);
 - the 00:20 CHECK rescores from the energy archive (written 00:15); a
@@ -16,11 +20,11 @@ calendar are the adapters' business.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
-from ..pv_surplus import DayType
+from ..pv_surplus import DayType, minute_of_day, surplus_window_end
 from .day_type import DayTypeFigures, day_type_figures
 from .full_charge_score import FullChargeScore, PlanReading, score_full_charge
 from .production_outcome import ChargeStartFact, ProductionOutcome, production_outcome
@@ -32,6 +36,7 @@ from .reserve_score import (
     MomentReserve,
     score_reserve,
 )
+from .so_far_score import WINDOW_END, MomentSoFar, score_so_far
 from .start_score import START_MOMENT, MomentStart, score_start
 from .variant_results import consumed
 
@@ -44,13 +49,27 @@ if TYPE_CHECKING:
 # 2: production scored with the setup of its day (`production_setup`).
 # 3: reserve errors signed system − needed (− = too little), as the charge start.
 # 4: the variant ranking with the hour credit (0f65863) on every day.
+# 5: the 04:41 reserve moment, the accuracy so far, runs during the day
+#    (trigger, cutoff, pending).
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 4
+SCHEMA_VERSION: Final = 5
+
+# D2's benchmark reads the surplus up to T2; a run before this has not got it.
+START_SCORED_FROM: Final = time(16, 0)
 
 
 class ScoreStatus(StrEnum):
     PRELIMINARY = "preliminary"
     FINAL = "final"
+
+
+class Pending(StrEnum):
+    """A part of the day a run before the day's end cannot score yet."""
+
+    RESERVE = "reserve"  # until the T1 window closes (13:00)
+    START = "start"  # until 16:00
+    FULL_CHARGE = "full_charge"  # until its full charges are measured, or T2
+    DAY_TYPE = "day_type"  # the actual PV of 07-13 is still coming
 
 
 # Days off on which the morning auto slots ran as on a workday — a one-off
@@ -82,6 +101,8 @@ class DayInputs:
     afternoon_charge: Sequence[tuple[int, int]] | None
     # The morning discharge plan just before its first hour started (D3).
     morning_plan: PlanReading | None = None
+    # How far the measured data reaches (a run during the day); None = whole day.
+    cutoff: datetime | None = None
 
 
 def score_day(
@@ -90,19 +111,47 @@ def score_day(
     status: ScoreStatus,
     computed_at: datetime,
     code_version: str,
+    trigger: str = "",
 ) -> DayScore:
-    """Score both decisions of the day and gather its facts."""
+    """Score both decisions of the day and gather its facts.
+
+    With `inputs.cutoff` only what the data up to it settles; the rest is
+    listed in `pending`.
+    """
     actuals = inputs.actuals
     day = actuals.day
     setup = setup_on(day, actuals.tz)
+    cutoff = inputs.cutoff
+    pending: list[Pending] = []
+    t1_closed = cutoff is None or cutoff >= datetime.combine(
+        day, WINDOW_END, actuals.tz
+    )
+    if not t1_closed:
+        pending.append(Pending.DAY_TYPE)
     reserve: tuple[MomentReserve, ...] = ()
     models: tuple[ModelReserve, ...] = ()
-    if has_morning_reserve(day):
+    if has_morning_reserve(day) and not t1_closed:
+        pending.append(Pending.RESERVE)
+    elif has_morning_reserve(day):
         reserve, models = score_reserve(
             actuals, inputs.snapshots, list(inputs.earlier_workdays.values()), setup
         )
+    so_far = score_so_far(
+        actuals,
+        inputs.snapshots,
+        list(inputs.earlier_workdays.values()),
+        setup,
+        cutoff,
+    )
     start: tuple[MomentStart, ...] = ()
-    if inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24:
+    has_prices = (
+        inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24
+    )
+    if has_prices and cutoff is not None and cutoff.time() < START_SCORED_FROM:
+        pending.append(Pending.START)
+    elif has_prices:
+        assert inputs.prices is not None  # has_prices
+        assert inputs.s0 is not None
         start = score_start(
             actuals,
             inputs.snapshots,
@@ -129,6 +178,13 @@ def score_day(
         and len(inputs.prices) == 24
         else None
     )
+    if (
+        full_charge is not None
+        and cutoff is not None
+        and not _full_charge_settled(full_charge, cutoff)
+    ):
+        full_charge = None
+        pending.append(Pending.FULL_CHARGE)
     return DayScore(
         day=day,
         status=status,
@@ -145,6 +201,26 @@ def score_day(
         s0=inputs.s0,
         setup=setup.label,
         full_charge=full_charge,
+        so_far=so_far,
+        trigger=trigger,
+        cutoff=cutoff,
+        pending=tuple(pending),
+    )
+
+
+def _full_charge_settled(score: FullChargeScore, cutoff: datetime) -> bool:
+    """Tell whether D3 stands on data up to `cutoff` alone.
+
+    Each full charge it compares is a minute computed from (or measured in) the
+    data before it; once every one of them lies before the cutoff, more data
+    cannot move them. Past T2 nothing more is waited for.
+    """
+    now = int(minute_of_day(cutoff))
+    if now >= surplus_window_end(cutoff.date()) * 60:
+        return True
+    return all(
+        minute is not None and minute <= now
+        for minute in (score.actual, score.optimal, score.model)
     )
 
 
@@ -173,6 +249,13 @@ class DayScore:
     setup: str = ""
     # D3: the forecast full charge of the morning discharge (from 17.10.2026).
     full_charge: FullChargeScore | None = None
+    # How the morning's forecasts are doing over the measured window (18.10.2026).
+    so_far: tuple[MomentSoFar, ...] = ()
+    # What ran it: charge_start, s0, full_charge, 13:06, 16:06, 21:06, manual...
+    trigger: str = ""
+    # How far the data reached (a run during the day); None = the whole day.
+    cutoff: datetime | None = None
+    pending: tuple[Pending, ...] = ()
 
     # --- headline figures (the long-term statistics sensors) --- #
 
@@ -246,6 +329,10 @@ class DayScore:
             "full_charge": (
                 self.full_charge.to_dict() if self.full_charge is not None else None
             ),
+            "so_far": [m.to_dict() for m in self.so_far],
+            "trigger": self.trigger,
+            "cutoff": self.cutoff.isoformat() if self.cutoff is not None else None,
+            "pending": [str(p) for p in self.pending],
         }
 
     @classmethod
@@ -277,6 +364,14 @@ class DayScore:
                 if isinstance(raw := data.get("full_charge"), dict)
                 else None
             ),
+            so_far=tuple(MomentSoFar.from_dict(m) for m in data.get("so_far", [])),
+            trigger=str(data.get("trigger", "")),
+            cutoff=(
+                datetime.fromisoformat(cut)
+                if isinstance(cut := data.get("cutoff"), str)
+                else None
+            ),
+            pending=tuple(Pending(p) for p in data.get("pending", [])),
         )
 
     @classmethod
@@ -296,7 +391,7 @@ class DayScore:
     def differences(self, other: DayScore) -> tuple[str, ...]:
         """Top-level parts that differ from `other` (status and timestamps aside)."""
         mine, theirs = self.to_dict(), other.to_dict()
-        ignored = {"status", "computed_at", "code_version", "replaced"}
+        ignored = {"status", "computed_at", "code_version", "replaced", "trigger"}
         return tuple(
             key
             for key in mine

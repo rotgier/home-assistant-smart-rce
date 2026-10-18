@@ -6,6 +6,7 @@ Etap 2F — 4 buttons per direction (charge / discharge):
 - `button.smart_rce_oneshot_<dir>_cancel` — cancels active one-shot
 - `button.ems_evening_plan_recalculate` — recomputes the evening discharge
   plan on demand, for whichever evening comes next
+- `button.ems_forecast_score_recompute` — scores today now (forecast scoreboard)
 
 Persistence owned by `BatteryScheduleRepository`.
 """
@@ -40,6 +41,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             EveningPlanRecalculateButton(entry),
+            ForecastScoreRecomputeButton(entry),
             OneShotExecuteButton(entry, direction=Direction.DISCHARGE),
             OneShotCancelButton(entry, direction=Direction.DISCHARGE),
             OneShotExecuteButton(entry, direction=Direction.CHARGE),
@@ -137,3 +139,25 @@ class EveningPlanRecalculateButton(ButtonEntity):
             for_tomorrow=result.for_tomorrow,
             answer_always=True,
         )
+
+
+class ForecastScoreRecomputeButton(ButtonEntity):
+    """Score today now with the data so far, instead of waiting for a trigger.
+
+    Parts the data cannot settle yet stay pending; after 21:06 it is the final
+    score (`ForecastScoreService.async_manual`).
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "EMS Forecast Score Recompute"
+    _attr_should_poll = False
+    _attr_icon = "mdi:scoreboard-outline"
+
+    def __init__(self, entry: SmartRceConfigEntry) -> None:
+        self._service = entry.runtime_data.forecast_score
+        self._attr_unique_id = f"{DOMAIN}_ems_forecast_score_recompute"
+        self.entity_id = "button.ems_forecast_score_recompute"
+        self._attr_device_info = ems_device_info(entry)
+
+    async def async_press(self) -> None:
+        await self._service.async_manual()
