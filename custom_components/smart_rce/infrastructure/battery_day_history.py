@@ -4,7 +4,8 @@ The recorder keeps ~9 full days, enough for the chart's day picker:
 
 - slot sessions: the last state of the day of the sessions sensor — its
   `sessions` attribute is cumulative over the day (the aggregate drops them
-  only after midnight). The sensor exists since 17.10.2026;
+  only after midnight). The sensor exists since 17.10.2026; for earlier days
+  the stretches of the engaging sensor stand in (no target, no reason);
 - PV charge: `PvChargeRun.replay` over the day's history of the charge-allowed
   gate, the engaging slot (a charge slot from the grid is not PV) and SoC —
   the same rule the live run follows.
@@ -72,6 +73,8 @@ class BatteryDayHistory:
             if run.start is not None
             else None
         )
+        if not sessions:
+            sessions = _sessions_from_engaging(day, engaging, soc)
         source = "recorder" if sessions or soc else "none"
         return BatteryDay(day, source, sessions=tuple(sessions), pv=pv)
 
@@ -117,6 +120,38 @@ class BatteryDayHistory:
             for s in result.get(entity_id, [])
             if s.state not in {"unknown", "unavailable"}
         ]
+
+
+def _sessions_from_engaging(
+    day: date, engaging: list[tuple[int, str]], soc: list[tuple[int, str]]
+) -> list[SlotSession]:
+    """Sessions of a day before the sessions sensor kept them (before 17.10.2026).
+
+    Each stretch the engaging sensor named a slot is a session; its SoC at
+    both ends comes from the SoC history. Target and reason were not kept.
+    """
+    tz = dt_util.get_default_time_zone()
+    midnight = datetime.combine(day, time(0), tzinfo=tz)
+    bounds = [*engaging, (24 * 60, "IDLE")]
+    sessions: list[SlotSession] = []
+    for (start, state), (end, _next) in zip(bounds, bounds[1:], strict=False):
+        kind = SlotKind.__members__.get(state)
+        if kind is None or end <= start:
+            continue
+        start_soc = _soc(_at(soc, start))
+        if start_soc is None:
+            continue
+        sessions.append(
+            SlotSession(
+                slot=kind,
+                started_at=midnight + timedelta(minutes=start),
+                start_soc=start_soc,
+                target_soc=None,
+                ended_at=midnight + timedelta(minutes=end),
+                end_soc=_soc(_at(soc, end)),
+            )
+        )
+    return sessions
 
 
 def _minute_on(day: date, moment: datetime) -> int:

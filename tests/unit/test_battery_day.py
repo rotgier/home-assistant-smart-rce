@@ -169,6 +169,37 @@ class TestHistoryAdapter:
         assert (day.pv.plateau_at, day.pv.full_at) == (12 * H + 56, 13 * H + 31)
         assert all(b.done for b in day.pv.bands)
 
+    def test_before_the_sessions_sensor_the_engaging_stretches_stand_in(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            battery_day_history.dt_util, "as_local", lambda moment: moment
+        )
+        states = {
+            battery_day_history.ENGAGING_ENTITY: [
+                _State("IDLE", _at(SATURDAY, 0)),
+                _State("DISCHARGE_MORNING_AUTO", _at(SATURDAY, 8, 18)),
+                _State("IDLE", _at(SATURDAY, 9)),
+                _State("CHARGE_AFTERNOON", _at(SATURDAY, 14, 56)),
+                _State("IDLE", _at(SATURDAY, 15, 50)),
+            ],
+            battery_day_history.SOC_ENTITY: [
+                _State("60", _at(SATURDAY, 0)),
+                _State("35", _at(SATURDAY, 9)),
+                _State("80", _at(SATURDAY, 15, 50)),
+            ],
+        }
+        day = asyncio.run(_History(states).async_day(SATURDAY))
+        got = [
+            (s.slot, s.started_at.time(), s.ended_at.time(), s.start_soc, s.end_soc)
+            for s in day.sessions
+        ]
+        assert got == [
+            (SlotKind.DISCHARGE_MORNING_AUTO, time(8, 18), time(9, 0), 60.0, 35.0),
+            (SlotKind.CHARGE_AFTERNOON, time(14, 56), time(15, 50), 35.0, 80.0),
+        ]
+        assert all(s.target_soc is None and s.reason is None for s in day.sessions)
+
     def test_a_day_the_recorder_lost_is_empty(self):
         day = asyncio.run(_History({}).async_day(SATURDAY))
         assert (day.source, day.sessions, day.pv) == ("none", (), None)
