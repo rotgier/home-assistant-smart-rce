@@ -5,7 +5,7 @@ Two runs, planning the same evening from different vantage points:
 - **22:05** — plans tomorrow evening from prices published that afternoon.
   Deferred to 23:05 and then 00:05 while a discharge is still running, because
   rewriting a slot mid-engagement would cut it short.
-- **from 15:00, every five minutes** — replans the evening now under way, this
+- **from 14:00, every five minutes** — replans the evening now under way, this
   time with tomorrow's morning prices available to veto it. Stops for the day
   once those prices are in and the plan has been applied.
 
@@ -41,8 +41,11 @@ _EVENING_RUN_HOURS: Final[tuple[int, ...]] = (21, 22, 23, 0)
 _EVENING_RUN_MINUTE: Final[int] = 5
 
 # The afternoon sweep polls until tomorrow's prices show up (published ~14:00,
-# but late often enough to be worth retrying rather than firing once).
-_AFTERNOON_HOURS: Final[list[int]] = list(range(15, 22))
+# but late often enough to be worth retrying rather than firing once). From
+# 14:00, with the price fetch (every 15 min from 14:00): until 18.10.2026 it
+# began at 15:00, so tonight's slots took tomorrow's prices up to an hour after
+# the T1 reserve and tomorrow morning's plan already had (user's decision).
+_AFTERNOON_HOURS: Final[list[int]] = list(range(14, 22))
 _AFTERNOON_MINUTES: Final[list[int]] = list(range(0, 60, 5))
 
 
