@@ -53,7 +53,7 @@ class PlanReading:
     full_at: int | None  # minute of the day; None = not full before T2
     hours: tuple[int, ...]
     # What the plan charged from: the reserve without margin, the 10% floor
-    # on a day off (f4ea9ff).
+    # on a day off (b6343a5).
     start_soc: float | None
     day_off: bool = False
 

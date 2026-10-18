@@ -608,7 +608,7 @@ def test_full_charge_against_the_same_computation_on_what_came(energy, prices):
 
 
 def test_full_charge_on_a_day_off_searches_from_five(energy, prices):
-    """A day off (f4ea9ff): the dearest hour is sought from 05:00, as production does."""
+    """A day off (b6343a5): the dearest hour is sought from 05:00, as production does."""
     day = DAYS[-1]
     actuals = DayActuals(energy[day], TZ)
     s0 = _s0(day, prices)
