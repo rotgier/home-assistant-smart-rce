@@ -32,6 +32,7 @@ from homeassistant.core import CALLBACK_TYPE
 
 from ..domain.forecast_score.day_actuals import DayActuals
 from ..domain.forecast_score.day_score import (
+    SCHEMA_VERSION,
     DayInputs,
     DayScore,
     ScoreStatus,
@@ -129,7 +130,11 @@ class ForecastScoreService:
         )
 
     async def _fired_on(self, day: date) -> set[str]:
-        """Triggers today's stored runs already answered."""
+        """Return the triggers today's stored runs already answered.
+
+        Only runs of the current schema count: after a schema change the old
+        ones are not read back (`DayScore.latest_of`), so they must run again.
+        """
         try:
             records = await self._hass.async_add_executor_job(
                 self._archive.records, day
@@ -140,6 +145,7 @@ class ForecastScoreService:
         return {
             trigger
             for record in records
+            if record.get("schema_version") == SCHEMA_VERSION
             for trigger in str(record.get("trigger", "")).split("+")
             if trigger
         }

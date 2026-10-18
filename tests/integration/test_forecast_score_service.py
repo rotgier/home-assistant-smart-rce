@@ -336,3 +336,14 @@ async def test_a_restart_does_not_run_the_triggers_again(
     PUBLISHED.clear()
     await restarted.async_tick()
     assert len(archive.records(DAY)) == 1
+
+
+async def test_runs_of_an_older_schema_do_not_count_as_fired(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    service, archive = _service(hass, tmp_path, _at(11, 0), _Sources())
+    archive.add(DAY, {"kind": DayScore.KIND, "schema_version": 1, "trigger": "s0"})
+    await service.async_tick()
+    records = archive.records(DAY)
+    assert len(records) == 2
+    assert records[-1]["trigger"] == "charge_start+s0"
