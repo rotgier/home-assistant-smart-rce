@@ -32,6 +32,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from ..charge_start_shift import to_minutes
+from ..consumption_percentile import percentile_by_key
 from ..pv_surplus import DayType, minute_of_day, surplus_window_end
 from .day_type import DayTypeFigures, day_type_figures
 from .full_charge_score import FullChargeScore, PlanReading, score_full_charge
@@ -63,8 +64,9 @@ if TYPE_CHECKING:
 #    its first hour, not the last change of its state) — 17-18.10 rescored.
 # 7: the accuracy so far in kWh and %, no points; on days off its consumption
 #    model is p60 of earlier days of the same type.
+# 8: D3's surplus error split into PV and consumption (`with_model`).
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 7
+SCHEMA_VERSION: Final = 8
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
@@ -185,6 +187,10 @@ def score_day(
             inputs.s0,
             outcome.full_at,
             inputs.start.start,
+            # The surplus production charged on: p60 of the same type's days.
+            percentile_by_key(inputs.earlier_same_type.values())
+            if inputs.earlier_same_type
+            else None,
         )
         if inputs.morning_plan is not None
         and inputs.prices is not None

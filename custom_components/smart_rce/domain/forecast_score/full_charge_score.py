@@ -19,6 +19,9 @@ the other decisions:
 
 error = system − optimal (the surplus forecast), model_error = model − actual
 (the charging model); minutes, + = computed full later than the reference.
+The surplus error splits exactly, through `with_model` — actual PV with the
+consumption model production read (p60 of earlier days of the same type):
+PV part = system − with_model, consumption part = with_model − optimal.
 `hours` vs `optimal_hours`: the discharge hours each full charge qualifies —
 does the forecast error change what was sold?
 """
@@ -65,6 +68,7 @@ def score_full_charge(  # noqa: PLR0917 — one call site, the day's facts
     s0: int,
     actual_full: int | None,
     actual_start: int | None,
+    consumption_model: Mapping[int, float] | None = None,
 ) -> FullChargeScore:
     """Score the plan's full charge against the same computation on what came."""
     day = actuals.day
@@ -75,6 +79,17 @@ def score_full_charge(  # noqa: PLR0917 — one call site, the day's facts
     )
     optimal = (
         full_charge_minute(came, s0, plan.start_soc, t2)
+        if plan.start_soc is not None
+        else None
+    )
+    # Actual PV, the model's consumption (None: the flat production falls back to).
+    with_model = (
+        full_charge_minute(
+            SurplusProfile.build(day, actuals.half_hours(PV), consumption_model),
+            s0,
+            plan.start_soc,
+            t2,
+        )
         if plan.start_soc is not None
         else None
     )
@@ -108,6 +123,7 @@ def score_full_charge(  # noqa: PLR0917 — one call site, the day's facts
             _hours(day_prices, best, s0, t2, plan.full_at) if best is not None else ()
         ),
         s0_soc=actuals.soc_near(actuals.at(s0)),
+        with_model=with_model,
         actual_start=start,
         actual_start_soc=start_soc,
         model=model,
@@ -140,6 +156,7 @@ class FullChargeScore:
     actual_start: int | None = None  # the charge start that struck (or S0)
     actual_start_soc: float | None = None
     model: int | None = None  # the charging model from the actual start and SoC
+    with_model: int | None = None  # actual PV + the consumption model (the split)
 
     @property
     def error_min(self) -> int | None:
@@ -147,6 +164,20 @@ class FullChargeScore:
         if self.system is None or self.optimal is None:
             return None
         return self.system - self.optimal
+
+    @property
+    def pv_part_min(self) -> int | None:
+        """The PV forecast's share of `error_min` (system − actual PV with the model)."""
+        if self.system is None or self.with_model is None:
+            return None
+        return self.system - self.with_model
+
+    @property
+    def consumption_part_min(self) -> int | None:
+        """The consumption model's share of `error_min` (with_model − optimal)."""
+        if self.with_model is None or self.optimal is None:
+            return None
+        return self.with_model - self.optimal
 
     @property
     def error_actual_min(self) -> int | None:
@@ -179,6 +210,7 @@ class FullChargeScore:
             "actual_start": self.actual_start,
             "actual_start_soc": self.actual_start_soc,
             "model": self.model,
+            "with_model": self.with_model,
         }
 
     @classmethod
@@ -196,4 +228,5 @@ class FullChargeScore:
             actual_start=data.get("actual_start"),
             actual_start_soc=data.get("actual_start_soc"),
             model=data.get("model"),
+            with_model=data.get("with_model"),
         )

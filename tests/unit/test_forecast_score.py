@@ -10,6 +10,7 @@ from custom_components.smart_rce.domain.battery_schedule.morning_discharge impor
 )
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.charge_start_shift import full_charge_minute
+from custom_components.smart_rce.domain.consumption_percentile import percentile_by_key
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.energy_day import EnergyDay
 from custom_components.smart_rce.domain.forecast_score import (
@@ -599,8 +600,14 @@ def test_full_charge_against_the_same_computation_on_what_came(energy, prices):
         hours=(7,),
         start_soc=30.0,
     )
+    earlier = [
+        energy[d].energy_by_half_hour(CONSUMPTION, TZ)
+        for d in sorted(energy)
+        if d < day and d.weekday() < 5
+    ]
+    model = percentile_by_key(earlier)
     score = score_full_charge(
-        actuals, plan, prices[day.isoformat()], s0, 15 * 60, 8 * 60 + 15
+        actuals, plan, prices[day.isoformat()], s0, 15 * 60, 8 * 60 + 15, model
     )
     profile = SurplusProfile.build(
         day, actuals.half_hours("pv_kwh"), actuals.half_hours(CONSUMPTION)
@@ -608,6 +615,14 @@ def test_full_charge_against_the_same_computation_on_what_came(energy, prices):
     t2 = surplus_window_end(day) * 60
     assert score.optimal == full_charge_minute(profile, s0, 30.0, t2)
     assert score.error_actual_min == -60
+    # The surplus error splits into the PV forecast and the consumption model.
+    with_model = full_charge_minute(
+        SurplusProfile.build(day, actuals.half_hours("pv_kwh"), model), s0, 30.0, t2
+    )
+    assert score.with_model == with_model
+    if score.optimal is not None and with_model is not None:
+        assert score.pv_part_min == 14 * 60 - with_model
+        assert score.pv_part_min + score.consumption_part_min == score.error_min
     if score.optimal is not None:
         assert score.error_min == 14 * 60 - score.optimal
     soc = actuals.soc_near(actuals.at(8 * 60 + 15))
