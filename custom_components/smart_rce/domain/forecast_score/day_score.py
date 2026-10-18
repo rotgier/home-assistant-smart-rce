@@ -4,8 +4,9 @@ A day is scored several times and checked once:
 - PRELIMINARY during the day (from 18.10.2026): at the charge start, at S0, when
   the battery reaches 100%, at 13:06, on the button, and at 16:06. Such a run
   sees the data only up to its `cutoff`, so a part that needs more waits
-  (`pending`): D1 until the T1 window closes (13:00), D2 until 16:00 (its
-  benchmark reads the surplus to T2), D3 until its full charges are measured.
+  (`pending`): D1 until the T1 window closes (13:00), D2 until T2 starts (its
+  benchmark is the latest start still full by T2, read on the surplus to T2;
+  16:00 in winter), D3 until its full charges are measured.
   The accuracy so far (`so_far`) is there from the first run;
 - FINAL at 21:06 — after sunset nothing that matters moves (the D2 windows and
   the afternoon top-up close before the evening T2);
@@ -54,9 +55,6 @@ if TYPE_CHECKING:
 # Older records are ignored, so the startup catch-up rescores those days.
 SCHEMA_VERSION: Final = 5
 
-# D2's benchmark reads the surplus up to T2; a run before this has not got it.
-START_SCORED_FROM: Final = time(16, 0)
-
 
 class ScoreStatus(StrEnum):
     PRELIMINARY = "preliminary"
@@ -67,7 +65,7 @@ class Pending(StrEnum):
     """A part of the day a run before the day's end cannot score yet."""
 
     RESERVE = "reserve"  # until the T1 window closes (13:00)
-    START = "start"  # until 16:00
+    START = "start"  # until T2 starts (16:00 in winter)
     FULL_CHARGE = "full_charge"  # until its full charges are measured, or T2
     DAY_TYPE = "day_type"  # the actual PV of 07-13 is still coming
 
@@ -147,7 +145,8 @@ def score_day(
     has_prices = (
         inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24
     )
-    if has_prices and cutoff is not None and cutoff.time() < START_SCORED_FROM:
+    t2 = datetime.combine(day, time(surplus_window_end(day)), actuals.tz)
+    if has_prices and cutoff is not None and cutoff < t2:
         pending.append(Pending.START)
     elif has_prices:
         assert inputs.prices is not None  # has_prices

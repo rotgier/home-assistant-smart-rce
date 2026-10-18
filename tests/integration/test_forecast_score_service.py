@@ -325,3 +325,14 @@ async def test_the_button_scores_now_and_final_after_nine(
     score = await service.async_day(DAY)
     assert score is not None
     assert (score.status, score.cutoff) == (ScoreStatus.FINAL, None)
+
+
+async def test_a_restart_does_not_run_the_triggers_again(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    service, archive = _service(hass, tmp_path, _at(11, 0), _Sources())
+    await service.async_tick()  # charge_start+s0
+    restarted, _ = _service(hass, tmp_path, _at(11, 30), _Sources())
+    PUBLISHED.clear()
+    await restarted.async_tick()
+    assert len(archive.records(DAY)) == 1

@@ -99,8 +99,8 @@ class ForecastScoreService:
         self._publish = publish
         self._cache: dict[date, DayScore | None] = {}
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
-        # Triggers already run today (in memory: after a restart the due ones
-        # make one run together).
+        # Triggers already run today (read back from today's records after a
+        # restart, so a restart does not run them again).
         self._fired: tuple[date, set[str]] | None = None
 
     def async_add_listener(self, update_callback: CALLBACK_TYPE) -> Callable[[], None]:
@@ -118,7 +118,7 @@ class ForecastScoreService:
         if not self.TRIGGERS_FROM <= now.time() < self.PRELIMINARY_AT:
             return
         if self._fired is None or self._fired[0] != now.date():
-            self._fired = (now.date(), set())
+            self._fired = (now.date(), await self._fired_on(now.date()))
         fired = self._fired[1]
         due = [t for t in self._due(now) if t not in fired]
         if not due:
@@ -127,6 +127,22 @@ class ForecastScoreService:
         await self._score_today(
             ScoreStatus.PRELIMINARY, trigger="+".join(due), cutoff=now
         )
+
+    async def _fired_on(self, day: date) -> set[str]:
+        """Triggers today's stored runs already answered."""
+        try:
+            records = await self._hass.async_add_executor_job(
+                self._archive.records, day
+            )
+        except Exception:  # noqa: BLE001 — unreadable: run the triggers again
+            _LOGGER.exception("Forecast score: %s unreadable", day)
+            return set()
+        return {
+            trigger
+            for record in records
+            for trigger in str(record.get("trigger", "")).split("+")
+            if trigger
+        }
 
     def _due(self, now: datetime) -> list[str]:
         """Triggers whose moment has come today (in the order of the day)."""
