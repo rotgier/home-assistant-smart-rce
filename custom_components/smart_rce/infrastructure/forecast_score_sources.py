@@ -17,11 +17,15 @@ Everything the scoreboard reads lives somewhere else already:
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from functools import partial
 import logging
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.history import state_changes_during_period
+from homeassistant.components.recorder.history import (
+    get_significant_states,
+    state_changes_during_period,
+)
 from homeassistant.util import dt as dt_util
 
 from ..domain.charge_slots import ChargeSlots
@@ -224,19 +228,39 @@ class ForecastScoreSources:
     async def _history(
         self, day: date, entity_id: str, *, attributes: bool = False
     ) -> list[State]:
+        """Return the entity's states over `day` (unknown/unavailable left out).
+
+        With `attributes`, every change of them too: a sensor whose value
+        stays put while its attributes move (the morning discharge plan's
+        `full_at`, the reserve's `value_without_margin`) records attribute-only
+        rows, which `state_changes_during_period` leaves out — it keeps only rows
+        where the state itself changed.
+        """
         tz = dt_util.DEFAULT_TIME_ZONE
         start = datetime.combine(day, time(0), tzinfo=tz)
         end = min(start + timedelta(days=1), dt_util.now())
-        result: dict[str, list[Any]] = await get_instance(
-            self._hass
-        ).async_add_executor_job(
-            state_changes_during_period,
-            self._hass,
-            start,
-            end,
-            entity_id,
-            not attributes,
-        )
+        recorder = get_instance(self._hass)
+        result: dict[str, list[Any]]
+        if attributes:
+            result = await recorder.async_add_executor_job(
+                partial(
+                    get_significant_states,
+                    self._hass,
+                    start,
+                    end,
+                    [entity_id],
+                    significant_changes_only=False,
+                )
+            )
+        else:
+            result = await recorder.async_add_executor_job(
+                state_changes_during_period,
+                self._hass,
+                start,
+                end,
+                entity_id,
+                True,
+            )
         return [
             s
             for s in result.get(entity_id, [])

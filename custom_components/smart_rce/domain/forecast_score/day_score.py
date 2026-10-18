@@ -59,8 +59,10 @@ if TYPE_CHECKING:
 # 4: the variant ranking with the hour credit (0f65863) on every day.
 # 5: the 04:41 reserve moment, the accuracy so far, runs during the day
 #    (trigger, cutoff, pending).
+# 6: D3 reads the plan with its attribute-only changes (the last plan before
+#    its first hour, not the last change of its state) — 17-18.10 rescored.
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 5
+SCHEMA_VERSION: Final = 6
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
