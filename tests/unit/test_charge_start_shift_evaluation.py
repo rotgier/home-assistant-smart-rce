@@ -101,7 +101,7 @@ def _run(service, clock, hour, minutes):
 
 
 def test_waits_for_extrap_then_moves_and_reports_why():
-    # SoC 20% -> 9.16 kWh to full. 12:00 window (12-14) gives 6.2 kWh, 11:00
+    # SoC 20% -> 8.77 kWh to full. 12:00 window (12-14) gives 6.2 kWh, 11:00
     # (11-15) 12.4 kWh -> candidate 11:00. Live alone would move at 08:11; the
     # applied variant waits for 09:10 and Extrap (same forecast here) agreeing.
     service, charge, clock, reports = _setup()
@@ -118,7 +118,7 @@ def test_waits_for_extrap_then_moves_and_reports_why():
     assert report.move == ForecastShiftMove(
         before=12 * H, after=11 * H, manual_start=None
     )
-    assert report.need_kwh == pytest.approx(9.16)
+    assert report.need_kwh == pytest.approx(8.77)
     assert report.surplus_kwh == pytest.approx(12.4)
     assert report.window_end_hour == 15
     assert service.last is not None
@@ -274,7 +274,7 @@ class _HistorySurplus:
 
 
 def test_applied_variant_reads_the_p60_consumption():
-    # SoC 20% -> 9.16 kWh. Flat surplus: 11:00 enough (12.4). With p60 use
+    # SoC 20% -> 8.77 kWh. Flat surplus: 11:00 enough (12.4). With p60 use
     # (2 kWh/h) only an earlier start would do, so from 09:11 it is "now".
     service, charge, clock, _ = _setup()
     service._pv_surplus = _HistorySurplus()  # noqa: SLF001

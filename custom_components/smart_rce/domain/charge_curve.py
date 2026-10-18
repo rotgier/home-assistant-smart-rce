@@ -1,9 +1,16 @@
 """Charge curve — energy that goes into the battery per 1 pp of SoC, by SoC band.
 
 Measured 2–12.10.2026 on the battery charge counter against SoC (934 pp,
-112 kWh; `research/2026-10-11-backtest-poranne-ladowanie/`). Not flat: the
-bottom band takes a third more per pp than the middle (BMS calibration), the
-average is 0.120 kWh/pp.
+112 kWh; `research/2026-10-11-backtest-poranne-ladowanie/`); 10–20% and the
+top re-measured 18.10.2026 on PV and grid charge runs 09–18.10, the battery
+power integral and the charge counter agreeing (home-assistant-ops
+`research/2026-10-18-tempo-ladowania-pv/`):
+- 10–20% takes 0.11–0.12 kWh/pp, not the 0.148 of the first fit;
+- the top is no single band: above ~90% the BMS caps the power at ~2.1 kW
+  and recalibrates the SoC — 89–91% takes ~0.2 kWh/pp, 91–98% only 0.03–0.06
+  (the SoC jumps), 98–100% ~0.08.
+With these the charge model's full charge on 6 sunny days: mean error +13 →
++3 min, MAE 19 → 7 min. 10→100% is ~9.9 kWh (the counter: ~10 kWh).
 
 Two readers:
 - the charge-start shift asks how much energy the battery still takes from the
@@ -34,12 +41,14 @@ class SocBand:
 
 
 BANDS: Final[tuple[SocBand, ...]] = (
-    SocBand(10, 20, 0.148),
+    SocBand(10, 20, 0.115),
     SocBand(20, 30, 0.112),
     SocBand(30, 50, 0.114),
     SocBand(50, 75, 0.118),
-    SocBand(75, 90, 0.108),
-    SocBand(90, 100, 0.119),
+    SocBand(75, 89, 0.110),
+    SocBand(89, 91, 0.22),
+    SocBand(91, 98, 0.04),
+    SocBand(98, 100, 0.08),
 )
 
 FULL_SOC: Final[float] = 100.0

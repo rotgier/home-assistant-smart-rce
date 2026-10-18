@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from custom_components.smart_rce.domain import charge_curve
 from custom_components.smart_rce.domain.battery_schedule.morning_discharge import (
     MorningDischargePlan,
 )
+from custom_components.smart_rce.domain.charge_curve import SocBand
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.charge_start_shift import full_charge_minute
 from custom_components.smart_rce.domain.consumption_percentile import percentile_by_key
@@ -79,6 +81,14 @@ import pytest
 TZ = ZoneInfo("Europe/Warsaw")
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "forecast_score"
 DAYS = (date(2026, 10, 12), date(2026, 10, 13), date(2026, 10, 14))
+_BANDS_AT_FA81958 = (
+    SocBand(10, 20, 0.148),
+    SocBand(20, 30, 0.112),
+    SocBand(30, 50, 0.114),
+    SocBand(50, 75, 0.118),
+    SocBand(75, 90, 0.108),
+    SocBand(90, 100, 0.119),
+)
 CONSUMPTION = "consumption_minus_water_kwh"
 VERDICTS = {
     "na czas": "on_time",
@@ -93,6 +103,12 @@ MODELS = {
     "poprz. dni: p60 (prod od 15.10 wieczór)": "p60",
     "prod do 14.10: max(flat, bez najg.)": "old_rule",
 }
+
+
+@pytest.fixture
+def charge_curve_at_fa81958(monkeypatch):
+    """Run on the charge curve the reference script had (before 18.10.2026)."""
+    monkeypatch.setattr(charge_curve, "BANDS", _BANDS_AT_FA81958)
 
 
 @pytest.fixture(scope="module")
@@ -180,6 +196,7 @@ class TestParityWithReferenceScript:
         ]
 
     @pytest.mark.parametrize("day", DAYS)
+    @pytest.mark.usefixtures("charge_curve_at_fa81958")
     def test_start_on_actual_consumption(
         self, day, energy, snapshots, expected, prices
     ):

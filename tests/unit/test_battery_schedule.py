@@ -79,13 +79,16 @@ class TestDirection:
         assert mins(24, 45) == pytest.approx(26.2, abs=0.5)
         assert mins(19, 70) == pytest.approx(63.8, abs=0.5)
 
-        # Into the plateau and the top. The model runs a few minutes long on
-        # purpose: a charge that starts early still finishes, one that starts
-        # late misses the window.
+        # Into the plateau and the top. The model runs long on purpose: a
+        # charge that starts early still finishes, one that starts late misses
+        # the window. These sessions took 98→100 at ~304 s/pp; the PV and grid
+        # runs of 09-18.10 took 13-23 min for the two points (BMS down to
+        # ~1 kW), so the model now takes 450 s/pp and runs up to ~12 min long
+        # on these three.
         for start, measured in ((60, 62.3), (53, 76.5), (64, 54.5)):
             modelled = mins(start, 100)
             assert modelled >= measured - 1.0, (start, modelled, measured)
-            assert modelled <= measured + 8.0, (start, modelled, measured)
+            assert modelled <= measured + 12.5, (start, modelled, measured)
 
     def test_charge_full_traversal_fits_the_afternoon_window(self):
         """0→100% must fit the ~3h window the seasonal automation sets.
@@ -257,8 +260,8 @@ class TestEntryPredicates:
             target_soc=100.0,
         )
         # 30→89: 59 × 75 = 4425 | 89→91: 2 × 390 = 780 | 91→94: 3 × 40 = 120
-        # 94→98: 4 × 80 = 320 | 98→100: 2 × 320 = 640
-        assert entry.time_to_complete_at(30.0) == pytest.approx(6285, abs=1.0)
+        # 94→98: 4 × 80 = 320 | 98→100: 2 × 450 = 900
+        assert entry.time_to_complete_at(30.0) == pytest.approx(6545, abs=1.0)
 
     def test_time_to_complete_at_charge_below_the_plateau_is_flat(self):
         """Nothing changed under 89% — that part the old stub already had right."""

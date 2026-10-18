@@ -5,17 +5,19 @@ import pytest
 
 
 def test_kwh_to_full_walks_the_bands():
-    assert kwh_to_full(10) == pytest.approx(10.64)
-    assert kwh_to_full(15) == pytest.approx(5 * 0.148 + 10.64 - 1.48)
-    assert kwh_to_full(95) == pytest.approx(5 * 0.119)
+    assert kwh_to_full(10) == pytest.approx(9.92)
+    assert kwh_to_full(15) == pytest.approx(9.92 - 5 * 0.115)
+    assert kwh_to_full(95) == pytest.approx(3 * 0.04 + 2 * 0.08)
     assert kwh_to_full(100) == 0.0
 
 
 def test_pp_below_full_walks_down_from_the_top():
     assert pp_below_full(0.0) == 0.0
-    assert pp_below_full(1.19) == pytest.approx(10)
-    assert pp_below_full(1.19 + 1.62) == pytest.approx(25)
-    assert pp_below_full(1.19 + 0.054) == pytest.approx(10.5)
+    assert pp_below_full(0.16) == pytest.approx(2)
+    assert pp_below_full(0.16 + 0.28) == pytest.approx(9)
+    assert pp_below_full(0.16 + 0.28 + 0.44) == pytest.approx(11)
+    assert pp_below_full(0.16 + 0.28 + 0.44 + 1.54) == pytest.approx(25)
+    assert pp_below_full(0.16 + 0.02) == pytest.approx(2.5)
 
 
 def test_pp_below_full_stops_at_the_bottom_band():

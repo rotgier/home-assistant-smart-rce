@@ -88,11 +88,14 @@ class Direction(Enum):
             # three points above the plateau run at a third of the flat rate,
             # the next four at roughly the flat rate, and the last two cost
             # more than the whole 91-98 stretch put together. Medians of
-            # 38 / 77 / 304 s/pp, rounded up — a charge that starts early
-            # still finishes, one that starts late does not.
+            # 38 / 77 s/pp, rounded up — a charge that starts early still
+            # finishes, one that starts late does not. 98-100: 304 s/pp in the
+            # first fit; PV and grid (CHARGE_AFTERNOON) runs 09-18.10 take
+            # 13-16 min for the two points, the BMS down to ~1 kW (18.10.2026,
+            # home-assistant-ops `research/2026-10-18-tempo-ladowania-pv/`).
             RateZone(soc_from=91.0, soc_to=94.0, sec_per_pp=40.0),
             RateZone(soc_from=94.0, soc_to=98.0, sec_per_pp=80.0),
-            RateZone(soc_from=98.0, soc_to=100.01, sec_per_pp=320.0),
+            RateZone(soc_from=98.0, soc_to=100.01, sec_per_pp=450.0),
         ),
     )
 
