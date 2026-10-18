@@ -164,6 +164,7 @@ class TestOutlook:
             (BandKind.TO_FULL, 13 * H, 13 * H + 40, False),
         ]
         assert (out.full_at, out.full_forecast) == (13 * H + 40, True)
+        assert (out.plateau_at, out.plateau_forecast) == (13 * H, True)
 
     def test_under_way_the_run_is_solid_up_to_now_and_the_forecast_goes_on(self):
         run = PvChargeRun(day=DAY, start=11 * H)
@@ -199,6 +200,7 @@ class TestOutlook:
             (BandKind.TO_FULL, 776, 811, True, True),
         ]
         assert (out.full_at, out.full_forecast) == (811, False)
+        assert (out.plateau_at, out.plateau_forecast) == (776, False)
 
     def test_short_of_full_by_t2_ends_at_t2_with_the_level(self):
         out = PvChargeOutlook.build(
@@ -212,6 +214,7 @@ class TestOutlook:
         (band,) = out.bands
         assert (band.end, band.reached, band.soc) == (T2, False, 87.0)
         assert out.full_at is None
+        assert out.plateau_at is None
 
     def test_reached_plateau_leaves_only_the_top_to_the_forecast(self):
         run = PvChargeRun(day=DAY, start=11 * H, plateau_at=776)
@@ -230,6 +233,9 @@ class TestOutlook:
             (BandKind.TO_FULL, False),
         ]
         assert out.bands[2].starts_now
+        # 90% is a fact already, 100% still the forecast.
+        assert (out.plateau_at, out.plateau_forecast) == (776, False)
+        assert (out.full_at, out.full_forecast) == (13 * H + 30, True)
 
 
 class TestService:
@@ -294,6 +300,62 @@ class TestService:
         assert service.outlook.day == tomorrow
         assert service.outlook.start == 10 * H + 30
         assert asked == [(tomorrow, True)]
+
+
+class TestHourSensors:
+    """sensor.ems_pv_charge_90_at / _100_at: hour as a number, forecast flag."""
+
+    @staticmethod
+    def _sensor(level, outlook):
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        from custom_components.smart_rce.sensor.pv_charge_sensor import (  # noqa: PLC0415
+            PvChargeHourSensor,
+        )
+
+        entry = SimpleNamespace(
+            entry_id="e",
+            runtime_data=SimpleNamespace(pv_charge=SimpleNamespace(outlook=outlook)),
+        )
+        return PvChargeHourSensor(entry, level)
+
+    def test_fact_for_90_forecast_for_100(self):
+        run = PvChargeRun(day=DAY, start=11 * H, plateau_at=12 * H + 56)
+        out = PvChargeOutlook.build(
+            DAY,
+            run=run,
+            forecast=PvChargeForecast(
+                13 * H,
+                92.0,
+                ChargeMilestones(13 * H, 13 * H + 31, 100.0),
+                from_now=True,
+            ),
+            now=13 * H,
+            soc=92.0,
+            window_end=T2,
+        )
+        s90, s100 = self._sensor("90", out), self._sensor("100", out)
+        assert s90.entity_id == "sensor.ems_pv_charge_90_at"
+        assert s90.native_value == 12.93
+        assert s90.extra_state_attributes == {
+            "day": "2026-10-17",
+            "forecast": False,
+            "at": "12:56",
+        }
+        assert s100.native_value == 13.52
+        assert s100.extra_state_attributes["forecast"] is True
+
+    def test_short_of_the_level_is_unknown(self):
+        out = PvChargeOutlook.build(
+            DAY,
+            run=None,
+            forecast=PvChargeForecast(11 * H, 30.0, ChargeMilestones(None, None, 80.0)),
+            now=8 * H,
+            soc=30.0,
+            window_end=T2,
+        )
+        assert self._sensor("90", out).native_value is None
+        assert self._sensor("100", out).native_value is None
 
 
 class SimpleRun:

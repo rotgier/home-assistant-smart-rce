@@ -122,13 +122,16 @@ class PvChargeRun:
 class PvChargeOutlook:
     """The plan day's PV charge for the chart: bands done and bands expected.
 
-    `full_at` is when the battery got full, or is forecast to; None when
-    neither (`full_forecast` says which).
+    `plateau_at` / `full_at`: when the battery got to 90% / full, or is
+    forecast to (`*_forecast` says which); None when neither — the forecast
+    stops short of it before T2.
     """
 
     day: date
     start: int | None
     bands: tuple[PvChargeBand, ...]
+    plateau_at: int | None
+    plateau_forecast: bool
     full_at: int | None
     full_forecast: bool
 
@@ -157,7 +160,15 @@ class PvChargeOutlook:
                 else ()
             ),
         ]
-        full_at, full_forecast = cls._full_at(run, forecast)
+        milestones = forecast.milestones if forecast is not None else None
+        plateau_at, plateau_forecast = cls._reached(
+            run.plateau_at if run is not None else None,
+            milestones.plateau_at if milestones is not None else None,
+        )
+        full_at, full_forecast = cls._reached(
+            run.full_at if run is not None else None,
+            milestones.full_at if milestones is not None else None,
+        )
         start = run.start if run is not None and run.start is not None else None
         if start is None and forecast is not None:
             start = forecast.start
@@ -165,6 +176,8 @@ class PvChargeOutlook:
             day=day,
             start=start,
             bands=tuple(b for b in bands if b.end > b.start),
+            plateau_at=plateau_at,
+            plateau_forecast=plateau_forecast,
             full_at=full_at,
             full_forecast=full_forecast,
         )
@@ -238,19 +251,20 @@ class PvChargeOutlook:
         return bands
 
     @staticmethod
-    def _full_at(
-        run: PvChargeRun | None, forecast: PvChargeForecast | None
-    ) -> tuple[int | None, bool]:
-        if run is not None and run.full_at is not None:
-            return run.full_at, False
-        if forecast is not None and forecast.milestones.full_at is not None:
-            return forecast.milestones.full_at, True
+    def _reached(happened: int | None, forecast: int | None) -> tuple[int | None, bool]:
+        """Return the minute a level was reached, else its forecast (and which)."""
+        if happened is not None:
+            return happened, False
+        if forecast is not None:
+            return forecast, True
         return None, False
 
     def to_dict(self, tz: tzinfo | None) -> dict[str, Any]:
         return {
             "day": self.day.isoformat(),
             "start": self._stamp(self.start, tz),
+            "plateau_at": self._stamp(self.plateau_at, tz),
+            "plateau_forecast": self.plateau_forecast,
             "full_at": self._stamp(self.full_at, tz),
             "full_forecast": self.full_forecast,
             "bands": [b.to_dict(self.day, tz) for b in self.bands],
