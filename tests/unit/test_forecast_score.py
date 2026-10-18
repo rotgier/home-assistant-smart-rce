@@ -12,7 +12,10 @@ from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.charge_start_shift import full_charge_minute
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.energy_day import EnergyDay
-from custom_components.smart_rce.domain.forecast_score import variant_results as vr
+from custom_components.smart_rce.domain.forecast_score import (
+    day_score as day_score_module,
+    variant_results as vr,
+)
 from custom_components.smart_rce.domain.forecast_score.consumption_models import (
     ConsumptionModel,
 )
@@ -44,7 +47,6 @@ from custom_components.smart_rce.domain.forecast_score.production_setup import (
 from custom_components.smart_rce.domain.forecast_score.ranking import rank
 from custom_components.smart_rce.domain.forecast_score.reserve_score import (
     score_reserve,
-    soc_points,
 )
 from custom_components.smart_rce.domain.forecast_score.start_score import (
     forecast_half_hours,
@@ -704,6 +706,8 @@ class TestDuringTheDay:
         day = DAYS[-1]
         score = _day_score(day, energy, snapshots, prices, cutoff=self._at(10))
         row = next(m for m in score.so_far if m.label == "06:11")
+        # 14.10 ran the old max-of rule — no profile, so the flat stood in.
+        assert (row.flat_model, row.model_day_count) == (True, 0)
         actuals = DayActuals(energy[day], TZ)
         assert (row.since, row.until) == (self._at(7), self._at(10))
         assert row.pv_actual_kwh == round(
@@ -720,11 +724,59 @@ class TestDuringTheDay:
         assert variant.pv_kwh == pytest.approx(promised, abs=1e-3)
         error = row.pv_error_kwh(row.system_variant)
         assert error is not None
-        # More PV promised than came -> less reserve: the PV part is negative.
-        assert row.pv_part_pp(row.system_variant) == -round(soc_points(error))
-        assert row.system_part_pp == (
-            row.pv_part_pp(row.system_variant) + row.consumption_part_pp
+        # + = promised more than came, in kWh and in percent of what came.
+        assert error == round(variant.pv_kwh - row.pv_actual_kwh, 3)
+        assert row.pv_error_pct(row.system_variant) == round(
+            100 * error / row.pv_actual_kwh, 1
         )
+        assert row.consumption_error_kwh == round(
+            row.consumption_model_kwh - row.consumption_actual_kwh, 3
+        )
+
+    def test_a_day_off_learns_its_consumption_from_its_own_kind(
+        self, energy, snapshots, prices, monkeypatch
+    ):
+        """No T1 reserve: the model reads the earlier days of the same type."""
+        day = DAYS[-1]
+        monkeypatch.setattr(day_score_module, "setup_on", lambda _d, _tz: CURRENT)
+        actuals = DayActuals(energy[day], TZ)
+        half = {
+            d: energy[d].energy_by_half_hour(CONSUMPTION, TZ)
+            for d in sorted(energy)
+            if d < day
+        }
+        workdays = {d: h for d, h in half.items() if d.weekday() < 5}
+        sundays = {d: h for d, h in half.items() if d.weekday() == 6}
+
+        def so_far(with_reserve: bool) -> tuple:
+            monkeypatch.setattr(
+                day_score_module, "has_morning_reserve", lambda _d: with_reserve
+            )
+            return score_day(
+                DayInputs(
+                    actuals=actuals,
+                    snapshots=vr.from_archive(snapshots[day]),
+                    earlier_workdays=workdays,
+                    earlier_same_type=sundays,
+                    prices=None,
+                    s0=None,
+                    start=ChargeStartFact(None, "none"),
+                    afternoon_charge=None,
+                    cutoff=self._at(10),
+                ),
+                status=ScoreStatus.PRELIMINARY,
+                computed_at=self._at(10),
+                code_version="test",
+            ).so_far
+
+        workday, day_off = so_far(True)[0], so_far(False)[0]
+        assert (workday.model_days, workday.model_day_count) == (
+            "workday",
+            len(workdays),
+        )
+        # 14.10 is a Tuesday: with no reserve it reads its own kind's days.
+        assert (day_off.model_day_count, day_off.flat_model) == (len(sundays), False)
+        assert day_off.consumption_model_kwh != workday.consumption_model_kwh
 
     def test_a_moment_inside_the_window_counts_from_itself(
         self, energy, snapshots, prices
@@ -772,7 +824,8 @@ def test_day_card_carries_accuracy_so_far_and_pending(energy, snapshots, prices)
     json.dumps(card)  # attributes must serialise
     row = card["so_far_summary"][0]
     assert row["label"] == "06:11"
-    assert row["total_part"] == row["pv_part"] + row["cons_part"]
+    assert row["pv_error_pct"] is not None
+    assert row["model_days"] == "workday"
     assert "live_soft" in row["variants"]
     assert set(card["pending"]) >= {"reserve", "start"}
     assert card["cutoff_hm"] is not None

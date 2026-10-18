@@ -6,11 +6,18 @@ honestly is the part of the T1 window already measured: for every reserve
 moment, the energy each forecast promised over [max(07:00, moment), until)
 against what came, and the same for the consumption model the system read.
 
-Signs follow the reserve (− = the system would keep too little): a PV forecast
-above what came lowers the reserve, so its part is −(forecast − actual); a
-consumption model above what came raises it, so its part is +(model − actual).
-The points are kWh through `soc_points` — a linear stand-in for the reserve's
-own dip arithmetic, good for "how far off so far", not for the final score.
+Errors are in kWh and percent of what came, + = the forecast (or the
+consumption model) promised MORE than came — the plain sense, not the reserve's
+sign. Deliberately no SoC points: the reserve depends on the dip until the sun
+covers the house, not on the window's whole energy (17.10 at 06:11 the window
+said −40 "points" where the reserve's PV and consumption parts were −1 and 0).
+The reserve's own points stay in D1.
+
+The consumption model is the one production read that day: on a day with a T1
+reserve the reserve's (p60 of earlier workdays); on a day off — no reserve —
+the charge start's (p60 of earlier days of the same type: Saturdays, Sundays).
+A rule that is no profile (the old max-of rule) or no history: the flat
+0.9 kWh/h.
 
 The same table on a closed day covers the whole window (until 13:00).
 """
@@ -24,13 +31,14 @@ from typing import TYPE_CHECKING, Any, Final
 from ..bucket import PV_WINDOW_HOURS
 from ..consumption_profiles import ConsumptionProfile
 from .day_actuals import CONSUMPTION, PV
-from .reserve_score import RESERVE_MOMENTS, soc_points
+from .reserve_score import RESERVE_MOMENTS
 from .variant_results import SCORED_VARIANTS, consumed
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from ..pv_forecast import PvForecastResult
+    from .consumption_models import ConsumptionModel
     from .day_actuals import DayActuals
     from .production_setup import ProductionSetup
     from .variant_results import ScoredSnapshot
@@ -41,22 +49,25 @@ WINDOW_END: Final = time(PV_WINDOW_HOURS[-1] + 1)
 _BUCKET: Final = timedelta(minutes=30)
 
 
-def score_so_far(
+def score_so_far(  # noqa: PLR0917 — one call site, the day's inputs
     actuals: DayActuals,
     snapshots: Sequence[ScoredSnapshot],
-    earlier_workdays: Sequence[Mapping[int, float]],
+    consumption: ConsumptionModel,
+    earlier_days: Sequence[Mapping[int, float]],
+    model_days: str,
     setup: ProductionSetup,
     until: datetime | None,
 ) -> tuple[MomentSoFar, ...]:
     """Score every reserve moment over the measured part of the window.
 
-    `until`: how far the data reaches (None = the whole window). A moment with
-    nothing measured after it yet is left out.
+    `consumption` learns from `earlier_days`, of the kind `model_days` names
+    (workday, saturday, sunday). `until`: how far the data reaches (None = the
+    whole window). A moment with nothing measured after it yet is left out.
     """
     day, tz = actuals.day, actuals.tz
     window_end = datetime.combine(day, WINDOW_END, tz)
     end = window_end if until is None else min(until, window_end)
-    model = setup.reserve_model.reserve_profile(earlier_workdays)
+    model = consumption.reserve_profile(earlier_days)
     profile = model or ConsumptionProfile.flat()
     out: list[MomentSoFar] = []
     for moment in RESERVE_MOMENTS:
@@ -87,6 +98,8 @@ def score_so_far(
                 ),
                 system_variant=setup.pv_variant,
                 flat_model=model is None,
+                model_days=model_days,
+                model_day_count=len(earlier_days) if model is not None else 0,
             )
         )
     return tuple(out)
@@ -139,7 +152,9 @@ class MomentSoFar:
     consumption_model_kwh: float
     variants: tuple[VariantSoFar, ...]
     system_variant: str  # the PV variant production steered by that day
-    flat_model: bool  # no earlier workdays: the flat 0.9 kWh/h stood in
+    flat_model: bool  # no earlier days: the flat 0.9 kWh/h stood in
+    model_days: str = "workday"  # the kind of earlier days the model learned from
+    model_day_count: int = 0
 
     def variant(self, key: str) -> VariantSoFar | None:
         return next((v for v in self.variants if v.variant == key), None)
@@ -149,10 +164,12 @@ class MomentSoFar:
         found = self.variant(key)
         return round(found.pv_kwh - self.pv_actual_kwh, 3) if found else None
 
-    def pv_part_pp(self, key: str) -> int | None:
-        """Reserve effect of that PV error in SoC points (− = too little)."""
+    def pv_error_pct(self, key: str) -> float | None:
+        """Return the PV error in percent of what came (None when nothing came)."""
         error = self.pv_error_kwh(key)
-        return -round(soc_points(error)) if error is not None else None
+        if error is None or self.pv_actual_kwh <= 0:
+            return None
+        return round(100 * error / self.pv_actual_kwh, 1)
 
     @property
     def consumption_error_kwh(self) -> float:
@@ -160,15 +177,11 @@ class MomentSoFar:
         return round(self.consumption_model_kwh - self.consumption_actual_kwh, 3)
 
     @property
-    def consumption_part_pp(self) -> int:
-        """Reserve effect of the consumption error (− = too little)."""
-        return round(soc_points(self.consumption_error_kwh))
-
-    @property
-    def system_part_pp(self) -> int | None:
-        """The system's PV and consumption parts together."""
-        pv = self.pv_part_pp(self.system_variant)
-        return pv + self.consumption_part_pp if pv is not None else None
+    def consumption_error_pct(self) -> float | None:
+        """Return the consumption error in percent of what came (None: nothing)."""
+        if self.consumption_actual_kwh <= 0:
+            return None
+        return round(100 * self.consumption_error_kwh / self.consumption_actual_kwh, 1)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -182,6 +195,8 @@ class MomentSoFar:
             "variants": [v.to_dict() for v in self.variants],
             "system_variant": self.system_variant,
             "flat_model": self.flat_model,
+            "model_days": self.model_days,
+            "model_day_count": self.model_day_count,
         }
 
     @classmethod
@@ -197,6 +212,8 @@ class MomentSoFar:
             variants=tuple(VariantSoFar.from_dict(v) for v in data["variants"]),
             system_variant=str(data["system_variant"]),
             flat_model=bool(data.get("flat_model", False)),
+            model_days=str(data.get("model_days", "workday")),
+            model_day_count=int(data.get("model_day_count", 0)),
         )
 
 

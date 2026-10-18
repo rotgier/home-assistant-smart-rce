@@ -281,13 +281,14 @@ def _so_far_row(moment: MomentSoFar) -> dict[str, Any]:
         "pv_actual": moment.pv_actual_kwh,
         "pv_system": system.pv_kwh if system is not None else None,
         "pv_error_kwh": moment.pv_error_kwh(moment.system_variant),
-        "pv_part": moment.pv_part_pp(moment.system_variant),
+        "pv_error_pct": moment.pv_error_pct(moment.system_variant),
         "cons_actual": moment.consumption_actual_kwh,
         "cons_model": moment.consumption_model_kwh,
         "cons_error_kwh": moment.consumption_error_kwh,
-        "cons_part": moment.consumption_part_pp,
-        "total_part": moment.system_part_pp,
+        "cons_error_pct": moment.consumption_error_pct,
         "flat_model": moment.flat_model,
+        "model_days": moment.model_days,
+        "model_day_count": moment.model_day_count,
         "variants": {
             v.variant: moment.pv_error_kwh(v.variant) for v in moment.variants
         },

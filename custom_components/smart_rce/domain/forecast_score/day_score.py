@@ -61,8 +61,10 @@ if TYPE_CHECKING:
 #    (trigger, cutoff, pending).
 # 6: D3 reads the plan with its attribute-only changes (the last plan before
 #    its first hour, not the last change of its state) — 17-18.10 rescored.
+# 7: the accuracy so far in kWh and %, no points; on days off its consumption
+#    model is p60 of earlier days of the same type.
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 6
+SCHEMA_VERSION: Final = 7
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
@@ -148,10 +150,19 @@ def score_day(
         reserve, models = score_reserve(
             actuals, inputs.snapshots, list(inputs.earlier_workdays.values()), setup
         )
+    # The consumption model of the accuracy so far: the reserve's on a day with
+    # one, else the charge start's (earlier days of the same type).
+    with_reserve = has_morning_reserve(day)
     so_far = score_so_far(
         actuals,
         inputs.snapshots,
-        list(inputs.earlier_workdays.values()),
+        setup.reserve_model if with_reserve else setup.start_model,
+        list(
+            (
+                inputs.earlier_workdays if with_reserve else inputs.earlier_same_type
+            ).values()
+        ),
+        DayType.WORKDAY.value if with_reserve else DayType.of(day).value,
         setup,
         cutoff,
     )
