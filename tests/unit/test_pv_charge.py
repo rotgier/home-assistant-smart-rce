@@ -413,6 +413,7 @@ class TestHourSensors:
         )
         assert self._sensor("90", out).native_value is None
         assert self._sensor("100", out).native_value is None
+        assert self._sensor("90", out).extra_state_attributes["at"] == "80% do T2"
 
 
 class SimpleRun:

@@ -125,5 +125,12 @@ class PvChargeHourSensor(SensorEntity):
         return {
             "day": outlook.day.isoformat(),
             "forecast": forecast,
-            "at": to_hhmm(minute) if minute is not None else None,
+            "at": self._at(minute, outlook.end_soc),
         }
+
+    @staticmethod
+    def _at(minute: int | None, end_soc: float | None) -> str | None:
+        """HH:MM, or the level reached by T2 when the charge stops short."""
+        if minute is not None:
+            return to_hhmm(minute)
+        return f"{round(end_soc)}% do T2" if end_soc is not None else None

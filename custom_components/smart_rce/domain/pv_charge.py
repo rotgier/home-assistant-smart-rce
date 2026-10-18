@@ -168,6 +168,8 @@ class PvChargeOutlook:
     full_at: int | None
     full_forecast: bool
     start_soc: float | None = None
+    # Level at the end of the PV window (T2): what an unfinished charge gets to.
+    end_soc: float | None = None
 
     @classmethod
     def build(
@@ -218,6 +220,11 @@ class PvChargeOutlook:
             full_at=full_at,
             full_forecast=full_forecast,
             start_soc=start_soc,
+            end_soc=(
+                milestones.end_soc
+                if milestones is not None
+                else (run.end_soc if run is not None else None)
+            ),
         )
 
     @staticmethod
