@@ -307,6 +307,10 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """Latest remembered LIVE_SOFT reserve (any day)."""
         return self._repo.schedule.t1_reserve
 
+    def t1_reserve_for(self, day: date) -> T1SocReserve | None:
+        """Return the remembered reserve when it is for `day` (tomorrow from 14:00)."""
+        return self._repo.schedule.t1_reserve_for(day)
+
     @callback
     def set_morning_discharge(
         self, day: date, plan: MorningDischargePlan | None

@@ -41,7 +41,7 @@ start is a whole hour or "now".
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, time
 from enum import Enum
@@ -127,13 +127,29 @@ def find_candidate(
     s0: int,
 ) -> Candidate:
     """Like `candidate_start`, telling apart "enough" from "earliest, still short"."""
+    return find_candidate_at(profile, hour_prices, now, s0, lambda _start: need_kwh)
+
+
+def find_candidate_at(
+    profile: SurplusProfile,
+    hour_prices: Sequence[float],
+    now: int,
+    s0: int,
+    need_at: Callable[[int], float],
+) -> Candidate:
+    """Like `find_candidate`, the need taken at each start tried.
+
+    `need_at(start)`: energy to full from the level the battery is expected at
+    when that start strikes — the PV charge outlook starts from the T1 reserve
+    with the margin of the start's hour (more at 08:00 than later).
+    """
     first = _first_sun_hour(profile, now, s0)
     # No sun before S0: only S0 itself is worth checking.
     lowest = s0 if first is None else min(max(EARLIEST_START, first * 60), s0)
     for start in _starts_latest_first(s0, lowest):
         begin = max(start, now)  # a start already past means "now"
         end = price_window_end(start, hour_prices) * 60
-        if profile.total(begin, end) >= need_kwh:
+        if profile.total(begin, end) >= need_at(begin):
             return Candidate(begin, True)
     # Short even at the earliest start: open from 08:00 regardless of the sun —
     # every kWh caught from PV saves a grid top-up (~0.73 zl vs ~0.15 exported),

@@ -19,7 +19,7 @@ from enum import StrEnum
 from typing import Any, Final
 
 from .charge_curve import FULL_SOC
-from .charge_start_shift import PLATEAU_SOC, ChargeMilestones, to_time
+from .charge_start_shift import PLATEAU_SOC, ChargeMilestones, to_hhmm, to_time
 
 # The time gate blocks charging from 06:00 to the start; before it the night
 # stands open by default, so a PV run is looked for from 06:00 only.
@@ -156,7 +156,8 @@ class PvChargeOutlook:
 
     `plateau_at` / `full_at`: when the battery got to 90% / full, or is
     forecast to (`*_forecast` says which); None when neither — the forecast
-    stops short of it before T2.
+    stops short of it before T2. `start_soc`: the level a charge still ahead
+    is forecast to start from (None once it started).
     """
 
     day: date
@@ -166,6 +167,7 @@ class PvChargeOutlook:
     plateau_forecast: bool
     full_at: int | None
     full_forecast: bool
+    start_soc: float | None = None
 
     @classmethod
     def build(
@@ -202,8 +204,11 @@ class PvChargeOutlook:
             milestones.full_at if milestones is not None else None,
         )
         start = run.start if run is not None and run.start is not None else None
+        start_soc = None
         if start is None and forecast is not None:
             start = forecast.start
+            if not forecast.from_now:
+                start_soc = forecast.start_soc
         return cls(
             day=day,
             start=start,
@@ -212,6 +217,7 @@ class PvChargeOutlook:
             plateau_forecast=plateau_forecast,
             full_at=full_at,
             full_forecast=full_forecast,
+            start_soc=start_soc,
         )
 
     @staticmethod
@@ -264,6 +270,7 @@ class PvChargeOutlook:
                     window_end=window_end,
                     end_soc=milestones.end_soc,
                     starts_now=forecast.from_now,
+                    from_soc=None if forecast.from_now else forecast.start_soc,
                 )
             )
         if (run is None or run.full_at is None) and milestones.plateau_at is not None:
@@ -277,6 +284,14 @@ class PvChargeOutlook:
                     end_soc=milestones.end_soc,
                     starts_now=(
                         forecast.from_now and milestones.plateau_at == forecast.start
+                    ),
+                    # Already over the plateau at the start: this band is the
+                    # whole charge, so it says where it starts from.
+                    from_soc=(
+                        forecast.start_soc
+                        if not forecast.from_now
+                        and milestones.plateau_at == forecast.start
+                        else None
                     ),
                 )
             )
@@ -298,6 +313,8 @@ class PvChargeOutlook:
             "plateau_at": self._stamp(self.plateau_at, tz),
             "plateau_forecast": self.plateau_forecast,
             "full_at": self._stamp(self.full_at, tz),
+            "start_at": to_hhmm(self.start) if self.start is not None else None,
+            "start_soc": round(self.start_soc) if self.start_soc is not None else None,
             "full_forecast": self.full_forecast,
             "bands": [b.to_dict(self.day, tz) for b in self.bands],
         }
@@ -341,6 +358,8 @@ class PvChargeBand:
     ongoing: bool
     soc: float | None
     starts_now: bool = False
+    # The level a forecast charge starts from (its first band only).
+    from_soc: float | None = None
 
     @classmethod
     def happened(
@@ -370,12 +389,31 @@ class PvChargeBand:
         window_end: int,
         end_soc: float,
         starts_now: bool = False,
+        from_soc: float | None = None,
     ) -> PvChargeBand:
         """Build a forecast stretch; one short of its level ends at the window end."""
         if reached_at is not None:
-            return cls(kind, start, reached_at, False, True, False, level, starts_now)
+            return cls(
+                kind,
+                start,
+                reached_at,
+                False,
+                True,
+                False,
+                level,
+                starts_now,
+                from_soc=from_soc,
+            )
         return cls(
-            kind, start, window_end, False, False, False, round(end_soc, 1), starts_now
+            kind,
+            start,
+            window_end,
+            False,
+            False,
+            False,
+            round(end_soc, 1),
+            starts_now,
+            from_soc=from_soc,
         )
 
     def to_dict(self, day: date, tz: tzinfo | None) -> dict[str, Any]:
@@ -387,6 +425,7 @@ class PvChargeBand:
             "reached": self.reached,
             "ongoing": self.ongoing,
             "soc": None if self.ongoing else self.soc,
+            "from_soc": round(self.from_soc) if self.from_soc is not None else None,
         }
 
 

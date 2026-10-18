@@ -1,6 +1,6 @@
 """PV charge on the price chart — milestones, the run as it happened, the bands."""
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from custom_components.smart_rce.domain.battery_charge_policy import (
@@ -239,10 +239,27 @@ class TestOutlook:
 
 
 class TestService:
-    """PvChargeService on fakes: start in force, SoC the slots leave, plan day."""
+    """PvChargeService on fakes: forecast start, start level, plan day."""
+
+    # Cheapest around noon (as in test_charge_start_shift).
+    PRICES = (
+        500, 500, 500, 500, 500, 500, 450, 420, 400, 380, 300, 200,
+        100, 100, 200, 400, 600, 700, 700, 650, 600, 550, 500, 500,
+    )  # fmt: skip
 
     @staticmethod
-    def _service(now, *, plan_day, runs=(), sessions=(), soc=40.0, run=None):
+    def _service(
+        now,
+        *,
+        plan_day,
+        runs=(),
+        sessions=(),
+        soc=40.0,
+        run=None,
+        prices=None,
+        reserve=None,
+        workday=True,
+    ):
         from types import SimpleNamespace  # noqa: PLC0415
 
         from custom_components.smart_rce.application.pv_charge_service import (  # noqa: PLC0415
@@ -256,6 +273,14 @@ class TestService:
             pv_charge_run=run,
             observe_pv_charge=lambda *a: observed.append(a),
         )
+        rce = None
+        if prices is not None:
+            rce = SimpleNamespace(
+                today=SimpleNamespace(day=now.date(), hour_price=prices),
+                tomorrow=SimpleNamespace(
+                    day=now.date() + timedelta(days=1), hour_price=prices
+                ),
+            )
         ems = SimpleNamespace(
             last_input_state=SimpleNamespace(battery_soc=soc),
             battery_charge_service=charge,
@@ -263,8 +288,14 @@ class TestService:
                 plan_day=plan_day,
                 upcoming_runs_on=lambda day: [r for r in runs if r.end.date() == day],
                 sessions_today=list(sessions),
+                t1_reserve_for=lambda day: reserve,
             ),
-            charge_slots=SimpleNamespace(tomorrow_start=time(10, 30)),
+            charge_slots=SimpleNamespace(
+                today_start=time(12, 0), tomorrow_start=time(10, 30)
+            ),
+            rce_prices=SimpleNamespace(rce_prices=rce),
+            is_workday_today=workday,
+            is_workday_tomorrow=workday,
         )
         asked = []
 
@@ -281,24 +312,50 @@ class TestService:
         service.refresh()
         return service, observed, asked
 
-    def test_today_before_the_start_takes_the_morning_discharge_target(self):
+    @staticmethod
+    def _reserve():
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        # 44% without margin, +5 pp at 08:00, none later (the margin steps).
+        return SimpleNamespace(value_at=lambda at: 49 if at.hour == 8 else 44)
+
+    def test_forecast_start_from_the_reserve_at_its_hour(self):
+        now = datetime(2026, 10, 17, 6, 0, tzinfo=TZ)
+        service, observed, asked = self._service(
+            now, plan_day=DAY, prices=self.PRICES, reserve=self._reserve()
+        )
+        out = service.outlook
+        # S0 12:00 short (window 12-14 = 6 kWh < need from 44%), 11:00 enough.
+        assert out.start == 11 * H
+        assert out.start_soc == 44.0
+        assert out.bands[0].from_soc == 44.0 and not out.bands[0].done
+        assert out.to_dict(TZ)["start_at"] == "11:00"
+        assert observed and (DAY, False) in asked
+
+    def test_a_day_off_starts_from_the_floor(self):
+        now = datetime(2026, 10, 17, 6, 0, tzinfo=TZ)
+        service, _o, _a = self._service(
+            now, plan_day=DAY, prices=self.PRICES, reserve=None, workday=False
+        )
+        assert service.outlook.start_soc == 10.0
+
+    def test_without_prices_the_start_in_force_and_the_slots_level(self):
         now = datetime(2026, 10, 17, 6, 0, tzinfo=TZ)
         run = SimpleRun(end=datetime(2026, 10, 17, 9, 0, tzinfo=TZ), target_soc=22.0)
-        service, observed, asked = self._service(now, plan_day=DAY, runs=[run])
-        forecast_start = service.outlook.bands[0]
-        assert forecast_start.start == 11 * H and not forecast_start.done
-        assert observed and (DAY, False) in asked
-        assert service.outlook.full_at is not None
-        # From 22% (after the discharge) the plateau comes later than from 40% now.
-        without, _o, _a = self._service(now, plan_day=DAY)
-        assert forecast_start.end > without.outlook.bands[0].end
+        service, _o, _a = self._service(now, plan_day=DAY, runs=[run])
+        assert service.outlook.start == 11 * H
+        assert service.outlook.start_soc == 22.0
 
-    def test_tomorrow_preview_starts_at_s0_and_records_nothing_of_tomorrow(self):
+    def test_tomorrow_preview_uses_tomorrows_reserve(self):
         now = datetime(2026, 10, 17, 21, 30, tzinfo=TZ)
         tomorrow = date(2026, 10, 18)
-        service, _observed, asked = self._service(now, plan_day=tomorrow)
+        service, _observed, asked = self._service(
+            now, plan_day=tomorrow, prices=self.PRICES, reserve=self._reserve()
+        )
         assert service.outlook.day == tomorrow
+        # Tomorrow's S0 is 10:30: its own window (ref hour 10) covers the need.
         assert service.outlook.start == 10 * H + 30
+        assert service.outlook.start_soc == 44.0
         assert (tomorrow, True) in asked
 
 
