@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.const import MATCH_ALL
 from homeassistant.core import callback
 from homeassistant.util import dt as dt_util
 
@@ -33,6 +34,9 @@ class PvChargeSensor(SensorEntity):
     _attr_has_entity_name = False
     _attr_should_poll = False
     _attr_icon = "mdi:solar-power-variant"
+    # The bands are for the live chart; the run itself is persisted by smart_rce.
+    # A forecast walked from now moves by a minute as the clock does.
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(self, entry: SmartRceConfigEntry) -> None:
         self._service: PvChargeService = entry.runtime_data.pv_charge
