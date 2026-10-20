@@ -39,7 +39,11 @@ from ..domain.forecast_score.day_score import (
     has_morning_reserve,
     score_day,
 )
-from ..domain.forecast_score.full_charge_score import decided_plan
+from ..domain.forecast_score.full_charge_score import (
+    FullChargeScore,
+    PlanReading,
+    decided_plan,
+)
 from ..domain.forecast_score.production_outcome import (
     ChargeStartFact,
     start_from_soc_rise,
@@ -49,7 +53,7 @@ from ..domain.forecast_score.ranking import rank
 from ..domain.forecast_score.variant_results import from_archive
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from datetime import tzinfo
 
     from homeassistant.core import HomeAssistant
@@ -76,6 +80,11 @@ class ForecastScoreService:
     FULL_SOC: Final = 100.0
     # First day with both archives (snapshots from 03.10 04:15, energy from 03.10).
     FIRST_DAY: Final = date(2026, 10, 4)
+    # The recorder keeps 10 days (HA default) and purges at 04:12: a day older
+    # than this may have lost the states it starts with (20.10.2026 the start
+    # of 11.10 read 16:10 instead of 12:00). Its facts from history come from
+    # the day's earlier records instead.
+    HISTORY_DAYS: Final = 7
     RANKING_DAYS: Final = 30
 
     def __init__(
@@ -243,9 +252,7 @@ class ForecastScoreService:
                 if energy is None and (today - day).days <= 1:
                     energy = await self._sources.recorder_energy(day)
                 if energy is not None:
-                    await self._score(
-                        day, energy, ScoreStatus.FINAL, trigger="catch_up"
-                    )
+                    await self._catch_up_day(day, energy, today)
             day += timedelta(days=1)
         stored = await self.async_day(today)
         if now.time() >= self.FINAL_AT:
@@ -257,6 +264,31 @@ class ForecastScoreService:
         # Days read back from the archive change what the sensors show even
         # when nothing was rescored.
         self._notify()
+
+    async def _catch_up_day(self, day: date, energy: EnergyDay, today: date) -> None:
+        """Score a past day; beyond the recorder's reach from the facts kept."""
+        records = await self._hass.async_add_executor_job(self._archive.records, day)
+        kept = (
+            _KeptFacts.of(records, day)
+            if (today - day).days > self.HISTORY_DAYS
+            else _KeptFacts()
+        )
+        score = await self._score(
+            day,
+            energy,
+            ScoreStatus.FINAL,
+            trigger="catch_up",
+            start=kept.start,
+            spans=kept.spans,
+            readings=kept.readings,
+        )
+        lost = _KeptFacts.lost(records, score) if score is not None else ()
+        if lost:
+            _LOGGER.warning(
+                "Forecast score: %s rescored without %s an earlier record had",
+                day,
+                ", ".join(lost),
+            )
 
     # --- reads (sensors) --- #
 
@@ -315,10 +347,13 @@ class ForecastScoreService:
         cutoff: datetime | None = None,
         start: ChargeStartFact | None = None,
         spans: list[tuple[int, int]] | None = None,
+        readings: list[PlanReading] | None = None,
         write: bool = True,
     ) -> DayScore | None:
         try:
-            inputs = await self._inputs(day, energy, start, spans, cutoff)
+            inputs = await self._inputs(
+                day, energy, start=start, spans=spans, readings=readings, cutoff=cutoff
+            )
             score = await self._hass.async_add_executor_job(
                 lambda: score_day(
                     inputs,
@@ -339,8 +374,10 @@ class ForecastScoreService:
         self,
         day: date,
         energy: EnergyDay,
+        *,
         start: ChargeStartFact | None,
         spans: list[tuple[int, int]] | None,
+        readings: list[PlanReading] | None,
         cutoff: datetime | None,
     ) -> DayInputs:
         snapshots = await self._sources.snapshots(day)
@@ -360,7 +397,8 @@ class ForecastScoreService:
             if has_morning_reserve(day)
             else {}
         )
-        readings = await self._sources.morning_plan_readings(day)
+        if readings is None:
+            readings = await self._sources.morning_plan_readings(day)
         return DayInputs(
             actuals=actuals,
             snapshots=scored,
@@ -444,3 +482,76 @@ class ForecastScoreService:
     def _notify(self) -> None:
         for update_callback in list(self._listeners.values()):
             update_callback()
+
+
+class _KeptFacts:
+    """Facts a past day's earlier records hold that the recorder may have lost.
+
+    The start (with S0) and the afternoon spans from the EARLIEST final — it
+    was computed closest to the day, from complete history; the plan readings
+    rebuilt from the LATEST final with a full charge — later ones carry the
+    moments. None = read history as usual.
+    """
+
+    def __init__(
+        self,
+        start: ChargeStartFact | None = None,
+        spans: list[tuple[int, int]] | None = None,
+        readings: list[PlanReading] | None = None,
+    ) -> None:
+        self.start = start
+        self.spans = spans
+        self.readings = readings
+
+    @classmethod
+    def of(cls, records: Sequence[Mapping[str, Any]], day: date) -> _KeptFacts:
+        finals = cls._finals(records)
+        first = next((r for r in finals if (r.get("outcome") or {}).get("start")), None)
+        start: ChargeStartFact | None = None
+        spans: list[tuple[int, int]] | None = None
+        if first is not None:
+            outcome = first["outcome"]
+            start = ChargeStartFact.from_dict(outcome["start"])
+            if (topups := outcome.get("topups")) is not None:
+                spans = [(t["first"], t["end"]) for t in topups]
+        last = next((r for r in reversed(finals) if r.get("full_charge")), None)
+        readings = (
+            FullChargeScore.from_dict(last["full_charge"]).plan_readings(
+                day_off=not has_morning_reserve(day)
+            )
+            if last is not None
+            else None
+        )
+        return cls(start, spans, readings)
+
+    @classmethod
+    def lost(
+        cls, records: Sequence[Mapping[str, Any]], score: DayScore
+    ) -> tuple[str, ...]:
+        """Decisions some earlier final had and `score` has not."""
+        finals = cls._finals(records)
+        had = {
+            part
+            for r in finals
+            for part in ("start", "reserve", "full_charge")
+            if r.get(part)
+        }
+        now = {
+            "start": bool(score.start),
+            "reserve": bool(score.reserve),
+            "full_charge": score.full_charge is not None,
+        }
+        return tuple(
+            part
+            for part in ("start", "reserve", "full_charge")
+            if part in had and not now[part]
+        )
+
+    @staticmethod
+    def _finals(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        return [
+            r
+            for r in records
+            if r.get("kind") == DayScore.KIND
+            and r.get("status") == ScoreStatus.FINAL.value
+        ]

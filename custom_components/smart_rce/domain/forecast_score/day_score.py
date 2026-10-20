@@ -68,8 +68,11 @@ if TYPE_CHECKING:
 # 9: D3 at the moments before the charge start (06:11 … the last evaluation).
 # 10: a decision reads the snapshot taken just after it from a fetch before it
 #     (04:41, 06:41, 08:41 read a 30-40 min old one before).
+# 11: a catch-up beyond the recorder's reach keeps the start, the spans and the
+#     plan readings of the day's earlier records (10 rescored 11.10 from a
+#     purged history).
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 10
+SCHEMA_VERSION: Final = 11
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).

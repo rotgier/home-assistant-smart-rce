@@ -311,6 +311,36 @@ class FullChargeScore:
     def hours_changed(self) -> bool:
         return self.hours_recomputed != self.optimal_hours
 
+    def plan_readings(self, *, day_off: bool) -> list[PlanReading]:
+        """Rebuild the plan readings this score was computed from, oldest first.
+
+        For a rescore once the recorder has dropped the plan's history: the
+        decision with its hours, and each moment as the plan stood then
+        (without hours — a moment never stands in for the decision).
+        """
+        day = self.planned_at.date()
+        tz = self.planned_at.tzinfo
+        readings = [
+            PlanReading(
+                at=datetime.combine(day, time(m.at // 60, m.at % 60), tz),
+                full_at=m.system,
+                hours=(),
+                start_soc=m.start_soc,
+                day_off=day_off,
+            )
+            for m in self.moments
+        ]
+        readings.append(
+            PlanReading(
+                at=self.planned_at,
+                full_at=self.system,
+                hours=self.hours,
+                start_soc=self.start_soc,
+                day_off=day_off,
+            )
+        )
+        return sorted(readings, key=lambda r: r.at)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "planned_at": self.planned_at.isoformat(),

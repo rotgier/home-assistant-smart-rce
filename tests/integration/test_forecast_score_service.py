@@ -13,6 +13,7 @@ from custom_components.smart_rce.application.forecast_score_service import (
 )
 from custom_components.smart_rce.domain.energy_day import EnergyDay
 from custom_components.smart_rce.domain.forecast_score.day_score import (
+    SCHEMA_VERSION,
     DayScore,
     Pending,
     ScoreStatus,
@@ -349,3 +350,50 @@ async def test_runs_of_an_older_schema_do_not_count_as_fired(
     records = archive.records(DAY)
     assert len(records) == 2
     assert records[-1]["trigger"] == "charge_start+s0"
+
+
+class _PurgedSources(_Sources):
+    """The recorder has dropped the day's first states (10-day retention)."""
+
+    async def start_changes(self, _day: date) -> list[tuple[int, int]] | None:
+        return [(970, 970)]  # only a late change is left
+
+    async def morning_plan_readings(self, _day: date) -> list[PlanReading]:
+        return []
+
+    async def recorder_energy(self, day: date) -> EnergyDay | None:  # type: ignore[override]
+        return await self.archived_energy(day)  # nothing for the days around
+
+
+async def test_catch_up_beyond_the_recorder_keeps_the_facts_of_earlier_records(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """20.10.2026: a schema bump rescored 11.10 with its start read as 16:10."""
+    first, first_archive = _service(
+        hass, tmp_path / "first", datetime(2026, 10, 14, 21, 6, tzinfo=TZ), _Sources()
+    )
+    await first.async_final()
+    [record] = first_archive.records(DAY)
+
+    def rescored(today: datetime) -> ForecastScoreService:
+        service, archive = _service(
+            hass, tmp_path / today.isoformat(), today, _PurgedSources()
+        )
+        archive.add(DAY, {**record, "schema_version": SCHEMA_VERSION - 1})
+        return service
+
+    late = rescored(datetime(2026, 10, 23, 10, 0, tzinfo=TZ))
+    await late.async_catch_up()
+    score = await late.async_day(DAY)
+    assert score is not None
+    assert score.outcome.start.start == 495  # from the 21:06 record
+    assert score.full_charge is not None
+    assert score.full_charge.system == 13 * 60  # the plan rebuilt from it
+
+    # Within the recorder's reach history is read again.
+    early = rescored(datetime(2026, 10, 16, 10, 0, tzinfo=TZ))
+    await early.async_catch_up()
+    score = await early.async_day(DAY)
+    assert score is not None
+    assert score.outcome.start.start == 970
+    assert score.full_charge is None
