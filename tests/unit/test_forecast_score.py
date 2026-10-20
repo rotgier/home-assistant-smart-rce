@@ -1,5 +1,6 @@
 """Forecast scoreboard — parity with the reference script, decisions, facts, ranking."""
 
+import dataclasses
 from datetime import date, datetime, time, timedelta
 import json
 from pathlib import Path
@@ -106,6 +107,11 @@ MODELS = {
 }
 
 
+def _at_fa81958(scored: list[vr.ScoredSnapshot]) -> list[vr.ScoredSnapshot]:
+    """Read snapshots as the reference script did: only those taken before a moment."""
+    return [dataclasses.replace(x, solcast_fetched_at=None) for x in scored]
+
+
 @pytest.fixture
 def charge_curve_at_fa81958(monkeypatch):
     """Run on the charge curve the reference script had (before 18.10.2026)."""
@@ -168,7 +174,7 @@ class TestParityWithReferenceScript:
 
     @pytest.mark.parametrize("day", DAYS)
     def test_reserve_variants_models_and_split(self, day, energy, snapshots, expected):
-        replayed = vr.replay(snapshots[day])
+        replayed = _at_fa81958(vr.replay(snapshots[day]))
         moments, models = score_reserve(
             DayActuals(energy[day], TZ), replayed, _earlier_workdays(day, energy)
         )
@@ -203,7 +209,7 @@ class TestParityWithReferenceScript:
     ):
         moments = score_start(
             DayActuals(energy[day], TZ),
-            vr.replay(snapshots[day]),
+            _at_fa81958(vr.replay(snapshots[day])),
             prices[day.isoformat()],
             _s0(day, prices),
             [],
@@ -266,6 +272,24 @@ class TestVariantResults:
         assert all(
             s.taken_at <= found.taken_at or s.taken_at > decision for s in scored
         )
+
+    def test_consumed_takes_the_snapshot_of_a_fetch_before_the_decision(
+        self, snapshots
+    ):
+        """20.10.2026: fetch 06:40:44, reserve moved 06:40:45, snapshot 06:41:04."""
+        earlier, later = vr.from_archive(snapshots[DAYS[0]])[:2]
+        at = lambda h, m, s=0: datetime(2026, 10, 20, h, m, s, tzinfo=TZ)  # noqa: E731
+        old = dataclasses.replace(earlier, taken_at=at(6, 10, 58))
+        fresh = dataclasses.replace(
+            later, taken_at=at(6, 41, 4), solcast_fetched_at=at(6, 40, 44)
+        )
+        assert vr.consumed([old, fresh], at(6, 41)) is fresh
+        # A fetch after the decision is not what it ran on.
+        late = dataclasses.replace(fresh, solcast_fetched_at=at(6, 41, 10))
+        assert vr.consumed([old, late], at(6, 41)) is old
+        # Nor a snapshot well past the decision.
+        stale = dataclasses.replace(fresh, taken_at=at(6, 43))
+        assert vr.consumed([old, stale], at(6, 41)) is old
 
 
 class TestTargetSocFor:
@@ -557,7 +581,7 @@ def test_the_0708_step_was_capped_by_live_and_extrap(energy, snapshots):
 
 
 @pytest.mark.parametrize(
-    ("label", "step", "buckets"), [("07:41", 10, 1), ("08:41", 5, 3)]
+    ("label", "step", "buckets"), [("07:41", 10, 2), ("08:41", 5, 4)]
 )
 def test_both_steps_are_capped_by_live_and_a_settled_blend(
     energy, snapshots, label, step, buckets
@@ -566,7 +590,7 @@ def test_both_steps_are_capped_by_live_and_a_settled_blend(
 
     On a replay every Extrap result carries its bucket count, so the gate is
     exercised the way production builds its caps: 12.10 at 07:41 the decision
-    read the 07:10 snapshot, Blend resting on one bucket — Live caps alone.
+    read the 07:41:01 snapshot (fetch 07:40:40), Blend on two buckets.
     """
     day = DAYS[0]
     scored = vr.replay(snapshots[day])

@@ -66,8 +66,10 @@ if TYPE_CHECKING:
 #    model is p60 of earlier days of the same type.
 # 8: D3's surplus error split into PV and consumption (`with_model`).
 # 9: D3 at the moments before the charge start (06:11 … the last evaluation).
+# 10: a decision reads the snapshot taken just after it from a fetch before it
+#     (04:41, 06:41, 08:41 read a 30-40 min old one before).
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 9
+SCHEMA_VERSION: Final = 10
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).

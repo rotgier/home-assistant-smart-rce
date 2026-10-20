@@ -60,6 +60,9 @@ SCORED_VARIANTS: Final[tuple[str, ...]] = (
 
 # A decision reads a snapshot at most this old; older means the archive has a hole.
 CONSUMED_MAX_AGE: Final = timedelta(minutes=40)
+# A snapshot taken this soon after the decision still counts when its Solcast
+# fetch came before the decision (see `consumed`).
+CONSUMED_GRACE: Final = timedelta(seconds=90)
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,8 @@ class ScoredSnapshot:
     results: Mapping[str, PvForecastResult | None]
     # "live" or "recorder_backfill" — copied from the snapshot.
     source: str = "live"
+    # When the Solcast forecast it holds was fetched (None = unknown).
+    solcast_fetched_at: datetime | None = None
 
     def result(self, variant: str) -> PvForecastResult | None:
         return self.results.get(variant)
@@ -81,9 +86,24 @@ def consumed(
     decision: datetime,
     max_age: timedelta = CONSUMED_MAX_AGE,
 ) -> ScoredSnapshot | None:
-    """Return the snapshot a decision at `decision` used: the latest before it."""
-    before = [s for s in snapshots if decision - max_age <= s.taken_at <= decision]
-    return before[-1] if before else None
+    """Return the snapshot a decision at `decision` used.
+
+    The latest taken before it, or one taken just after (within
+    `CONSUMED_GRACE`) from a Solcast fetch that came before it. Production
+    recomputes on the fetch itself and the snapshot follows some 20 s later:
+    20.10.2026 the fetch at 06:40:44 moved the reserve at 06:40:45, the snapshot
+    is 06:41:04 — the 06:41 decision ran on it, not on the one from 06:10:58.
+    """
+    used = [
+        s
+        for s in snapshots
+        if decision - max_age <= s.taken_at <= decision + CONSUMED_GRACE
+        and (
+            s.taken_at <= decision
+            or (s.solcast_fetched_at is not None and s.solcast_fetched_at <= decision)
+        )
+    ]
+    return used[-1] if used else None
 
 
 def from_archive(snapshots: Iterable[ForecastSnapshot]) -> list[ScoredSnapshot]:
@@ -102,7 +122,11 @@ def from_archive(snapshots: Iterable[ForecastSnapshot]) -> list[ScoredSnapshot]:
             )
         out.append(
             ScoredSnapshot(
-                snapshot.taken_at, snapshot.context, results, snapshot.source
+                snapshot.taken_at,
+                snapshot.context,
+                results,
+                snapshot.source,
+                _fetched_at(snapshot),
             )
         )
     return out
@@ -129,8 +153,17 @@ def replay(snapshots: Iterable[ForecastSnapshot]) -> list[ScoredSnapshot]:
         }
         results |= {key: strategy.result for key, strategy in extras.items()}
         results[RAW_SOLCAST] = raw_solcast(ctx)
-        out.append(ScoredSnapshot(snapshot.taken_at, ctx, results, snapshot.source))
+        out.append(
+            ScoredSnapshot(
+                snapshot.taken_at, ctx, results, snapshot.source, _fetched_at(snapshot)
+            )
+        )
     return out
+
+
+def _fetched_at(snapshot: ForecastSnapshot) -> datetime | None:
+    raw = snapshot.solcast_fetched_at
+    return datetime.fromisoformat(raw) if raw else None
 
 
 def raw_solcast(ctx: ForecastContext) -> PvForecastResult | None:
