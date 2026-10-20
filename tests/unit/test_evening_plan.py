@@ -41,6 +41,7 @@ def _morning(price: float) -> RceDayPrices:
 EXPORT_THRESHOLD = EveningPlan.EXPORT_THRESHOLD
 FULL_TARGET_SOC = EveningWindow.FULL_TARGET_SOC
 PARTIAL_TARGET_SOC = EveningWindow.PARTIAL_TARGET_SOC
+FIRST_RUNG_TARGET_SOC = EveningWindow.FIRST_RUNG_TARGET_SOC
 
 
 def _propose(today, tomorrow=None, *, day=WORKDAY, is_workday=True):
@@ -50,14 +51,45 @@ def _propose(today, tomorrow=None, *, day=WORKDAY, is_workday=True):
 # ─── the three shapes the user described ───
 
 
-def test_one_expensive_hour_gives_one_window_that_empties_what_it_can():
+def test_one_expensive_hour_in_the_middle_of_t2_sells_one_rung_not_everything():
+    """19:00 alone, with 20:00 and 21:00 still inside summer T2.
+
+    This used to empty to 10% on the argument that one hour cannot shed more
+    than ~48 pp anyway. The argument held only while the lone hour was also
+    the last of the zone. On 20.10 winter put it in the middle: 18:00 sold
+    alone to 10% while 19:00 and 20:00 were still T2, and only the discharge
+    rate kept the battery off the floor.
+    """
     proposal = _propose(_day(WORKDAY, h19=RICH), _morning(CHEAP_MORNING))
 
     assert len(proposal.windows) == 1
     slot = proposal.windows[0]
     assert (slot.start, slot.end) == (time(19, 0), time(20, 0))
-    # A single hour cannot reach the target from a full battery anyway.
+    assert slot.target_soc == FIRST_RUNG_TARGET_SOC
+
+
+def test_one_expensive_hour_that_closes_t2_still_empties():
+    """The last hour of T2 has nothing behind it, so rationing buys nothing."""
+    proposal = _propose(_day(WORKDAY, h21=RICH), _morning(CHEAP_MORNING))
+
+    assert len(proposal.windows) == 1
+    slot = proposal.windows[0]
+    assert (slot.start, slot.end) == (time(21, 0), time(22, 0))
     assert slot.target_soc == FULL_TARGET_SOC
+
+
+def test_a_lone_winter_hour_before_the_end_of_t2_holds_a_rung():
+    """20.10 verbatim: 18:00 qualifies, 19:00 and 20:00 vetoed by the morning."""
+    proposal = _propose(
+        _day(WINTER_WORKDAY, h18=1109.0 / 1.23, h19=982.0 / 1.23, h20=857.0 / 1.23),
+        _morning(1034.0 / 1.23),
+        day=WINTER_WORKDAY,
+    )
+
+    assert len(proposal.windows) == 1
+    slot = proposal.windows[0]
+    assert (slot.start, slot.end) == (time(18, 0), time(19, 0))
+    assert slot.target_soc == FIRST_RUNG_TARGET_SOC
 
 
 def test_two_expensive_hours_hold_back_for_the_remaining_t2_hour():

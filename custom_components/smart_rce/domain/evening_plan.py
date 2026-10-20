@@ -558,20 +558,32 @@ class EveningWindow:
     ) -> float:
         """Hold charge back only while an expensive hour still lies ahead.
 
-        Holding back pays when the window ends before T2 does, because the
-        house would otherwise buy those hours at the T2 rate. Three cases
-        empty the battery instead: a day with no expensive zone at all, a
-        window running to the end of T2, and a single-hour window — at full
-        charge the target is out of reach anyway (~50 pp/h against 90 pp to
-        give), and from a low start we would rather sell everything into that
-        one expensive hour than ration it.
+        Emptying is right in exactly two cases: a day with no expensive zone
+        at all, and a window that runs to the end of T2. Nothing costly comes
+        after either, so there is nothing to ration for.
+
+        A LONE hour that leaves expensive hours behind it takes the ladder's
+        first rung instead. It used to empty as well, on the argument that one
+        hour cannot shed more than ~48 pp anyway — true while T2 began at
+        19:00 and the battery met it full, because the window was then also
+        the last of the zone. Winter moved T2 to 16-21 and the same hour now
+        sits in the middle of it: on 20.10 the plan sold 18:00 alone down to
+        10% while 19:00 and 20:00 were still T2. A full battery survived it on
+        the rate limit (ended the hour at 47%), but from ~60% the house would
+        have bought those two hours at the T2 rate instead.
+
+        One rung is also the better trade, not merely the safer one: the hours
+        left behind are bought at the zone rate, which through 2026 runs well
+        above what the evening pays for them.
 
         An earlier window always holds back; the later one finishes the job.
         """
         if not is_last:
             return cls.PARTIAL_TARGET_SOC
-        if zone_end is None or len(hours) < 2 or hours[-1] + 1 >= zone_end:
+        if zone_end is None or hours[-1] + 1 >= zone_end:
             return cls.FULL_TARGET_SOC
+        if len(hours) < 2:
+            return cls.FIRST_RUNG_TARGET_SOC
         return cls.PARTIAL_TARGET_SOC
 
     @staticmethod
