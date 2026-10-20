@@ -624,3 +624,85 @@ def test_a_day_off_never_asks_the_question():
     )
 
     assert len(proposal.windows) == 1
+
+
+# ─── LATE stands down when the hour after it pays more (20.10.2026) ───
+
+
+def _enabled(plan: EveningPlan) -> list[str]:
+    return [
+        c.kind.name
+        for c in plan.slot_commands()
+        if type(c).__name__ == "SetSlotEnabledCommand" and c.value
+    ]
+
+
+def test_late_stands_down_when_the_next_hour_pays_more_21_10_2026():
+    """RCE net 21.10.2026: 18-20 fall (907, 835, 759 gross), 21:00 pays 819.
+
+    The ladder keeps its two upper rungs; LATE at 20:00 is left out and the
+    charge stays in the battery rather than moving to 21:00.
+    """
+    prices = RceDayPrices(
+        published_at=None,
+        day=date(2026, 10, 21),
+        hour_price=(
+            606.87,
+            606.01,
+            594.91,
+            592.57,
+            610.93,
+            695.46,
+            770.57,
+            840.29,
+            710.37,
+            623.04,
+            645.35,
+            598.11,
+            589.57,
+            594.94,
+            701.87,
+            731.86,
+            641.77,
+            697.57,
+            737.19,
+            678.59,
+            616.97,
+            666.01,
+            665.96,
+            602.81,
+        ),  # fmt: skip
+    )
+    plan = EveningPlan.for_day(date(2026, 10, 21), prices, is_workday=True)
+
+    assert [(w.start, w.target_soc) for w in plan.windows] == [
+        (time(18, 0), 47.0),
+        (time(19, 0), 33.0),
+    ]
+    # MID keeps its slot: dropping LATE must not shift the rung into it.
+    assert _enabled(plan) == ["DISCHARGE_EVENING_EARLY", "DISCHARGE_EVENING_MID"]
+
+
+def test_late_stands_down_in_the_split_too_and_early_keeps_its_reserve():
+    # Summer T2 19-22: three rich hours split into 19-21 + 21; 22:00 pays more.
+    plan = _propose(
+        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH, h22=RICH + 50),
+        _morning(CHEAP_MORNING),
+    )
+
+    (early,) = plan.windows
+    assert (early.start, early.end, early.target_soc) == (
+        time(19, 0),
+        time(21, 0),
+        PARTIAL_TARGET_SOC,
+    )
+    assert _enabled(plan) == ["DISCHARGE_EVENING_EARLY"]
+
+
+def test_late_stays_when_the_next_hour_pays_the_same():
+    plan = _propose(
+        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH, h22=RICH),
+        _morning(CHEAP_MORNING),
+    )
+
+    assert _enabled(plan) == ["DISCHARGE_EVENING_EARLY", "DISCHARGE_EVENING_LATE"]

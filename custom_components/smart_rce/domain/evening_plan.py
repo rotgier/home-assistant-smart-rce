@@ -110,6 +110,7 @@ class EveningPlan:
         *,
         is_workday: bool,
         windows: tuple[EveningWindow, ...] = (),
+        slots: tuple[SlotKind, ...] | None = None,
         max_morning_price: float = 0.0,
         overruled_by_morning: bool = False,
         export_threshold: float = EXPORT_THRESHOLD,
@@ -118,6 +119,7 @@ class EveningPlan:
         self._prices = prices
         self._is_workday = is_workday
         self._windows = windows
+        self._slots = slots if slots is not None else self._SLOTS_BY_COUNT[len(windows)]
         self._max_morning_price = max_morning_price
         self._overruled_by_morning = overruled_by_morning
         self._export_threshold = export_threshold
@@ -180,15 +182,16 @@ class EveningPlan:
         max_morning_price = (
             tomorrow.max_gross_in(cls.MORNING_LOOKAHEAD) if tomorrow else 0.0
         )
-        windows = cls._windows_for(
+        windows, slots = cls._windows_for(
             day, prices, is_workday, max_morning_price, export_threshold
         )
-        unfiltered = cls._windows_for(day, prices, is_workday, 0.0, export_threshold)
+        unfiltered, _ = cls._windows_for(day, prices, is_workday, 0.0, export_threshold)
         return cls(
             day,
             prices,
             is_workday=is_workday,
             windows=windows,
+            slots=slots,
             max_morning_price=max_morning_price,
             overruled_by_morning=len(windows) < len(unfiltered),
             export_threshold=export_threshold,
@@ -242,9 +245,7 @@ class EveningPlan:
         window surviving into a day that does not want it is exactly the kind
         of stale setting this plan exists to prevent.
         """
-        carried = dict(
-            zip(self._SLOTS_BY_COUNT[len(self._windows)], self._windows, strict=True)
-        )
+        carried = dict(zip(self._slots, self._windows, strict=True))
         commands: list[SlotCommand] = []
         for kind in self._SLOT_ORDER:
             window = carried.get(kind)
@@ -266,8 +267,8 @@ class EveningPlan:
         is_workday: bool,
         max_morning_price: float,
         export_threshold: float,
-    ) -> tuple[EveningWindow, ...]:
-        """Qualifying hours → grouped runs → at most two windows."""
+    ) -> tuple[tuple[EveningWindow, ...], tuple[SlotKind, ...]]:
+        """Qualifying hours → grouped runs → windows, with the slot each one takes."""
         candidates = prices.hours_clearing(
             cls._evening_hours(day, is_workday),
             at_least=export_threshold,
@@ -276,13 +277,13 @@ class EveningPlan:
         if is_workday:
             runs = cls._contiguous_runs(candidates)
             if ladder := cls._descending_ladder(runs, prices):
-                return ladder
+                return cls._late_held_back(ladder, cls._SLOTS_BY_COUNT[3], prices)
             runs = cls._split_long_run(runs, prices, is_workday)
         else:
             runs = cls._best_off_peak_pair(candidates, prices)
         usable = runs[: cls._ADAPTIVE_WINDOWS]
         zone_end = cls._expensive_zone_end(day, is_workday)
-        return tuple(
+        windows = tuple(
             EveningWindow.covering(
                 tuple(hours),
                 prices,
@@ -291,6 +292,29 @@ class EveningPlan:
             )
             for index, hours in enumerate(usable)
         )
+        return cls._late_held_back(windows, cls._SLOTS_BY_COUNT[len(windows)], prices)
+
+    @staticmethod
+    def _late_held_back(
+        windows: tuple[EveningWindow, ...],
+        slots: tuple[SlotKind, ...],
+        prices: RceDayPrices,
+    ) -> tuple[tuple[EveningWindow, ...], tuple[SlotKind, ...]]:
+        """Leave LATE out when the hour right after it pays more.
+
+        The charge stays in the battery rather than moving to that hour
+        (user's decision 20.10.2026): on 21.10 Late at 20:00 would sell at 759
+        gross with 21:00 paying 819. Moving the sale there was weighed and
+        left out — on 272 workdays since 04.2025 it changed 2 evenings, worth
+        a few grosze each. The windows before keep their targets: the 33%
+        reserve covers the house through the last T2 hour, as it always did.
+        """
+        if not slots or slots[-1] is not SlotKind.DISCHARGE_EVENING_LATE:
+            return windows, slots
+        last = windows[-1].hours[-1]
+        if prices.gross_at(last + 1) <= prices.gross_at(last):
+            return windows, slots
+        return windows[:-1], slots[:-1]
 
     @classmethod
     def _evening_hours(cls, day: date, is_workday: bool) -> range:
