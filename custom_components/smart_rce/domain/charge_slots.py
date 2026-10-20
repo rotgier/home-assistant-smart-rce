@@ -241,15 +241,18 @@ def find_best_consecutive_hours(
     )
     for consecutive_hours in range(initial_hours + 1, MAX_CONSECUTIVE_HOURS + 1):
         candidate: int = start_charge_hours[consecutive_hours]
-        if (
-            candidate == best_hour
-            or candidate < best_hour
-            and (
+        if candidate == best_hour:
+            best_consecutive_hours = consecutive_hours
+        elif candidate < best_hour:
+            if not (
                 prices[candidate] < absolute_cheap_price
                 or prices[candidate] - initial_consecutive_hours_max_price
                 < extend_threshold
-            )
-        ):
+            ):
+                # Every longer window reaching earlier holds this hour too, while
+                # the check sees only its first one (21.10.2026: 10:00 at 794
+                # gross refused, then 9-17 taken because 9:00 was cheaper).
+                break
             best_consecutive_hours = consecutive_hours
 
     return best_consecutive_hours

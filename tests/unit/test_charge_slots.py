@@ -92,6 +92,25 @@ class TestExtendEarlier:
         assert looser is not None
         assert looser.start_hour == 10.0
 
+    def test_a_refused_hour_ends_the_extension_21_10_2026(self):
+        # RCE net 21.10.2026. Base 12-14 (max 731.8 gross); 11:00 is 3.9 above
+        # → 11-14. 10:00 is 62 above → refused, and with it every longer window
+        # reaching earlier: before, 9:00 (34.6 above) took 9-17 over 10:00.
+        prices = [
+            606.87, 606.01, 594.91, 592.57, 610.93, 695.46, 770.57, 840.29, 710.37,
+            623.04, 645.35, 598.11, 589.57, 594.94, 701.87, 731.86, 641.77, 697.57,
+            737.19, 678.59, 616.97, 666.01, 665.96, 602.81,
+        ]  # fmt: skip
+        params = ChargeWindowParams(
+            initial_hours=2,
+            extend_threshold=45,
+            absolute_cheap_price=25,
+            base_window_shift_minutes=0,
+        )
+        window = ChargeSlots.compute(_day(prices), params=params)
+        assert window is not None
+        assert (window.start_hour, window.end_hour) == (11.0, 14.0)
+
     def test_no_extend_when_above_threshold(self):
         # Same shape, but threshold 30 < 40 gap → stay at base 2h.
         prices = [500.0] * 24
