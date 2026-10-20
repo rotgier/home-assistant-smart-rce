@@ -4,8 +4,12 @@ The recorder keeps ~9 full days, enough for the chart's day picker:
 
 - slot sessions: the last state of the day of the sessions sensor — its
   `sessions` attribute is cumulative over the day (the aggregate drops them
-  only after midnight). The sensor exists since 17.10.2026; for earlier days
-  the stretches of the engaging sensor stand in (no target, no reason);
+  only after midnight). The sensor's state is the count of sessions, so it
+  changes when a session opens, while a close changes the attributes alone:
+  rows with attribute-only changes are read too. A session still open at the
+  end of a past day ends where the engaging sensor left its slot. The sensor
+  exists since 17.10.2026; for earlier days the stretches of the engaging
+  sensor stand in (no target, no reason);
 - PV charge: `PvChargeRun.replay` over the day's history of the charge-allowed
   gate, the engaging slot (a charge slot from the grid is not PV) and SoC —
   the same rule the live run follows.
@@ -16,11 +20,16 @@ Blocking recorder reads go through the recorder's executor.
 from __future__ import annotations
 
 from bisect import bisect_right
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.history import state_changes_during_period
+from homeassistant.components.recorder.history import (
+    get_significant_states,
+    state_changes_during_period,
+)
 from homeassistant.util import dt as dt_util
 
 from ..domain.battery_day import BatteryDay
@@ -48,10 +57,10 @@ class BatteryDayHistory:
         self._hass = hass
 
     async def async_day(self, day: date) -> BatteryDay:
-        sessions = await self._sessions(day)
         soc = await self._steps(day, SOC_ENTITY)
         allowed = await self._steps(day, CHARGE_ALLOWED_ENTITY)
         engaging = await self._steps(day, ENGAGING_ENTITY)
+        sessions = _closed_by_engaging(day, await self._sessions(day), engaging, soc)
         window_end = surplus_window_end(day) * 60
         run = PvChargeRun.replay(
             day,
@@ -105,21 +114,70 @@ class BatteryDayHistory:
         end = min(
             datetime.combine(day, time(0), tzinfo=tz) + timedelta(days=1), dt_util.now()
         )
-        result: dict[str, list[Any]] = await get_instance(
-            self._hass
-        ).async_add_executor_job(
-            state_changes_during_period,
-            self._hass,
-            start,
-            end,
-            entity_id,
-            not attributes,
-        )
+        recorder = get_instance(self._hass)
+        result: dict[str, list[Any]]
+        if attributes:
+            # Attribute-only rows too: `state_changes_during_period` keeps
+            # only rows where the state itself changed.
+            result = await recorder.async_add_executor_job(
+                partial(
+                    get_significant_states,
+                    self._hass,
+                    start,
+                    end,
+                    [entity_id],
+                    significant_changes_only=False,
+                )
+            )
+        else:
+            result = await recorder.async_add_executor_job(
+                state_changes_during_period,
+                self._hass,
+                start,
+                end,
+                entity_id,
+                True,
+            )
         return [
             s
             for s in result.get(entity_id, [])
             if s.state not in {"unknown", "unavailable"}
         ]
+
+
+def _closed_by_engaging(
+    day: date,
+    sessions: list[SlotSession],
+    engaging: list[tuple[int, str]],
+    soc: list[tuple[int, str]],
+) -> list[SlotSession]:
+    """End each session left open on a past day where its slot let go.
+
+    The first later minute the engaging sensor named something else, else the
+    end of the day; the SoC then is the level reached. Without it the chart
+    would stretch the session up to now.
+    """
+    tz = dt_util.get_default_time_zone()
+    midnight = datetime.combine(day, time(0), tzinfo=tz)
+    closed: list[SlotSession] = []
+    for session in sessions:
+        if session.is_open:
+            start = _minute_on(day, session.started_at)
+            end = next(
+                (
+                    minute
+                    for minute, state in engaging
+                    if minute > start and state != session.slot.name
+                ),
+                24 * 60,
+            )
+            session = replace(
+                session,
+                ended_at=midnight + timedelta(minutes=end),
+                end_soc=_soc(_at(soc, end)),
+            )
+        closed.append(session)
+    return closed
 
 
 def _sessions_from_engaging(

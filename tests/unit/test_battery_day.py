@@ -200,6 +200,66 @@ class TestHistoryAdapter:
         ]
         assert all(s.target_soc is None and s.reason is None for s in day.sessions)
 
+    def test_a_session_left_open_ends_where_its_slot_let_go(self, monkeypatch):
+        # 19.10: the close at 20:22 changed only the attributes; had the last row
+        # kept Late open, the chart would stretch it to now.
+        monkeypatch.setattr(
+            battery_day_history.dt_util, "as_local", lambda moment: moment
+        )
+        monkeypatch.setattr(
+            battery_day_history.dt_util, "get_default_time_zone", lambda: TZ
+        )
+        late = {
+            "slot": "DISCHARGE_EVENING_LATE",
+            "start": _at(SATURDAY, 20).isoformat(),
+            "start_soc": 40.0,
+            "target": 10.0,
+            "end": None,
+            "end_soc": None,
+            "reason": None,
+        }
+        states = {
+            battery_day_history.SESSIONS_ENTITY: [
+                _State("1", _at(SATURDAY, 20), {"sessions": [late]})
+            ],
+            battery_day_history.ENGAGING_ENTITY: [
+                _State("IDLE", _at(SATURDAY, 0)),
+                _State("IDLE", _at(SATURDAY, 20)),
+                _State("DISCHARGE_EVENING_LATE", _at(SATURDAY, 20)),
+                _State("IDLE", _at(SATURDAY, 20, 22)),
+            ],
+            battery_day_history.SOC_ENTITY: [
+                _State("40", _at(SATURDAY, 20)),
+                _State("10", _at(SATURDAY, 20, 22)),
+            ],
+        }
+        day = asyncio.run(_History(states).async_day(SATURDAY))
+        (session,) = day.sessions
+        assert (session.ended_at, session.end_soc) == (_at(SATURDAY, 20, 22), 10.0)
+
+    def test_sessions_read_attribute_only_changes(self, monkeypatch):
+        calls = []
+
+        def significant(*args, **kwargs):
+            calls.append((args[3], kwargs))
+            return {}
+
+        class _Recorder:
+            async def async_add_executor_job(self, job, *args):
+                return job(*args)
+
+        monkeypatch.setattr(
+            battery_day_history, "get_instance", lambda hass: _Recorder()
+        )
+        monkeypatch.setattr(battery_day_history, "get_significant_states", significant)
+        monkeypatch.setattr(
+            battery_day_history, "state_changes_during_period", lambda *a: {}
+        )
+        asyncio.run(BatteryDayHistory(None).async_day(SATURDAY))
+        assert calls == [
+            ([battery_day_history.SESSIONS_ENTITY], {"significant_changes_only": False})
+        ]
+
     def test_a_day_the_recorder_lost_is_empty(self):
         day = asyncio.run(_History({}).async_day(SATURDAY))
         assert (day.source, day.sessions, day.pv) == ("none", (), None)
