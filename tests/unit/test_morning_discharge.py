@@ -81,6 +81,49 @@ class TestBestHour:
         assert MorningDischargePlan.best_hour(self.PRICES_DAY, 7, 7) is None
 
 
+class TestHoursFrom:
+    # RCE net 21.10.2026: S0 11:00, full ~13:03, so the sun refills in 11-13.
+    PRICES_21_10 = RceDayPrices(
+        None,
+        date(2026, 10, 21),
+        (
+            606.87,
+            606.01,
+            594.91,
+            592.57,
+            610.93,
+            695.46,
+            770.57,
+            840.29,
+            710.37,
+            623.04,
+            645.35,
+            598.11,
+            589.57,
+            594.94,
+            701.87,
+            731.86,
+            641.77,
+            697.57,
+            737.19,
+            678.59,
+            616.97,
+            666.01,
+            665.96,
+            602.81,
+        ),  # fmt: skip
+    )
+
+    def test_an_hour_waits_for_a_dearer_one_before_s0(self):
+        # 09 (766 gross) beats the PV hours but 10 (794) sells the same energy
+        # for more: 07, 08, then 10.
+        assert MorningDischargePlan.hours_from(self.PRICES_21_10, 7, 11, 14) == (
+            7,
+            8,
+            10,
+        )
+
+
 def test_lowest_soc_the_sun_fills_walks_up_from_the_floor():
     # 1 kWh/h surplus 10-16 (PV 1.9 minus flat 0.9): ~6 kWh, not enough from 20%.
     pv = slots_from_hourly(dict.fromkeys(range(10, 16), 1.9))

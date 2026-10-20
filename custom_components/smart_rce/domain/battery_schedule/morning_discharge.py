@@ -12,7 +12,9 @@ it is not: the energy it sells comes back from PV in those hours, and the
 surplus after the battery is full is exported whatever the morning did
 (17.10.2026: full ~13:20, so 09 at 705 sells although 15:00 pays 715). S0,
 not a forecast-moved start: an hour dearer than the whole PV window is worth
-selling even when the battery already takes PV.
+selling even when the battery already takes PV. It must also be dearer than
+every hour still left before S0: the energy it would sell down to the reserve
+is worth more an hour later (21.10.2026: 09 at 766 waits for 10 at 794).
 
 A day off has no T1: the whole day is T3, so the reserve is the floor (10%),
 and above the bar the battery goes all the way down — a shortfall is bought
@@ -135,14 +137,15 @@ class MorningDischargePlan:
         """Hours from the dearest one until S0 that pay off (see the module doc).
 
         `refill_end_hour`: first hour the sun no longer charges the battery in —
-        the hour after the forecast full charge, or T2.
+        the hour after the forecast full charge, or T2. The hours still left
+        before S0 count too: a dearer one sells the same energy for more.
         """
         return tuple(
             hour
             for hour in range(best, s0_hour)
             if all(
                 prices.gross_at(hour) > prices.gross_at(later)
-                for later in range(max(hour + 1, s0_hour), refill_end_hour)
+                for later in range(hour + 1, max(refill_end_hour, s0_hour))
             )
         )
 
