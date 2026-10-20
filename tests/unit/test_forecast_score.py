@@ -972,9 +972,94 @@ def test_accuracy_over_the_charging_day_runs_to_four(energy, snapshots, prices):
 
     card = day_card(score)
     expected = "06:41" if score.discharge_peak_hour == 7 else "07:41"
-    assert card["sort_moment"] == expected
+    tables = {t["id"]: t for t in card["tables"]}
+    assert tables["so_far"]["sort"] == {"column": expected, "descending": False}
     assert len(card["so_far_day_summary"]) == len(score.so_far_day)
     assert DayScore.from_dict(json.loads(json.dumps(score.to_dict()))) == score
+
+
+class TestTables:
+    """The card's tables: ready rows, the card only draws (20.10.2026)."""
+
+    @staticmethod
+    def _card(energy, snapshots, prices):
+        from custom_components.smart_rce.sensor.forecast_score_sensor import day_card
+
+        day = DAYS[-1]
+        plan = PlanReading(
+            at=datetime.combine(day, time(6, 59), TZ),
+            full_at=14 * 60,
+            hours=(7, 8),
+            start_soc=30.0,
+        )
+        return day_card(_day_score(day, energy, snapshots, prices, plan=plan))
+
+    def test_day_tables_follow_the_contract(self, energy, snapshots, prices):
+        from custom_components.smart_rce.sensor.forecast_score_tables import (
+            TABLES_SCHEMA,
+            VARIANT_LABELS,
+        )
+
+        card = self._card(energy, snapshots, prices)
+        json.dumps(card)  # attributes must serialise
+        assert card["tables_schema"] == TABLES_SCHEMA
+        tables = {t["id"]: t for t in card["tables"]}
+        assert list(tables) == ["so_far", "so_far_day", "reserve", "start"]
+        for table in tables.values():
+            keys = {c["key"] for c in table["columns"]}
+            assert table["group"] == "day_moments"
+            for row in table["rows"]:
+                assert set(row["cells"]) <= keys
+        rows = tables["so_far"]["rows"]
+        assert [r["key"] for r in rows] == list(VARIANT_LABELS)
+        system = [r for r in rows if r["system"]]
+        assert [r["label"] for r in system] == ["Soft 0,5 (system)"]  # 14.10
+        cell = rows[0]["cells"]["06:11"]
+        assert cell["sort"] == pytest.approx(abs(float(cell["text"])), abs=0.005)
+
+    def test_reserve_cells_carry_the_dangerous_side(self, energy, snapshots, prices):
+        card = self._card(energy, snapshots, prices)
+        reserve = next(t for t in card["tables"] if t["id"] == "reserve")
+        cells = [c for r in reserve["rows"] for c in r["cells"].values() if c]
+        assert cells
+        for c in cells:
+            value = int(c["text"])
+            expected = "bad" if value < -3 else "warn" if value > 3 else None
+            assert c["severity"] == expected
+            assert c["sort"] == abs(value)
+
+    def test_accuracy_severity_needs_share_and_amount(self):
+        from custom_components.smart_rce.sensor.forecast_score_tables import (
+            _accuracy_severity,
+        )
+
+        assert _accuracy_severity(0.25, 0.5) is None  # 50% but a quarter kWh
+        assert _accuracy_severity(0.4, 1.0) == "warn"
+        assert _accuracy_severity(-1.2, 2.0) == "bad"
+        assert _accuracy_severity(1.2, 10.0) is None  # 12%
+        assert _accuracy_severity(0.5, 0.0) is None
+
+    def test_ranking_tables_sort_by_mae(self, energy, snapshots, prices):
+        from custom_components.smart_rce.sensor.forecast_score_tables import (
+            ranking_tables,
+        )
+
+        scores = [_day_score(d, energy, snapshots, prices) for d in DAYS]
+        tables = {t["id"]: t for t in ranking_tables(rank(scores))}
+        assert list(tables) == [
+            "ranking_reserve_06:11",
+            "ranking_reserve_08:41",
+            "ranking_start",
+            "ranking_models",
+            "ranking_start_models",
+        ]
+        reserve = tables["ranking_reserve_06:11"]
+        assert reserve["sort"] == {"column": "mae", "descending": False}
+        assert reserve["group"] is None
+        assert reserve["rows"]
+        mae = reserve["rows"][0]["cells"]["mae"]
+        assert mae["strong"] is True
+        json.dumps(list(tables.values()))
 
 
 def test_energy_between_takes_edge_slots_in_proportion(energy):

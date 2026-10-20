@@ -31,6 +31,13 @@ from ..domain.forecast_score.headlines import HEADLINES, Headline
 from ..domain.forecast_score.production_setup import setup_on
 from ..domain.forecast_score.ranking import SHORT_WEIGHT
 from ..ems_device import ems_device_info
+from .forecast_score_tables import (
+    MODEL_LABELS,
+    TABLES_SCHEMA,
+    VARIANT_LABELS,
+    day_tables,
+    ranking_tables,
+)
 
 if TYPE_CHECKING:
     from .. import SmartRceConfigEntry
@@ -193,7 +200,12 @@ class ForecastScoreRankingSensor(_SelectedDaySensor):
     async def _async_load(self, day: date) -> None:
         ranking = await self._service.async_ranking(day)
         self._attr_native_value = len(ranking["days"])
-        self._attrs = {"end": day.isoformat(), **ranking}
+        self._attrs = {
+            "end": day.isoformat(),
+            **ranking,
+            "tables_schema": TABLES_SCHEMA,
+            "tables": ranking_tables(ranking),
+        }
 
 
 def day_card(score: DayScore) -> dict[str, Any]:
@@ -249,8 +261,10 @@ def day_card(score: DayScore) -> dict[str, Any]:
         "full_charge_summary": _full_charge_summary(score),
         "so_far_summary": [_so_far_row(m) for m in score.so_far],
         "so_far_day_summary": [_so_far_row(m) for m in score.so_far_day],
-        "discharge_peak_hour": score.discharge_peak_hour,
-        "sort_moment": _sort_moment(score),
+        "tables_schema": TABLES_SCHEMA,
+        "tables": day_tables(score, setup.pv_variant),
+        "variant_labels": VARIANT_LABELS,
+        "model_labels": MODEL_LABELS,
         "cutoff_hm": (
             dt_util.as_local(score.cutoff).strftime("%H:%M")
             if score.cutoff is not None
@@ -272,15 +286,6 @@ def day_card(score: DayScore) -> dict[str, Any]:
             "grid_topup_kwh": score.outcome.grid_topup_kwh,
         },
     }
-
-
-def _sort_moment(score: DayScore) -> str | None:
-    """Return the moment the dearest morning discharge read (last before its hour)."""
-    hour = score.discharge_peak_hour
-    if hour is None:
-        return None
-    before = [m.label for m in score.so_far if m.label < f"{hour:02d}:00"]
-    return before[-1] if before else None
 
 
 def _so_far_row(moment: MomentSoFar) -> dict[str, Any]:
