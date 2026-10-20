@@ -19,23 +19,28 @@ the charge start's (p60 of earlier days of the same type: Saturdays, Sundays).
 A rule that is no profile (the old max-of rule) or no history: the flat
 0.9 kWh/h.
 
-The same table on a closed day covers the whole window (until 13:00).
+The same table on a closed day covers the whole window (until 13:00). A second
+one runs on to 16:00 (`DAY_END`) — the rest of the charging day; its expected
+consumption is the model's half hours (flat 0.45 kWh where it has none), since
+the reserve's profile stops at 13:00.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 from ..bucket import PV_WINDOW_HOURS
 from ..consumption_profiles import ConsumptionProfile
+from ..target_soc import CONSUMPTION_PER_30MIN
 from .day_actuals import CONSUMPTION, PV
 from .reserve_score import RESERVE_MOMENTS
 from .variant_results import SCORED_VARIANTS, consumed
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from ..pv_forecast import PvForecastResult
     from .consumption_models import ConsumptionModel
@@ -46,6 +51,8 @@ if TYPE_CHECKING:
 # The T1 window the reserve covers.
 WINDOW_START: Final = time(PV_WINDOW_HOURS[0])
 WINDOW_END: Final = time(PV_WINDOW_HOURS[-1] + 1)
+# The longer window: the charging day.
+DAY_END: Final = time(16)
 _BUCKET: Final = timedelta(minutes=30)
 
 
@@ -57,18 +64,29 @@ def score_so_far(  # noqa: PLR0917 — one call site, the day's inputs
     model_days: str,
     setup: ProductionSetup,
     until: datetime | None,
+    window_end_at: time = WINDOW_END,
 ) -> tuple[MomentSoFar, ...]:
     """Score every reserve moment over the measured part of the window.
 
     `consumption` learns from `earlier_days`, of the kind `model_days` names
     (workday, saturday, sunday). `until`: how far the data reaches (None = the
-    whole window). A moment with nothing measured after it yet is left out.
+    whole window). The window ends at `window_end_at`. A moment with nothing
+    measured after it yet is left out.
     """
     day, tz = actuals.day, actuals.tz
-    window_end = datetime.combine(day, WINDOW_END, tz)
+    window_end = datetime.combine(day, window_end_at, tz)
     end = window_end if until is None else min(until, window_end)
-    model = consumption.reserve_profile(earlier_days)
-    profile = model or ConsumptionProfile.flat()
+    flat: bool
+    expected: Callable[[datetime, datetime], float]
+    if window_end_at == WINDOW_END:
+        reserve_profile = consumption.reserve_profile(earlier_days)
+        flat = reserve_profile is None
+        profile = reserve_profile or ConsumptionProfile.flat()
+        expected = partial(_profile_kwh, profile)
+    else:
+        slots = consumption.half_hours(earlier_days)
+        flat = slots is None
+        expected = partial(_slots_kwh, slots or {})
     out: list[MomentSoFar] = []
     for moment in RESERVE_MOMENTS:
         at = datetime.combine(day, moment.at, tz)
@@ -80,7 +98,7 @@ def score_so_far(  # noqa: PLR0917 — one call site, the day's inputs
         cons = actuals.energy_between(CONSUMPTION, since, end)
         if pv is None or cons is None:
             continue
-        expected_cons = _profile_kwh(profile, since, end)
+        expected_cons = expected(since, end)
         out.append(
             MomentSoFar(
                 label=moment.label,
@@ -97,9 +115,9 @@ def score_so_far(  # noqa: PLR0917 — one call site, the day's inputs
                     and (kwh := _forecast_kwh(result, since, end)) is not None
                 ),
                 system_variant=setup.pv_variant,
-                flat_model=model is None,
+                flat_model=flat,
                 model_days=model_days,
-                model_day_count=len(earlier_days) if model is not None else 0,
+                model_day_count=0 if flat else len(earlier_days),
             )
         )
     return tuple(out)
@@ -113,6 +131,16 @@ def _profile_kwh(profile: ConsumptionProfile, since: datetime, end: datetime) ->
         start = datetime.combine(day, time(bucket.hour, bucket.minute), tz)
         total += kwh * _share(start, since, end)
     return total
+
+
+def _slots_kwh(slots: Mapping[int, float], since: datetime, end: datetime) -> float:
+    """Return the expected consumption over [since, end) from half-hour slots."""
+    day, tz = since.date(), since.tzinfo
+    return sum(
+        slots.get(slot, CONSUMPTION_PER_30MIN)
+        * _share(datetime.combine(day, time(slot // 2, slot % 2 * 30), tz), since, end)
+        for slot in range(48)
+    )
 
 
 def _forecast_kwh(

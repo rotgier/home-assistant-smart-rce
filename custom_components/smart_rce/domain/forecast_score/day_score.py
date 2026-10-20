@@ -45,7 +45,7 @@ from .reserve_score import (
     MomentReserve,
     score_reserve,
 )
-from .so_far_score import WINDOW_END, MomentSoFar, score_so_far
+from .so_far_score import DAY_END, WINDOW_END, MomentSoFar, score_so_far
 from .start_score import PREVIEW_MOMENTS, START_MOMENT, MomentStart, score_start
 from .variant_results import consumed
 
@@ -71,8 +71,9 @@ if TYPE_CHECKING:
 # 11: a catch-up beyond the recorder's reach keeps the start, the spans and the
 #     plan readings of the day's earlier records (10 rescored 11.10 from a
 #     purged history).
+# 12: the accuracy so far also to 16:00 (`so_far_day`), the dearest discharge hour.
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 11
+SCHEMA_VERSION: Final = 12
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
@@ -163,7 +164,7 @@ def score_day(
     # The consumption model of the accuracy so far: the reserve's on a day with
     # one, else the charge start's (earlier days of the same type).
     with_reserve = has_morning_reserve(day)
-    so_far = score_so_far(
+    so_far_args = (
         actuals,
         inputs.snapshots,
         setup.reserve_model if with_reserve else setup.start_model,
@@ -176,6 +177,8 @@ def score_day(
         setup,
         cutoff,
     )
+    so_far = score_so_far(*so_far_args)
+    so_far_day = score_so_far(*so_far_args, window_end_at=DAY_END)
     start: tuple[MomentStart, ...] = ()
     if inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24:
         settled = _settled_start(inputs, setup, inputs.prices, inputs.s0)
@@ -231,6 +234,8 @@ def score_day(
         setup=setup.label,
         full_charge=full_charge,
         so_far=so_far,
+        so_far_day=so_far_day,
+        discharge_peak_hour=_discharge_peak_hour(inputs),
         trigger=trigger,
         cutoff=cutoff,
         pending=tuple(pending),
@@ -302,6 +307,14 @@ def _without_diagnostics(moments: tuple[MomentStart, ...]) -> tuple[MomentStart,
     )
 
 
+def _discharge_peak_hour(inputs: DayInputs) -> int | None:
+    """Hour the morning discharge sold at the dearest price (None: no plan)."""
+    plan, prices = inputs.morning_plan, inputs.prices
+    if plan is None or not plan.hours or prices is None or len(prices) != 24:
+        return None
+    return max(plan.hours, key=lambda hour: prices[hour])
+
+
 def _full_charge_settled(score: FullChargeScore, cutoff: datetime) -> bool:
     """Tell whether D3 stands on data up to `cutoff` alone.
 
@@ -354,6 +367,10 @@ class DayScore:
     full_charge: FullChargeScore | None = None
     # How the morning's forecasts are doing over the measured window (18.10.2026).
     so_far: tuple[MomentSoFar, ...] = ()
+    # The same accuracy over the charging day, to 16:00.
+    so_far_day: tuple[MomentSoFar, ...] = ()
+    # The morning discharge hour at the dearest price (the card sorts by it).
+    discharge_peak_hour: int | None = None
     # What ran it: charge_start, s0, full_charge, 13:06, 16:06, 21:06, manual...
     trigger: str = ""
     # How far the data reached (a run during the day); None = the whole day.
@@ -433,6 +450,8 @@ class DayScore:
                 self.full_charge.to_dict() if self.full_charge is not None else None
             ),
             "so_far": [m.to_dict() for m in self.so_far],
+            "so_far_day": [m.to_dict() for m in self.so_far_day],
+            "discharge_peak_hour": self.discharge_peak_hour,
             "trigger": self.trigger,
             "cutoff": self.cutoff.isoformat() if self.cutoff is not None else None,
             "pending": [str(p) for p in self.pending],
@@ -468,6 +487,10 @@ class DayScore:
                 else None
             ),
             so_far=tuple(MomentSoFar.from_dict(m) for m in data.get("so_far", [])),
+            so_far_day=tuple(
+                MomentSoFar.from_dict(m) for m in data.get("so_far_day", [])
+            ),
+            discharge_peak_hour=data.get("discharge_peak_hour"),
             trigger=str(data.get("trigger", "")),
             cutoff=(
                 datetime.fromisoformat(cut)

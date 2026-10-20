@@ -949,6 +949,34 @@ class TestDuringTheDay:
         assert late.full_charge is not None
 
 
+def test_accuracy_over_the_charging_day_runs_to_four(energy, snapshots, prices):
+    """20.10.2026: the second table, from each moment to 16:00."""
+    day = DAYS[-1]
+    plan = PlanReading(
+        at=datetime.combine(day, time(6, 59), TZ),
+        full_at=14 * 60,
+        hours=(7, 8),
+        start_soc=30.0,
+    )
+    score = _day_score(day, energy, snapshots, prices, plan=plan)
+    four = datetime.combine(day, time(16), TZ)
+    assert score.so_far_day
+    assert all(m.until == four for m in score.so_far_day)
+    assert [m.label for m in score.so_far_day] == [m.label for m in score.so_far]
+    longer = {m.label: m for m in score.so_far_day}
+    for short in score.so_far:
+        assert longer[short.label].pv_actual_kwh >= short.pv_actual_kwh
+    day_prices = prices[day.isoformat()]
+    assert score.discharge_peak_hour == max((7, 8), key=lambda h: day_prices[h])
+    from custom_components.smart_rce.sensor.forecast_score_sensor import day_card
+
+    card = day_card(score)
+    expected = "06:41" if score.discharge_peak_hour == 7 else "07:41"
+    assert card["sort_moment"] == expected
+    assert len(card["so_far_day_summary"]) == len(score.so_far_day)
+    assert DayScore.from_dict(json.loads(json.dumps(score.to_dict()))) == score
+
+
 def test_energy_between_takes_edge_slots_in_proportion(energy):
     actuals = DayActuals(energy[DAYS[-1]], TZ)
     at = lambda h, m, sec=0: datetime.combine(DAYS[-1], time(h, m, sec), TZ)  # noqa: E731
