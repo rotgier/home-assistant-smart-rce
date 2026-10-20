@@ -25,6 +25,31 @@ _RELOADED = re.compile(
 )
 _IMPORTS_SLOT_KIND = re.compile(r"from [\w.]*battery_schedule(?:\.\w+)* import")
 
+# Importers known to be absent from `live_reload()` — every one of them keeps the
+# outgoing SlotKind across a reload and will raise KeyError the moment it touches
+# the aggregate. `morning_discharge_service` did exactly that on 20.10 and took
+# the whole integration down for eight minutes.
+#
+# They are listed rather than failing the suite because seven of the eight landed
+# in the past ten days from a parallel line of work, and slotting them into the
+# reload order needs their own dependency graph (`plan_application` has to precede
+# `battery_schedule_service`, `battery_day_history` has to follow `battery_day`).
+# Guessing that order would trade one KeyError for another.
+#
+# 🚨 While this list is non-empty, deploy with a RESTART, not a reload.
+_KNOWN_ABSENT: frozenset[str] = frozenset(
+    {
+        "application.morning_discharge_service",
+        "application.plan_application",
+        "application.pv_charge_service",
+        "domain.battery_day",
+        "domain.forecast_score.full_charge_score",
+        "domain.forecast_score.production_setup",
+        "domain.forecast_score.reserve_score",
+        "infrastructure.battery_day_history",
+    }
+)
+
 
 def _reload_order() -> dict[str, int]:
     text = (_ROOT / "__init__.py").read_text(encoding="utf-8")
@@ -59,6 +84,30 @@ def test_battery_schedule_is_reloaded_before_every_module_that_imports_it():
         "reloaded before domain.battery_schedule, so they keep the outgoing "
         f"SlotKind class and every lookup keyed by it raises KeyError: {too_early}"
     )
+
+
+def test_every_importer_is_on_the_reload_list():
+    """Absent from the list is as broken as listed too early — it is just quieter.
+
+    A module that is never reloaded keeps the enum class it imported at startup.
+    After a reload the aggregate holds members of the new class, so the two stop
+    matching and the first dict lookup raises.
+    """
+    order = _reload_order()
+
+    absent = sorted(
+        module for module in _modules_importing_slot_kind() if module not in order
+    )
+
+    assert absent == sorted(_KNOWN_ABSENT), (
+        "the set of importers missing from live_reload() moved; add new ones to "
+        f"the reload list (not to the allowlist) — got {absent}"
+    )
+
+
+def test_the_known_gaps_never_grow():
+    """A ratchet: the allowlist may shrink, never grow."""
+    assert len(_KNOWN_ABSENT) <= 8
 
 
 def test_the_guard_above_is_actually_watching_something():
