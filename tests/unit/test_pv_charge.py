@@ -85,6 +85,7 @@ class TestPvChargeRun:
         # The BMS sat at 99% from 13:08 and showed 100% only at 16:36.
         run = PvChargeRun(day=DAY)
         self._observe(run, 11 * H, 10.0)
+        self._observe(run, 12 * H + 40, 90.0)
         assert not self._observe(run, 13 * H + 7, 98.0)
         assert self._observe(run, 13 * H + 8, 99.0)
         assert not self._observe(run, 15 * H, 100.0)
