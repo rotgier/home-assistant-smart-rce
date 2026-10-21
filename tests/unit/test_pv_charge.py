@@ -81,6 +81,15 @@ class TestPvChargeRun:
         assert self._observe(run, 13 * H + 31, 100.0)
         assert (run.plateau_at, run.full_at) == (12 * H + 56, 13 * H + 31)
 
+    def test_99_reads_as_full_21_10_2026(self):
+        # The BMS sat at 99% from 13:08 and showed 100% only at 16:36.
+        run = PvChargeRun(day=DAY)
+        self._observe(run, 11 * H, 10.0)
+        assert not self._observe(run, 13 * H + 7, 98.0)
+        assert self._observe(run, 13 * H + 8, 99.0)
+        assert not self._observe(run, 15 * H, 100.0)
+        assert run.full_at == 13 * H + 8
+
     def test_gate_found_open_after_a_restart_dates_back_to_the_start_in_force(self):
         run = PvChargeRun(day=DAY)
         self._observe(run, 11 * H + 20, 30.0)

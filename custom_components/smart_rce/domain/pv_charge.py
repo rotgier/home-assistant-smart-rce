@@ -34,6 +34,11 @@ class PvChargeRun:
     the start, the first reading at or above a level marks reaching it.
     """
 
+    # Full as read off the BMS: on 21.10.2026 it sat at 99% from 13:08 and
+    # showed 100% only at 16:36, so the chart charged on all afternoon. The
+    # forecast still runs to 100% (`FULL_SOC`) — only the observation is lenient.
+    _FULL_READ_SOC: Final[float] = 99.0
+
     def __init__(
         self,
         *,
@@ -117,7 +122,7 @@ class PvChargeRun:
         if self.plateau_at is None and soc >= PLATEAU_SOC:
             self.plateau_at = minute
             changed = True
-        if self.full_at is None and soc >= FULL_SOC:
+        if self.full_at is None and soc >= self._FULL_READ_SOC:
             self.full_at = minute
             changed = True
         return changed
