@@ -10,12 +10,14 @@ the other decisions:
 - optimal: the same `full_charge_minute` on what really came (actual PV and
   consumption), from the same start (S0) and the same SoC (the reserve without
   margin at that moment) — the forecast's error alone;
-- actual: the first slot the SoC really reached full (the facts panel) — also
-  depends on how the morning really went (discharge depth, the start);
+- actual: the first slot the SoC really reached full — 99% on the BMS
+  (`FULL_READ_SOC`, from 22.10.2026; it can sit there for hours before showing
+  100) — also depends on how the morning really went (discharge depth, the start);
 - model: the same `full_charge_minute` on what really came, from the ACTUAL
-  charge start with the SoC the battery really had then — against `actual` it
-  isolates the charging model (charge curve, pace of `Direction.CHARGE`, the
-  BMS plateau).
+  charge start with the SoC the battery really had then, to the same 99% —
+  against `actual` it isolates the charging model (charge curve, pace of
+  `Direction.CHARGE`, the BMS plateau). The forecast's rows stay at 100:
+  production's plan forecasts to 100.
 
 error = system − optimal (the surplus forecast), model_error = model − actual
 (the charging model); minutes, + = computed full later than the reference.
@@ -45,6 +47,7 @@ from ..charge_start_shift import full_charge_minute
 from ..pv_surplus import SurplusProfile, surplus_window_end
 from ..rce import RceDayPrices
 from .day_actuals import CONSUMPTION, PV
+from .production_outcome import FULL_READ_SOC
 from .reserve_score import MAIN_MOMENT
 from .start_score import PREVIEW_MOMENTS, START_MOMENT, last_evaluation_before
 
@@ -120,7 +123,7 @@ def score_full_charge(  # noqa: PLR0917 — one call site, the day's facts
     start = actual_start if actual_start is not None else s0
     start_soc = actuals.soc_near(actuals.at(start))
     model = (
-        full_charge_minute(came, start, start_soc, t2)
+        full_charge_minute(came, start, start_soc, t2, FULL_READ_SOC)
         if start_soc is not None
         else None
     )

@@ -26,9 +26,12 @@ if TYPE_CHECKING:
 
 T1_HOURS: Final = range(7, 13)
 MORNING_EXPORT_HOURS: Final = range(7, 10)
+# The BMS reading that counts as a full battery: 21.10.2026 it sat at 99%
+# from 13:08 and showed 100% only at 16:36 (user's call, 22.10.2026).
+FULL_READ_SOC: Final = 99.0
 # A slot mean at or above this counts as full (the mean of the slot the
-# battery reaches 100 in is just below it).
-FULL_SOC: Final = 99.5
+# battery reaches 99 in is just below it).
+FULL_SOC: Final = FULL_READ_SOC - 0.5
 SOC_RISE_PP: Final = 1.0
 
 

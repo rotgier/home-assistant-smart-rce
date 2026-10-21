@@ -193,14 +193,22 @@ def lowest_soc_the_sun_fills(
 
 
 def full_charge_minute(
-    profile: SurplusProfile, start: int, soc: float, end: int
+    profile: SurplusProfile,
+    start: int,
+    soc: float,
+    end: int,
+    full_soc: float = FULL_SOC,
 ) -> int | None:
     """Minute of the day the battery is full charging from `start`; None if not by `end`."""
-    return charge_milestones(profile, start, soc, end).full_at
+    return charge_milestones(profile, start, soc, end, full_soc).full_at
 
 
 def charge_milestones(
-    profile: SurplusProfile, start: int, soc: float, end: int
+    profile: SurplusProfile,
+    start: int,
+    soc: float,
+    end: int,
+    full_soc: float = FULL_SOC,
 ) -> ChargeMilestones:
     """When the battery reaches the plateau level and full charging from `start`.
 
@@ -208,19 +216,21 @@ def charge_milestones(
     minutes) goes in, at most at the charge pace of `Direction.CHARGE` (the
     same SoC-zone model the charge slots run on: ~75 s/pp up to 89%, then the
     BMS plateau and the slow top). Energy per pp from the charge curve.
+    `full_soc`: the level that counts as full — 100 for decisions; the
+    scoreboard compares the model against the BMS reading of 99%.
     """
     level = soc
     plateau_at: int | None = start if soc >= PLATEAU_SOC else None
     for minute in range(start, end):
-        if level >= FULL_SOC:
-            return ChargeMilestones(plateau_at, minute, FULL_SOC)
+        if level >= full_soc:
+            return ChargeMilestones(plateau_at, minute, level)
         slot = profile.slots[minute // SLOT_MINUTES]
         surplus_pp = slot.surplus_kwh / SLOT_MINUTES / kwh_per_pp(level)
         pace_pp = 60 / _charge_sec_per_pp(level)
         level = min(FULL_SOC, level + min(surplus_pp, pace_pp))
         if plateau_at is None and level >= PLATEAU_SOC:
             plateau_at = minute + 1
-    full_at = end if level >= FULL_SOC else None
+    full_at = end if level >= full_soc else None
     return ChargeMilestones(plateau_at, full_at, level)
 
 

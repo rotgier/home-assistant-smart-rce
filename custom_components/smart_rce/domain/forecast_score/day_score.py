@@ -72,8 +72,9 @@ if TYPE_CHECKING:
 #     plan readings of the day's earlier records (10 rescored 11.10 from a
 #     purged history).
 # 12: the accuracy so far also to 16:00 (`so_far_day`), the dearest discharge hour.
+# 13: 99% on the BMS counts as full (the fact, the D3 trigger, the charging model).
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 12
+SCHEMA_VERSION: Final = 13
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).

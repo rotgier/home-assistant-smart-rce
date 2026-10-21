@@ -45,6 +45,7 @@ from ..domain.forecast_score.full_charge_score import (
     decided_plan,
 )
 from ..domain.forecast_score.production_outcome import (
+    FULL_READ_SOC,
     ChargeStartFact,
     start_from_soc_rise,
     struck_start,
@@ -76,8 +77,8 @@ class ForecastScoreService:
     # The triggers during the day: from the start of the charge block (06:00)
     # until the 16:06 preliminary takes over.
     TRIGGERS_FROM: Final = time(6, 0)
-    # The battery is full (the D3 trigger).
-    FULL_SOC: Final = 100.0
+    # The battery is full (the D3 trigger): the BMS reading of 99% counts.
+    FULL_SOC: Final = FULL_READ_SOC
     # First day with both archives (snapshots from 03.10 04:15, energy from 03.10).
     FIRST_DAY: Final = date(2026, 10, 4)
     # The recorder keeps 10 days (HA default) and purges at 04:12: a day older

@@ -784,6 +784,38 @@ class TestFullChargeMoments:
         assert card["full_charge_summary"]["moments"][0]["label"] == "06:11"
 
 
+def test_ninety_nine_on_the_bms_counts_as_full(energy, prices):
+    """22.10.2026: the BMS sat at 99% for hours before 100% (21.10: 13:08 → 16:36)."""
+    from custom_components.smart_rce.domain.forecast_score.production_outcome import (
+        FULL_READ_SOC,
+        FULL_SOC,
+    )
+
+    assert FULL_READ_SOC == 99.0
+    assert FULL_SOC == 98.5  # the mean of the slot it reaches 99 in
+    day = DAYS[-1]
+    actuals = DayActuals(energy[day], TZ)
+    profile = SurplusProfile.build(
+        day, actuals.half_hours("pv_kwh"), actuals.half_hours(CONSUMPTION)
+    )
+    t2 = surplus_window_end(day) * 60
+    to_99 = full_charge_minute(profile, 9 * 60, 30.0, t2, 99.0)
+    to_100 = full_charge_minute(profile, 9 * 60, 30.0, t2)
+    if to_99 is not None and to_100 is not None:
+        assert to_99 < to_100  # the last point alone takes 450 s
+    plan = PlanReading(
+        at=datetime.combine(day, time(6, 59), TZ),
+        full_at=14 * 60,
+        hours=(7,),
+        start_soc=30.0,
+    )
+    score = score_full_charge(
+        actuals, plan, prices[day.isoformat()], _s0(day, prices), None, 9 * 60
+    )
+    soc = actuals.soc_near(actuals.at(9 * 60))
+    assert score.model == full_charge_minute(profile, 9 * 60, soc, t2, 99.0)
+
+
 class TestDuringTheDay:
     """Runs before the day closes (18.10.2026): accuracy so far, pending parts."""
 
