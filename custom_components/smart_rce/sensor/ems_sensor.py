@@ -208,7 +208,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         value_fn=lambda ems: _reserve_field(
             ems.battery_schedule_service.t1_reserve, "value"
         ),
-        attr_fn=lambda ems: _reserve_attrs(ems.battery_schedule_service.t1_reserve),
+        attr_fn=lambda ems: _reserve_with_floor_attrs(ems),
         icon="mdi:battery-clock-outline",
     ),
     EmsSensorDescription(
@@ -296,6 +296,18 @@ def _reserve_field(reserve: T1SocReserve | None, field_name: str) -> Any:
 
 def _reserve_attrs(reserve: T1SocReserve | None) -> dict[str, Any] | None:
     return reserve.to_dict() if reserve is not None else None
+
+
+def _reserve_with_floor_attrs(ems: Ems) -> dict[str, Any] | None:
+    """Return the reserve plus the weak-sun floor of its day's night charge."""
+    service = ems.battery_schedule_service
+    reserve = service.t1_reserve
+    if reserve is None:
+        return None
+    floor = service.morning_charge_floor_for(reserve.day)
+    return reserve.to_dict() | {
+        "weak_sun_floor": floor.to_dict() if floor is not None else None
+    }
 
 
 def _morning_plan_attrs(ems: Ems) -> dict[str, Any] | None:

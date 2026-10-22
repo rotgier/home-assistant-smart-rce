@@ -243,6 +243,34 @@ class PvSurplusService:
         scaled = {slot: kwh * pv_scale for slot, kwh in pv.items()}
         return SurplusProfile.build(day, scaled, cons)
 
+    def consumption_percentile(
+        self, day: date, fraction: float
+    ) -> dict[int, float] | None:
+        """Per-slot `fraction` percentile of earlier days' consumption for `day`.
+
+        None until the history of `day` (the target day) is loaded.
+        """
+        if self._profiles_day != day or not self._prev_profiles:
+            return None
+        return percentile_by_key(self._prev_profiles.values(), fraction)
+
+    def p90_by_slot(self, day: date) -> dict[int, float]:
+        """Solcast p90 of `day` in kWh per 30-min slot (today's or tomorrow's)."""
+        forecasts = self._energy_balance.forecasts
+        periods = (
+            forecasts.solcast_today
+            if day == self._clock().date()
+            else forecasts.solcast_tomorrow
+        )
+        out: dict[int, float] = {}
+        for period in periods:
+            moment = datetime.fromisoformat(str(period.period_start).replace(" ", "T"))
+            if moment.date() == day:
+                slot = int(minute_of_day(moment)) // SLOT_MINUTES
+                # pv_estimate90 is a kWh/h rate over a 30-min period.
+                out[slot] = out.get(slot, 0.0) + period.pv_estimate90 / 2
+        return out
+
     def live_soft_profile(self, day: date, *, tomorrow: bool) -> SurplusProfile | None:
         """`day`'s Live Soft surplus, p60 consumption when there is one, else flat.
 

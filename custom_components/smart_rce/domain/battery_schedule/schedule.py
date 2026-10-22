@@ -36,6 +36,7 @@ from .events import (
     SlotDisengaged,
     SlotEngaged,
 )
+from .morning_charge import MorningChargeFloor
 from .morning_discharge import MorningDischargePlan
 from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
@@ -144,6 +145,7 @@ class BatterySchedule:
         # afternoon tomorrow's (evening preview, hold rule). In memory only:
         # rebuilt within a minute of a restart from the forecast and prices.
         self._morning_discharge: dict[date, MorningDischargePlan] = {}
+        self._morning_charge_floor: dict[date, MorningChargeFloor] = {}
         # Today's slot engagements, for the dashboard. Persisted so a restart
         # in the middle of the day — or of a session — keeps what already ran.
         self._sessions: list[SlotSession] = list(sessions or [])
@@ -370,6 +372,28 @@ class BatterySchedule:
     def morning_discharge_for(self, day: date) -> MorningDischargePlan | None:
         """Return the plan for `day`, None when there is none."""
         return self._morning_discharge.get(day)
+
+    def set_morning_charge_floor(
+        self, day: date, floor: MorningChargeFloor | None
+    ) -> bool:
+        """Remember `day`'s weak-sun floor (None: none). True if changed.
+
+        Floors older than the day before are dropped.
+        """
+        if self._morning_charge_floor.get(day) == floor:
+            return False
+        if floor is None:
+            del self._morning_charge_floor[day]
+        else:
+            self._morning_charge_floor[day] = floor
+        horizon = day - timedelta(days=1)
+        for old in [d for d in self._morning_charge_floor if d < horizon]:
+            del self._morning_charge_floor[old]
+        return True
+
+    def morning_charge_floor_for(self, day: date) -> MorningChargeFloor | None:
+        """Return `day`'s weak-sun floor, None when there is none."""
+        return self._morning_charge_floor.get(day)
 
     # ─── Read models for the dashboard ───
 
@@ -697,7 +721,9 @@ class BatterySchedule:
         # it: the fallback is already the generous guess the margin stands in for.
         if reserve is None:
             return entry
-        return entry.with_target_soc(float(reserve.value))
+        floor = self._morning_charge_floor.get(day)
+        target = reserve.value if floor is None else floor.lifts(reserve.value)
+        return entry.with_target_soc(float(target))
 
     def _target_source(self, kind: SlotKind, day: date) -> str | None:
         """Where an auto-target slot's target came from; None for fixed slots."""
@@ -707,7 +733,12 @@ class BatterySchedule:
         if not kind.profile.auto_target:
             return None
         reserve = self.t1_reserve_for(day)
-        return reserve.source if reserve is not None else "fallback"
+        if reserve is None:
+            return "fallback"
+        floor = self._morning_charge_floor.get(day)
+        return (
+            reserve.source if floor is None else f"{reserve.source}, {floor.describe()}"
+        )
 
     def roll_day(self) -> None:
         """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.

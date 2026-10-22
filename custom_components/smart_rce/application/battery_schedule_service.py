@@ -37,6 +37,7 @@ from ..domain.battery_schedule import (
     BatteryScheduleEntry,
     BatteryScheduleInput,
     Direction,
+    MorningChargeFloor,
     MorningDischargePlan,
     OneShotOperation,
     OneShotParams,
@@ -318,6 +319,18 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """Take `day`'s automatic morning discharge plan (in memory only)."""
         if self._repo.schedule.set_morning_discharge(plan, day=day):
             self._notify_all()
+
+    @callback
+    def set_morning_charge_floor(
+        self, day: date, floor: MorningChargeFloor | None
+    ) -> None:
+        """Take `day`'s weak-sun floor of the night charge (in memory only)."""
+        if self._repo.schedule.set_morning_charge_floor(day, floor):
+            self._notify_all()
+
+    def morning_charge_floor_for(self, day: date) -> MorningChargeFloor | None:
+        """Return `day`'s weak-sun floor, None when there is none."""
+        return self._repo.schedule.morning_charge_floor_for(day)
 
     @property
     def export_threshold(self) -> float:

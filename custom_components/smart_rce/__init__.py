@@ -18,6 +18,7 @@ from .application.charge_start_shift_service import ChargeStartShiftService
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
 from .application.forecast_score_service import ForecastScoreService
+from .application.morning_charge_service import MorningChargeService
 from .application.morning_discharge_service import MorningDischargeService
 from .application.pv_charge_service import PvChargeService
 from .application.pv_surplus_service import PvSurplusService
@@ -171,14 +172,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     # Automatic morning discharge: plan rebuilt every minute, after the surplus
     # tick (second 5) has refreshed what is still to come.
     morning_discharge = MorningDischargeService(ems, pv_surplus, dt_util.now)
+    # Weak-sun floor of the night charge (CHARGE_MORNING_AUTO), same tick.
+    morning_charge = MorningChargeService(ems, pv_surplus, dt_util.now)
 
     @callback
     def _refresh_morning_discharge(_now: object) -> None:
+        morning_charge.refresh()
         morning_discharge.refresh()
 
     entry.async_on_unload(
         async_track_time_change(hass, _refresh_morning_discharge, second=10)
     )
+    morning_charge.refresh()
     morning_discharge.refresh()
 
     # PV charge on the price chart: today's run recorded and the plan day's
@@ -360,7 +365,8 @@ def live_reload() -> None:
     # already in sys.modules, so edits inside the package would silently not
     # take effect (the same trap garden hit before it was itemised here).
     # Order: direction -> operation -> entry -> oneshot -> commands -> events
-    # -> session -> t1_reserve -> morning_discharge -> schedule -> package re-exports.
+    # -> session -> t1_reserve -> morning_charge -> morning_discharge -> schedule
+    # -> package re-exports.
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.direction")
     )
@@ -376,6 +382,11 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.battery_schedule.session"))
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.t1_reserve")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.domain.battery_schedule.morning_charge"
+        )
     )
     reload(
         import_module(
@@ -444,6 +455,11 @@ def live_reload() -> None:
         import_module(
             "custom_components.smart_rce.application.battery_schedule_service"
         )
+    )
+    # morning_charge_service builds MorningChargeFloor for the aggregate — after
+    # battery_schedule, so its floors are of the class the schedule holds.
+    reload(
+        import_module("custom_components.smart_rce.application.morning_charge_service")
     )
     reload(
         import_module("custom_components.smart_rce.application.battery_charge_service")

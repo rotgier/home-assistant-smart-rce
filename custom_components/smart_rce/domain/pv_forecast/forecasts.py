@@ -102,6 +102,11 @@ class PvForecasts:
         """Raw Solcast live periods — exposed for downstream consumers."""
         return self._solcast_today
 
+    @property
+    def solcast_tomorrow(self) -> list[SolcastPeriod]:
+        """Raw Solcast periods for tomorrow — exposed for downstream consumers."""
+        return self._solcast_tomorrow
+
     # ─── Trigger-named public API: each takes only the delta ────────────────
 
     def solcast_at_6_updated(
