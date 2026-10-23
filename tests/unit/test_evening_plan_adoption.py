@@ -25,6 +25,7 @@ from custom_components.smart_rce.domain.rce import RceDayPrices
 TODAY = date(2026, 9, 21)  # Monday
 NOW = datetime(2026, 9, 21, 15, 0, tzinfo=timezone.utc)
 EARLY = SlotKind.DISCHARGE_EVENING_EARLY
+MID = SlotKind.DISCHARGE_EVENING_MID
 LATE = SlotKind.DISCHARGE_EVENING_LATE
 
 RICH = 700.0
@@ -76,9 +77,11 @@ async def test_a_plan_lands_in_the_slots_when_nobody_touched_them():
     result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
 
     assert result.outcome is PlanOutcome.APPLIED
+    # Summer T2 19-22: 19:00 and 20:00 each sell, one rung per hour.
     entry = schedule.today_entry_for(EARLY)
     assert entry.enabled
-    assert (entry.start, entry.end) == (time(19, 0), time(21, 0))
+    assert (entry.start, entry.end) == (time(19, 0), time(20, 0))
+    assert schedule.today_entry_for(MID).enabled
 
 
 async def test_a_hand_edited_evening_is_left_alone():
@@ -202,10 +205,10 @@ async def test_the_report_names_what_moved():
 
     result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
 
-    assert [c.kind for c in result.changes] == [EARLY]
+    assert [c.kind for c in result.changes] == [EARLY, MID]
     change = result.changes[0]
     assert change.was_enabled
-    assert (change.after.start, change.after.end) == (time(19, 0), time(21, 0))
+    assert (change.after.start, change.after.end) == (time(19, 0), time(20, 0))
 
 
 async def test_no_diff_when_the_slots_already_agree():

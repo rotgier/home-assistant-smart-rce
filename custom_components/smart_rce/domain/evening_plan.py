@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import ClassVar, Final
 
-from ..tariff import Zone, evening_peak
-from ..tariff.table import latest_rates
+from ..tariff import evening_peak
 from .battery_schedule import (
     Scope,
     SetSlotBehaviorCommand,
@@ -33,19 +32,25 @@ from .rce import RceDayPrices
 
 
 class EveningPlan:
-    """The evening's discharge decision — at most two windows, or none.
+    """The evening's discharge decision — one rung per selling hour, or none.
 
-    Owns the rules that used to be applied by hand each evening. An hour
-    qualifies for discharging when it clears BOTH bars (gross PLN/MWh):
+    Owns the rules that used to be applied by hand each evening. On a workday
+    every T2 hour is judged on its own (user's decision 23.10.2026) and sells
+    when it clears all three (gross PLN/MWh):
 
     - `EXPORT_THRESHOLD` — below it the spread over a night-time T3 purchase
       is too thin to be worth emptying the battery; the charge does more good
-      feeding the house overnight.
+      feeding the house overnight;
     - the best price tomorrow morning — the same kWh sells once, so if the
-      morning pays better the evening stands down.
+      morning pays better the evening holds it;
+    - every later evening hour, up to the first hour after T2 — the same kWh
+      sells for more an hour later (21.10.2026: 20:00 at 759 held back for
+      21:00 at 819). A tie sells in the earlier hour.
 
-    Qualifying hours become windows, which map one-to-one onto the two evening
-    slots: first window to EARLY, second to LATE.
+    A selling hour discharges down to the reserve the T2 hours still ahead of
+    it need, one rung per hour (`_rung_for`): winter 16:00 75%, 17:00 61%,
+    18:00 47%, 19:00 33%, 20:00 10%. A day off has no T2: the best pair of
+    hours from 16:00 empties the battery in one window.
     """
 
     # Gross PLN/MWh below which the charge is worth more to the house.
@@ -58,50 +63,29 @@ class EveningPlan:
     # Evening hours considered on days with no expensive zone at all.
     NON_WORKDAY_EVENING: Final[range] = range(16, 23)
 
-    # A run this long outlasts a single discharge, so it earns two windows.
-    _MIN_HOURS_TO_SPLIT: Final[int] = 3
-
-    # How much of T2 is worth considering on a workday, counted back from its
-    # end. Three hours covers a full discharge plus a held-back reserve for the
-    # last expensive hour; anything earlier is spent before the peak arrives.
-    _WORKDAY_HOURS: Final[int] = 3
-
-    # Hours a single discharge covers off-peak — the battery empties in about
-    # 1h48m, so a wider window only lets the strategy miss the peak.
-    _OFF_PEAK_HOURS: Final[int] = 2
-
-    # Sets the bar for selling the reserve early rather than holding it.
-    # Together with the zone gap it lands near 1090 PLN/MWh, which is about
-    # where the deposit-aware arithmetic puts the real break-even — see
-    # `_sell_early_beats_holding` for why the formula itself does not derive
-    # that number and why the gap between the two costs tenths of a zloty.
-    _SELL_EARLY_MARGIN: Final[float] = 1.25
+    # Workday rungs by the T2 hours left after the hour (0 = the last one):
+    # (slot, SoC to stand on when the hour closes). The last hour empties to
+    # the floor; 33% is one evening hour of the house with a margin (02.10.2026:
+    # 1.17 kWh drawn against 1.58 kWh for 33->10%); each earlier rung holds
+    # ~14 pp more, about one hour of discharge (75 s/pp above 25% sheds ~48 pp
+    # an hour, so a nearly full battery reaches 47% within its hour). Winter's
+    # T2 is five hours (16-21), summer's three (19-22, from EARLY on).
+    _RUNGS: Final[tuple[tuple[SlotKind, float], ...]] = (
+        (SlotKind.DISCHARGE_EVENING_LATE, 10.0),
+        (SlotKind.DISCHARGE_EVENING_MID, 33.0),
+        (SlotKind.DISCHARGE_EVENING_EARLY, 47.0),
+        (SlotKind.DISCHARGE_EVENING_XEARLY, 61.0),
+        (SlotKind.DISCHARGE_EVENING_XXEARLY, 75.0),
+    )
 
     _SCOPE_TODAY: Final[Scope] = "today"
     _SLOT_ORDER: Final[tuple[SlotKind, ...]] = (
+        SlotKind.DISCHARGE_EVENING_XXEARLY,
+        SlotKind.DISCHARGE_EVENING_XEARLY,
         SlotKind.DISCHARGE_EVENING_EARLY,
         SlotKind.DISCHARGE_EVENING_MID,
         SlotKind.DISCHARGE_EVENING_LATE,
     )
-
-    # Which slots carry a plan of N windows. MID only ever joins the three-rung
-    # ladder: with two windows the pair stays EARLY + LATE, exactly as before
-    # the ladder existed, so an evening that does not need it looks unchanged.
-    _SLOTS_BY_COUNT: Final[dict[int, tuple[SlotKind, ...]]] = {
-        0: (),
-        1: (SlotKind.DISCHARGE_EVENING_EARLY,),
-        2: (SlotKind.DISCHARGE_EVENING_EARLY, SlotKind.DISCHARGE_EVENING_LATE),
-        3: (
-            SlotKind.DISCHARGE_EVENING_EARLY,
-            SlotKind.DISCHARGE_EVENING_MID,
-            SlotKind.DISCHARGE_EVENING_LATE,
-        ),
-    }
-
-    # Windows the price-driven path may produce. The third slot belongs to the
-    # ladder alone — handing it a third run would park two windows on the same
-    # partial target, where the second has nothing left to do.
-    _ADAPTIVE_WINDOWS: Final[int] = 2
 
     def __init__(
         self,
@@ -110,7 +94,7 @@ class EveningPlan:
         *,
         is_workday: bool,
         windows: tuple[EveningWindow, ...] = (),
-        slots: tuple[SlotKind, ...] | None = None,
+        slots: tuple[SlotKind, ...] = (),
         max_morning_price: float = 0.0,
         overruled_by_morning: bool = False,
         export_threshold: float = EXPORT_THRESHOLD,
@@ -119,7 +103,7 @@ class EveningPlan:
         self._prices = prices
         self._is_workday = is_workday
         self._windows = windows
-        self._slots = slots if slots is not None else self._SLOTS_BY_COUNT[len(windows)]
+        self._slots = slots
         self._max_morning_price = max_morning_price
         self._overruled_by_morning = overruled_by_morning
         self._export_threshold = export_threshold
@@ -239,7 +223,7 @@ class EveningPlan:
         return f"no evening hour clears {self._export_threshold:.0f} gross PLN/MWh"
 
     def slot_commands(self) -> list[SlotCommand]:
-        """Commands putting this plan into the two evening slots.
+        """Commands putting this plan into the evening slots.
 
         Slots without a window are disabled rather than left alone — an old
         window surviving into a day that does not want it is exactly the kind
@@ -268,90 +252,83 @@ class EveningPlan:
         max_morning_price: float,
         export_threshold: float,
     ) -> tuple[tuple[EveningWindow, ...], tuple[SlotKind, ...]]:
-        """Qualifying hours → grouped runs → windows, with the slot each one takes."""
-        candidates = prices.hours_clearing(
-            cls._evening_hours(day, is_workday),
-            at_least=export_threshold,
-            above=max_morning_price,
-        )
+        """Return the windows of `day`, with the slot each one takes."""
         if is_workday:
-            runs = cls._contiguous_runs(candidates)
-            if ladder := cls._descending_ladder(runs, prices):
-                return cls._late_held_back(ladder, cls._SLOTS_BY_COUNT[3], prices)
-            runs = cls._split_long_run(runs, prices, is_workday)
-        else:
-            runs = cls._best_off_peak_pair(candidates, prices)
-        usable = runs[: cls._ADAPTIVE_WINDOWS]
-        zone_end = cls._expensive_zone_end(day, is_workday)
-        windows = tuple(
-            EveningWindow.covering(
-                tuple(hours),
-                prices,
-                zone_end=zone_end,
-                is_last=index == len(usable) - 1,
-            )
-            for index, hours in enumerate(usable)
+            return cls._workday_rungs(day, prices, max_morning_price, export_threshold)
+        hours = cls._best_off_peak_pair(
+            prices.hours_clearing(
+                cls.NON_WORKDAY_EVENING,
+                at_least=export_threshold,
+                above=max_morning_price,
+            ),
+            prices,
         )
-        return cls._late_held_back(windows, cls._SLOTS_BY_COUNT[len(windows)], prices)
-
-    @staticmethod
-    def _late_held_back(
-        windows: tuple[EveningWindow, ...],
-        slots: tuple[SlotKind, ...],
-        prices: RceDayPrices,
-    ) -> tuple[tuple[EveningWindow, ...], tuple[SlotKind, ...]]:
-        """Leave LATE out when the hour right after it pays more.
-
-        The charge stays in the battery rather than moving to that hour
-        (user's decision 20.10.2026): on 21.10 Late at 20:00 would sell at 759
-        gross with 21:00 paying 819. Moving the sale there was weighed and
-        left out — on 272 workdays since 04.2025 it changed 2 evenings, worth
-        a few grosze each. The windows before keep their targets: the 33%
-        reserve covers the house through the last T2 hour, as it always did.
-        """
-        if not slots or slots[-1] is not SlotKind.DISCHARGE_EVENING_LATE:
-            return windows, slots
-        last = windows[-1].hours[-1]
-        if prices.gross_at(last + 1) <= prices.gross_at(last):
-            return windows, slots
-        return windows[:-1], slots[:-1]
+        if not hours:
+            return (), ()
+        return (EveningWindow.covering(tuple(hours), prices),), (
+            SlotKind.DISCHARGE_EVENING_EARLY,
+        )
 
     @classmethod
-    def _evening_hours(cls, day: date, is_workday: bool) -> range:
-        """Hours worth considering on `day`.
-
-        On a workday: the LAST THREE hours of T2, whatever the season. Summer's
-        block (19-22) is three hours anyway; winter's (16-21) is five, and its
-        first two are no use — the battery empties in under two hours, so
-        starting at 16:00 would spend the charge before the expensive evening
-        even peaks.
-
-        Off-peak days have no T2, so the whole evening is fair game and the
-        best pair inside it gets picked later.
-        """
-        if not is_workday:
-            return cls.NON_WORKDAY_EVENING
+    def _workday_rungs(
+        cls,
+        day: date,
+        prices: RceDayPrices,
+        max_morning_price: float,
+        export_threshold: float,
+    ) -> tuple[tuple[EveningWindow, ...], tuple[SlotKind, ...]]:
+        """One rung for every T2 hour worth selling in (see the class doc)."""
         peak = evening_peak(day)
-        return range(max(peak.start, peak.stop - cls._WORKDAY_HOURS), peak.stop)
+        rungs = [
+            cls._rung_for(hour, peak)
+            for hour in peak
+            if cls._sells(hour, peak, prices, max_morning_price, export_threshold)
+        ]
+        return tuple(w for _k, w in rungs), tuple(k for k, _w in rungs)
+
+    @staticmethod
+    def _sells(
+        hour: int,
+        peak: range,
+        prices: RceDayPrices,
+        max_morning_price: float,
+        export_threshold: float,
+    ) -> bool:
+        """Tell whether `hour` clears the bar, the morning and every later hour."""
+        paid = prices.gross_at(hour)
+        later = max(prices.gross_at(h) for h in range(hour + 1, peak.stop + 1))
+        return paid >= export_threshold and paid > max_morning_price and paid >= later
+
+    @classmethod
+    def _rung_for(cls, hour: int, peak: range) -> tuple[SlotKind, EveningWindow]:
+        """Return the slot and rung of a selling `hour`, by the T2 hours after it.
+
+        Every rung but the last stands on its target as the hour closes
+        (DELAYED_TO_END): the next hour is still T2 and needs that reserve.
+        Hourly settlement nets the whole hour, so holding back to its end costs
+        nothing. The last one empties at once.
+        """
+        left = peak.stop - 1 - hour
+        kind, target = cls._RUNGS[left]
+        behavior = SlotBehavior.IMMEDIATE if left == 0 else SlotBehavior.DELAYED_TO_END
+        return kind, EveningWindow.rung(hour, target_soc=target, behavior=behavior)
 
     @classmethod
     def _best_off_peak_pair(
         cls, candidates: list[int], prices: RceDayPrices
-    ) -> list[list[int]]:
+    ) -> list[int]:
         """Pick the best adjacent pair of hours — the whole plan on a day off.
 
         With no expensive zone to reserve charge for, the only question is
         where to sell, and the battery empties in about 1h48m. Two adjacent
         hours is therefore the entire answer: a wider window only lets the
         strategy drift off the peak, and a second window would have nothing
-        left to discharge. That is why days off never use the LATE slot.
+        left to discharge.
 
         Falls back to the single best hour when no two qualify side by side,
         and to no window at all when nothing qualifies — which is a real
         outcome, not an edge case: the morning filter vetoes every evening
-        hour whenever tomorrow's sunrise pays better, and on a day off that
-        leaves this with an empty list. The workday path reaches the same
-        state through `_contiguous_runs`, which simply returns no runs.
+        hour whenever tomorrow's sunrise pays better.
         """
         if not candidates:
             return []
@@ -364,174 +341,32 @@ class EveningPlan:
             best = max(
                 pairs, key=lambda p: prices.gross_at(p[0]) + prices.gross_at(p[1])
             )
-            return [list(best)]
-        return [[max(candidates, key=prices.gross_at)]]
-
-    @staticmethod
-    def _contiguous_runs(hours: list[int]) -> list[list[int]]:
-        """Split qualifying hours into runs; a cheap hour between them breaks one."""
-        runs: list[list[int]] = []
-        for hour in hours:
-            if runs and hour == runs[-1][-1] + 1:
-                runs[-1].append(hour)
-            else:
-                runs.append([hour])
-        return runs
-
-    @classmethod
-    def _descending_ladder(
-        cls, runs: list[list[int]], prices: RceDayPrices
-    ) -> tuple[EveningWindow, ...] | None:
-        """Three one-hour rungs, or None when the evening does not call for them.
-
-        Used on exactly one shape: a single unbroken run of three expensive
-        hours whose prices fall from the first to the third. That shape is the
-        one the price-driven path handles badly. It picks IMMEDIATE (the first
-        hour pays best), empties the battery to the reserve well before the
-        second hour closes, and from then until the last hour opens the house
-        quietly eats the reserve — so the last expensive hour, which still has
-        to be covered, starts short.
-
-        Every other shape is left alone on purpose. With the peak in the middle
-        or at the end the same path already picks DELAYED_TO_END and lands on
-        the reserve as the hour turns, which is exactly what this ladder has to
-        arrange by hand.
-
-        Each rung ends where an hour ends, so holding it back costs nothing:
-        hourly settlement nets the whole hour, and within one hour it does not
-        matter when the battery gave what it gave.
-        """
-        if len(runs) != 1 or len(runs[0]) != cls._MIN_HOURS_TO_SPLIT:
-            return None
-        hours = runs[0]
-        paid = [prices.gross_at(hour) for hour in hours]
-        if not paid[0] > paid[1] > paid[2]:
-            return None
-        return tuple(
-            EveningWindow.rung(hour, target_soc=target, behavior=behavior)
-            for hour, (target, behavior) in zip(
-                hours, EveningWindow.LADDER, strict=True
-            )
-        )
-
-    @classmethod
-    def _split_long_run(
-        cls, runs: list[list[int]], prices: RceDayPrices, is_workday: bool
-    ) -> list[list[int]]:
-        """Break a lone run of three-plus hours into a head and a final hour.
-
-        Emptying a full battery takes roughly 1h48m, so one window spanning
-        three expensive hours would reach only two of them — starting at once
-        would skip the last, waiting would skip the first. Two windows, with
-        the head stopping at the partial target, put energy into all three.
-
-        Only an undivided run is split; once prices produced two runs there
-        are no slots left to give.
-        """
-        if len(runs) != 1 or len(runs[0]) < cls._MIN_HOURS_TO_SPLIT:
-            return runs
-        run = runs[0]
-        if cls._sell_early_beats_holding(run, prices, is_workday):
-            return [run]
-        return [run[:-1], run[-1:]]
-
-    @classmethod
-    def _sell_early_beats_holding(
-        cls, run: list[int], prices: RceDayPrices, is_workday: bool
-    ) -> bool:
-        """Tell whether emptying into the earlier hours beats keeping a reserve.
-
-        Holding back covers the house through the last expensive hour instead
-        of buying it at the T2 rate. Selling the reserve an hour early earns
-        the price difference instead, so it wins only when that difference
-        beats what the house then buys back.
-
-        The threshold is a stand-in, not a derivation, and the zone gap it is
-        built from does not belong in the arithmetic: the battery ends the
-        evening at 10% either way, so the night top-up — and with it the T3
-        price — is identical on both paths and cancels. What the bar should
-        answer to is the deposit: with the balance in surplus an exported kWh
-        is worth about 30% of its RCE, while the distribution half of a T2
-        purchase is paid in cash whatever the deposit does. Working that
-        through puts the honest threshold at roughly 1100-1500 PLN/MWh, which
-        is where this constant happens to sit. It is kept because it lands in
-        the right place, not because the formula explains it.
-
-        What makes the imprecision affordable is the domain. Every candidate
-        hour already clears `EXPORT_THRESHOLD`, so the last one is never below
-        750 gross and this can only fire above roughly 1840. On top of that a
-        trio whose prices fall all the way is claimed by the ladder, and
-        `_WORKDAY_HOURS` caps a run at three — so what is left is a middle
-        hour paying over 1840 with a cheap hour behind it. A handful of hours
-        a year, worth tenths of a zloty when the call goes the wrong way.
-
-        Off-peak days have no T2 to protect against, so the question does not
-        arise; the last window already empties the battery there.
-        """
-        if not is_workday or len(run) < 2:
-            return False
-        rates = latest_rates()
-        zone_gap = rates.marginal_cost(Zone.T2) - rates.marginal_cost(Zone.T3)
-        price_gap = prices.gross_at(run[-2]) - prices.gross_at(run[-1])
-        return price_gap > zone_gap * cls._SELL_EARLY_MARGIN
-
-    @staticmethod
-    def _expensive_zone_end(day: date, is_workday: bool) -> int | None:
-        """Hour at which T2 ends, or None on days that have no expensive zone."""
-        if not is_workday:
-            return None
-        return evening_peak(day).stop
+            return list(best)
+        return [max(candidates, key=prices.gross_at)]
 
 
 @dataclass(frozen=True)
 class EveningWindow:
     """One contiguous stretch of hours to discharge into — maps onto one slot.
 
-    Value object: `target_soc` and `behavior` follow from the hours and the
-    surrounding day, and are settled once by `covering` rather than by whoever
-    happens to build the window.
+    Value object: `target_soc` and `behavior` are settled once, by `rung` on a
+    workday and by `covering` on a day off, rather than by whoever happens to
+    build the window.
     """
 
-    # Left in the battery when an expensive hour still lies ahead. 33 pp above
-    # the floor is roughly what the house draws over one evening hour, measured
-    # at 1.17 kWh on 02.10 against 1.58 kWh for the 33->10% stretch.
-    PARTIAL_TARGET_SOC: ClassVar[float] = 33.0
+    # A day off has no expensive zone to ration for: its window empties.
     FULL_TARGET_SOC: ClassVar[float] = 10.0
-
-    # Top rung of the ladder: one hour of discharge below a nearly full
-    # battery. At 75 s/pp above 25% an hour sheds about 48 pp, so a battery
-    # starting near 95% lands here as the hour closes; starting from 100% the
-    # rung simply runs out of hour and stops a few points high, which the next
-    # rung absorbs because its target is absolute.
-    FIRST_RUNG_TARGET_SOC: ClassVar[float] = 47.0
-
-    # Targets and behaviors of the three rungs, in slot order. The two upper
-    # rungs have to be standing on their target when the hour turns, which is
-    # what DELAYED_TO_END arranges; the last one empties and may as well do it
-    # at once.
-    LADDER: ClassVar[tuple[tuple[float, SlotBehavior], ...]] = (
-        (FIRST_RUNG_TARGET_SOC, SlotBehavior.DELAYED_TO_END),
-        (PARTIAL_TARGET_SOC, SlotBehavior.DELAYED_TO_END),
-        (FULL_TARGET_SOC, SlotBehavior.IMMEDIATE),
-    )
 
     hours: tuple[int, ...]
     target_soc: float
     behavior: SlotBehavior
 
     @classmethod
-    def covering(
-        cls,
-        hours: tuple[int, ...],
-        prices: RceDayPrices,
-        *,
-        zone_end: int | None,
-        is_last: bool,
-    ) -> EveningWindow:
-        """Build the window over `hours`, settling how deep and when to run."""
+    def covering(cls, hours: tuple[int, ...], prices: RceDayPrices) -> EveningWindow:
+        """Build the day-off window over `hours`: it empties toward the dearer end."""
         return cls(
             hours=hours,
-            target_soc=cls._target_for(hours, zone_end, is_last=is_last),
+            target_soc=cls.FULL_TARGET_SOC,
             behavior=cls._behavior_for(hours, prices),
         )
 
@@ -539,7 +374,7 @@ class EveningWindow:
     def rung(
         cls, hour: int, *, target_soc: float, behavior: SlotBehavior
     ) -> EveningWindow:
-        """One step of the ladder — target and behavior come from it, not from prices."""
+        """One hour of the workday ladder — target and behavior come from it."""
         return cls(hours=(hour,), target_soc=target_soc, behavior=behavior)
 
     @property
@@ -550,14 +385,6 @@ class EveningWindow:
     def end(self) -> time:
         """Exclusive end — the hour after the last one covered."""
         return time(self.hours[-1] + 1, 0)
-
-    @property
-    def is_single_hour(self) -> bool:
-        return len(self.hours) < 2
-
-    def reaches(self, hour: int) -> bool:
-        """Tell whether the window runs up to (or past) `hour`."""
-        return self.hours[-1] + 1 >= hour
 
     def describe(self) -> str:
         """Compact form for the Telegram summary, e.g. `19-21 to 33%`."""
@@ -575,40 +402,6 @@ class EveningWindow:
             SetSlotTargetSocCommand(scope=scope, kind=kind, value=self.target_soc),
             SetSlotBehaviorCommand(scope=scope, kind=kind, value=self.behavior),
         ]
-
-    @classmethod
-    def _target_for(
-        cls, hours: tuple[int, ...], zone_end: int | None, *, is_last: bool
-    ) -> float:
-        """Hold charge back only while an expensive hour still lies ahead.
-
-        Emptying is right in exactly two cases: a day with no expensive zone
-        at all, and a window that runs to the end of T2. Nothing costly comes
-        after either, so there is nothing to ration for.
-
-        A LONE hour that leaves expensive hours behind it takes the ladder's
-        first rung instead. It used to empty as well, on the argument that one
-        hour cannot shed more than ~48 pp anyway — true while T2 began at
-        19:00 and the battery met it full, because the window was then also
-        the last of the zone. Winter moved T2 to 16-21 and the same hour now
-        sits in the middle of it: on 20.10 the plan sold 18:00 alone down to
-        10% while 19:00 and 20:00 were still T2. A full battery survived it on
-        the rate limit (ended the hour at 47%), but from ~60% the house would
-        have bought those two hours at the T2 rate instead.
-
-        One rung is also the better trade, not merely the safer one: the hours
-        left behind are bought at the zone rate, which through 2026 runs well
-        above what the evening pays for them.
-
-        An earlier window always holds back; the later one finishes the job.
-        """
-        if not is_last:
-            return cls.PARTIAL_TARGET_SOC
-        if zone_end is None or hours[-1] + 1 >= zone_end:
-            return cls.FULL_TARGET_SOC
-        if len(hours) < 2:
-            return cls.FIRST_RUNG_TARGET_SOC
-        return cls.PARTIAL_TARGET_SOC
 
     @staticmethod
     def _behavior_for(hours: tuple[int, ...], prices: RceDayPrices) -> SlotBehavior:

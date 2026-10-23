@@ -399,8 +399,8 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.domain.battery_schedule"))
     # dod_policy imports battery_schedule (T1SocReserve) — after it.
     reload(import_module("custom_components.smart_rce.domain.dod_policy"))
-    # evening_plan keeps SlotKind members in module-level tables (_SLOT_ORDER,
-    # _SLOTS_BY_COUNT), so it MUST come after battery_schedule. Reloading it
+    # evening_plan keeps SlotKind members in class-level tables (_SLOT_ORDER,
+    # _RUNGS), so it MUST come after battery_schedule. Reloading it
     # first binds the outgoing SlotKind class while the aggregate is rebuilt
     # with the incoming one; enum members hash by identity, so every
     # `target[cmd.kind]` in apply_slot_command then raises KeyError and the

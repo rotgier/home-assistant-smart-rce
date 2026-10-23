@@ -53,6 +53,8 @@ _LEGACY_EVENING_KEY = "DISCHARGE_EVENING"
 # MID joined on 17.10.2026: it was added to the planner (02.10) after this set.
 _EVENING_KINDS = frozenset(
     {
+        SlotKind.DISCHARGE_EVENING_XXEARLY,
+        SlotKind.DISCHARGE_EVENING_XEARLY,
         SlotKind.DISCHARGE_EVENING_EARLY,
         SlotKind.DISCHARGE_EVENING_MID,
         SlotKind.DISCHARGE_EVENING_LATE,

@@ -84,6 +84,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Slots the evening planner owns — the ones worth diffing and reporting.
 _EVENING = (
+    SlotKind.DISCHARGE_EVENING_XXEARLY,
+    SlotKind.DISCHARGE_EVENING_XEARLY,
     SlotKind.DISCHARGE_EVENING_EARLY,
     SlotKind.DISCHARGE_EVENING_MID,
     SlotKind.DISCHARGE_EVENING_LATE,

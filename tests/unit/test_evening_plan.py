@@ -1,9 +1,11 @@
-"""Evening discharge proposal — the rules the user used to apply by hand.
+"""Evening discharge plan — the rules the user used to apply by hand.
 
-Cases are named after the situations that actually occur: a single expensive
-hour, a pair, a pair followed by a third, a dip in between, and the evening
-that loses to the next morning. Prices in these tests are NET (as RCE
-publishes them); the proposer converts to gross before comparing.
+Workdays (user's decision 23.10.2026): every T2 hour sells on its own when it
+clears the bar, beats tomorrow morning and no later evening hour pays more; a
+selling hour stands on the reserve the T2 hours after it need. Days off: the
+best pair of hours from 16:00, emptied in one window. Prices in these tests
+are NET (as RCE publishes them) unless built with `_gross`; the plan compares
+gross.
 """
 
 from datetime import date, datetime, time
@@ -20,12 +22,34 @@ WEEKEND = date(2026, 9, 20)  # Sunday — T3 all day
 RICH = 700.0  # 861 gross — qualifies
 POOR = 500.0  # 615 gross — does not
 CHEAP_MORNING = 100.0
+_HUGE = 2400.0  # ~2950 gross
+_MID = 1700.0  # ~2090 gross
+_SMALL = 640.0  # ~790 gross
+
+EXPORT_THRESHOLD = EveningPlan.EXPORT_THRESHOLD
+FULL_TARGET_SOC = EveningWindow.FULL_TARGET_SOC
+
+XXEARLY = SlotKind.DISCHARGE_EVENING_XXEARLY
+XEARLY = SlotKind.DISCHARGE_EVENING_XEARLY
+EARLY = SlotKind.DISCHARGE_EVENING_EARLY
+MID = SlotKind.DISCHARGE_EVENING_MID
+LATE = SlotKind.DISCHARGE_EVENING_LATE
+DELAYED = SlotBehavior.DELAYED_TO_END
+IMMEDIATE = SlotBehavior.IMMEDIATE
 
 
 def _day(day: date, **hours: float) -> RceDayPrices:
     prices = [POOR] * 24
     for hour, price in hours.items():
         prices[int(hour[1:])] = price
+    return RceDayPrices(published_at=None, day=day, hour_price=tuple(prices))
+
+
+def _gross(day: date, by_hour: dict[int, float]) -> RceDayPrices:
+    """Build a day from gross prices (as the dashboard shows them), the rest POOR."""
+    prices = [POOR] * 24
+    for hour, gross in by_hour.items():
+        prices[hour] = gross / 1.23
     return RceDayPrices(published_at=None, day=day, hour_price=tuple(prices))
 
 
@@ -38,97 +62,185 @@ def _morning(price: float) -> RceDayPrices:
     )
 
 
-EXPORT_THRESHOLD = EveningPlan.EXPORT_THRESHOLD
-FULL_TARGET_SOC = EveningWindow.FULL_TARGET_SOC
-PARTIAL_TARGET_SOC = EveningWindow.PARTIAL_TARGET_SOC
-FIRST_RUNG_TARGET_SOC = EveningWindow.FIRST_RUNG_TARGET_SOC
+def _morning_gross(price: float) -> RceDayPrices:
+    return _morning(price / 1.23)
 
 
 def _propose(today, tomorrow=None, *, day=WORKDAY, is_workday=True):
     return EveningPlan.for_day(day, today, is_workday=is_workday, tomorrow=tomorrow)
 
 
-# ─── the three shapes the user described ───
+def _rungs(plan: EveningPlan) -> list[tuple[int, float, SlotKind]]:
+    """(hour, target, slot) of every window, read back from the commands."""
+    by_kind: dict[SlotKind, dict[str, object]] = {}
+    for c in plan.slot_commands():
+        by_kind.setdefault(c.kind, {})[type(c).__name__] = c.value
+    return [
+        (cmds["SetSlotStartCommand"].hour, cmds["SetSlotTargetSocCommand"], kind)  # type: ignore[union-attr]
+        for kind, cmds in by_kind.items()
+        if cmds.get("SetSlotEnabledCommand")
+    ]
 
 
-def test_one_expensive_hour_in_the_middle_of_t2_sells_one_rung_not_everything():
-    """19:00 alone, with 20:00 and 21:00 still inside summer T2.
-
-    This used to empty to 10% on the argument that one hour cannot shed more
-    than ~48 pp anyway. The argument held only while the lone hour was also
-    the last of the zone. On 20.10 winter put it in the middle: 18:00 sold
-    alone to 10% while 19:00 and 20:00 were still T2, and only the discharge
-    rate kept the battery off the floor.
-    """
-    proposal = _propose(_day(WORKDAY, h19=RICH), _morning(CHEAP_MORNING))
-
-    assert len(proposal.windows) == 1
-    slot = proposal.windows[0]
-    assert (slot.start, slot.end) == (time(19, 0), time(20, 0))
-    assert slot.target_soc == FIRST_RUNG_TARGET_SOC
+# ─── one rung per selling hour, the reserve by the T2 hours left ───
 
 
-def test_one_expensive_hour_that_closes_t2_still_empties():
-    """The last hour of T2 has nothing behind it, so rationing buys nothing."""
-    proposal = _propose(_day(WORKDAY, h21=RICH), _morning(CHEAP_MORNING))
-
-    assert len(proposal.windows) == 1
-    slot = proposal.windows[0]
-    assert (slot.start, slot.end) == (time(21, 0), time(22, 0))
-    assert slot.target_soc == FULL_TARGET_SOC
-
-
-def test_a_lone_winter_hour_before_the_end_of_t2_holds_a_rung():
-    """20.10 verbatim: 18:00 qualifies, 19:00 and 20:00 vetoed by the morning."""
-    proposal = _propose(
-        _day(WINTER_WORKDAY, h18=1109.0 / 1.23, h19=982.0 / 1.23, h20=857.0 / 1.23),
-        _morning(1034.0 / 1.23),
+def test_a_falling_winter_evening_sells_in_all_five_hours():
+    plan = _propose(
+        _gross(WINTER_WORKDAY, {16: 2000, 17: 1900, 18: 1800, 19: 1700, 20: 1600}),
+        _morning(CHEAP_MORNING),
         day=WINTER_WORKDAY,
     )
 
-    assert len(proposal.windows) == 1
-    slot = proposal.windows[0]
-    assert (slot.start, slot.end) == (time(18, 0), time(19, 0))
-    assert slot.target_soc == FIRST_RUNG_TARGET_SOC
+    assert _rungs(plan) == [
+        (16, 75.0, XXEARLY),
+        (17, 61.0, XEARLY),
+        (18, 47.0, EARLY),
+        (19, 33.0, MID),
+        (20, 10.0, LATE),
+    ]
+    # Every rung but the last stands on its target as the hour closes.
+    assert [w.behavior for w in plan.windows] == [DELAYED] * 4 + [IMMEDIATE]
+    assert all((w.end.hour - w.start.hour) == 1 for w in plan.windows)
 
 
-def test_two_expensive_hours_hold_back_for_the_remaining_t2_hour():
-    # 19 and 20 qualify, 21 does not — but 21 is still inside T2, so the house
-    # must be able to run off the battery rather than buy at the T2 rate.
-    proposal = _propose(_day(WORKDAY, h19=RICH, h20=RICH), _morning(CHEAP_MORNING))
-
-    assert len(proposal.windows) == 1
-    slot = proposal.windows[0]
-    assert (slot.start, slot.end) == (time(19, 0), time(21, 0))
-    assert slot.target_soc == PARTIAL_TARGET_SOC
-
-
-def test_three_expensive_hours_split_into_early_and_late():
-    proposal = _propose(
-        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH), _morning(CHEAP_MORNING)
+def test_an_hour_holds_when_a_later_one_pays_more():
+    # 16:00 beats 17-19 but 20:00 pays more than 17, 18 and 19: those three
+    # hold for it. The slot follows the hour, not the count of windows.
+    plan = _propose(
+        _gross(WINTER_WORKDAY, {16: 1200, 17: 800, 18: 850, 19: 900, 20: 1000}),
+        _morning(CHEAP_MORNING),
+        day=WINTER_WORKDAY,
     )
 
-    early, late = proposal.windows
-    assert (early.start, early.end) == (time(19, 0), time(21, 0))
-    assert early.target_soc == PARTIAL_TARGET_SOC
-    assert (late.start, late.end) == (time(21, 0), time(22, 0))
-    # Runs to the end of T2 — nothing left to reserve for.
-    assert late.target_soc == FULL_TARGET_SOC
+    assert _rungs(plan) == [(16, 75.0, XXEARLY), (20, 10.0, LATE)]
 
 
-# ─── strategy follows the expensive end of the window ───
+def test_a_tie_sells_in_the_earlier_hour():
+    plan = _propose(
+        _gross(WINTER_WORKDAY, {18: 1000, 19: 1000}),
+        _morning(CHEAP_MORNING),
+        day=WINTER_WORKDAY,
+    )
+
+    assert _rungs(plan) == [(18, 47.0, EARLY), (19, 33.0, MID)]
 
 
-def test_strategy_starts_at_once_when_the_first_hour_pays_more():
-    proposal = _propose(_day(WORKDAY, h19=900.0, h20=RICH), _morning(CHEAP_MORNING))
+def test_the_last_hour_holds_for_a_dearer_hour_after_t2_21_10_2026():
+    # RCE net 21.10.2026: 18-20 fall (907, 835, 759 gross), 21:00 pays 819.
+    # 16 and 17 hold for the dearer 18:00.
+    prices = RceDayPrices(
+        published_at=None,
+        day=date(2026, 10, 21),
+        hour_price=(
+            606.87,
+            606.01,
+            594.91,
+            592.57,
+            610.93,
+            695.46,
+            770.57,
+            840.29,
+            710.37,
+            623.04,
+            645.35,
+            598.11,
+            589.57,
+            594.94,
+            701.87,
+            731.86,
+            641.77,
+            697.57,
+            737.19,
+            678.59,
+            616.97,
+            666.01,
+            665.96,
+            602.81,
+        ),  # fmt: skip
+    )
+    plan = EveningPlan.for_day(date(2026, 10, 21), prices, is_workday=True)
 
-    assert proposal.windows[0].behavior is SlotBehavior.IMMEDIATE
+    assert _rungs(plan) == [(18, 47.0, EARLY), (19, 33.0, MID)]
 
 
-def test_strategy_waits_when_the_second_hour_pays_more():
-    proposal = _propose(_day(WORKDAY, h19=RICH, h20=900.0), _morning(CHEAP_MORNING))
+def test_the_morning_takes_the_last_hour_1_10_2026():
+    # Gross 1.10.2026; 2.10 morning paid 1141, more than 20:00 (927). The plan
+    # of the day sold 18-20 to 33% at once and ran out of hour at 19:20.
+    plan = _propose(
+        _gross(
+            date(2026, 10, 1), {16: 864, 17: 942, 18: 1153, 19: 1150, 20: 927, 21: 882}
+        ),
+        _morning_gross(1141),
+        day=date(2026, 10, 1),
+    )
 
-    assert proposal.windows[0].behavior is SlotBehavior.DELAYED_TO_END
+    assert _rungs(plan) == [(18, 47.0, EARLY), (19, 33.0, MID)]
+
+
+def test_the_peak_at_17_takes_the_new_slot_20_10_2026():
+    # Gross 20.10.2026, 21.10 morning 1034: 16:00 holds for 17:00, 19:00 and
+    # 20:00 lose to the morning.
+    plan = _propose(
+        _gross(
+            date(2026, 10, 20),
+            {16: 1100, 17: 1152, 18: 1109, 19: 982, 20: 857, 21: 763},
+        ),
+        _morning_gross(1034),
+        day=date(2026, 10, 20),
+    )
+
+    assert _rungs(plan) == [(17, 61.0, XEARLY), (18, 47.0, EARLY)]
+
+
+def test_23_10_2026_sells_from_the_peak_and_keeps_the_last_reserve():
+    # The plan of the day sold 18-20 to 33% at once (reached 18:40) and the
+    # house barely made it to 21:00. 24.10 morning paid 837 > 20:00 (829).
+    plan = _propose(
+        _gross(
+            date(2026, 10, 23),
+            {16: 1060, 17: 1435, 18: 1363, 19: 1084, 20: 829, 21: 689},
+        ),
+        _morning_gross(837),
+        day=date(2026, 10, 23),
+    )
+
+    assert _rungs(plan) == [(17, 61.0, XEARLY), (18, 47.0, EARLY), (19, 33.0, MID)]
+    assert all(w.behavior is DELAYED for w in plan.windows)
+
+
+def test_a_summer_evening_uses_the_three_slots_it_always_had():
+    plan = _propose(
+        _day(WORKDAY, h19=_HUGE, h20=_MID, h21=_SMALL), _morning(CHEAP_MORNING)
+    )
+
+    assert _rungs(plan) == [(19, 47.0, EARLY), (20, 33.0, MID), (21, 10.0, LATE)]
+    disabled = {
+        c.kind
+        for c in plan.slot_commands()
+        if type(c).__name__ == "SetSlotEnabledCommand" and not c.value
+    }
+    assert disabled == {XXEARLY, XEARLY}
+
+
+def test_a_lone_hour_in_the_middle_of_t2_holds_its_reserve():
+    # 19:00 alone with 20:00 and 21:00 still summer T2: one rung, not empty.
+    plan = _propose(_day(WORKDAY, h19=RICH), _morning(CHEAP_MORNING))
+
+    assert _rungs(plan) == [(19, 47.0, EARLY)]
+
+
+def test_a_cheap_hour_in_the_middle_leaves_a_gap():
+    plan = _propose(
+        _day(WORKDAY, h19=RICH, h20=POOR, h21=RICH), _morning(CHEAP_MORNING)
+    )
+
+    assert _rungs(plan) == [(19, 47.0, EARLY), (21, 10.0, LATE)]
+
+
+def test_hours_outside_the_expensive_zone_are_ignored_on_workdays():
+    # 18:00 is T3 on a summer workday, however rich it looks.
+    assert _propose(_day(WORKDAY, h18=900.0), _morning(CHEAP_MORNING)).is_empty
 
 
 # ─── the morning filter ───
@@ -142,14 +254,10 @@ def test_a_better_morning_cancels_the_evening_entirely():
 
 
 def test_only_hours_beating_the_morning_survive():
-    # 19 beats the morning, 20 does not — the window shrinks to one hour.
+    # 19 beats the morning, 20 does not.
     proposal = _propose(_day(WORKDAY, h19=900.0, h20=RICH), _morning(RICH + 50))
 
-    assert len(proposal.windows) == 1
-    assert (proposal.windows[0].start, proposal.windows[0].end) == (
-        time(19, 0),
-        time(20, 0),
-    )
+    assert _rungs(proposal) == [(19, 47.0, EARLY)]
 
 
 def test_an_unpublished_tomorrow_leaves_the_evening_on_its_own_merits():
@@ -176,48 +284,7 @@ def test_the_threshold_is_applied_on_gross_prices():
     assert not _propose(_day(WORKDAY, h19=just_over), _morning(0)).is_empty
 
 
-# ─── zones and seasons ───
-
-
-def test_a_gap_in_the_middle_produces_two_windows():
-    proposal = _propose(
-        _day(WORKDAY, h19=RICH, h20=POOR, h21=RICH), _morning(CHEAP_MORNING)
-    )
-
-    early, late = proposal.windows
-    assert (early.start, early.end) == (time(19, 0), time(20, 0))
-    assert (late.start, late.end) == (time(21, 0), time(22, 0))
-
-
-def test_winter_considers_the_last_three_hours_of_its_longer_peak():
-    # Winter T2 runs 16-21, but the battery empties in under two hours, so
-    # only 18, 19 and 20 are of any use — starting at 16:00 would spend the
-    # charge before the expensive evening peaks.
-    proposal = _propose(
-        _day(WINTER_WORKDAY, h18=RICH, h19=RICH),
-        _morning(CHEAP_MORNING),
-        day=WINTER_WORKDAY,
-    )
-
-    slot = proposal.windows[0]
-    assert (slot.start, slot.end) == (time(18, 0), time(20, 0))
-
-
-def test_winter_ignores_the_first_hours_of_its_peak():
-    proposal = _propose(
-        _day(WINTER_WORKDAY, h16=_HUGE, h17=_HUGE),
-        _morning(CHEAP_MORNING),
-        day=WINTER_WORKDAY,
-    )
-
-    assert proposal.is_empty
-
-
-def test_evening_hours_outside_the_expensive_zone_are_ignored_on_workdays():
-    # 18:00 is T3 on a summer workday, however rich it looks.
-    proposal = _propose(_day(WORKDAY, h18=900.0), _morning(CHEAP_MORNING))
-
-    assert proposal.is_empty
+# ─── days off ───
 
 
 def test_a_weekend_considers_the_whole_evening_and_always_empties():
@@ -236,7 +303,7 @@ def test_a_weekend_considers_the_whole_evening_and_always_empties():
 
 def test_a_day_off_takes_the_best_adjacent_pair():
     # 20 and 21 together beat any other neighbouring pair, so that is the
-    # window — one slot, nothing held back, LATE unused.
+    # window — one slot, nothing held back.
     proposal = _propose(
         _day(WEEKEND, h17=RICH, h18=RICH, h20=_HUGE, h21=_MID),
         _morning(CHEAP_MORNING),
@@ -250,7 +317,7 @@ def test_a_day_off_takes_the_best_adjacent_pair():
     assert window.target_soc == FULL_TARGET_SOC
 
 
-def test_a_day_off_never_fills_the_late_slot():
+def test_a_day_off_uses_the_early_slot_alone():
     proposal = _propose(
         _day(WEEKEND, h17=RICH, h18=RICH, h19=RICH, h20=RICH),
         _morning(CHEAP_MORNING),
@@ -258,11 +325,7 @@ def test_a_day_off_never_fills_the_late_slot():
         is_workday=False,
     )
 
-    late = [
-        c for c in proposal.slot_commands() if c.kind is SlotKind.DISCHARGE_EVENING_LATE
-    ]
-    assert len(proposal.windows) == 1
-    assert [c.value for c in late] == [False]
+    assert [kind for _h, _t, kind in _rungs(proposal)] == [EARLY]
 
 
 def test_a_day_off_falls_back_to_one_hour_when_none_adjoin():
@@ -277,26 +340,52 @@ def test_a_day_off_falls_back_to_one_hour_when_none_adjoin():
     assert proposal.windows[0].start == time(20, 0)
 
 
+def test_a_day_off_window_pushes_toward_its_dearer_end():
+    first = _propose(
+        _day(WEEKEND, h19=900.0, h20=RICH), day=WEEKEND, is_workday=False
+    ).windows[0]
+    second = _propose(
+        _day(WEEKEND, h19=RICH, h20=900.0), day=WEEKEND, is_workday=False
+    ).windows[0]
+
+    assert first.behavior is IMMEDIATE
+    assert second.behavior is DELAYED
+
+
+def test_a_day_off_with_nothing_left_after_the_morning_filter_is_empty():
+    """Every evening hour vetoed on a day off used to raise ValueError.
+
+    Real case, 04.10.2026: the evening paid 702-1255 gross, which clears the
+    export threshold, but Monday 07:00 paid 1309 and outbid all of it; the
+    fallback called `max()` on an empty list.
+    """
+    plan = _propose(
+        _day(WEEKEND, h17=1003.0, h18=1173.0, h19=1255.0, h20=1195.0),
+        _morning(1309.0),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    assert plan.is_empty
+    assert plan.overruled_by_morning
+    assert [c.value for c in plan.slot_commands()] == [False] * 5
+
+
+def test_a_day_off_with_nothing_qualifying_at_all_is_empty_too():
+    """Same shape without a morning to blame — simply no hour worth selling."""
+    plan = _propose(_day(WEEKEND), day=WEEKEND, is_workday=False)
+
+    assert plan.is_empty
+    assert not plan.overruled_by_morning
+
+
 # ─── the plan speaks the aggregate's language ───
 
 
-def test_windows_become_commands_for_the_two_evening_slots():
-    plan = _propose(
-        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH), _morning(CHEAP_MORNING)
-    )
-
-    targets = {(c.kind, type(c).__name__) for c in plan.slot_commands()}
-    assert (SlotKind.DISCHARGE_EVENING_EARLY, "SetSlotStartCommand") in targets
-    assert (SlotKind.DISCHARGE_EVENING_LATE, "SetSlotStartCommand") in targets
-
-
 def test_a_slot_without_a_window_is_switched_off():
-    # One window only — LATE must be disabled, not left on yesterday's setting.
     plan = _propose(_day(WORKDAY, h19=RICH, h20=RICH), _morning(CHEAP_MORNING))
 
-    late = [
-        c for c in plan.slot_commands() if c.kind is SlotKind.DISCHARGE_EVENING_LATE
-    ]
+    late = [c for c in plan.slot_commands() if c.kind is LATE]
     assert len(late) == 1
     assert late[0].value is False
 
@@ -305,16 +394,28 @@ def test_an_empty_plan_switches_every_slot_off():
     plan = _propose(_day(WORKDAY, h19=POOR), _morning(CHEAP_MORNING))
 
     assert plan.is_empty
-    assert [c.value for c in plan.slot_commands()] == [False, False, False]
+    assert [c.value for c in plan.slot_commands()] == [False] * 5
 
 
 def test_commands_carry_the_window_settings():
     plan = _propose(_day(WORKDAY, h19=RICH, h20=RICH), _morning(CHEAP_MORNING))
 
-    values = {type(c).__name__: c.value for c in plan.slot_commands()}
-    assert values["SetSlotStartCommand"] == time(19, 0)
-    assert values["SetSlotEndCommand"] == time(21, 0)
-    assert values["SetSlotTargetSocCommand"] == PARTIAL_TARGET_SOC
+    early = {type(c).__name__: c.value for c in plan.slot_commands() if c.kind is EARLY}
+    assert early == {
+        "SetSlotEnabledCommand": True,
+        "SetSlotStartCommand": time(19, 0),
+        "SetSlotEndCommand": time(20, 0),
+        "SetSlotTargetSocCommand": 47.0,
+        "SetSlotBehaviorCommand": DELAYED,
+    }
+
+
+def test_a_window_describes_itself_for_the_summary():
+    plan = _propose(_day(WORKDAY, h19=RICH, h20=900.0), _morning(CHEAP_MORNING))
+
+    assert [w.describe() for w in plan.windows] == [
+        "20:00-21:00 to 33% (delayed_to_end)"
+    ]
 
 
 # ─── who may overwrite a hand-set schedule ───
@@ -339,25 +440,6 @@ def test_a_plan_left_intact_by_the_morning_claims_nothing():
     plan = _propose(_day(WORKDAY, h19=RICH, h20=RICH), _morning(CHEAP_MORNING))
 
     assert not plan.overruled_by_morning
-
-
-# ─── window as a value object ───
-
-
-def test_a_window_describes_itself_for_the_summary():
-    plan = _propose(_day(WORKDAY, h19=RICH, h20=900.0), _morning(CHEAP_MORNING))
-
-    assert plan.windows[0].describe() == "19:00-21:00 to 33% (delayed_to_end)"
-
-
-def test_a_window_knows_whether_it_runs_to_a_given_hour():
-    window = EveningWindow.covering(
-        (19, 20), _day(WORKDAY, h19=RICH, h20=RICH), zone_end=22, is_last=True
-    )
-
-    assert window.reaches(21)
-    assert not window.reaches(22)
-    assert not window.is_single_hour
 
 
 # ─── which evening a run targets ───
@@ -412,297 +494,3 @@ def test_a_slot_ending_before_the_season_hour_changes_nothing():
 def test_after_midnight_a_run_is_back_to_planning_tonight():
     # The 00:05 retry sits inside the evening it is planning for.
     assert not EveningPlan.plans_tomorrow_at(datetime(2026, 9, 21, 0, 5))
-
-
-# ─── a day off where the morning wins outright ───
-
-
-def test_a_day_off_with_nothing_left_after_the_morning_filter_is_empty():
-    """Every evening hour vetoed on a day off used to raise ValueError.
-
-    Real case, 04.10.2026: the evening paid 702-1255 gross, which clears the
-    export threshold, but Monday 07:00 paid 1309 and outbid all of it. The
-    workday path reaches this state through `_contiguous_runs`, which returns
-    no runs; the day-off path went to `_best_off_peak_pair`, whose fallback
-    called `max()` on an empty list. The afternoon sweep died every five
-    minutes until the Telegram guard said so.
-    """
-    plan = _propose(
-        _day(WEEKEND, h17=1003.0, h18=1173.0, h19=1255.0, h20=1195.0),
-        _morning(1309.0),
-        day=WEEKEND,
-        is_workday=False,
-    )
-
-    assert plan.is_empty
-    assert plan.overruled_by_morning
-    assert [c.value for c in plan.slot_commands()] == [False, False, False]
-
-
-def test_a_day_off_with_nothing_qualifying_at_all_is_empty_too():
-    """Same shape without a morning to blame — simply no hour worth selling."""
-    plan = _propose(_day(WEEKEND), day=WEEKEND, is_workday=False)
-
-    assert plan.is_empty
-    assert not plan.overruled_by_morning
-
-
-# ─── the three-rung ladder ───
-
-# A trio that falls from hour to hour. Gross: ~2950 / ~2090 / ~1600.
-_LADDER_DAY = {"h19": 2400.0, "h20": 1700.0, "h21": 1300.0}
-
-
-def test_a_falling_trio_becomes_three_one_hour_rungs():
-    plan = _propose(_day(WORKDAY, **_LADDER_DAY), _morning(CHEAP_MORNING))
-
-    assert [(w.start, w.end) for w in plan.windows] == [
-        (time(19, 0), time(20, 0)),
-        (time(20, 0), time(21, 0)),
-        (time(21, 0), time(22, 0)),
-    ]
-    assert [w.target_soc for w in plan.windows] == [47.0, 33.0, 10.0]
-    assert [w.behavior for w in plan.windows] == [
-        SlotBehavior.DELAYED_TO_END,
-        SlotBehavior.DELAYED_TO_END,
-        SlotBehavior.IMMEDIATE,
-    ]
-
-
-def test_the_two_upper_rungs_wait_so_they_land_on_target_as_the_hour_turns():
-    """The whole point of the ladder: be standing on the reserve at the boundary.
-
-    IMMEDIATE would reach the target early and hand the rest of the hour to
-    the house, which quietly eats into the reserve the next hour needs.
-    """
-    plan = _propose(_day(WORKDAY, **_LADDER_DAY), _morning(CHEAP_MORNING))
-
-    assert all(w.behavior is SlotBehavior.DELAYED_TO_END for w in plan.windows[:2])
-
-
-def test_the_ladder_fills_all_three_slots_in_order():
-    plan = _propose(_day(WORKDAY, **_LADDER_DAY), _morning(CHEAP_MORNING))
-
-    enabled = [
-        c.kind.name
-        for c in plan.slot_commands()
-        if type(c).__name__ == "SetSlotEnabledCommand" and c.value
-    ]
-    assert enabled == [
-        "DISCHARGE_EVENING_EARLY",
-        "DISCHARGE_EVENING_MID",
-        "DISCHARGE_EVENING_LATE",
-    ]
-
-
-def test_a_peak_in_the_middle_is_left_to_the_price_driven_path():
-    """Not a falling trio — and that path already lands on the reserve itself."""
-    plan = _propose(
-        _day(WORKDAY, h19=1300.0, h20=2400.0, h21=1700.0), _morning(CHEAP_MORNING)
-    )
-
-    assert len(plan.windows) == 2
-    assert plan.windows[0].behavior is SlotBehavior.DELAYED_TO_END
-
-
-def test_a_rising_trio_is_left_alone():
-    plan = _propose(
-        _day(WORKDAY, h19=1300.0, h20=1700.0, h21=2400.0), _morning(CHEAP_MORNING)
-    )
-
-    assert len(plan.windows) == 2
-
-
-def test_equal_hours_are_not_a_falling_trio():
-    """`>` not `>=`.
-
-    What follows is then the price-driven path's business — here it sells the
-    reserve early, because 20:00 beats 21:00 by more than the zone gap. The
-    point of the assertion is only that the ladder stood down.
-    """
-    plan = _propose(
-        _day(WORKDAY, h19=2400.0, h20=2400.0, h21=1300.0), _morning(CHEAP_MORNING)
-    )
-
-    assert len(plan.windows) < 3
-    assert all(w.target_soc != 47.0 for w in plan.windows)
-
-
-def test_only_two_qualifying_hours_keep_the_old_pair():
-    """The ladder needs three hours; two stay on EARLY + LATE, MID unused."""
-    plan = _propose(_day(WORKDAY, h19=2400.0, h20=1700.0), _morning(CHEAP_MORNING))
-
-    enabled = [
-        c.kind.name
-        for c in plan.slot_commands()
-        if type(c).__name__ == "SetSlotEnabledCommand" and c.value
-    ]
-    assert "DISCHARGE_EVENING_MID" not in enabled
-
-
-def test_a_day_off_never_climbs_the_ladder():
-    """Days off have no T2 to ration — one window, and MID stays out of it."""
-    plan = _propose(
-        _day(WEEKEND, h17=2400.0, h18=1700.0, h19=1300.0),
-        _morning(CHEAP_MORNING),
-        day=WEEKEND,
-        is_workday=False,
-    )
-
-    assert len(plan.windows) == 1
-
-
-# ─── selling the reserve early instead of holding it ───
-
-# Gross zone gap is T2 minus T3 (~870 at the 2026 tariff), and the margin
-# demands a quarter more. Net prices below are chosen either side of that.
-_HUGE = 2400.0  # ~2950 gross
-_MID = 1700.0  # ~2090 gross
-_SMALL = 640.0  # ~790 gross
-
-
-def test_a_wide_gap_before_the_last_hour_keeps_one_window():
-    # 19 and 20 pay hugely, 21 barely clears the threshold: selling the
-    # reserve into the peak beats saving it for the T2 hour.
-    #
-    # The peak sits at 20:00, not 19:00. A trio that falls all the way belongs
-    # to the ladder now, so the early-sale rule is only ever asked about
-    # evenings shaped like this one.
-    proposal = _propose(
-        _day(WORKDAY, h19=_MID, h20=_HUGE, h21=_SMALL), _morning(CHEAP_MORNING)
-    )
-
-    assert len(proposal.windows) == 1
-    window = proposal.windows[0]
-    assert (window.start, window.end) == (time(19, 0), time(22, 0))
-    assert window.target_soc == FULL_TARGET_SOC
-
-
-def test_a_narrow_gap_still_splits_into_two_windows():
-    # All three hours are comparable — holding a reserve for 21:00 wins.
-    proposal = _propose(
-        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH), _morning(CHEAP_MORNING)
-    )
-
-    assert len(proposal.windows) == 2
-
-
-def test_the_margin_is_what_rejects_a_gap_that_merely_clears_break_even():
-    # Gap just over the raw zone difference but under it times the margin.
-    from custom_components.smart_rce.domain.evening_plan import EveningPlan
-    from custom_components.smart_rce.tariff import Zone
-    from custom_components.smart_rce.tariff.table import latest_rates
-
-    rates = latest_rates()
-    zone_gap = rates.marginal_cost(Zone.T2) - rates.marginal_cost(Zone.T3)
-    last = 900.0  # net
-    bare = last + (zone_gap * 1.05) / 1.23  # clears break-even, not the margin
-    ample = last + (zone_gap * EveningPlan._SELL_EARLY_MARGIN * 1.2) / 1.23
-
-    # 19:00 matches 20:00 rather than beating it, so the trio does not fall
-    # all the way and the ladder leaves the decision here.
-    assert (
-        len(_propose(_day(WORKDAY, h19=bare, h20=bare, h21=last), _morning(0)).windows)
-        == 2
-    )
-    assert (
-        len(
-            _propose(_day(WORKDAY, h19=ample, h20=ample, h21=last), _morning(0)).windows
-        )
-        == 1
-    )
-
-
-def test_a_day_off_never_asks_the_question():
-    # No T2 to reserve against, and only ever one window — so the early-sale
-    # rule has nothing to decide there.
-    proposal = _propose(
-        _day(WEEKEND, h17=_HUGE, h18=_MID, h19=_SMALL),
-        _morning(CHEAP_MORNING),
-        day=WEEKEND,
-        is_workday=False,
-    )
-
-    assert len(proposal.windows) == 1
-
-
-# ─── LATE stands down when the hour after it pays more (20.10.2026) ───
-
-
-def _enabled(plan: EveningPlan) -> list[str]:
-    return [
-        c.kind.name
-        for c in plan.slot_commands()
-        if type(c).__name__ == "SetSlotEnabledCommand" and c.value
-    ]
-
-
-def test_late_stands_down_when_the_next_hour_pays_more_21_10_2026():
-    """RCE net 21.10.2026: 18-20 fall (907, 835, 759 gross), 21:00 pays 819.
-
-    The ladder keeps its two upper rungs; LATE at 20:00 is left out and the
-    charge stays in the battery rather than moving to 21:00.
-    """
-    prices = RceDayPrices(
-        published_at=None,
-        day=date(2026, 10, 21),
-        hour_price=(
-            606.87,
-            606.01,
-            594.91,
-            592.57,
-            610.93,
-            695.46,
-            770.57,
-            840.29,
-            710.37,
-            623.04,
-            645.35,
-            598.11,
-            589.57,
-            594.94,
-            701.87,
-            731.86,
-            641.77,
-            697.57,
-            737.19,
-            678.59,
-            616.97,
-            666.01,
-            665.96,
-            602.81,
-        ),  # fmt: skip
-    )
-    plan = EveningPlan.for_day(date(2026, 10, 21), prices, is_workday=True)
-
-    assert [(w.start, w.target_soc) for w in plan.windows] == [
-        (time(18, 0), 47.0),
-        (time(19, 0), 33.0),
-    ]
-    # MID keeps its slot: dropping LATE must not shift the rung into it.
-    assert _enabled(plan) == ["DISCHARGE_EVENING_EARLY", "DISCHARGE_EVENING_MID"]
-
-
-def test_late_stands_down_in_the_split_too_and_early_keeps_its_reserve():
-    # Summer T2 19-22: three rich hours split into 19-21 + 21; 22:00 pays more.
-    plan = _propose(
-        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH, h22=RICH + 50),
-        _morning(CHEAP_MORNING),
-    )
-
-    (early,) = plan.windows
-    assert (early.start, early.end, early.target_soc) == (
-        time(19, 0),
-        time(21, 0),
-        PARTIAL_TARGET_SOC,
-    )
-    assert _enabled(plan) == ["DISCHARGE_EVENING_EARLY"]
-
-
-def test_late_stays_when_the_next_hour_pays_the_same():
-    plan = _propose(
-        _day(WORKDAY, h19=RICH, h20=RICH, h21=RICH, h22=RICH),
-        _morning(CHEAP_MORNING),
-    )
-
-    assert _enabled(plan) == ["DISCHARGE_EVENING_EARLY", "DISCHARGE_EVENING_LATE"]

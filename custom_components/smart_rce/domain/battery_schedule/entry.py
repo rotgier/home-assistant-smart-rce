@@ -433,6 +433,24 @@ class SlotKind(Enum):
         workdays_only=True,
     )
 
+    DISCHARGE_EVENING_XXEARLY = SlotProfile(
+        direction=Direction.DISCHARGE,
+        notification_level=NotificationLevel.EMERGENCY,
+        # Winter's first T2 hour (16:00), a rung of `EveningPlan` when it is
+        # worth selling in: it stands on 75%, the reserve the four T2 hours
+        # after it need (user's decision 23.10.2026).
+        default_window=(time(16, 0), time(17, 0)),
+        default_target_soc=75.0,
+    )
+
+    DISCHARGE_EVENING_XEARLY = SlotProfile(
+        direction=Direction.DISCHARGE,
+        notification_level=NotificationLevel.EMERGENCY,
+        # Winter's 17:00 rung, standing on 61% for the three T2 hours after it.
+        default_window=(time(17, 0), time(18, 0)),
+        default_target_soc=61.0,
+    )
+
     DISCHARGE_EVENING_EARLY = SlotProfile(
         direction=Direction.DISCHARGE,
         notification_level=NotificationLevel.EMERGENCY,
@@ -444,10 +462,9 @@ class SlotKind(Enum):
     DISCHARGE_EVENING_MID = SlotProfile(
         direction=Direction.DISCHARGE,
         notification_level=NotificationLevel.EMERGENCY,
-        # Middle rung of the descending ladder, used only on evenings whose
-        # three expensive hours get cheaper one after another. Its job is less
-        # to sell than to be standing at the reserve when the hour closes —
-        # see `EveningPlan._descending_ladder`.
+        # The second-to-last T2 hour's rung (winter 19:00, 33%). Its job is
+        # less to sell than to be standing at the reserve when the hour
+        # closes — see `EveningPlan._rung_for`.
         default_window=(time(20, 0), time(21, 0)),
         default_target_soc=33.0,
     )
@@ -489,6 +506,8 @@ class SlotKind(Enum):
             cls.CHARGE_AFTERNOON,
             cls.DISCHARGE_MORNING_AUTO,
             cls.DISCHARGE_MORNING,
+            cls.DISCHARGE_EVENING_XXEARLY,
+            cls.DISCHARGE_EVENING_XEARLY,
             cls.DISCHARGE_EVENING_EARLY,
             cls.DISCHARGE_EVENING_MID,
             cls.DISCHARGE_EVENING_LATE,

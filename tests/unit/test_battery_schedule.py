@@ -139,6 +139,8 @@ class TestSlotProfile:
             SlotKind.CHARGE_AFTERNOON,
             SlotKind.DISCHARGE_MORNING_AUTO,
             SlotKind.DISCHARGE_MORNING,
+            SlotKind.DISCHARGE_EVENING_XXEARLY,
+            SlotKind.DISCHARGE_EVENING_XEARLY,
             SlotKind.DISCHARGE_EVENING_EARLY,
             SlotKind.DISCHARGE_EVENING_MID,
             SlotKind.DISCHARGE_EVENING_LATE,

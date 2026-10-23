@@ -63,16 +63,21 @@ async def notify_evening_plan(
 
 def _describe_change(change: SlotChange) -> str:
     """One slot, before and after — so the reader sees what the plan moved."""
-    label = (
-        "wcześniejszy"
-        if change.kind is SlotKind.DISCHARGE_EVENING_EARLY
-        else "późniejszy"
-    )
+    label = _LABELS.get(change.kind, change.kind.name)
     if change.was_disabled:
         return f"• {label}: wyłączony (był {_window(change.before)})"
     if change.was_enabled:
         return f"• {label}: włączony {_window(change.after)}"
     return f"• {label}: {_window(change.before)} → {_window(change.after)}"
+
+
+_LABELS = {
+    SlotKind.DISCHARGE_EVENING_XXEARLY: "XXEarly",
+    SlotKind.DISCHARGE_EVENING_XEARLY: "XEarly",
+    SlotKind.DISCHARGE_EVENING_EARLY: "Early",
+    SlotKind.DISCHARGE_EVENING_MID: "Mid",
+    SlotKind.DISCHARGE_EVENING_LATE: "Late",
+}
 
 
 def _window(entry: BatteryScheduleEntry) -> str:
