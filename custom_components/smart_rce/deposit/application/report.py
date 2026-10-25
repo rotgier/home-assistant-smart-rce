@@ -7,7 +7,7 @@ one snapshot avoids the sensors and the table disagreeing mid-recalculation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +15,7 @@ from ...tariff import VAT
 from ..domain.billing_month import BillingMonth
 from ..domain.capacity import ConsumptionCapacity
 from ..domain.deposit_ledger import MonthSettlement
+from ..domain.export_origin import ExportOrigin
 from ..domain.projection import ExpiryOutlook, WinterOutlook
 from ..domain.savings import SavingsReport
 
@@ -58,6 +59,15 @@ class DepositReport:
     winter: WinterOutlook
     expiry: ExpiryOutlook
     savings: SavingsReport
+    export_origin: Mapping[BillingMonth, ExportOrigin] = field(default_factory=dict)
+    """Deposit of the previous and the current month split into PV and battery."""
+
+    def origin_of(self, months_back: int) -> ExportOrigin | None:
+        """Return the split of the month `months_back` before the latest one measured."""
+        if not self.export_origin:
+            return None
+        latest = max(self.export_origin)
+        return self.export_origin.get(latest.shifted(-months_back))
 
     @property
     def utilization(self) -> float:

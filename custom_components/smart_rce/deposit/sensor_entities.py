@@ -117,6 +117,11 @@ def _rounded(value: float | None, digits: int = 2) -> float | None:
     return None if value is None else round(value, digits)
 
 
+def _origin(report: DepositReport, months_back: int, field: str) -> float | None:
+    origin = report.origin_of(months_back)
+    return None if origin is None else _rounded(getattr(origin, field))
+
+
 SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
     DepositSensorDescription(
         key="balance",
@@ -223,6 +228,41 @@ SENSOR_DESCRIPTIONS: tuple[DepositSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         value_fn=lambda report: _rounded(report.savings.deposit_pln),
         icon="mdi:cash-refund",
+    ),
+    # Where the deposit came from (ADR-028): export the PV did not need for the
+    # house, or the battery selling in the dear hours. Current month as the
+    # meter has it so far, and the previous one, which settles a week later.
+    DepositSensorDescription(
+        key="deposit_pv_month",
+        name="From PV This Month",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda report: _origin(report, 0, "pv_pln"),
+        icon="mdi:solar-power",
+    ),
+    DepositSensorDescription(
+        key="deposit_battery_month",
+        name="From Battery This Month",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda report: _origin(report, 0, "battery_pln"),
+        icon="mdi:home-battery",
+    ),
+    DepositSensorDescription(
+        key="deposit_pv_last_month",
+        name="From PV Last Month",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda report: _origin(report, 1, "pv_pln"),
+        icon="mdi:solar-power",
+    ),
+    DepositSensorDescription(
+        key="deposit_battery_last_month",
+        name="From Battery Last Month",
+        native_unit_of_measurement=_PLN,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda report: _origin(report, 1, "battery_pln"),
+        icon="mdi:home-battery",
     ),
     DepositSensorDescription(
         # Gross, to line up with `number.ems_export_threshold`

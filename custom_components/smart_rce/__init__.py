@@ -657,6 +657,7 @@ def live_reload() -> None:
     reload(import_module("custom_components.smart_rce.deposit.domain.self_consumption"))
     reload(import_module("custom_components.smart_rce.deposit.domain.savings"))
     reload(import_module("custom_components.smart_rce.deposit.domain.hourly_history"))
+    reload(import_module("custom_components.smart_rce.deposit.domain.export_origin"))
     reload(import_module("custom_components.smart_rce.deposit.domain.market_price"))
     reload(import_module("custom_components.smart_rce.deposit.domain.projection"))
     reload(import_module("custom_components.smart_rce.deposit.domain"))
@@ -704,6 +705,12 @@ def live_reload() -> None:
     reload(
         import_module("custom_components.smart_rce.deposit.infrastructure.rcem_reader")
     )
+    # battery_discharge_reader imports a helper from household_energy_reader.
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.infrastructure.battery_discharge_reader"
+        )
+    )
     reload(import_module("custom_components.smart_rce.deposit.infrastructure"))
     reload(import_module("custom_components.smart_rce.deposit.application.ports"))
     reload(import_module("custom_components.smart_rce.deposit.application.report"))
@@ -712,6 +719,11 @@ def live_reload() -> None:
     )
     reload(
         import_module("custom_components.smart_rce.deposit.application.savings_service")
+    )
+    reload(
+        import_module(
+            "custom_components.smart_rce.deposit.application.export_origin_service"
+        )
     )
     reload(
         import_module(

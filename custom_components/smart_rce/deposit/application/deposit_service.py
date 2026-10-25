@@ -25,6 +25,8 @@ from .report import DepositReport, MonthlyVolumes, OpenMonth
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from ..domain.export_origin import ExportOrigin
+
 _PLN_PER_MWH: Final = 1000.0
 
 
@@ -58,6 +60,7 @@ class DepositService:
         self._measured_production: dict[BillingMonth, float] = {}
         self._last_year_days: dict[datetime.date, DayRecord] = {}
         self._self_consumption: dict[BillingMonth, Mapping[Zone, float]] = {}
+        self._export_origin: dict[BillingMonth, ExportOrigin] = {}
         self._consumption_factor = consumption_factor
         self._price_factor = price_factor
         self._report = self._build()
@@ -106,6 +109,13 @@ class DepositService:
         self._self_consumption = dict(by_month)
         self.recalculate()
 
+    def update_export_origin(
+        self, by_month: Mapping[BillingMonth, ExportOrigin]
+    ) -> None:
+        """Replace the PV / battery split of recent months and rebuild."""
+        self._export_origin = dict(by_month)
+        self.recalculate()
+
     def recalculate(self) -> None:
         """Rebuild the snapshot and wake the entities reading it."""
         self._report = self._build()
@@ -145,6 +155,7 @@ class DepositService:
                 self._tariff,
                 self._legacy,
             ),
+            export_origin=dict(self._export_origin),
         )
 
     def _open_months(self, settled_balance: float) -> tuple[OpenMonth, ...]:

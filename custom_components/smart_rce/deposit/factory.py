@@ -27,11 +27,13 @@ from homeassistant.util import dt as dt_util
 from ..infrastructure.async_task_runner import AsyncTaskRunner
 from . import websocket_api
 from .application.deposit_service import DepositService
+from .application.export_origin_service import ExportOriginService
 from .application.market_price_service import MarketPriceService
 from .application.production_service import ProductionService
 from .application.reference_days_service import ReferenceDaysService
 from .application.refresh_service import DepositRefreshService
 from .application.savings_service import SavingsService
+from .infrastructure.battery_discharge_reader import BatteryDischargeReader
 from .infrastructure.elicznik_reader import ElicznikReader
 from .infrastructure.history_repository import HistoryRepository
 from .infrastructure.hour_archive import HourArchive
@@ -67,6 +69,7 @@ class Deposit:
 
     service: DepositService
     savings: SavingsService
+    export_origin: ExportOriginService
     production: ProductionService
     market_prices: MarketPriceService
     reference_days: ReferenceDaysService
@@ -102,6 +105,9 @@ async def create_deposit(
     deposit = Deposit(
         service=service,
         savings=savings,
+        export_origin=ExportOriginService(
+            archive, BatteryDischargeReader(hass), service
+        ),
         production=production,
         reference_days=ReferenceDaysService(archive, service),
         market_prices=MarketPriceService(
@@ -176,6 +182,10 @@ def _schedule_daily(
             await deposit.savings.async_refresh(today)
         except Exception:  # noqa: BLE001 - reporting extra, never fatal
             _LOGGER.exception("Deposit: self-consumption refresh failed")
+        try:
+            await deposit.export_origin.async_refresh(today)
+        except Exception:  # noqa: BLE001 - reporting extra, never fatal
+            _LOGGER.exception("Deposit: PV / battery split refresh failed")
         try:
             await deposit.production.async_refresh(today)
         except Exception:  # noqa: BLE001 - reporting extra, never fatal
