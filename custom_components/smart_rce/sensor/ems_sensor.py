@@ -317,6 +317,10 @@ def _morning_plan_attrs(ems: Ems) -> dict[str, Any] | None:
         attrs |= plan.to_dict()
     if (tomorrow := service.morning_discharge_tomorrow) is not None:
         attrs["tomorrow"] = tomorrow.to_dict()
+    if (why := service.morning_discharge_why_none) is not None:
+        attrs["why_none"] = why
+    if (why := service.morning_discharge_why_none_tomorrow) is not None:
+        attrs["tomorrow_why_none"] = why
     return attrs or None
 
 

@@ -231,14 +231,21 @@ def _service(
     now=None,
     tomorrow: bool = False,
     surplus: _Surplus | None = None,
+    prices: tuple[float, ...] = PRICES,
+    why: bool = False,
 ):
-    """Plan for DAY at `now`; with `tomorrow` the plan for NEXT (same inputs)."""
+    """Plan for DAY at `now`; with `tomorrow` the plan for NEXT (same inputs).
+
+    With `why`, the reason there is no plan instead.
+    """
     plans: dict = {}
+    why_none: dict = {}
     entry = _auto_discharge()
     schedule = SimpleNamespace(
         slot=lambda scope, kind: entry,
         t1_reserve=_reserve(25, NEXT if tomorrow else DAY),
         set_morning_discharge=plans.__setitem__,
+        set_morning_discharge_why_none=why_none.__setitem__,
         export_threshold=MorningDischargePlan.EXPORT_THRESHOLD,
     )
     ems = SimpleNamespace(
@@ -248,18 +255,30 @@ def _service(
         charge_slots=SimpleNamespace(today_start=s0, tomorrow_start=s0),
         rce_prices=SimpleNamespace(
             rce_prices=SimpleNamespace(
-                today=RceDayPrices(None, DAY, PRICES),
-                tomorrow=RceDayPrices(None, NEXT, PRICES),
+                today=RceDayPrices(None, DAY, prices),
+                tomorrow=RceDayPrices(None, NEXT, prices),
             )
         ),
     )
     clock = now or _at(6, 30)
     service = MorningDischargeService(ems, surplus or _Surplus(rate), lambda: clock)
     service.refresh()
+    if why:
+        return why_none[NEXT if tomorrow else DAY]
     return plans[NEXT if tomorrow else DAY]
 
 
 class TestService:
+    def test_no_plan_says_which_later_hour_outbids_the_morning(self):
+        # 26.10.2026 shape: 07:00 the dearest morning hour, but the sun does not
+        # fill the battery before T2 and 14:00 pays more — the energy is kept.
+        prices = list(PRICES)
+        prices[7], prices[8], prices[9], prices[14] = 790.0, 600.0, 500.0, 915.0
+        why = _service(1.2, prices=tuple(prices), why=True)
+        assert why.startswith("najdroższa 07:00 (972) nie przebija 14:00 (1125)")
+        assert "przed T2" in why
+        assert _service(6.0, why=True) is None
+
     def test_plenty_of_sun_stands_on_the_reserve_in_the_dearest_hour(self):
         plan = _service(6.0)
         # Reserve 25 without margin; the 08:00 hour stands on the 08 step (+5).

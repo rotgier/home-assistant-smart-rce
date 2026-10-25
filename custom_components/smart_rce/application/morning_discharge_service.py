@@ -51,16 +51,20 @@ class MorningDischargeService:
     def refresh(self) -> None:
         """Rebuild today's and tomorrow's plan and hand them to the schedule."""
         now = self._clock()
+        schedule = self._ems.battery_schedule_service
         for day in (now.date(), now.date() + timedelta(days=1)):
-            self._ems.battery_schedule_service.set_morning_discharge(
-                day, self._plan(now, day)
-            )
+            plan, why_none = self._plan(now, day)
+            schedule.set_morning_discharge(day, plan)
+            schedule.set_morning_discharge_why_none(day, why_none)
 
-    def _plan(self, now: datetime, day: date) -> MorningDischargePlan | None:
-        """`day`'s plan (today or tomorrow), None while its inputs are missing.
+    def _plan(
+        self, now: datetime, day: date
+    ) -> tuple[MorningDischargePlan | None, str | None]:
+        """`day`'s plan (today or tomorrow), or None and why there is none.
 
         Tomorrow's plan takes over at midnight; both are recomputed every
-        minute, so they follow the forecast.
+        minute, so they follow the forecast. The reason is for the dashboard
+        (Polish, as the user reads it).
         """
         schedule = self._ems.battery_schedule_service
         tomorrow = day != now.date()
@@ -71,7 +75,7 @@ class MorningDischargeService:
         # Computed with the slot switched off too — the sensor then shows what
         # it would do; the schedule runs a plan only for an enabled slot.
         if not SlotKind.DISCHARGE_MORNING_AUTO.profile.runs_on(day, is_workday):
-            return None
+            return None, "slot nie działa w ten dzień"
         day_off = is_day_off(day, is_workday)
         prices = self._prices_for(day)
         s0 = (
@@ -80,10 +84,12 @@ class MorningDischargeService:
             else self._ems.charge_slots.today_start
         )
         reserve = schedule.t1_reserve
-        if prices is None or s0 is None:
-            return None
+        if prices is None:
+            return None, "brak cen RCE na ten dzień"
+        if s0 is None:
+            return None, "brak startu ładowania z cen RCE"
         if not day_off and (reserve is None or reserve.day != day):
-            return None
+            return None, "brak rezerwy T1 na ten dzień (liczona od 14:00 dnia przed)"
         # A day off searches from 05:00 whatever the slot's start says: the
         # slot's window is tuned for workdays.
         first = (
@@ -95,10 +101,12 @@ class MorningDischargeService:
             prices, first, min(entry.end.hour, s0.hour), day_off=day_off
         )
         if best is None:
-            return None
+            return None, (
+                f"start ładowania o {s0:%H:%M} — przed nim nie ma godziny od {first:02d}:00"
+            )
         profile = self._pv_surplus.live_soft_profile(day, tomorrow=tomorrow)
         if profile is None:
-            return None
+            return None, "brak prognozy PV (Live Soft)"
         t2 = surplus_window_end(day)
         # Starts from the reading without margin — the lowest the battery can
         # be left at, so the latest full charge (the cautious side).
@@ -115,10 +123,13 @@ class MorningDischargeService:
         # The sun charges the battery until the hour it fills in (inclusive).
         refill_end = t2 if full is None else min(t2, -(-full // 60))
         hours = MorningDischargePlan.hours_from(prices, best, s0.hour, refill_end)
+        if not hours:
+            return None, self._outbid(prices, best, s0.hour, refill_end, full)
         # The hour running now or the next one still to come (tomorrow: the first).
         hour = next((h for h in hours if tomorrow or h >= now.hour), None)
         if hour is None:
-            return None
+            hhmm = ", ".join(f"{h:02d}:00" for h in hours)
+            return None, f"godziny sprzedaży już minęły ({hhmm})"
         # The line the hour stands on: the margin step at the hour's start,
         # not now's (at 07:41 the plan for 08:00 already takes the 08 step).
         # A day off has no T1 — the floor.
@@ -130,7 +141,7 @@ class MorningDischargeService:
         fill = lowest_soc_the_sun_fills(
             profile, prices.hour_price, (hour + 1) * 60, to_minutes(s0), line
         )
-        return MorningDischargePlan.decide(
+        plan = MorningDischargePlan.decide(
             export_threshold=schedule.export_threshold,
             day=day,
             hour=hour,
@@ -140,6 +151,34 @@ class MorningDischargeService:
             hours=hours,
             full_at_minute=full,
             day_off=day_off,
+        )
+        return plan, None
+
+    @staticmethod
+    def _outbid(
+        prices: RceDayPrices,
+        best: int,
+        s0_hour: int,
+        refill_end: int,
+        full: int | None,
+    ) -> str:
+        """Why even the dearest morning hour does not sell: a later hour pays more.
+
+        The energy sold in the morning comes back from the sun in the hours up
+        to the full charge (`MorningDischargePlan.hours_from`); an hour paying
+        more among them, or before the charge start, is worth more.
+        """
+        later = range(best + 1, max(refill_end, s0_hour))
+        dearer = max(later, key=prices.gross_at)
+        sun = (
+            f"słońce dopełni baterię ok. {full // 60:02d}:{full % 60:02d}"
+            if full is not None
+            else f"prognoza nie dopełnia baterii przed T2 ({refill_end:02d}:00)"
+        )
+        return (
+            f"najdroższa {best:02d}:00 ({prices.gross_at(best):.0f}) nie przebija "
+            f"{dearer:02d}:00 ({prices.gross_at(dearer):.0f}) — tę energię lepiej "
+            f"zachować; {sun}"
         )
 
     @staticmethod

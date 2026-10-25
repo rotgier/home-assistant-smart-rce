@@ -131,6 +131,8 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         self._last_soc: float | None = None
         # LIVE+EXTRAP reserve — observation only, nothing acts on it yet.
         self._t1_reserve_extrap: T1SocReserve | None = None
+        # Why a day has no automatic morning discharge plan (dashboard only).
+        self._morning_discharge_why_none: dict[date, str] = {}
 
     @callback
     def update(self, input: BatteryScheduleInput) -> BatteryScheduleUpdateResult:
@@ -321,6 +323,32 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """Take `day`'s automatic morning discharge plan (in memory only)."""
         if self._repo.schedule.set_morning_discharge(plan, day=day):
             self._notify_all()
+
+    @callback
+    def set_morning_discharge_why_none(self, day: date, why: str | None) -> None:
+        """Take why `day` has no morning discharge plan (None: it has one)."""
+        if self._morning_discharge_why_none.get(day) == why:
+            return
+        if why is None:
+            self._morning_discharge_why_none.pop(day, None)
+        else:
+            self._morning_discharge_why_none[day] = why
+        horizon = day - timedelta(days=1)
+        for old in [d for d in self._morning_discharge_why_none if d < horizon]:
+            del self._morning_discharge_why_none[old]
+        self._notify_all()
+
+    @property
+    def morning_discharge_why_none(self) -> str | None:
+        """Why today has no morning discharge plan, None when it has one."""
+        return self._morning_discharge_why_none.get(self._clock().date())
+
+    @property
+    def morning_discharge_why_none_tomorrow(self) -> str | None:
+        """Why tomorrow has no morning discharge plan (yet), None when it has one."""
+        return self._morning_discharge_why_none.get(
+            self._clock().date() + timedelta(days=1)
+        )
 
     @callback
     def set_morning_charge_floor(
