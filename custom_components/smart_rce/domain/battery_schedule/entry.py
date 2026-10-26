@@ -32,8 +32,8 @@ class NotificationLevel(StrEnum):
 
     NORMAL → telegram + persistent notification (reuse existing
              `script.notify_alert` with voice variable = False).
-    EMERGENCY → adds voice call. OK during evening discharge (user is awake),
-                NOT for morning slots (would wake them up).
+    EMERGENCY → adds voice call. Only the workday morning auto discharge
+                uses it; never for slots at dawn (would wake the user up).
     """
 
     NORMAL = "NORMAL"
@@ -435,7 +435,7 @@ class SlotKind(Enum):
 
     DISCHARGE_EVENING_XXEARLY = SlotProfile(
         direction=Direction.DISCHARGE,
-        notification_level=NotificationLevel.EMERGENCY,
+        notification_level=NotificationLevel.NORMAL,
         # Winter's first T2 hour (16:00), a rung of `EveningPlan` when it is
         # worth selling in: it stands on 75%, the reserve the four T2 hours
         # after it need (user's decision 23.10.2026).
@@ -445,7 +445,7 @@ class SlotKind(Enum):
 
     DISCHARGE_EVENING_XEARLY = SlotProfile(
         direction=Direction.DISCHARGE,
-        notification_level=NotificationLevel.EMERGENCY,
+        notification_level=NotificationLevel.NORMAL,
         # Winter's 17:00 rung, standing on 61% for the three T2 hours after it.
         default_window=(time(17, 0), time(18, 0)),
         default_target_soc=61.0,
@@ -453,15 +453,17 @@ class SlotKind(Enum):
 
     DISCHARGE_EVENING_EARLY = SlotProfile(
         direction=Direction.DISCHARGE,
-        notification_level=NotificationLevel.EMERGENCY,
-        # Voice call OK — user is awake during evening peak.
+        # Text only (user's decision 26.10.2026): since the evening is planned
+        # hour by hour, these slots start and stop several times an evening and
+        # a call for each was noise.
+        notification_level=NotificationLevel.NORMAL,
         default_window=(time(19, 0), time(21, 0)),
         default_target_soc=10.0,
     )
 
     DISCHARGE_EVENING_MID = SlotProfile(
         direction=Direction.DISCHARGE,
-        notification_level=NotificationLevel.EMERGENCY,
+        notification_level=NotificationLevel.NORMAL,
         # The second-to-last T2 hour's rung (winter 19:00, 33%). Its job is
         # less to sell than to be standing at the reserve when the hour
         # closes — see `EveningPlan._rung_for`.
@@ -471,7 +473,7 @@ class SlotKind(Enum):
 
     DISCHARGE_EVENING_LATE = SlotProfile(
         direction=Direction.DISCHARGE,
-        notification_level=NotificationLevel.EMERGENCY,
+        notification_level=NotificationLevel.NORMAL,
         # Second evening window. Nights where the RCE peak is followed by
         # another expensive hour need two discharges with a hold in between
         # (drain to ~33% in the peak, keep the rest for the later hour).

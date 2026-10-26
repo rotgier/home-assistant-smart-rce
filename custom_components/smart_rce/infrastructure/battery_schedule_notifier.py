@@ -3,9 +3,9 @@
 Subscribes to `BatteryScheduleEvent` emissions from
 `BatterySchedule.compute_operation` (wired via `BatteryScheduleService.update`).
 Fires `script.notify_alert_en` (with voice call, English TTS) for
-`EMERGENCY` slots (evening discharge — user is awake) and
-`script.notify_text` (text only) for `NORMAL` slots (morning slots
-must not wake the user).
+`EMERGENCY` slots (the workday morning auto discharge) and
+`script.notify_text` (text only) for `NORMAL` slots (everything else,
+the evening discharge included).
 
 `DayRolled` events are NOT notified (internal-only midnight roll —
 emitting telegram for every day boundary would be spam).

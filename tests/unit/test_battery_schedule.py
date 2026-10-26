@@ -114,9 +114,16 @@ class TestSlotProfile:
         assert p.default_target_soc == 100.0
         assert p.notification_level == NotificationLevel.NORMAL
 
-    def test_discharge_evening_emergency_notification(self):
-        p = SlotKind.DISCHARGE_EVENING_EARLY.profile
-        assert p.notification_level == NotificationLevel.EMERGENCY
+    def test_discharge_evening_text_only_notification(self):
+        """Evening slots — text only, no voice call (user's decision 26.10.2026)."""
+        for kind in (
+            SlotKind.DISCHARGE_EVENING_XXEARLY,
+            SlotKind.DISCHARGE_EVENING_XEARLY,
+            SlotKind.DISCHARGE_EVENING_EARLY,
+            SlotKind.DISCHARGE_EVENING_MID,
+            SlotKind.DISCHARGE_EVENING_LATE,
+        ):
+            assert kind.profile.notification_level_on(False) is NotificationLevel.NORMAL
 
     def test_discharge_morning_normal_notification(self):
         """Morning discharge — no voice call (would wake user)."""
