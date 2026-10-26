@@ -204,6 +204,9 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         # CHARGE_MORNING_AUTO slot; 07-13 what is left (falls); 13-14 today's
         # window replayed in full; from 14:00 tomorrow's window (TOMORROW_LIVE).
         native_unit_of_measurement=PERCENTAGE,
+        # Battery class (user's decision 26.10.2026) so HA History draws it on
+        # one chart with the battery SoC; the explicit icon still wins.
+        device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: _reserve_field(
             ems.battery_schedule_service.t1_reserve, "value"
@@ -238,6 +241,7 @@ EMS_SENSOR_DESCRIPTIONS: tuple[EmsSensorDescription, ...] = (
         # Replaced "T1 SoC Reserve Median" on 15.10.2026 — a new entity, the
         # median history is a different quantity.
         native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda ems: _reserve_field(
             ems.battery_schedule_service.t1_reserve, "p60"
