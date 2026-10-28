@@ -233,6 +233,7 @@ def _service(
     surplus: _Surplus | None = None,
     prices: tuple[float, ...] = PRICES,
     why: bool = False,
+    floor=None,
 ):
     """Plan for DAY at `now`; with `tomorrow` the plan for NEXT (same inputs).
 
@@ -247,6 +248,7 @@ def _service(
         set_morning_discharge=plans.__setitem__,
         set_morning_discharge_why_none=why_none.__setitem__,
         export_threshold=MorningDischargePlan.EXPORT_THRESHOLD,
+        morning_charge_floor_for=lambda day: floor,
     )
     ems = SimpleNamespace(
         battery_schedule_service=schedule,
@@ -269,6 +271,18 @@ def _service(
 
 
 class TestService:
+    def test_a_dear_day_keeps_the_night_charge(self):
+        # 28.10.2026: every hour 07-16 above the bar, the night charged to 100
+        # for T1 — selling it at 07:00 would be grid-battery-grid.
+        dear = SimpleNamespace(dear_day=True, target=100)
+        assert _service(6.0, floor=dear) is None
+        why = _service(6.0, floor=dear, why=True)
+        assert why.startswith("drogi dzień") and "do 100%" in why
+
+    def test_a_floor_on_an_ordinary_day_does_not_stop_the_sale(self):
+        weak = SimpleNamespace(dear_day=False, target=90)
+        assert _service(6.0, floor=weak) is not None
+
     def test_no_plan_says_which_later_hour_outbids_the_morning(self):
         # 26.10.2026 shape: 07:00 the dearest morning hour, but the sun does not
         # fill the battery before T2 and 14:00 pays more — the energy is kept.

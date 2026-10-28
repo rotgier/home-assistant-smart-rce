@@ -48,12 +48,20 @@ def _decide(prices: RceDayPrices, pv_rate: float, without_margin: int = 50):
 
 
 class TestDecide:
-    def test_a_day_dearer_than_the_bar_stores_no_sun_and_charges_to_the_cap(self):
-        # 22.10.2026: every hour 07-16 above the bar, so no surplus counts.
+    def test_a_dear_day_stores_no_sun_and_charges_to_full(self):
+        # 28.10.2026: every hour 07-16 above the bar, so no surplus counts and
+        # the night charge goes to 100 (its sun is exported anyway).
         floor = _decide(_prices(DAY, DEAR), pv_rate=3.0)
         assert (floor.surplus_kwh, floor.fill, floor.dip) == (0.0, 100, 40)
+        assert floor.dear_day
+        assert floor.target == MorningChargeFloor.DEAR_DAY_CAP == 100
+        assert floor.lifts(65) == 100
+        assert floor.to_dict()["dear_day"] is True
+
+    def test_one_cheap_hour_keeps_the_cap_of_90(self):
+        floor = _decide(_prices(DAY, DEAR, h12=CHEAP), pv_rate=0.1)
+        assert not floor.dear_day
         assert floor.target == MorningChargeFloor.CAP
-        assert floor.lifts(65) == 90
 
     def test_a_sunny_cheap_day_leaves_the_reserve_alone(self):
         floor = _decide(_prices(DAY, CHEAP), pv_rate=3.0)
@@ -109,8 +117,9 @@ class TestSchedule:
 
     def test_the_night_charge_goes_to_the_floor_when_higher(self):
         engaged = self._engaged(_decide(_prices(DAY, DEAR), pv_rate=3.0))
-        assert engaged.target_soc == 90.0
-        assert "weak-sun floor 90" in (engaged.target_source or "")
+        assert engaged.target_soc == 100.0
+        assert "weak-sun floor 100" in (engaged.target_source or "")
+        assert "dear day" in (engaged.target_source or "")
 
     def test_without_a_floor_the_reserve_stands(self):
         engaged = self._engaged(None)
@@ -154,7 +163,7 @@ def _service(*, consumption=FLAT_CONS, workday=True, reserves=None):
 class TestService:
     def test_today_and_tomorrow_get_their_floor(self):
         floors = _service(reserves={DAY: _reserve(DAY), NEXT: _reserve(NEXT)})
-        assert floors[DAY].target == 90
+        assert floors[DAY].target == 100  # every hour above the bar
         assert floors[NEXT].target is None  # cheap and sunny
 
     def test_missing_inputs_leave_no_floor(self):

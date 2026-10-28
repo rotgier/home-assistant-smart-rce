@@ -25,6 +25,14 @@ that counts the sun in the price window from the charge start only, which on
 Backtest 05-22.10 (workdays): home-assistant-ops
 `research/2026-10-22-poranne-ladowanie-slaby-dzien/` — at 750 three days
 changed (14.10 to 71, 20.10 and 22.10 to 90), -0.42 zl, none lost.
+
+A dear day (no hour from 07:00 to T2 below the bar, `dear_day`) charges to 100
+instead (user's decision 28.10.2026): its sun goes to the grid at a good price
+anyway, so the battery needs no room left for it, and the house runs T1 on the
+night's T3 energy. The morning sale then stays off (`MorningDischargeService`)
+— selling at 07:00 what the night just bought is the grid-battery-grid round
+trip ADR-028 rules out. 28.10 (every hour above 950 gross) charged to 90 and
+would have sold it down to 16% at 07:00.
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ class MorningChargeFloor:
     """The level the night charge goes to so the sun can still fill the battery."""
 
     CAP: ClassVar[int] = 90
+    DEAR_DAY_CAP: ClassVar[int] = 100
     FIRST_HOUR: ClassVar[int] = 7
 
     day: date
@@ -56,6 +65,8 @@ class MorningChargeFloor:
     dip: int
     # None: the sun refills from the floor, the reserve alone stands.
     target: int | None
+    # No hour from 07:00 to T2 below the export bar.
+    dear_day: bool = False
 
     @classmethod
     def decide(
@@ -70,19 +81,23 @@ class MorningChargeFloor:
     ) -> MorningChargeFloor:
         """Floor for `day` from PV p90 and consumption p40 per 30-min slot (kWh)."""
         profile = SurplusProfile.build(day, pv, consumption)
-        surplus = sum(
-            profile.total(hour * 60, (hour + 1) * 60)
+        cheap = [
+            hour
             for hour in range(cls.FIRST_HOUR, surplus_window_end(day))
             if prices.gross_at(hour) < export_threshold
-        )
+        ]
+        surplus = sum(profile.total(hour * 60, (hour + 1) * 60) for hour in cheap)
         fill = round(100 - pp_below_full(surplus))
         dip = max(0, reserve_without_margin - MIN_SOC_PERCENT)
+        dear_day = not cheap
+        cap = cls.DEAR_DAY_CAP if dear_day else cls.CAP
         return cls(
             day=day,
             surplus_kwh=round(surplus, 2),
             fill=fill,
             dip=dip,
-            target=min(cls.CAP, fill + dip) if fill > MIN_SOC_PERCENT else None,
+            target=min(cap, fill + dip) if fill > MIN_SOC_PERCENT else None,
+            dear_day=dear_day,
         )
 
     def lifts(self, reserve: int) -> int:
@@ -92,9 +107,10 @@ class MorningChargeFloor:
     def describe(self) -> str:
         """One line for the slot's target source."""
         floor = "none" if self.target is None else str(self.target)
+        dear = ", dear day" if self.dear_day else ""
         return (
             f"weak-sun floor {floor} (fill {self.fill}, dip {self.dip}, "
-            f"surplus {self.surplus_kwh:.2f} kWh)"
+            f"surplus {self.surplus_kwh:.2f} kWh{dear})"
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,4 +120,5 @@ class MorningChargeFloor:
             "fill": self.fill,
             "dip": self.dip,
             "target": self.target,
+            "dear_day": self.dear_day,
         }

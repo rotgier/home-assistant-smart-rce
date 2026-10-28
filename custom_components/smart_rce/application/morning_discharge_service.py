@@ -90,6 +90,15 @@ class MorningDischargeService:
             return None, "brak startu ładowania z cen RCE"
         if not day_off and (reserve is None or reserve.day != day):
             return None, "brak rezerwy T1 na ten dzień (liczona od 14:00 dnia przed)"
+        floor = schedule.morning_charge_floor_for(day)
+        if floor is not None and floor.dear_day and floor.target is not None:
+            # The night charge filled it for T1 on purpose; selling that at
+            # 07:00 is the grid-battery-grid round trip ADR-028 rules out.
+            return None, (
+                f"drogi dzień (wszystkie godziny 07–{surplus_window_end(day)}:00 "
+                f"od {schedule.export_threshold:.0f} brutto): nocne ładowanie do "
+                f"{floor.target}% zostaje w baterii"
+            )
         # A day off searches from 05:00 whatever the slot's start says: the
         # slot's window is tuned for workdays.
         first = (
