@@ -7,8 +7,11 @@ of earlier days of the same type, earlier moves held back until Extrap agrees) t
 persists the shift. The other variants are only tracked here, in memory, so
 the sensor can show where each of them would have put the start.
 
-Runs from 07:41 until S0. A confirmed move is reported — also when a
-hand-set start keeps it from taking effect. Once the start is locked the shift
+Runs from 07:41 until the start in force (S0, or later when the start moved
+past it). A confirmed move is reported — also when a hand-set start keeps it
+from taking effect. Only the applied variant looks for a cheaper later start
+(`cheaper_later_start`, since 28.10.2026); the observed ones, Extrap and the
+rewind watch keep the rule up to S0. Once the start is locked the shift
 stops moving; from 09:00 a `RewindWatch` then looks for a later start that
 would still fill the battery and raises an alert (phone call) — the user
 decides, nothing is changed automatically.
@@ -34,12 +37,14 @@ from ..domain.charge_start_shift import (
     ChargeStartShift,
     RewindWatch,
     ShiftVariant,
+    cheaper_later_start,
     find_candidate,
     guarded_candidate,
     price_window_end,
     to_minutes,
 )
 from ..domain.pv_forecast import PvForecast
+from ..domain.pv_surplus import surplus_window_end
 
 if TYPE_CHECKING:
     from ..domain.pv_surplus import SurplusProfile
@@ -153,7 +158,7 @@ class ChargeStartShiftService:
         """One evaluation (scheduled at :01, :06, :11 ...)."""
         now = self._clock()
         s0 = self._ems.charge_slots.today_start
-        if s0 is None or not self._in_window(now, s0):
+        if s0 is None or not self._in_window(now, s0, self.shift):
             return
         state = self._ems.last_input_state
         soc = state.battery_soc if state is not None else None
@@ -167,8 +172,10 @@ class ChargeStartShiftService:
             return
         now_min, s0_min, need = to_minutes(now.time()), to_minutes(s0), kwh_to_full(soc)
         candidates: dict[ShiftVariant, int] = {}
+        # Past S0 (a start moved later) the observed rule only answers "now".
+        observing = now_min < s0_min
         for variant in ShiftVariant:
-            if variant.guarded:
+            if variant.guarded or not observing:
                 continue
             profile = self._pv_surplus.today_profile(
                 history=variant.history, pv_scale=variant.pv_scale
@@ -179,7 +186,15 @@ class ChargeStartShiftService:
         applied = self._applied_profile()
         if applied is None:
             return
-        live = find_candidate(applied, prices, now_min, need, s0_min)
+        live = cheaper_later_start(
+            applied,
+            prices,
+            now_min,
+            find_candidate(applied, prices, now_min, need, s0_min),
+            # Until a later start the battery stays closed and covers the house.
+            lambda start: need + applied.deficit(now_min, start),
+            window_end=surplus_window_end(now.date()) * 60,
+        )
         found_extrap = self._extrap_candidate(
             prices, now_min, need, s0_min, EXTRAP_FROM
         )
@@ -192,7 +207,7 @@ class ChargeStartShiftService:
             need,
             candidates,
             extrap,
-            self._by_pv_variant(prices, now_min, need, s0_min),
+            self._by_pv_variant(prices, now_min, need, s0_min) if observing else {},
         )
         self._observe(now.date(), now_min, s0_min, candidates)
         move = self._charge.evaluate_forecast_shift(
@@ -203,9 +218,12 @@ class ChargeStartShiftService:
         self._notify_listeners()
 
     @staticmethod
-    def _in_window(now: datetime, s0: time) -> bool:
-        """From 07:41 until S0 — after S0 no start can move any more."""
-        return FIRST_EVALUATION <= to_minutes(now.time()) < to_minutes(s0)
+    def _in_window(now: datetime, s0: time, shift: ChargeStartShift | None) -> bool:
+        """From 07:41 until the start — S0, or today's start moved past it."""
+        end = to_minutes(s0)
+        if shift is not None and shift.day == now.date():
+            end = max(end, shift.start)
+        return FIRST_EVALUATION <= to_minutes(now.time()) < end
 
     def _watch_rewind(
         self,

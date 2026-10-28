@@ -151,6 +151,25 @@ def test_stops_at_s0():
     assert service.last is None
 
 
+def test_a_full_battery_waits_past_s0_for_the_cheapest_hours():
+    # 28.10.2026 shape: SoC 90%, S0 09:00 (380), 12:00-13:00 cost 100. The
+    # applied variant moves the start later — past S0 — and keeps evaluating
+    # until it.
+    service, charge, clock, reports = _setup(soc=90.0, s0=time(9, 0))
+    _run(service, clock, 7, (41, 46, 51))
+    assert charge.start_charge_hour_override == time(12, 0)
+    assert reports[-1].move == ForecastShiftMove(
+        before=9 * H, after=12 * H, manual_start=None
+    )
+    assert "(później)" in render(reports[-1])
+    _run(service, clock, 9, (1, 6, 11, 16))
+    assert service.last is not None and service.last.at == clock.now
+    assert charge.start_charge_hour_override == time(12, 0)
+    # The observed variants keep the rule up to S0 and stop there.
+    assert service.observed_start(ShiftVariant.FLAT) == 9 * H
+    assert service.last.by_pv == {}
+
+
 def test_stops_once_locked():
     service, charge, clock, _ = _setup()
     _run(service, clock, 9, (11, 16, 21))

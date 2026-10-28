@@ -329,23 +329,36 @@ class TestService:
         # 44% without margin, +5 pp at 08:00, none later (the margin steps).
         return SimpleNamespace(value_at=lambda at: 49 if at.hour == 8 else 44)
 
-    def test_forecast_start_from_the_reserve_at_its_hour(self):
+    def test_today_starts_from_the_soc_not_the_reserve(self):
+        # 28.10.2026: no morning sale, the battery at 89% — not the reserve.
         now = datetime(2026, 10, 17, 6, 0, tzinfo=TZ)
         service, observed, asked = self._service(
             now, plan_day=DAY, prices=self.PRICES, reserve=self._reserve()
         )
         out = service.outlook
-        # S0 12:00 short (window 12-14 = 6 kWh < need from 44%), 11:00 enough.
+        # S0 12:00 short (window 12-14 = 6 kWh < need from 40%), 11:00 enough.
         assert out.start == 11 * H
-        assert out.start_soc == 44.0
-        assert out.bands[0].from_soc == 44.0 and not out.bands[0].done
+        assert out.start_soc == 40.0
+        assert out.bands[0].from_soc == 40.0 and not out.bands[0].done
         assert out.to_dict(TZ)["start_at"] == "11:00"
         assert observed and (DAY, False) in asked
 
-    def test_a_day_off_starts_from_the_floor(self):
+    def test_today_a_morning_sale_leaves_its_target(self):
         now = datetime(2026, 10, 17, 6, 0, tzinfo=TZ)
+        sale = SimpleRun(end=datetime(2026, 10, 17, 9, 0, tzinfo=TZ), target_soc=22.0)
         service, _o, _a = self._service(
-            now, plan_day=DAY, prices=self.PRICES, reserve=None, workday=False
+            now, plan_day=DAY, prices=self.PRICES, reserve=self._reserve(), runs=[sale]
+        )
+        assert service.outlook.start_soc == 22.0
+
+    def test_a_day_off_tomorrow_starts_from_the_floor(self):
+        now = datetime(2026, 10, 17, 21, 30, tzinfo=TZ)
+        service, _o, _a = self._service(
+            now,
+            plan_day=date(2026, 10, 18),
+            prices=self.PRICES,
+            reserve=None,
+            workday=False,
         )
         assert service.outlook.start_soc == 10.0
 
@@ -363,8 +376,9 @@ class TestService:
             now, plan_day=tomorrow, prices=self.PRICES, reserve=self._reserve()
         )
         assert service.outlook.day == tomorrow
-        # Tomorrow's S0 is 10:30: its own window (ref hour 10) covers the need.
-        assert service.outlook.start == 10 * H + 30
+        # Tomorrow's S0 is 10:30 and covers the need; 11:00 takes the same
+        # energy cheaper (no 10:30-11:00 at 300) with the margin kept.
+        assert service.outlook.start == 11 * H
         assert service.outlook.start_soc == 44.0
         assert (tomorrow, True) in asked
 

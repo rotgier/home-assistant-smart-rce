@@ -48,7 +48,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
 from .battery_schedule.direction import Direction
-from .charge_curve import FULL_SOC, kwh_per_pp, kwh_to_full
+from .charge_curve import FULL_SOC, kwh_per_pp, kwh_to_full, pp_below_full
 from .pv_surplus import SLOT_MINUTES
 
 if TYPE_CHECKING:
@@ -62,6 +62,14 @@ REWIND_FROM: Final[int] = 9 * 60
 # The BMS holds SoC here for ~10 minutes before the fast top (17.10.2026:
 # 90% from 12:56 to 13:06); the chart splits the PV charge at it.
 PLATEAU_SOC: Final[float] = 90.0
+# A start later than the base one (`cheaper_later_start`): the surplus from it
+# covers the need this many times over, and the battery is full this many
+# minutes before T2 (user's decision 28.10.2026).
+LATER_MARGIN: Final[float] = 1.5
+LATER_FULL_BEFORE_END: Final[int] = 60
+# ...and its energy is at least this much cheaper (zl/MWh net, mean of what the
+# battery takes) — near-equal hours must not toss the start back and forth.
+LATER_MIN_GAIN: Final[float] = 10.0
 
 
 class ShiftVariant(Enum):
@@ -173,6 +181,79 @@ def _starts_latest_first(s0: int, lowest: int) -> list[int]:
     return [s0, *(hour * 60 for hour in whole if hour * 60 >= lowest)]
 
 
+def cheaper_later_start(
+    profile: SurplusProfile,
+    hour_prices: Sequence[float],
+    now: int,
+    base: Candidate,
+    need_at: Callable[[int], float],
+    *,
+    window_end: int,
+) -> Candidate:
+    """Return `base`, or a later whole-hour start where the battery takes cheaper PV.
+
+    A battery that needs little is filled within an hour or two, so the start
+    can wait for the cheapest hours and export the dearer ones before them —
+    later than S0 too. Only when `base` itself fills the battery (`enough`);
+    a later start has to keep a margin: the surplus from it until an hour
+    before `window_end` (T2) is at least `LATER_MARGIN` x the need, and the
+    charge model fills the battery by then. The price of a start is the mean
+    price of the energy the battery actually takes from it (minute by minute,
+    until full), not of the hour it starts in; a later start wins only when
+    `LATER_MIN_GAIN` cheaper than `base`, the cheapest one (the earliest among
+    equals).
+
+    `need_at(start)`: energy to full at that start, the drain until then
+    included — the caller knows the level the battery is left at.
+    """
+    if not base.enough:
+        return base
+    deadline = window_end - LATER_FULL_BEFORE_END
+    base_price = _taken_price(profile, hour_prices, base.start, need_at)
+    if base_price is None:
+        return base
+    best, best_price = base, base_price - LATER_MIN_GAIN
+    first_hour = base.start // 60 + 1
+    for hour in range(max(first_hour, -(-now // 60)), deadline // 60):
+        start = hour * 60
+        need = need_at(start)
+        if profile.total(start, deadline) < LATER_MARGIN * need:
+            continue
+        soc = FULL_SOC - pp_below_full(need)
+        if charge_milestones(profile, start, soc, deadline).full_at is None:
+            continue
+        price = _taken_price(profile, hour_prices, start, need_at)
+        if price is None:
+            continue
+        # The first later start may just meet the bar; any further one has to
+        # beat the start already found.
+        if price < best_price or (best is base and price == best_price):
+            best, best_price = Candidate(start, True), price
+    return best
+
+
+def _taken_price(
+    profile: SurplusProfile,
+    hour_prices: Sequence[float],
+    start: int,
+    need_at: Callable[[int], float],
+) -> float | None:
+    """Mean price of the energy the battery takes charging from `start` until full."""
+    level = FULL_SOC - pp_below_full(need_at(start))
+    cost = taken = 0.0
+    for minute in range(start, len(hour_prices) * 60):
+        if level >= FULL_SOC:
+            break
+        slot = profile.slots[minute // SLOT_MINUTES]
+        surplus_pp = slot.surplus_kwh / SLOT_MINUTES / kwh_per_pp(level)
+        step = min(surplus_pp, 60 / _charge_sec_per_pp(level), FULL_SOC - level)
+        kwh = step * kwh_per_pp(level)
+        cost += kwh * hour_prices[minute // 60]
+        taken += kwh
+        level += step
+    return cost / taken if taken > 0 else None
+
+
 def lowest_soc_the_sun_fills(
     profile: SurplusProfile,
     hour_prices: Sequence[float],
@@ -270,7 +351,7 @@ def price_window_end(start: int, hour_prices: Sequence[float]) -> int:
 
 
 class ChargeStartShift:
-    """Today's forecast-driven charge start: confirmation, cap at S0, lock.
+    """Today's forecast-driven charge start: confirmation, lock.
 
     Plain class (entity with a lifecycle): reconstituted from the persisted
     day, S0, start and lock baseline; the last candidates live in memory only —
@@ -292,7 +373,8 @@ class ChargeStartShift:
     ) -> None:
         self.day = day
         self._s0 = s0
-        self._start = s0 if start is None else min(start, s0)
+        # Later than S0 too since 28.10.2026 (`cheaper_later_start`).
+        self._start = s0 if start is None else start
         # Start for which `soc_at_start` was taken — a start moved later after
         # striking strikes again, with a new baseline.
         self._struck_start = struck_start
@@ -379,7 +461,7 @@ class ChargeStartShift:
         if now < self._start and all(c < self._start for c in recent):
             return max(recent)
         if all(c > self._start for c in recent):
-            return min(*recent, self._s0)
+            return min(recent)
         return None
 
     def restart(self, s0: int) -> bool:

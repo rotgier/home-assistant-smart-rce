@@ -191,6 +191,12 @@ class SurplusProfile:
     def consumption(self, start: float, end: float) -> float:
         return sum(s.cons_kwh * s.overlap(start, end) for s in self.slots)
 
+    def deficit(self, start: float, end: float) -> float:
+        """Return what consumption takes beyond PV over `[start, end)` (drain)."""
+        return sum(
+            max(0.0, s.cons_kwh - s.pv_kwh) * s.overlap(start, end) for s in self.slots
+        )
+
     def pv(self, start: float, end: float) -> float:
         return sum(s.pv_kwh * s.overlap(start, end) for s in self.slots)
 

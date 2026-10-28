@@ -9,6 +9,7 @@ from custom_components.smart_rce.domain.charge_start_shift import (
     ChargeStartShift,
     RewindWatch,
     candidate_start,
+    cheaper_later_start,
     find_candidate,
     guarded_candidate,
     price_window_end,
@@ -100,6 +101,48 @@ class TestCandidate:
         assert candidate_start(profile, PRICES, 7 * H + 41, 18.0, s0) == 9 * H
 
 
+class TestCheaperLaterStart:
+    """28.10.2026: S0 09:00 (990 net), 10:00 the cheapest hour (824)."""
+
+    PRICES_28 = [
+        773, 805, 782, 775, 782, 792, 1227, 1297, 1268, 990, 824, 964,
+        1015, 1224, 1783, 2173, 2222, 2167, 1965, 1991, 1564, 1232, 1117, 963,
+    ]  # fmt: skip
+    SUNNY = dict.fromkeys(range(8, 15), 4.0)
+
+    def _later(self, need, *, prices=None, base=None, pv=None):
+        profile = _profile(pv or self.SUNNY)
+        prices = prices or self.PRICES_28
+        base = base or find_candidate(profile, prices, 8 * H + 41, need, 9 * H)
+        return cheaper_later_start(
+            profile, prices, 8 * H + 41, base, lambda _s: need, window_end=16 * H
+        )
+
+    def test_little_to_fill_waits_for_the_cheapest_hour(self):
+        # Battery at ~90%: about 1 kWh, filled within 10:00.
+        assert self._later(1.0) == Candidate(10 * H, True)
+
+    def test_a_large_need_stays_at_the_base_start(self):
+        # From ~20%: 10:00 onwards no longer keeps the 1.5x margin by 15:00.
+        assert self._later(15.0).start == 9 * H
+
+    def test_a_base_short_of_sun_is_left_alone(self):
+        short = Candidate(8 * H, False)
+        assert self._later(1.0, base=short) is short
+
+    def test_near_equal_hours_do_not_move_the_start(self):
+        # 10:00 only 5 zl/MWh cheaper than 9:00 — under LATER_MIN_GAIN.
+        prices = list(self.PRICES_28)
+        prices[10] = prices[9] - 5
+        prices[11] = prices[12] = prices[13] = 2000
+        assert self._later(1.0, prices=prices).start == 9 * H
+
+    def test_not_full_an_hour_before_t2_is_not_a_start(self):
+        # Sun only up to 11:00: from 10:00 1 h of sun, not 1.5x a 3 kWh need.
+        pv = dict.fromkeys(range(8, 11), 4.0)
+        assert self._later(3.0, pv=pv).start == 9 * H
+
+
 class TestGuarded:
     """Variant A: earlier moves wait for 09:10 and Extrap, unless Live is short."""
 
@@ -175,11 +218,17 @@ class TestConfirmation:
             assert not shift.evaluate(now, cand, None)
         assert shift.start == 10 * H
 
-    def test_moves_later_but_never_past_s0(self):
+    def test_moves_later_by_the_least_of_three_past_s0_too(self):
+        # Since 28.10.2026 a cheaper later start may lie past S0.
         shift = ChargeStartShift(day=DAY, s0=11 * H, start=9 * H)
         for i, cand in enumerate((12 * H, 11 * H + 30, 13 * H)):
             moved = shift.evaluate(8 * H + 5 * i, cand, None)
-        assert moved and shift.start == 11 * H
+        assert moved and shift.start == 11 * H + 30
+
+    def test_a_start_past_s0_survives_the_round_trip(self):
+        shift = ChargeStartShift(day=DAY, s0=9 * H, start=10 * H)
+        restored = ChargeStartShift.from_dict(shift.to_dict())
+        assert restored is not None and restored.start == 10 * H
 
     def test_does_not_move_earlier_once_the_start_has_passed(self):
         shift = ChargeStartShift(day=DAY, s0=12 * H, start=9 * H)

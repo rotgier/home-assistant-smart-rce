@@ -7,12 +7,15 @@ or tomorrow once the evening switched over); the day sensor picks either.
 The forecast walks `charge_milestones` on Live Soft (p60 consumption) from:
 
 - a charge under way (today, from its start on): now, at the current SoC;
-- otherwise the start the forecast points to now (`find_candidate_at`, the
-  rule of the forecast shift, recomputed every minute), at the T1 reserve with
-  the margin of that start's hour — the lowest the morning may leave the
-  battery at (user, 18.10.2026); a day off without T1 from the 10% floor.
-  Without prices or a reserve: the start in force, at the level the slots
-  before it leave the battery at.
+- otherwise the start the forecast points to now (`find_candidate_at` plus
+  `cheaper_later_start`, the rule of the forecast shift, recomputed every
+  minute). Today from the level the battery is really left at then: the slots
+  before the start (a morning sale: its target), then the house's drain (user,
+  28.10.2026 — until then the T1 reserve, which a morning without a sale
+  undercut: 28.10 the outlook started at 21% with the battery at 89%).
+  Tomorrow at the T1 reserve with the margin of that start's hour — the lowest
+  the morning may leave the battery at; a day off without T1 from the 10%
+  floor. Without prices: the start in force.
 
 The applied start (`ChargeStartShift`, guarded, from the current SoC) may
 still differ; the outlook shows where the forecast points, not the decision.
@@ -29,9 +32,10 @@ from typing import TYPE_CHECKING
 from homeassistant.core import CALLBACK_TYPE, callback
 
 from ..domain.battery_schedule import is_day_off
-from ..domain.charge_curve import kwh_to_full
+from ..domain.charge_curve import kwh_per_pp, kwh_to_full
 from ..domain.charge_start_shift import (
     charge_milestones,
+    cheaper_later_start,
     find_candidate_at,
     to_minutes,
     to_time,
@@ -138,13 +142,18 @@ class PvChargeService:
         if started:
             begin, begin_soc = now_min, soc
         else:
-            start = self._forecast_start(day, now_min, soc, profile, today)
+            start = self._forecast_start(
+                day, now_min, soc, profile, window_end, today=today
+            )
             if start is None:
                 return None
             if today and now_min >= start:
                 begin, begin_soc = now_min, soc
             else:
-                begin, begin_soc = start, self._start_soc(day, start, soc, today=today)
+                begin = start
+                begin_soc = self._start_soc(
+                    day, start, soc, profile, now_min, today=today
+                )
         return PvChargeForecast(
             begin,
             begin_soc,
@@ -158,6 +167,8 @@ class PvChargeService:
         now_min: int,
         soc: float,
         profile: SurplusProfile,
+        window_end: int,
+        *,
         today: bool,
     ) -> int | None:
         """Start the forecast points to now; the start in force without prices."""
@@ -166,12 +177,15 @@ class PvChargeService:
         prices = self._prices(day)
         if s0 is None or prices is None:
             return self._start(day, today=today)
-        return find_candidate_at(
-            profile,
-            prices,
-            now_min,
-            to_minutes(s0),
-            lambda begin: kwh_to_full(self._start_soc(day, begin, soc, today=today)),
+
+        def need_at(begin: int) -> float:
+            return kwh_to_full(
+                self._start_soc(day, begin, soc, profile, now_min, today=today)
+            )
+
+        base = find_candidate_at(profile, prices, now_min, to_minutes(s0), need_at)
+        return cheaper_later_start(
+            profile, prices, now_min, base, need_at, window_end=window_end
         ).start
 
     def _prices(self, day: date) -> tuple[float, ...] | None:
@@ -187,13 +201,28 @@ class PvChargeService:
             return None
         return tuple(prices.hour_price)
 
-    def _start_soc(self, day: date, start: int, soc: float, *, today: bool) -> float:
-        """Level the battery starts taking PV at: the T1 reserve at the start's hour.
+    def _start_soc(  # noqa: PLR0913 — the level hangs on all of them
+        self,
+        day: date,
+        start: int,
+        soc: float,
+        profile: SurplusProfile,
+        now_min: int,
+        *,
+        today: bool,
+    ) -> float:
+        """Level the battery starts taking PV at.
 
-        The margin is the step in force at the start (08:00 more than later);
-        a day off has no T1 — the 10% floor. Without a reserve for the day,
-        the level the slots before the start leave the battery at.
+        Today: what the slots before the start leave it at, then the house's
+        drain until the start (the battery is closed to PV till then). Tomorrow:
+        the T1 reserve with the margin step in force at the start (08:00 more
+        than later); a day off has no T1 — the 10% floor. Without a reserve for
+        the day, the level the slots before the start leave the battery at.
         """
+        if today:
+            level, since = self._soc_at(day, start, soc, now_min, today=True)
+            drain = profile.deficit(since, start)
+            return max(float(MIN_SOC_PERCENT), level - drain / kwh_per_pp(level))
         is_workday = (
             self._ems.is_workday_today if today else self._ems.is_workday_tomorrow
         )
@@ -201,7 +230,7 @@ class PvChargeService:
             return float(MIN_SOC_PERCENT)
         reserve = self._ems.battery_schedule_service.t1_reserve_for(day)
         if reserve is None:
-            return self._soc_at(day, start, soc, today=today)
+            return self._soc_at(day, start, soc, 0, today=today)[0]
         at = datetime.combine(day, to_time(start), tzinfo=self._clock().tzinfo)
         return float(reserve.value_at(at))
 
@@ -219,10 +248,12 @@ class PvChargeService:
             )
         return to_minutes(start) if start is not None else None
 
-    def _soc_at(self, day: date, start: int, soc: float, *, today: bool) -> float:
-        """Level the slots before the start leave the battery at."""
+    def _soc_at(
+        self, day: date, start: int, soc: float, now_min: int, *, today: bool
+    ) -> tuple[float, int]:
+        """Level the slots before the start leave the battery at, and from when."""
         schedule = self._ems.battery_schedule_service
-        level = soc
+        level, since = soc, now_min
         if today:
             level = next(
                 (
@@ -234,5 +265,5 @@ class PvChargeService:
             )
         for run in schedule.upcoming_runs_on(day):
             if run.end.date() == day and to_minutes(run.end.time()) <= start:
-                level = run.target_soc
-        return level
+                level, since = run.target_soc, to_minutes(run.end.time())
+        return level, since

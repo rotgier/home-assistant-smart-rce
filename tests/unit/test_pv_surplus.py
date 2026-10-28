@@ -185,3 +185,12 @@ class TestService:
         svc = _service(datetime(2026, 10, 12, 11, 40, tzinfo=TZ))
         await svc.async_refresh()
         assert svc.realized is not None and svc.realized.total == pytest.approx(2.0)
+
+
+def test_deficit_counts_what_pv_does_not_cover():
+    # 08:00-10:00: PV 0.2 kWh/h against flat 0.9 — 0.7 kWh/h from the battery;
+    # from 10:00 PV 3.0 covers the house, nothing drains.
+    pv = slots_from_hourly({8: 0.2, 9: 0.2, 10: 3.0})
+    profile = SurplusProfile.build(date(2026, 10, 28), pv, None)
+    assert profile.deficit(8 * 60, 10 * 60) == pytest.approx(1.4)
+    assert profile.deficit(10 * 60, 11 * 60) == 0.0
