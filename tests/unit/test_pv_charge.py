@@ -1,6 +1,7 @@
 """PV charge on the price chart — milestones, the run as it happened, the bands."""
 
 from datetime import date, datetime, time, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from custom_components.smart_rce.domain.battery_charge_policy import (
@@ -269,6 +270,8 @@ class TestService:
         prices=None,
         reserve=None,
         workday=True,
+        floor=None,
+        plan_tomorrow=None,
     ):
         from types import SimpleNamespace  # noqa: PLC0415
 
@@ -299,6 +302,8 @@ class TestService:
                 upcoming_runs_on=lambda day: [r for r in runs if r.end.date() == day],
                 sessions_today=list(sessions),
                 t1_reserve_for=lambda day: reserve,
+                morning_charge_floor_for=lambda day: floor,
+                morning_discharge_tomorrow=plan_tomorrow,
             ),
             charge_slots=SimpleNamespace(
                 today_start=time(12, 0), tomorrow_start=time(10, 30)
@@ -381,6 +386,34 @@ class TestService:
         assert service.outlook.start == 11 * H
         assert service.outlook.start_soc == 44.0
         assert (tomorrow, True) in asked
+
+    def test_tomorrow_on_a_dear_day_starts_from_the_night_charge(self):
+        # 28.10.2026: the night charges to 100 and nothing sells it in the
+        # morning — the preview must not start from the 44% reserve.
+        now = datetime(2026, 10, 17, 21, 30, tzinfo=TZ)
+        dear = SimpleNamespace(target=100, dear_day=True)
+        service, _o, _a = self._service(
+            now,
+            plan_day=date(2026, 10, 18),
+            prices=self.PRICES,
+            reserve=self._reserve(),
+            floor=dear,
+        )
+        # The fake profile has no consumption: no drain from 07:00.
+        assert service.outlook.start_soc == 100.0
+
+    def test_tomorrow_with_a_morning_sale_stays_on_the_reserve(self):
+        now = datetime(2026, 10, 17, 21, 30, tzinfo=TZ)
+        weak = SimpleNamespace(target=90, dear_day=False)
+        service, _o, _a = self._service(
+            now,
+            plan_day=date(2026, 10, 18),
+            prices=self.PRICES,
+            reserve=self._reserve(),
+            floor=weak,
+            plan_tomorrow=object(),
+        )
+        assert service.outlook.start_soc == 44.0
 
 
 class TestHourSensors:

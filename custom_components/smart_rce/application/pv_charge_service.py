@@ -14,8 +14,9 @@ The forecast walks `charge_milestones` on Live Soft (p60 consumption) from:
   28.10.2026 — until then the T1 reserve, which a morning without a sale
   undercut: 28.10 the outlook started at 21% with the battery at 89%).
   Tomorrow at the T1 reserve with the margin of that start's hour — the lowest
-  the morning may leave the battery at; a day off without T1 from the 10%
-  floor. Without prices: the start in force.
+  the morning may leave the battery at — unless the night charges above it
+  and no morning sale is planned (a dear day: 100); a day off without T1 from
+  the 10% floor. Without prices: the start in force.
 
 The applied start (`ChargeStartShift`, guarded, from the current SoC) may
 still differ; the outlook shows where the forecast points, not the decision.
@@ -31,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import CALLBACK_TYPE, callback
 
-from ..domain.battery_schedule import is_day_off
+from ..domain.battery_schedule import MorningChargeFloor, is_day_off
 from ..domain.charge_curve import kwh_per_pp, kwh_to_full
 from ..domain.charge_start_shift import (
     charge_milestones,
@@ -216,8 +217,10 @@ class PvChargeService:
         Today: what the slots before the start leave it at, then the house's
         drain until the start (the battery is closed to PV till then). Tomorrow:
         the T1 reserve with the margin step in force at the start (08:00 more
-        than later); a day off has no T1 — the 10% floor. Without a reserve for
-        the day, the level the slots before the start leave the battery at.
+        than later) — or, when the night charges above it (`MorningChargeFloor`,
+        a dear day to 100) and no morning sale is planned, that level less the
+        drain from 07:00; a day off has no T1 — the 10% floor. Without a reserve
+        for the day, the level the slots before the start leave the battery at.
         """
         if today:
             level, since = self._soc_at(day, start, soc, now_min, today=True)
@@ -228,11 +231,25 @@ class PvChargeService:
         )
         if is_day_off(day, is_workday):
             return float(MIN_SOC_PERCENT)
-        reserve = self._ems.battery_schedule_service.t1_reserve_for(day)
+        schedule = self._ems.battery_schedule_service
+        reserve = schedule.t1_reserve_for(day)
         if reserve is None:
             return self._soc_at(day, start, soc, 0, today=today)[0]
         at = datetime.combine(day, to_time(start), tzinfo=self._clock().tzinfo)
-        return float(reserve.value_at(at))
+        line = float(reserve.value_at(at))
+        floor = schedule.morning_charge_floor_for(day)
+        if (
+            floor is None
+            or floor.target is None
+            or floor.target <= line
+            or schedule.morning_discharge_tomorrow is not None
+        ):
+            return line
+        # The night lifts the battery above the reserve (weak sun, a dear day)
+        # and no morning sale takes it down: from 07:00 only the house drains it.
+        level = float(floor.target)
+        drain = profile.deficit(MorningChargeFloor.FIRST_HOUR * 60, start)
+        return max(line, level - drain / kwh_per_pp(level))
 
     def _start(self, day: date, *, today: bool) -> int | None:
         """Return the day's charge start: today the one in force, tomorrow plan or S0."""
