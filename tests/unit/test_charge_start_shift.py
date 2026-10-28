@@ -137,6 +137,13 @@ class TestCheaperLaterStart:
         prices[11] = prices[12] = prices[13] = 2000
         assert self._later(1.0, prices=prices).start == 9 * H
 
+    def test_the_margin_counts_only_hours_cheaper_than_the_one_before(self):
+        # 10:00's price window is 10-12 (12:00 at 1015 > 990 of 09:00): 2 h x
+        # 3.1 = 6.2 kWh < 1.5 x 4.5. The sun after 12:00 would fill it, but in
+        # hours dearer than starting at 09:00 — so 09:00 stays.
+        assert self._later(4.5).start == 9 * H
+        assert self._later(4.0).start == 10 * H  # 6.0 kWh fits in 10-12
+
     def test_not_full_an_hour_before_t2_is_not_a_start(self):
         # Sun only up to 11:00: from 10:00 1 h of sun, not 1.5x a 3 kWh need.
         pv = dict.fromkeys(range(8, 11), 4.0)

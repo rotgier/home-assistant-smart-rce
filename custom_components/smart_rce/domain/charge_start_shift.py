@@ -195,9 +195,12 @@ def cheaper_later_start(
     A battery that needs little is filled within an hour or two, so the start
     can wait for the cheapest hours and export the dearer ones before them —
     later than S0 too. Only when `base` itself fills the battery (`enough`);
-    a later start has to keep a margin: the surplus from it until an hour
-    before `window_end` (T2) is at least `LATER_MARGIN` x the need, and the
-    charge model fills the battery by then. The price of a start is the mean
+    a later start has to keep a margin inside its price window — the hours
+    cheaper than the one before it (`price_window_end`, the rule the earlier
+    moves count by: charging on into a dearer hour is worse than having
+    started an hour earlier, user 28.10.2026), and no later than an hour
+    before `window_end` (T2): the surplus there is at least `LATER_MARGIN` x
+    the need, and the charge model fills the battery there. The price of a start is the mean
     price of the energy the battery actually takes from it (minute by minute,
     until full), not of the hour it starts in; a later start wins only when
     `LATER_MIN_GAIN` cheaper than `base`, the cheapest one (the earliest among
@@ -217,10 +220,11 @@ def cheaper_later_start(
     for hour in range(max(first_hour, -(-now // 60)), deadline // 60):
         start = hour * 60
         need = need_at(start)
-        if profile.total(start, deadline) < LATER_MARGIN * need:
+        end = min(price_window_end(start, hour_prices) * 60, deadline)
+        if profile.total(start, end) < LATER_MARGIN * need:
             continue
         soc = FULL_SOC - pp_below_full(need)
-        if charge_milestones(profile, start, soc, deadline).full_at is None:
+        if charge_milestones(profile, start, soc, end).full_at is None:
             continue
         price = _taken_price(profile, hour_prices, start, need_at)
         if price is None:
