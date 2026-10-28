@@ -137,6 +137,29 @@ class TestCheaperLaterStart:
         prices[11] = prices[12] = prices[13] = 2000
         assert self._later(1.0, prices=prices).start == 9 * H
 
+    def test_a_held_later_start_stays_close_to_its_hour(self):
+        # 28.10.2026 09:41 shape: starting now takes only minutes at 990, so
+        # "now" is within 10 zl/MWh of 10:00 (here 09:58: ~832 vs 824) — not
+        # a reason to give up a start in force.
+        profile = _profile(self.SUNNY)
+        now = 9 * H + 58
+        base = find_candidate(profile, self.PRICES_28, now, 2.1, 9 * H)
+        assert base.start == now
+
+        def later(held):
+            return cheaper_later_start(
+                profile,
+                self.PRICES_28,
+                now,
+                base,
+                lambda _s: 2.1,
+                window_end=16 * H,
+                held=held,
+            ).start
+
+        assert later(None) == now  # would not move there now
+        assert later(10 * H) == 10 * H  # but keeps it once held
+
     def test_the_margin_counts_only_hours_cheaper_than_the_one_before(self):
         # 10:00's price window is 10-12 (12:00 at 1015 > 990 of 09:00): 2 h x
         # 3.1 = 6.2 kWh < 1.5 x 4.5. The sun after 12:00 would fill it, but in

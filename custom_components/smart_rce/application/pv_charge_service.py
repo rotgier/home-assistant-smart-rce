@@ -186,7 +186,13 @@ class PvChargeService:
 
         base = find_candidate_at(profile, prices, now_min, to_minutes(s0), need_at)
         return cheaper_later_start(
-            profile, prices, now_min, base, need_at, window_end=window_end
+            profile,
+            prices,
+            now_min,
+            base,
+            need_at,
+            window_end=window_end,
+            held=self._start(day, today=today) if today else None,
         ).start
 
     def _prices(self, day: date) -> tuple[float, ...] | None:

@@ -189,6 +189,7 @@ def cheaper_later_start(
     need_at: Callable[[int], float],
     *,
     window_end: int,
+    held: int | None = None,
 ) -> Candidate:
     """Return `base`, or a later whole-hour start where the battery takes cheaper PV.
 
@@ -206,6 +207,13 @@ def cheaper_later_start(
     `LATER_MIN_GAIN` cheaper than `base`, the cheapest one (the earliest among
     equals).
 
+    `held`: the later start already in force. It stays while it keeps the
+    margin and costs no more than `base` — the bar is for moving, not for
+    staying: past S0 `base` is "now", and close to the held hour starting now
+    takes almost nothing at the dearer price, so the gap shrinks under the bar
+    (28.10.2026: 10:00 dropped to 09:41 on 834 vs 831). Another later hour
+    replaces it only when `LATER_MIN_GAIN` cheaper than it.
+
     `need_at(start)`: energy to full at that start, the drain until then
     included — the caller knows the level the battery is left at.
     """
@@ -215,7 +223,7 @@ def cheaper_later_start(
     base_price = _taken_price(profile, hour_prices, base.start, need_at)
     if base_price is None:
         return base
-    best, best_price = base, base_price - LATER_MIN_GAIN
+    options: list[tuple[int, float]] = []
     first_hour = base.start // 60 + 1
     for hour in range(max(first_hour, -(-now // 60)), deadline // 60):
         start = hour * 60
@@ -227,13 +235,16 @@ def cheaper_later_start(
         if charge_milestones(profile, start, soc, end).full_at is None:
             continue
         price = _taken_price(profile, hour_prices, start, need_at)
-        if price is None:
-            continue
-        # The first later start may just meet the bar; any further one has to
-        # beat the start already found.
-        if price < best_price or (best is base and price == best_price):
-            best, best_price = Candidate(start, True), price
-    return best
+        bar = base_price if start == held else base_price - LATER_MIN_GAIN
+        if price is not None and price <= bar:
+            options.append((start, price))
+    if not options:
+        return base
+    start, price = min(options, key=lambda option: (option[1], option[0]))
+    kept = next((o for o in options if o[0] == held), None)
+    if kept is not None and price > kept[1] - LATER_MIN_GAIN:
+        start = kept[0]
+    return Candidate(start, True)
 
 
 def _taken_price(

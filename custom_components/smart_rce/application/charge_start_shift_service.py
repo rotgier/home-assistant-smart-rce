@@ -186,6 +186,7 @@ class ChargeStartShiftService:
         applied = self._applied_profile()
         if applied is None:
             return
+        current = shift.start if shift is not None else s0_min
         live = cheaper_later_start(
             applied,
             prices,
@@ -194,12 +195,12 @@ class ChargeStartShiftService:
             # Until a later start the battery stays closed and covers the house.
             lambda start: need + applied.deficit(now_min, start),
             window_end=surplus_window_end(now.date()) * 60,
+            held=current,
         )
         found_extrap = self._extrap_candidate(
             prices, now_min, need, s0_min, EXTRAP_FROM
         )
         extrap = found_extrap.start if found_extrap is not None else None
-        current = shift.start if shift is not None else s0_min
         candidates[APPLIED_VARIANT] = guarded_candidate(live, extrap, current, now_min)
         self.last = ShiftEvaluation(
             now,
