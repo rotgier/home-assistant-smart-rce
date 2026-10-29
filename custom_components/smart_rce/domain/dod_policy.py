@@ -48,7 +48,10 @@ Phase classification + decisions:
     (`number.ems_export_threshold`) with energy above its target. Direct
     DoD=0: the battery waits for it.
   - **RESERVE_FLOOR**: a workday morning ahead. The house may draw down to
-    that morning's T1 reserve (DoD = 100 - reserve), no further.
+    that morning's T1 reserve (DoD = 100 - reserve), no further — or to the
+    night charge's target when the weak-sun floor lifts it (a dear day: 100,
+    DoD 0), since 29.10.2026: what the night buys for T1 stays for T1
+    (`BatteryScheduleService.reserve_floor`).
   - **RELEASED**: otherwise the house may draw down to 10% (DoD=90).
   - In RESERVE_FLOOR and RELEASED the battery does not discharge while PV is
     exporting anyway (`block_afternoon_dynamic` hysteresis → DoD=0).

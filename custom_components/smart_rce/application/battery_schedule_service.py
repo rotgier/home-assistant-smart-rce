@@ -393,9 +393,23 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         )
 
     def reserve_floor(self, now: datetime) -> int | None:
-        """T1 reserve of the morning ahead — how low the house may take the battery."""
-        reserve = self._repo.schedule.t1_reserve_for(self._morning_ahead(now))
-        return reserve.value if reserve is not None else None
+        """How low the house may take the battery before the morning ahead.
+
+        The T1 reserve of that morning — or the night charge's target when the
+        weak-sun floor lifts it (a dear day to 100): what the night buys at T3
+        for T1 is not for the house to use up before 07:00 (29.10.2026: charged
+        to 100 at 06:53, then DoD 50 let the house draw it down to the reserve).
+        """
+        schedule = self._repo.schedule
+        day = self._morning_ahead(now)
+        reserve = schedule.t1_reserve_for(day)
+        if reserve is None:
+            return None
+        floor = schedule.morning_charge_floor_for(day)
+        night = schedule.today_entry_for(SlotKind.CHARGE_MORNING_AUTO)
+        if floor is None or not night.enabled:
+            return reserve.value
+        return floor.lifts(reserve.value)
 
     @classmethod
     def _morning_ahead(cls, now: datetime) -> date:

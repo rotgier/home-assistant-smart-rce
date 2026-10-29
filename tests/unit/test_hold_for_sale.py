@@ -10,6 +10,7 @@ from custom_components.smart_rce.domain.battery_schedule import (
     BatterySchedule,
     BatteryScheduleEntry,
     BatteryScheduleInput,
+    MorningChargeFloor,
     MorningDischargePlan,
     ReserveWindow,
     SlotBehavior,
@@ -130,6 +131,57 @@ class TestReserveFloor:
         assert service.reserve_floor(_at(SUNDAY, 20)) == 38
         assert service.reserve_floor(_at(MONDAY, 3)) == 38
         assert service.reserve_floor(_at(SATURDAY, 20)) is None
+
+    def test_a_lifted_night_charge_is_not_for_the_house(self):
+        # 29.10.2026: dear day, the night charged to 100 by 06:53, and the
+        # house was let down to the 50% reserve before 07:00.
+        sch = BatterySchedule(today=self._night_charge(enabled=True))
+        sch.set_t1_reserve(self._reserve(), _at(SUNDAY, 16))
+        sch.set_morning_charge_floor(MONDAY, self._floor(target=100))
+        service = _service(sch, _at(MONDAY, 6, 55))
+        assert service.reserve_floor(_at(MONDAY, 6, 55)) == 100
+
+    def test_a_floor_below_the_reserve_leaves_the_reserve(self):
+        sch = BatterySchedule(today=self._night_charge(enabled=True))
+        sch.set_t1_reserve(self._reserve(), _at(SUNDAY, 16))
+        sch.set_morning_charge_floor(MONDAY, self._floor(target=None))
+        assert _service(sch, _at(SUNDAY, 22)).reserve_floor(_at(SUNDAY, 22)) == 38
+
+    def test_no_lift_when_the_night_charge_is_off(self):
+        sch = BatterySchedule(today=self._night_charge(enabled=False))
+        sch.set_t1_reserve(self._reserve(), _at(SUNDAY, 16))
+        sch.set_morning_charge_floor(MONDAY, self._floor(target=100))
+        assert _service(sch, _at(SUNDAY, 22)).reserve_floor(_at(SUNDAY, 22)) == 38
+
+    @staticmethod
+    def _night_charge(*, enabled: bool) -> dict[SlotKind, BatteryScheduleEntry]:
+        today = BatteryScheduleEntry.defaults_for_all_kinds()
+        auto = today[SlotKind.CHARGE_MORNING_AUTO]
+        today[SlotKind.CHARGE_MORNING_AUTO] = auto.with_enabled(enabled)
+        return today
+
+    @staticmethod
+    def _reserve() -> T1SocReserve:
+        return T1SocReserve(
+            day=MONDAY,
+            value=38,
+            flat=38,
+            prev_without_worst=None,
+            dip_kwh=None,
+            source="tomorrow_live_soft",
+            window=ReserveWindow.FULL,
+        )
+
+    @staticmethod
+    def _floor(target: int | None) -> MorningChargeFloor:
+        return MorningChargeFloor(
+            day=MONDAY,
+            surplus_kwh=0.0,
+            fill=100 if target else 10,
+            dip=28,
+            target=target,
+            dear_day=target == 100,
+        )
 
 
 class TestExportThreshold:
