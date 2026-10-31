@@ -114,6 +114,9 @@ class BatteryScheduleEntry:
     def with_end(self, value: time) -> BatteryScheduleEntry:
         return dataclasses.replace(self, end=value)
 
+    def with_window(self, start: time, end: time) -> BatteryScheduleEntry:
+        return dataclasses.replace(self, start=start, end=end)
+
     def with_target_soc(self, value: float) -> BatteryScheduleEntry:
         return dataclasses.replace(self, target_soc=value)
 

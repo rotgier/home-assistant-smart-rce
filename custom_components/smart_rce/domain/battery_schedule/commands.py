@@ -66,6 +66,24 @@ class SetSlotEndCommand:
 
 
 @dataclass(frozen=True)
+class SetSlotWindowCommand:
+    """Start and end in one step — `value` is (start, end).
+
+    Setting them one by one passes through a window that may not exist: moving
+    16:00-18:00 to 19:00-20:00 set start 19:00 against end 18:00 first, and the
+    enabled entry refused it (31.10.2026, evening plan for 01.11).
+    """
+
+    scope: Scope
+    kind: SlotKind
+    value: tuple[time, time]
+
+    def apply_to_entry(self, entry: BatteryScheduleEntry) -> BatteryScheduleEntry:
+        start, end = self.value
+        return entry.with_window(start, end)
+
+
+@dataclass(frozen=True)
 class SetSlotTargetSocCommand:
     scope: Scope
     kind: SlotKind

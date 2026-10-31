@@ -17,6 +17,7 @@ from custom_components.smart_rce.domain.battery_schedule import (
     BatterySchedule,
     SetSlotEnabledCommand,
     SetSlotStartCommand,
+    SetSlotWindowCommand,
     SlotKind,
 )
 from custom_components.smart_rce.domain.evening_plan import EveningPlan
@@ -82,6 +83,25 @@ async def test_a_plan_lands_in_the_slots_when_nobody_touched_them():
     assert entry.enabled
     assert (entry.start, entry.end) == (time(19, 0), time(20, 0))
     assert schedule.today_entry_for(MID).enabled
+
+
+async def test_a_window_moved_past_its_old_end_lands_in_one_step():
+    # 31.10.2026: EARLY stood at 16:00-18:00 (enabled); tomorrow's plan wanted
+    # 19:00-20:00 and the start alone (19:00 against end 18:00) was refused.
+    schedule = BatterySchedule()
+    service = _service(schedule)
+    schedule.apply_slot_command(
+        SetSlotWindowCommand(scope="today", kind=EARLY, value=(time(16), time(18)))
+    )
+    schedule.apply_slot_command(
+        SetSlotEnabledCommand(scope="today", kind=EARLY, value=True)
+    )
+
+    result = await service.adopt_evening_plan(_plan(_prices(h19=RICH, h20=RICH)), NOW)
+
+    assert result.outcome is PlanOutcome.APPLIED
+    entry = schedule.today_entry_for(EARLY)
+    assert (entry.start, entry.end) == (time(19, 0), time(20, 0))
 
 
 async def test_a_hand_edited_evening_is_left_alone():

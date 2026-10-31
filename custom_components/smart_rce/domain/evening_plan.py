@@ -21,9 +21,8 @@ from .battery_schedule import (
     Scope,
     SetSlotBehaviorCommand,
     SetSlotEnabledCommand,
-    SetSlotEndCommand,
-    SetSlotStartCommand,
     SetSlotTargetSocCommand,
+    SetSlotWindowCommand,
     SlotBehavior,
     SlotCommand,
     SlotKind,
@@ -394,13 +393,16 @@ class EveningWindow:
         )
 
     def commands_for(self, kind: SlotKind, *, scope: Scope) -> list[SlotCommand]:
-        """Express this window in the language the schedule aggregate speaks."""
+        """Express this window in the language the schedule aggregate speaks.
+
+        The window lands in one step and the slot is switched on last: an
+        enabled entry checks start < end, so no step may leave it half-moved.
+        """
         return [
-            SetSlotEnabledCommand(scope=scope, kind=kind, value=True),
-            SetSlotStartCommand(scope=scope, kind=kind, value=self.start),
-            SetSlotEndCommand(scope=scope, kind=kind, value=self.end),
+            SetSlotWindowCommand(scope=scope, kind=kind, value=(self.start, self.end)),
             SetSlotTargetSocCommand(scope=scope, kind=kind, value=self.target_soc),
             SetSlotBehaviorCommand(scope=scope, kind=kind, value=self.behavior),
+            SetSlotEnabledCommand(scope=scope, kind=kind, value=True),
         ]
 
     @staticmethod

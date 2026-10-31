@@ -76,7 +76,7 @@ def _rungs(plan: EveningPlan) -> list[tuple[int, float, SlotKind]]:
     for c in plan.slot_commands():
         by_kind.setdefault(c.kind, {})[type(c).__name__] = c.value
     return [
-        (cmds["SetSlotStartCommand"].hour, cmds["SetSlotTargetSocCommand"], kind)  # type: ignore[union-attr]
+        (cmds["SetSlotWindowCommand"][0].hour, cmds["SetSlotTargetSocCommand"], kind)  # type: ignore[index]
         for kind, cmds in by_kind.items()
         if cmds.get("SetSlotEnabledCommand")
     ]
@@ -403,8 +403,7 @@ def test_commands_carry_the_window_settings():
     early = {type(c).__name__: c.value for c in plan.slot_commands() if c.kind is EARLY}
     assert early == {
         "SetSlotEnabledCommand": True,
-        "SetSlotStartCommand": time(19, 0),
-        "SetSlotEndCommand": time(20, 0),
+        "SetSlotWindowCommand": (time(19, 0), time(20, 0)),
         "SetSlotTargetSocCommand": 47.0,
         "SetSlotBehaviorCommand": DELAYED,
     }

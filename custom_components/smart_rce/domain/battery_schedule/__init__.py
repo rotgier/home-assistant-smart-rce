@@ -16,6 +16,7 @@ from .commands import (
     SetSlotEndCommand,
     SetSlotStartCommand,
     SetSlotTargetSocCommand,
+    SetSlotWindowCommand,
     SlotCommand,
     StartOneShotCommand,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "SetSlotEndCommand",
     "SetSlotStartCommand",
     "SetSlotTargetSocCommand",
+    "SetSlotWindowCommand",
     "SlotBehavior",
     "SlotCommand",
     "SlotDisengaged",
