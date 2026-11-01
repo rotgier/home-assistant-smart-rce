@@ -160,6 +160,8 @@ class ChargeStartShiftService:
         s0 = self._ems.charge_slots.today_start
         if s0 is None or not self._in_window(now, s0, self.shift):
             return
+        if self._charge.day_off_start_today is not None:
+            return  # the day-off rule set today's start; nothing to shift
         state = self._ems.last_input_state
         soc = state.battery_soc if state is not None else None
         prices = self._today_prices(now.date())

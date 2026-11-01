@@ -35,11 +35,13 @@ from homeassistant.core import callback
 from ..domain.battery_charge_policy import (
     ChargeStartPlan,
     ChargeStartSource,
+    DayOffStart,
     OverrideMode,
 )
 from ..domain.battery_schedule import BatteryOperation
 from ..domain.charge_slots import ChargeWindowParams
 from ..domain.charge_start_shift import ChargeStartShift, to_hhmm, to_minutes, to_time
+from ..domain.day_off_charge import NONE
 from ..domain.pv_charge import PvChargeRun
 from ..infrastructure.battery_charge_repository import BatteryChargeRepository
 from .service import Service
@@ -174,6 +176,13 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
             summary = f"{start:%H:%M} ręcznie"
             if shift is not None and shift.is_shifted:
                 summary += f" (prognoza: {to_hhmm(shift.start)})"
+        elif source is ChargeStartSource.DAY_OFF:
+            summary = (
+                "dzień wolny — bez ładowania z PV"
+                if self.day_off_start_today is not None
+                and self.day_off_start_today.variant == NONE
+                else f"{start:%H:%M} — dzień wolny, tańsze godziny"
+            )
         else:
             summary = f"{start:%H:%M} z cen RCE"
         plan = policy.tomorrow_plan
@@ -181,6 +190,29 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
             "summary": summary,
             "tomorrow_manual": f"{plan.value:%H:%M}" if plan is not None else None,
         }
+
+    @property
+    def day_off_start_today(self) -> DayOffStart | None:
+        """Today's start set by the day-off rule, None when there is none."""
+        return self._repo.policy.day_off_start_for(self._clock().date())
+
+    @callback
+    def apply_day_off_start(
+        self, now: datetime, s0: time | None, start: DayOffStart | None
+    ) -> None:
+        """Put the day-off rule's start in force (None: back to S0 / the shift).
+
+        Remembered even under a hand-set start — that one stays in force; the
+        decision only takes over once the hand-set mark is gone.
+        """
+        today = now.date()
+        policy = self._repo.policy
+        changed = policy.set_day_off_start(start)
+        if s0 is not None and policy.start_charge_manual_day != today:
+            changed |= policy.set_start_charge_hour_override(
+                self._effective_start(s0, today)
+            )
+        self._save_if_changed_and_notify(changed)
 
     @property
     def start_charge_is_manual_today(self) -> bool:
@@ -336,7 +368,10 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         self._save_if_changed_and_notify(changed)
 
     def _effective_start(self, computed_today: time, today: date) -> time:
-        """Return the computed start, or today's forecast shift of it."""
+        """Return the day-off start, else today's forecast shift, else the computed one."""
+        day_off = self._repo.policy.day_off_start_for(today)
+        if day_off is not None:
+            return day_off.value
         shift = self._repo.policy.forecast_shift
         if shift is None or shift.day != today:
             return computed_today
@@ -364,7 +399,9 @@ class BatteryChargeService(Service[BatteryChargeRepository]):
         changed |= shift.to_dict() != before
         manual = policy.start_charge_manual_day == today
         if not manual:
-            changed |= policy.set_start_charge_hour_override(to_time(shift.start))
+            changed |= policy.set_start_charge_hour_override(
+                self._effective_start(s0, today)
+            )
         self._save_if_changed_and_notify(changed)
         if not moved:
             return None

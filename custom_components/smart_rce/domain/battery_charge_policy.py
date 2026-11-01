@@ -68,6 +68,8 @@ class ChargeStartSource(StrEnum):
     AUTO = "auto"
     FORECAST = "forecast"
     MANUAL = "manual"
+    # The day-off rule (`DayOffChargeDecision`): no PV charging, or a later start.
+    DAY_OFF = "day_off"
 
 
 CHARGE_CURRENT_MAX_AMPS: float = 18.5
@@ -100,6 +102,7 @@ class BatteryChargePolicy:
         start_charge_manual_day: date | None = None,
         tomorrow_plan: ChargeStartPlan | None = None,
         forecast_shift: ChargeStartShift | None = None,
+        day_off_start: DayOffStart | None = None,
         pv_charge_run: PvChargeRun | None = None,
         initial_charge_hours: int = DEFAULT_INITIAL_HOURS,
         charge_extend_threshold: float = DEFAULT_EXTEND_THRESHOLD,
@@ -133,6 +136,9 @@ class BatteryChargePolicy:
         # Pinned to its day like `tomorrow_plan`; a hand-set start for today
         # still wins — the shift keeps being evaluated, only not applied.
         self.forecast_shift = forecast_shift
+        # Today's start set by the day-off rule (none = start at T2, or a later
+        # hour). Outranks the forecast shift, a hand-set start outranks it.
+        self.day_off_start = day_off_start
         # Today's PV charge as it happened (opened, 90%, full) — read model for
         # the price chart, persisted so a restart mid-day keeps it.
         self.pv_charge_run = pv_charge_run
@@ -214,6 +220,8 @@ class BatteryChargePolicy:
         """
         if self.start_charge_manual_day == today:
             return ChargeStartSource.MANUAL
+        if self.day_off_start_for(today) is not None:
+            return ChargeStartSource.DAY_OFF
         shift = self.forecast_shift
         if shift is not None and shift.day == today and shift.is_shifted:
             return ChargeStartSource.FORECAST
@@ -278,6 +286,18 @@ class BatteryChargePolicy:
         if self.tomorrow_plan is None:
             return False
         self.tomorrow_plan = None
+        return True
+
+    def day_off_start_for(self, today: date) -> DayOffStart | None:
+        """Today's day-off start, None when there is none (or it is spent)."""
+        start = self.day_off_start
+        return start if start is not None and start.day == today else None
+
+    def set_day_off_start(self, start: DayOffStart | None) -> bool:
+        """Remember the day-off start (None: none). Returns True if changed."""
+        if self.day_off_start == start:
+            return False
+        self.day_off_start = start
         return True
 
     def forecast_shift_for(self, today: date, s0: int) -> ChargeStartShift:
@@ -393,6 +413,9 @@ class BatteryChargePolicy:
                 if self.forecast_shift is not None
                 else None
             ),
+            "day_off_start": (
+                self.day_off_start.to_dict() if self.day_off_start is not None else None
+            ),
             "pv_charge_run": (
                 self.pv_charge_run.to_dict() if self.pv_charge_run is not None else None
             ),
@@ -469,6 +492,7 @@ class BatteryChargePolicy:
             start_charge_manual_day=manual_day,
             tomorrow_plan=tomorrow_plan,
             forecast_shift=ChargeStartShift.from_dict(data.get("forecast_shift")),
+            day_off_start=DayOffStart.from_dict(data.get("day_off_start")),
             pv_charge_run=PvChargeRun.from_dict(data.get("pv_charge_run")),
             initial_charge_hours=initial_hours,
             charge_extend_threshold=extend_threshold,
@@ -510,6 +534,38 @@ class ChargeStartPlan:
         if day is None or value is None:
             return None
         return cls(day=day, value=value)
+
+
+@dataclass(frozen=True)
+class DayOffStart:
+    """The day-off rule's charge start, pinned to its day.
+
+    `variant` names the winning variant (`day_off_charge.NONE` = no PV
+    charging: the start stands at T2; `from_<hh>` = a later hour).
+    """
+
+    day: date
+    value: time
+    variant: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "day": self.day.isoformat(),
+            "value": self.value.isoformat(),
+            "variant": self.variant,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> DayOffStart | None:
+        """Restore from persisted dict; None on missing / unparsable input."""
+        if not isinstance(data, dict):
+            return None
+        day = _coerce_date(data.get("day"))
+        value = _coerce_time(data.get("value"))
+        variant = data.get("variant")
+        if day is None or value is None or not isinstance(variant, str):
+            return None
+        return cls(day=day, value=value, variant=variant)
 
 
 def _coerce_int(raw: Any, default: int) -> int:

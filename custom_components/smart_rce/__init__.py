@@ -10,11 +10,16 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_call_later, async_track_time_change
 from homeassistant.util import dt as dt_util
 
 from .application.battery_day_service import BatteryDayService
 from .application.charge_start_shift_service import ChargeStartShiftService
+from .application.day_off_charge_service import (
+    DECIDE_AT,
+    VALIDATE_AT,
+    DayOffChargeService,
+)
 from .application.ems import Ems
 from .application.energy_balance_service import EnergyBalanceService
 from .application.forecast_score_service import ForecastScoreService
@@ -32,6 +37,7 @@ from .forecast_score_factory import create_forecast_score
 from .garden.factory import Garden, create_garden
 from .infrastructure.battery_day_history import BatteryDayHistory
 from .infrastructure.charge_start_shift_notifier import ChargeStartShiftNotifier
+from .infrastructure.day_off_charge_notifier import DayOffChargeNotifier
 from .infrastructure.energy_archive_reader import EnergyArchiveReader
 from .infrastructure.pv_forecast.hourly_energy_loader import HourlyEnergyLoader
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
@@ -83,6 +89,7 @@ class SmartRceData:
     forecast_score: ForecastScoreService
     pv_charge: PvChargeService
     battery_day: BatteryDayService
+    day_off_charge: DayOffChargeService
 
 
 type SmartRceConfigEntry = ConfigEntry[SmartRceData]
@@ -169,6 +176,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         )
     )
 
+    # Day off: store the PV or export it at once — decided at 06:41, checked at
+    # 07:41, 30 s after the :40 Solcast refresh has landed in the forecast.
+    day_off_notifier = DayOffChargeNotifier(hass, entry)
+    day_off_charge = DayOffChargeService(
+        ems, pv_surplus, day_off_notifier.notify, dt_util.now
+    )
+
+    @callback
+    def _decide_day_off(_now: object) -> None:
+        day_off_charge.evaluate(validation=False)
+
+    @callback
+    def _validate_day_off(_now: object) -> None:
+        day_off_charge.evaluate(validation=True)
+
+    for at, run in ((DECIDE_AT, _decide_day_off), (VALIDATE_AT, _validate_day_off)):
+        entry.async_on_unload(
+            async_track_time_change(
+                hass, run, hour=at.hour, minute=at.minute, second=30
+            )
+        )
+
+    @callback
+    def _catch_up_day_off(_now: object) -> None:
+        """HA was down at 06:41: decide once now, if still before 07:41."""
+        moment = dt_util.now().time()
+        if DECIDE_AT <= moment < VALIDATE_AT and day_off_charge.last is None:
+            day_off_charge.evaluate(validation=False)
+
+    # Two minutes for prices, forecast and SoC to load after a restart.
+    entry.async_on_unload(async_call_later(hass, 120, _catch_up_day_off))
+
     # Automatic morning discharge: plan rebuilt every minute, after the surplus
     # tick (second 5) has refreshed what is still to come.
     morning_discharge = MorningDischargeService(ems, pv_surplus, dt_util.now)
@@ -242,6 +281,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
         forecast_score,
         pv_charge,
         battery_day,
+        day_off_charge,
     )
 
     # Credentials for the deposit fetch live in options; picking them up needs a
