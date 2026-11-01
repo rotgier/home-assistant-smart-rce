@@ -78,8 +78,9 @@ if TYPE_CHECKING:
 # 14: D2 by production's start rule of the day (`cheaper_later_start` from
 #     28.10, the start in force held), moments until the start (also past S0),
 #     the LAST strike as the fact, the start history kept; the dear day.
+# 15: a dear day only on a day with the morning auto slots (31.10 was flagged).
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 14
+SCHEMA_VERSION: Final = 15
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
