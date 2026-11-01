@@ -45,7 +45,10 @@ MAX_KWH_PER_H: Final[float] = 5.0
 # Round trip of a kWh through the battery (`target_soc.LOSS_FACTOR`).
 ROUND_TRIP: Final[float] = 0.9
 # A variant has to beat the one in force by this much (zl, deposit + cash).
-MIN_ADVANTAGE_ZL: Final[float] = 0.30
+# User's decision 01.11.2026: 0.05 — at 0.30 the rule would have let 31.10 charge
+# (forecast -0.26 zl, actually -1.65), since the p60 consumption of Saturdays
+# overstates the day almost twice and so understates the surplus.
+MIN_ADVANTAGE_ZL: Final[float] = 0.05
 # An hour counts as a later start only with a real surplus.
 MIN_SURPLUS_KWH: Final[float] = 0.05
 
