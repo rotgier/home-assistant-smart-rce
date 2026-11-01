@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 START_ENTITY: Final = "time.ems_battery_charge_start_hour_override"
 ENGAGING_ENTITY: Final = "sensor.ems_battery_schedule_currently_engaging"
 PLAN_ENTITY: Final = "sensor.ems_morning_discharge_plan"
+DAY_OFF_ENTITY: Final = "sensor.ems_day_off_charge"
 RESERVE_ENTITY: Final = "sensor.ems_t1_soc_reserve"
 SOC_ENTITY: Final = "sensor.battery_state_of_charge"
 AFTERNOON_SLOT: Final = "CHARGE_AFTERNOON"
@@ -208,6 +209,16 @@ class ForecastScoreSources:
                 )
             )
         return out
+
+    async def day_off_choice(self, day: date) -> str | None:
+        """Return the day-off rule's last choice for `day` (None: no run that day).
+
+        The sensor keeps the last run until the next day off, so only a state
+        whose `day` attribute is `day` counts.
+        """
+        states = await self._history(day, DAY_OFF_ENTITY, attributes=True)
+        mine = [s.state for s in states if s.attributes.get("day") == day.isoformat()]
+        return mine[-1] if mine else None
 
     async def afternoon_spans(self, day: date) -> list[tuple[int, int]] | None:
         """CHARGE_AFTERNOON engagements over `day` (minutes); None = no history."""

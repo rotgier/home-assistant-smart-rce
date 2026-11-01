@@ -79,8 +79,13 @@ if TYPE_CHECKING:
 #     28.10, the start in force held), moments until the start (also past S0),
 #     the LAST strike as the fact, the start history kept; the dear day.
 # 15: a dear day only on a day with the morning auto slots (31.10 was flagged).
+# 16: the day-off rule's choice (`day_off_choice`); a day it moved the start
+#     ranks D2 apart.
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 15
+SCHEMA_VERSION: Final = 16
+
+# The day-off rule's choice that leaves the start as it was (`day_off_charge.S0`).
+DAY_OFF_KEEPS_START: Final = "s0"
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
@@ -137,6 +142,8 @@ class DayInputs:
     cutoff: datetime | None = None
     # Production's export bar (gross PLN/MWh) — tells a dear day; None = unknown.
     export_threshold: float | None = None
+    # The day-off rule's choice (`none`, `s0`, `from_<hh>`); None = no run.
+    day_off_choice: str | None = None
 
 
 def score_day(
@@ -248,6 +255,7 @@ def score_day(
         so_far_day=so_far_day,
         discharge_peak_hour=_discharge_peak_hour(inputs),
         dear_day=_dear_day(inputs, setup),
+        day_off_choice=inputs.day_off_choice,
         trigger=trigger,
         cutoff=cutoff,
         pending=tuple(pending),
@@ -405,6 +413,9 @@ class DayScore:
     # A dear day: the night charged to 100, nothing sold in the morning — its
     # reserve did not steer; ranked apart (None = unknown).
     dear_day: bool | None = None
+    # The day-off rule's choice (from 01.11.2026): `none` = no PV charging,
+    # `from_<hh>` = a later start, `s0` = the start as it was; None = no run.
+    day_off_choice: str | None = None
     # What ran it: charge_start, s0, full_charge, 13:06, 16:06, 21:06, manual...
     trigger: str = ""
     # How far the data reached (a run during the day); None = the whole day.
@@ -412,6 +423,11 @@ class DayScore:
     pending: tuple[Pending, ...] = ()
 
     # --- headline figures (the long-term statistics sensors) --- #
+
+    @property
+    def day_off_moved_start(self) -> bool:
+        """Tell whether the day-off rule set the start, not the start rule D2 scores."""
+        return self.day_off_choice not in {None, DAY_OFF_KEEPS_START}
 
     def reserve_moment(self, label: str) -> MomentReserve | None:
         return next((m for m in self.reserve if m.label == label), None)
@@ -487,6 +503,7 @@ class DayScore:
             "so_far_day": [m.to_dict() for m in self.so_far_day],
             "discharge_peak_hour": self.discharge_peak_hour,
             "dear_day": self.dear_day,
+            "day_off_choice": self.day_off_choice,
             "trigger": self.trigger,
             "cutoff": self.cutoff.isoformat() if self.cutoff is not None else None,
             "pending": [str(p) for p in self.pending],
@@ -527,6 +544,7 @@ class DayScore:
             ),
             discharge_peak_hour=data.get("discharge_peak_hour"),
             dear_day=data.get("dear_day"),
+            day_off_choice=data.get("day_off_choice"),
             trigger=str(data.get("trigger", "")),
             cutoff=(
                 datetime.fromisoformat(cut)

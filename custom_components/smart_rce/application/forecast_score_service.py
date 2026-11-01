@@ -413,6 +413,9 @@ class ForecastScoreService:
             plan_readings=readings,
             cutoff=cutoff,
             export_threshold=self._sources.export_threshold(),
+            day_off_choice=(
+                await self._sources.day_off_choice(day) or await self._kept_day_off(day)
+            ),
         )
 
     async def _start_fact(
@@ -440,6 +443,14 @@ class ForecastScoreService:
         return ChargeStartFact(
             rise, "soc_rise" if rise is not None else "none", s0, locked, manual, kept
         )
+
+    async def _kept_day_off(self, day: date) -> str | None:
+        """Return the day-off rule's choice kept by the day's latest final."""
+        records = await self._hass.async_add_executor_job(self._archive.records, day)
+        for record in reversed(_KeptFacts.finals(records)):
+            if (choice := record.get("day_off_choice")) is not None:
+                return str(choice)
+        return None
 
     async def _kept_flags(self, day: date) -> tuple[bool | None, bool | None]:
         """Lock and hand-set of the start from the day's latest final (None: none)."""

@@ -22,6 +22,7 @@ the day: a click on 08:41 sorts every table that has it).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.util import dt as dt_util
@@ -259,6 +260,7 @@ def _start_table(
         "start",
         "Start — warianty PV",
         _dear_day_prefix(score)
+        + _day_off_prefix(score)
         + "start, mała liczba: błąd h, + = za późno · z bieżącym modelem zużycia;"
         " optymalnie = rzeczywiste PV + ten sam model",
         columns,
@@ -284,6 +286,20 @@ def _dear_day_prefix(score: DayScore) -> str:
     )
 
 
+def _day_off_prefix(score: DayScore) -> str:
+    """Note a day off whose start the day-off rule set (D2 ranked apart)."""
+    if not score.day_off_moved_start:
+        return ""
+    what = (
+        "bez ładowania z PV"
+        if score.day_off_choice == "none"
+        else f"ładowanie od {str(score.day_off_choice)[5:]}:00"
+    )
+    return (
+        f"dzień wolny — reguła: {what}; start nie z reguły startu, w rankingu osobno · "
+    )
+
+
 def ranking_tables(ranking: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Tables of the 30-day ranking: reserve 06:11 and 08:41, start, models."""
     system = CURRENT.pv_variant
@@ -295,12 +311,16 @@ def ranking_tables(ranking: Mapping[str, Any]) -> list[dict[str, Any]]:
     tables.append(_ranking_models_table(ranking.get("reserve_models") or {}))
     tables.append(_ranking_start_models_table(ranking.get("start_models") or {}))
     dear = ranking.get("dear") or {}
-    count = len(ranking.get("dear_days") or [])
+    dear_apart = _Apart(
+        "Drogie dni",
+        f"{len(ranking.get('dear_days') or [])} dni: noc do 100%, bez porannej"
+        " sprzedaży — rezerwa nie sterowała, do pełna ~0,3 kWh",
+    )
     tables.append(
         _ranking_start_table(
             dear.get("start") or {},
             system,
-            dear_days=count,
+            apart=dear_apart,
             table_id="ranking_dear_start",
         )
     )
@@ -309,8 +329,21 @@ def ranking_tables(ranking: Mapping[str, Any]) -> list[dict[str, Any]]:
             dear.get("reserve") or {},
             "06:11",
             system,
-            dear_days=count,
+            apart=dear_apart,
             table_id="ranking_dear_reserve_06:11",
+        )
+    )
+    day_off = ranking.get("day_off") or {}
+    tables.append(
+        _ranking_start_table(
+            day_off.get("start") or {},
+            system,
+            apart=_Apart(
+                "Dni wolne z regułą ładowania",
+                f"{len(ranking.get('day_off_days') or [])} dni: reguła dnia wolnego"
+                " wyłączyła albo opóźniła ładowanie z PV — start nie z reguły startu",
+            ),
+            table_id="ranking_day_off_start",
         )
     )
     return tables
@@ -321,10 +354,10 @@ def _ranking_reserve_table(
     label: str,
     system: str,
     *,
-    dear_days: int | None = None,
+    apart: _Apart | None = None,
     table_id: str | None = None,
 ) -> dict[str, Any]:
-    """D1 at one moment; `dear_days` given = the dear days' table (their count)."""
+    """D1 at one moment; `apart` given = the table of days ranked apart."""
     rows_all = (reserve.get("all") or {}).get(label) or []
     by_kind = {
         kind: {r["variant"]: r for r in (reserve.get(kind) or {}).get(label) or []}
@@ -370,8 +403,8 @@ def _ranking_reserve_table(
     title = f"Rezerwa {label}{' (linia rozładowania)' if label == '08:41' else ''}"
     return _table(
         table_id or f"ranking_reserve_{label}",
-        _dear_title(title, dear_days),
-        _dear_note("część PV [pp, − = za mało] · MAE / bias", dear_days),
+        _apart_title(title, apart),
+        _apart_note("część PV [pp, − = za mało] · MAE / bias", apart),
         columns,
         rows,
         "mae",
@@ -389,10 +422,10 @@ def _ranking_start_table(
     start: Mapping[str, Any],
     system: str,
     *,
-    dear_days: int | None = None,
+    apart: _Apart | None = None,
     table_id: str | None = None,
 ) -> dict[str, Any]:
-    """D2 at the start; `dear_days` given = the dear days' table (their count)."""
+    """D2 at the start; `apart` given = the table of days ranked apart."""
     rows_all = (start.get("all") or {}).get("start") or []
     columns = _columns(
         ("n", "n"),
@@ -426,8 +459,8 @@ def _ranking_start_table(
     ]
     return _table(
         table_id or "ranking_start",
-        _dear_title("Start — ostatnia ocena przed startem", dear_days),
-        _dear_note("+ = za późno · liczba werdyktów", dear_days),
+        _apart_title("Start — ostatnia ocena przed startem", apart),
+        _apart_note("+ = za późno · liczba werdyktów", apart),
         columns,
         rows,
         "mae_h",
@@ -437,22 +470,15 @@ def _ranking_start_table(
     )
 
 
-def _dear_title(title: str, dear_days: int | None) -> str:
-    return (
-        f"Drogie dni — {title[0].lower()}{title[1:]}"
-        if dear_days is not None
-        else title
-    )
+def _apart_title(title: str, apart: _Apart | None) -> str:
+    return f"{apart.title} — {title[0].lower()}{title[1:]}" if apart else title
 
 
-def _dear_note(note: str, dear_days: int | None) -> str:
-    """Ordinary days' tables say the dear ones are apart; theirs say how many."""
-    if dear_days is None:
-        return f"{note} · bez drogich dni (osobno niżej)"
-    return (
-        f"{note} · {dear_days} dni: noc do 100%, bez porannej sprzedaży —"
-        " rezerwa nie sterowała, do pełna ~0,3 kWh"
-    )
+def _apart_note(note: str, apart: _Apart | None) -> str:
+    """Ordinary days' tables say which days are apart; theirs say why and how many."""
+    if apart is None:
+        return f"{note} · bez drogich dni i dni z regułą dnia wolnego (osobno niżej)"
+    return f"{note} · {apart.note}"
 
 
 def _verdict_cells(verdicts: Mapping[str, int]) -> dict[str, dict[str, Any] | None]:
@@ -679,3 +705,11 @@ def _number(value: float | None) -> str:
     return (
         str(value) if isinstance(value, int) else f"{value:.2f}".rstrip("0").rstrip(".")
     )
+
+
+@dataclass(frozen=True)
+class _Apart:
+    """Days ranked apart: the title's prefix and why (with how many)."""
+
+    title: str
+    note: str

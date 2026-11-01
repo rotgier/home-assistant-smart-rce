@@ -101,6 +101,9 @@ class _Sources:
     def export_threshold(self) -> float:
         return 750.0
 
+    async def day_off_choice(self, _day: date) -> str | None:
+        return None
+
     async def start_changes(self, _day: date) -> list[tuple[int, int]] | None:
         return [(0, 540), (1, 660), (480, 495)]
 

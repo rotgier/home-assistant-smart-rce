@@ -8,6 +8,9 @@ Dear days (`DayScore.dear_day`: the night charged to 100, nothing sold in the
 morning, from 28.10.2026) are ranked apart (`dear`, the key moments only): the
 reserve did not steer, and with ~0.3 kWh to full a start hours off costs
 next to nothing — mixed in, a few of them would move the D2 ranking.
+Days off whose start the day-off rule set (no PV charging, or later — from
+01.11.2026) rank D2 apart too (`day_off`): the start did not come from the
+start rule the ranking scores.
 
 Per row:
 - D1 (SoC points, system − needed; − = too little reserve): n, MAE, bias,
@@ -53,11 +56,13 @@ _KEY_START: Final = ("08:41", START_MOMENT)
 def rank(scores: Sequence[DayScore]) -> dict[str, Any]:
     """Build the ranking tables of `scores` (final ones, any order)."""
     every = sorted(scores, key=lambda s: s.day)
-    days = [s for s in every if not s.dear_day]
+    days = [s for s in every if not s.dear_day and not s.day_off_moved_start]
     dear = [s for s in every if s.dear_day]
+    day_off = [s for s in every if s.day_off_moved_start]
     return {
         "days": [s.day.isoformat() for s in every],
         "dear_days": [s.day.isoformat() for s in dear],
+        "day_off_days": [s.day.isoformat() for s in day_off],
         "day_kinds": {
             s.day.isoformat(): (s.day_type.kind.value if s.day_type.kind else None)
             for s in every
@@ -88,6 +93,7 @@ def rank(scores: Sequence[DayScore]) -> dict[str, Any]:
             "reserve": {"all": _reserve_tables(dear, _KEY_RESERVE)},
             "start": {"all": _start_tables(dear, _KEY_START)},
         },
+        "day_off": {"start": {"all": _start_tables(day_off, _KEY_START)}},
     }
 
 

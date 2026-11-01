@@ -599,6 +599,22 @@ class TestRanking:
         dear = {r["variant"]: r for r in ranking["dear"]["reserve"]["all"]["06:11"]}
         assert dear["solcast_p50"]["n"] == 1
 
+    def test_days_whose_start_the_day_off_rule_set_rank_d2_apart(
+        self, energy, snapshots, prices
+    ):
+        scores = [_day_score(d, energy, snapshots, prices) for d in DAYS]
+        kept = dataclasses.replace(scores[1], day_off_choice="s0")
+        moved = dataclasses.replace(scores[0], day_off_choice="none")
+        assert not kept.day_off_moved_start
+        assert moved.day_off_moved_start
+        ranking = rank([moved, kept, scores[2]])
+        assert ranking["day_off_days"] == [DAYS[0].isoformat()]
+        rows = {r["variant"]: r for r in ranking["start"]["all"]["start"]}
+        apart = {r["variant"]: r for r in ranking["day_off"]["start"]["all"]["start"]}
+        assert rows["solcast_p50"]["n"] == 2
+        assert apart["solcast_p50"]["n"] == 1
+        assert DayScore.from_dict(moved.to_dict()).day_off_choice == "none"
+
     def test_a_dear_day_is_a_workday_of_the_dear_day_setup(self, energy):
         actuals = DayActuals(energy[DAYS[-1]], TZ)
         inputs = DayInputs(
@@ -1226,6 +1242,7 @@ class TestTables:
             "ranking_start_models",
             "ranking_dear_start",
             "ranking_dear_reserve_06:11",
+            "ranking_day_off_start",
         ]
         reserve = tables["ranking_reserve_06:11"]
         assert reserve["sort"] == {"column": "mae", "descending": False}
