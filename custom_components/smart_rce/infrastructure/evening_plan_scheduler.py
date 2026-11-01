@@ -139,8 +139,16 @@ class EveningPlanScheduler:
             self._planned_evening_on = target
 
     async def _run_afternoon(self, now: datetime) -> None:
-        """Re-plan this evening once tomorrow's prices allow the morning veto."""
+        """Re-plan this evening once tomorrow's prices allow the morning veto.
+
+        Not once the evening has switched over to tomorrow: the slots then hold
+        tomorrow's plan (the evening run's). The "done" mark lives in memory,
+        so after a restart at 21:10 (01.11.2026) the sweep re-planned the
+        evening already over and switched tomorrow's three slots off.
+        """
         if self._revised_evening_on == now.date():
+            return
+        if self._ems.battery_schedule_service.plans_tomorrow_at(now):
             return
         if not self._ems.rce_prices.has_tomorrow:
             return  # keep polling; prices are late

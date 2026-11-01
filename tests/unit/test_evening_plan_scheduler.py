@@ -95,3 +95,16 @@ async def test_a_successful_run_says_nothing(scheduler, reported):
     await scheduler._guarded(fine, "tura wieczorna")(NOW)
 
     assert reported == []
+
+
+async def test_the_afternoon_sweep_leaves_tomorrows_slots_alone():
+    # 01.11.2026: a restart at 21:10 cleared the "done" mark; the sweep then
+    # re-planned the evening already over and switched tomorrow's slots off.
+    ems = Mock()
+    ems.rce_prices.has_tomorrow = True
+    ems.battery_schedule_service.plans_tomorrow_at.return_value = True
+    sweep = EveningPlanScheduler(Mock(), ems)
+
+    await sweep._run_afternoon(datetime(2026, 11, 1, 21, 10, 30))  # noqa: SLF001
+
+    ems.build_evening_plan.assert_not_called()
