@@ -37,6 +37,7 @@ from .forecast_score_tables import (
     VARIANT_LABELS,
     day_tables,
     ranking_tables,
+    sort_moment,
 )
 
 if TYPE_CHECKING:
@@ -183,6 +184,15 @@ class ForecastScoreDaySensor(_SelectedDaySensor):
             return
         self._attr_native_value = str(score.status)
         self._attrs = day_card(score)
+        charts = await self._service.async_moment_charts(score)
+        if charts is not None:
+            setup = setup_on(score.day, dt_util.get_default_time_zone())
+            # The chart under the accuracy table: `auto` = the table's default.
+            self._attrs["moment_charts"] = {
+                **charts,
+                "default_moment": sort_moment(score),
+                "system_variant": setup.pv_variant,
+            }
 
 
 class ForecastScoreRankingSensor(_SelectedDaySensor):

@@ -452,3 +452,20 @@ async def test_catch_up_beyond_the_recorder_prefers_a_final_with_the_start_histo
 
     assert await rescored(stale) == 480  # nothing better kept: the earliest
     assert await rescored(stale, with_history) == 495
+
+
+async def test_moment_charts_of_a_scored_day_are_cached_per_run(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    service, _archive = _service(
+        hass, tmp_path, datetime(2026, 10, 14, 21, 6, tzinfo=TZ), _Sources()
+    )
+    await service.async_final()
+    score = await service.async_day(DAY)
+    assert score is not None
+    charts = await service.async_moment_charts(score)
+    assert charts is not None
+    assert set(charts["moments"]) >= {"06:11", "07:41", "08:41"}
+    # 14.10 ran the old max-of rule: no per-slot model to draw.
+    assert charts["consumption_model"] is None
+    assert await service.async_moment_charts(score) is charts

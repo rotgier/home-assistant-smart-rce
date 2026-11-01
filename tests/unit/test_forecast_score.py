@@ -40,6 +40,10 @@ from custom_components.smart_rce.domain.forecast_score.full_charge_score import 
     decided_plan,
     score_full_charge,
 )
+from custom_components.smart_rce.domain.forecast_score.moment_chart import (
+    MOMENT_CHARTS_SCHEMA,
+    moment_charts,
+)
 from custom_components.smart_rce.domain.forecast_score.production_outcome import (
     ChargeStartFact,
     production_outcome,
@@ -646,6 +650,39 @@ class TestRanking:
         assert is_dear_day(day, dear, 750.0)
         cheap = RceDayPrices(None, day, tuple([800.0] * 11 + [500.0] + [800.0] * 12))
         assert not is_dear_day(day, cheap, 750.0)
+
+
+class TestMomentCharts:
+    def test_each_moment_draws_the_snapshot_the_table_scores(self, energy, snapshots):
+        day = DAYS[-1]
+        actuals = DayActuals(energy[day], TZ)
+        scored = vr.from_archive(snapshots[day])
+        charts = moment_charts(actuals, scored, dict.fromkeys(range(48), 0.5))
+        assert charts["schema"] == MOMENT_CHARTS_SCHEMA
+        assert charts["unit"] == "kW"
+        n = len(charts["times"])
+        assert n == 34  # 04:00-21:00
+        assert (
+            charts["times"][0]
+            == datetime(2026, 10, 14, 4, 0, tzinfo=TZ).timestamp() * 1000
+        )
+        assert charts["consumption_model"][0] == 1.0  # 0.5 kWh in half an hour = 1 kW
+        at_0741 = charts["moments"]["07:41"]
+        snapshot = vr.consumed(scored, datetime(2026, 10, 14, 7, 41, tzinfo=TZ))
+        assert snapshot is not None
+        assert at_0741["snapshot_at"] == snapshot.taken_at.isoformat()
+        live = forecast_half_hours(snapshot.result("live"), day)
+        slot_10 = 20 - 8  # 10:00 is slot 20, the chart starts at slot 8
+        assert at_0741["variants"]["live"][slot_10] == pytest.approx(
+            live[20] * 2, abs=1e-3
+        )
+        assert all(len(v) == n for v in at_0741["variants"].values())
+        assert len(charts["pv"]) == n
+        assert at_0741["weather"]
+        assert all(
+            level in {10, 20, 40, 60, 80, 100} for _, level in at_0741["weather"]
+        )
+        assert len(json.dumps(charts)) < 30_000
 
 
 class _ShiftedDay:

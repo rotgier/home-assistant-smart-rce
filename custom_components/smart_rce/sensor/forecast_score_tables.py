@@ -97,7 +97,7 @@ def day_tables(score: DayScore, system_variant: str) -> list[dict[str, Any]]:
         if score.cutoff is not None and score.status is ScoreStatus.PRELIMINARY
         else None
     )
-    sort_column = _sort_moment(score)
+    sort_column = sort_moment(score)
     hint = (
         f"auto = chwila przed oddaniem po najwyższej porannej cenie "
         f"({score.discharge_peak_hour:02d}:00)"
@@ -131,7 +131,7 @@ def day_tables(score: DayScore, system_variant: str) -> list[dict[str, Any]]:
     ]
 
 
-def _sort_moment(score: DayScore) -> str | None:
+def sort_moment(score: DayScore) -> str | None:
     """Return the moment the dearest morning discharge read (last before its hour)."""
     hour = score.discharge_peak_hour
     if hour is None:

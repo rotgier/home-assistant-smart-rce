@@ -44,12 +44,14 @@ from ..domain.forecast_score.full_charge_score import (
     PlanReading,
     decided_plan,
 )
+from ..domain.forecast_score.moment_chart import moment_charts
 from ..domain.forecast_score.production_outcome import (
     FULL_READ_SOC,
     ChargeStartFact,
     start_from_soc_rise,
     struck_start,
 )
+from ..domain.forecast_score.production_setup import setup_on
 from ..domain.forecast_score.ranking import rank
 from ..domain.forecast_score.variant_results import from_archive
 
@@ -110,6 +112,7 @@ class ForecastScoreService:
         # Final days out as daily long-term statistics (rewrites a day's row).
         self._publish = publish
         self._cache: dict[date, DayScore | None] = {}
+        self._charts: dict[tuple[date, datetime], dict[str, Any]] = {}
         self._listeners: dict[CALLBACK_TYPE, CALLBACK_TYPE] = {}
         # Triggers already run today (read back from today's records after a
         # restart, so a restart does not run them again).
@@ -305,6 +308,48 @@ class ForecastScoreService:
                 _LOGGER.exception("Forecast score: %s unreadable", day)
                 self._cache[day] = None
         return self._cache[day]
+
+    async def async_moment_charts(self, score: DayScore) -> dict[str, Any] | None:
+        """Charts of the day's moments (`moment_chart`), cached per scoring run.
+
+        Read from the archives when the day is read — the same snapshot the
+        accuracy table scores. None when the day's energy is not there.
+        """
+        key = (score.day, score.computed_at)
+        if key in self._charts:
+            return self._charts[key]
+        day = score.day
+        try:
+            energy = await self._sources.archived_energy(day)
+            if energy is None and (self._clock().date() - day).days <= 1:
+                energy = await self._sources.recorder_energy(day)
+            if energy is None:
+                return None
+            snapshots = await self._sources.snapshots(day)
+            scored = await self._hass.async_add_executor_job(from_archive, snapshots)
+            setup = setup_on(day, self._tz())
+            if has_morning_reserve(day):
+                model = setup.reserve_model
+                earlier = await self._sources.earlier_workdays(day)
+            else:
+                model = setup.start_model
+                earlier = await self._sources.earlier_same_type(day)
+            actuals = DayActuals(energy, self._tz())
+            charts = await self._hass.async_add_executor_job(
+                lambda: moment_charts(
+                    actuals,
+                    scored,
+                    model.half_hours(list(earlier.values()))
+                    if model.is_profile
+                    else None,
+                )
+            )
+        except Exception:  # noqa: BLE001 — a chart must never break the day's card
+            _LOGGER.exception("Forecast score: moment charts of %s failed", day)
+            return None
+        self._charts = {k: v for k, v in self._charts.items() if k[0] != day}
+        self._charts[key] = charts
+        return charts
 
     async def async_ranking(self, end: date) -> dict[str, Any]:
         """Ranking tables of the final days among the RANKING_DAYS ending at `end`."""
