@@ -32,6 +32,8 @@ from ..domain.charge_slots import ChargeSlots
 from ..domain.consumption_profiles import PREV_DAYS_COUNT
 from ..domain.energy_day import EnergyDay
 from ..domain.forecast_score.full_charge_score import PlanReading
+from ..domain.forecast_score.moment_weather import MomentForecast, WeatherInputs
+from ..domain.forecast_score.reserve_score import RESERVE_MOMENTS
 from ..domain.pv_forecast.forecast_snapshot import ForecastSnapshot
 from ..domain.pv_surplus import DayType
 from ..domain.rce import RceDayPrices
@@ -54,6 +56,12 @@ START_ENTITY: Final = "time.ems_battery_charge_start_hour_override"
 ENGAGING_ENTITY: Final = "sensor.ems_battery_schedule_currently_engaging"
 PLAN_ENTITY: Final = "sensor.ems_morning_discharge_plan"
 DAY_OFF_ENTITY: Final = "sensor.ems_day_off_charge"
+# The weather as Target SOC Historical's snapshot chart reads it.
+CONDITION_ENTITY: Final = "sensor.wetteronline_condition_custom"
+WEATHER_FORECAST_ENTITY: Final = "sensor.wetteronline_forecast_for_today"
+# The forecast in force at a moment: its last state within this before it.
+_FORECAST_LOOKBACK: Final = timedelta(minutes=10)
+WEATHER_ARCHIVE_DIR: Final = "smart_rce/archive/weather_moments"
 RESERVE_ENTITY: Final = "sensor.ems_t1_soc_reserve"
 SOC_ENTITY: Final = "sensor.battery_state_of_charge"
 AFTERNOON_SLOT: Final = "CHARGE_AFTERNOON"
@@ -71,6 +79,7 @@ class ForecastScoreSources:
         *,
         forecast_archive: DailyJsonlArchive,
         energy_archive: DailyJsonlArchive,
+        weather_archive: DailyJsonlArchive,
         workday_loader: ConsumptionProfileLoader,
         same_type_loader: HourlyEnergyLoader,
         rce_api: RceApi,
@@ -79,6 +88,7 @@ class ForecastScoreSources:
         self._hass = hass
         self._forecast = forecast_archive
         self._energy = energy_archive
+        self._weather = weather_archive
         self._workday_loader = workday_loader
         self._same_type_loader = same_type_loader
         self._rce_api = rce_api
@@ -220,6 +230,41 @@ class ForecastScoreSources:
         mine = [s.state for s in states if s.attributes.get("day") == day.isoformat()]
         return mine[-1] if mine else None
 
+    async def recorder_weather(self, day: date) -> WeatherInputs | None:
+        """Read the day's observed weather and the forecast at each moment.
+
+        None when the recorder holds neither (purged after 10 days).
+        """
+        tz = dt_util.DEFAULT_TIME_ZONE
+        observed = tuple(
+            (dt_util.as_local(s.last_changed), s.state)
+            for s in await self._history(day, CONDITION_ENTITY)
+        )
+        forecasts: dict[str, MomentForecast] = {}
+        for moment in RESERVE_MOMENTS:
+            at = datetime.combine(day, moment.at, tz)
+            if at > dt_util.now():
+                continue
+            states = await self._history_between(
+                at - _FORECAST_LOOKBACK, at, WEATHER_FORECAST_ENTITY
+            )
+            items = states[-1].attributes.get("forecast") if states else None
+            if items:
+                forecasts[moment.label] = MomentForecast.from_forecast(items, day)
+        if not observed and not forecasts:
+            return None
+        return WeatherInputs(day=day, observed=observed, forecasts=forecasts)
+
+    async def archived_weather(self, day: date) -> WeatherInputs | None:
+        records = await self._hass.async_add_executor_job(self._weather.read_day, day)
+        return WeatherInputs.from_dict(records[-1]) if records else None
+
+    async def keep_weather(self, weather: WeatherInputs) -> None:
+        """Archive a day's weather inputs (the day closed: one record, replaced)."""
+        await self._hass.async_add_executor_job(
+            self._weather.write_day, weather.day, [weather.to_dict()]
+        )
+
     async def afternoon_spans(self, day: date) -> list[tuple[int, int]] | None:
         """CHARGE_AFTERNOON engagements over `day` (minutes); None = no history."""
         states = await self._history(day, ENGAGING_ENTITY)
@@ -275,6 +320,27 @@ class ForecastScoreSources:
                 entity_id,
                 True,
             )
+        return [
+            s
+            for s in result.get(entity_id, [])
+            if s.state not in {"unknown", "unavailable"}
+        ]
+
+    async def _history_between(
+        self, start: datetime, end: datetime, entity_id: str
+    ) -> list[State]:
+        """Return the entity's states with attributes over [start, end]."""
+        recorder = get_instance(self._hass)
+        result: dict[str, list[Any]] = await recorder.async_add_executor_job(
+            partial(
+                get_significant_states,
+                self._hass,
+                start,
+                end,
+                [entity_id],
+                significant_changes_only=False,
+            )
+        )
         return [
             s
             for s in result.get(entity_id, [])

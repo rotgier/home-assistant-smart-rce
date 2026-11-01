@@ -21,6 +21,10 @@ from custom_components.smart_rce.domain.forecast_score.day_score import (
 from custom_components.smart_rce.domain.forecast_score.full_charge_score import (
     PlanReading,
 )
+from custom_components.smart_rce.domain.forecast_score.moment_weather import (
+    MomentForecast,
+    WeatherInputs,
+)
 from custom_components.smart_rce.domain.pv_forecast.forecast_snapshot import (
     ForecastSnapshot,
 )
@@ -49,6 +53,7 @@ class _Sources:
         self.recorder_pv_scale = 1.0
         self.prices_available = True
         self.soc: float | None = 50.0
+        self.kept_weather: dict[date, WeatherInputs] = {}
 
     async def snapshots(self, day: date) -> list[ForecastSnapshot]:
         return [ForecastSnapshot.from_dict(r) for r in self._forecast.read_day(day)]
@@ -103,6 +108,24 @@ class _Sources:
 
     async def day_off_choice(self, _day: date) -> str | None:
         return None
+
+    async def archived_weather(self, day: date) -> WeatherInputs | None:
+        return self.kept_weather.get(day)
+
+    async def recorder_weather(self, day: date) -> WeatherInputs | None:
+        at = datetime.combine(day, time(9, 0), TZ)
+        return WeatherInputs(
+            day=day,
+            observed=((at, "rainy"),),
+            forecasts={
+                "09:41": MomentForecast(
+                    hourly=((at.replace(hour=10), "cloudy"),), nowcast=()
+                )
+            },
+        )
+
+    async def keep_weather(self, weather: WeatherInputs) -> None:
+        self.kept_weather[weather.day] = weather
 
     async def start_changes(self, _day: date) -> list[tuple[int, int]] | None:
         return [(0, 540), (1, 660), (480, 495)]
@@ -469,3 +492,18 @@ async def test_moment_charts_of_a_scored_day_are_cached_per_run(
     # 14.10 ran the old max-of rule: no per-slot model to draw.
     assert charts["consumption_model"] is None
     assert await service.async_moment_charts(score) is charts
+    # The recorder's weather: observed until 09:41, the forecast after it.
+    weather = charts["moments"]["09:41"]["weather"]
+    assert [level for _ts, level in weather] == [10, 40]
+
+
+async def test_final_archives_the_days_weather_once(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    sources = _Sources()
+    service, _archive = _service(
+        hass, tmp_path, datetime(2026, 10, 14, 21, 6, tzinfo=TZ), sources
+    )
+    await service.async_final()
+    kept = sources.kept_weather[DAY]
+    assert kept.points("09:41", datetime(2026, 10, 14, 9, 41, tzinfo=TZ))

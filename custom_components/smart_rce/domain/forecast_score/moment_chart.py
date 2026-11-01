@@ -2,8 +2,10 @@
 
 At a moment (04:41 … 09:41) production read one snapshot (`consumed`, the
 same the table scores). The chart shows what that snapshot said — every PV
-variant, Solcast's p10/p90, the weather — against what came over the whole
-day: PV and consumption, and the consumption model the system counted with.
+variant, Solcast's p10/p90 — against what came over the whole day: PV and
+consumption, and the consumption model the system counted with. The weather:
+observed until the moment, the forecast as it stood at it after
+(`moment_weather`); without those inputs the snapshot's hourly conditions.
 
 Built when a day is read (from the forecast and energy archives), not kept in
 the score record. The card only draws: timestamps, units and the weather's
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from .day_actuals import DayActuals
+    from .moment_weather import WeatherInputs
     from .variant_results import ScoredSnapshot
 
 MOMENT_CHARTS_SCHEMA: Final = 1
@@ -52,11 +55,13 @@ def moment_charts(
     actuals: DayActuals,
     snapshots: Sequence[ScoredSnapshot],
     consumption_model: Mapping[int, float] | None,
+    weather: WeatherInputs | None = None,
 ) -> dict[str, Any]:
     """Build the chart of every moment of the day (power in kW, epoch ms).
 
     `consumption_model`: the system's model per half hour (kWh, key 0..47),
-    None when it had no earlier days (flat).
+    None when it had no earlier days (flat). `weather`: the day's observed
+    weather and forecasts at the moments (None: the snapshots' hourly ones).
     """
     day, tz = actuals.day, actuals.tz
     slots = range(FIRST_SLOT, END_SLOT)
@@ -66,6 +71,14 @@ def moment_charts(
         snapshot = consumed(snapshots, at)
         if snapshot is not None:
             moments[moment.label] = _moment(snapshot, at, day, tz, slots)
+            if weather is not None and (points := weather.points(moment.label, at)):
+                moments[moment.label]["weather"] = [
+                    [
+                        int(when.timestamp() * 1000),
+                        WEATHER_LEVEL.get(cond, _UNKNOWN_WEATHER),
+                    ]
+                    for when, cond in points
+                ]
     return {
         "schema": MOMENT_CHARTS_SCHEMA,
         "unit": "kW",

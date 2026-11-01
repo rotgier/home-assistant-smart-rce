@@ -88,6 +88,8 @@ class ForecastScoreService:
     # of 11.10 read 16:10 instead of 12:00). Its facts from history come from
     # the day's earlier records instead.
     HISTORY_DAYS: Final = 7
+    # The recorder's reach (purge keeps 10 days): the weather is archived from it.
+    WEATHER_DAYS: Final = 9
     RANKING_DAYS: Final = 30
 
     def __init__(
@@ -202,6 +204,7 @@ class ForecastScoreService:
         await self._score_today(
             ScoreStatus.FINAL, trigger=self.FINAL_AT.strftime("%H:%M")
         )
+        await self._keep_weather(self._clock().date())
 
     async def async_check(self, _now: datetime | None = None) -> None:
         """Rescore yesterday from the energy archive; replace the final if it moved."""
@@ -258,6 +261,10 @@ class ForecastScoreService:
                 if energy is not None:
                     await self._catch_up_day(day, energy, today)
             day += timedelta(days=1)
+        # The weather the moment charts draw lives in the recorder 10 days.
+        for back in range(self.WEATHER_DAYS, 0, -1):
+            if (day := today - timedelta(days=back)) >= self.FIRST_DAY:
+                await self._keep_weather(day)
         stored = await self.async_day(today)
         if now.time() >= self.FINAL_AT:
             if stored is None or stored.status is not ScoreStatus.FINAL:
@@ -268,6 +275,17 @@ class ForecastScoreService:
         # Days read back from the archive change what the sensors show even
         # when nothing was rescored.
         self._notify()
+
+    async def _keep_weather(self, day: date) -> None:
+        """Archive the day's weather for the moment charts, once (recorder: 10 days)."""
+        try:
+            if await self._sources.archived_weather(day) is not None:
+                return
+            weather = await self._sources.recorder_weather(day)
+            if weather is not None:
+                await self._sources.keep_weather(weather)
+        except Exception:  # noqa: BLE001 — a chart's weather must not stop scoring
+            _LOGGER.exception("Forecast score: weather of %s not archived", day)
 
     async def _catch_up_day(self, day: date, energy: EnergyDay, today: date) -> None:
         """Score a past day; beyond the recorder's reach from the facts kept."""
@@ -327,6 +345,12 @@ class ForecastScoreService:
                 return None
             snapshots = await self._sources.snapshots(day)
             scored = await self._hass.async_add_executor_job(from_archive, snapshots)
+            weather = await self._sources.archived_weather(day)
+            if (
+                weather is None
+                and (self._clock().date() - day).days < self.WEATHER_DAYS
+            ):
+                weather = await self._sources.recorder_weather(day)
             setup = setup_on(day, self._tz())
             if has_morning_reserve(day):
                 model = setup.reserve_model
@@ -342,6 +366,7 @@ class ForecastScoreService:
                     model.half_hours(list(earlier.values()))
                     if model.is_profile
                     else None,
+                    weather,
                 )
             )
         except Exception:  # noqa: BLE001 — a chart must never break the day's card

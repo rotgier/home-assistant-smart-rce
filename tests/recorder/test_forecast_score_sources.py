@@ -11,8 +11,10 @@ from custom_components.smart_rce.domain.forecast_score.full_charge_score import 
     decided_plan,
 )
 from custom_components.smart_rce.infrastructure.forecast_score_sources import (
+    CONDITION_ENTITY,
     PLAN_ENTITY,
     RESERVE_ENTITY,
+    WEATHER_FORECAST_ENTITY,
     ForecastScoreSources,
 )
 from freezegun.api import FrozenDateTimeFactory
@@ -40,6 +42,7 @@ def _sources(hass: HomeAssistant) -> ForecastScoreSources:
         hass,
         forecast_archive=MagicMock(),
         energy_archive=MagicMock(),
+        weather_archive=MagicMock(),
         workday_loader=MagicMock(),
         same_type_loader=MagicMock(),
         rce_api=MagicMock(),
@@ -102,3 +105,55 @@ async def test_the_plan_that_decided_is_the_last_one_before_its_first_hour(
     # Every reading of the day, each with the reserve in force then.
     assert [r.full_at for r in readings] == [12 * 60 + 54, 12 * 60 + 56, 13 * 60 + 30]
     assert readings[-1].start_soc == 27.0
+
+
+async def test_the_forecast_at_a_moment_is_the_last_one_up_to_it(
+    recorder_mock: Any, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """31.10.2026 09:41 — the 09:40 forecast, not the 09:45 one after it."""
+    await hass.config.async_set_time_zone("Europe/Warsaw")
+
+    def forecast(cond_12: str) -> dict[str, Any]:
+        return {
+            "forecast": [
+                {"datetime": "2026-10-19T12:00:00+02:00", "condition_custom": cond_12}
+            ]
+        }
+
+    steps = [
+        (datetime(2026, 10, 19, 0, 0, 30, tzinfo=TZ), CONDITION_ENTITY, "rainy", {}),
+        (datetime(2026, 10, 19, 9, 10, tzinfo=TZ), CONDITION_ENTITY, "cloudy", {}),
+        (
+            datetime(2026, 10, 19, 9, 35, tzinfo=TZ),
+            WEATHER_FORECAST_ENTITY,
+            "x",
+            forecast("rainy"),
+        ),
+        (
+            datetime(2026, 10, 19, 9, 40, tzinfo=TZ),
+            WEATHER_FORECAST_ENTITY,
+            "x",
+            forecast("cloudy"),
+        ),
+        (
+            datetime(2026, 10, 19, 9, 45, tzinfo=TZ),
+            WEATHER_FORECAST_ENTITY,
+            "x",
+            forecast("partlycloudy"),
+        ),
+        (datetime(2026, 10, 19, 9, 50, tzinfo=TZ), CONDITION_ENTITY, "sunny", {}),
+    ]
+    for moment, entity, state, attrs in steps:
+        freezer.move_to(moment)
+        hass.states.async_set(entity, state, attrs)
+        await hass.async_block_till_done()
+    freezer.move_to(datetime(2026, 10, 19, 12, 0, tzinfo=TZ))
+    await async_wait_recording_done(hass)
+
+    weather = await _sources(hass).recorder_weather(DAY)
+
+    assert weather is not None
+    assert [c for _w, c in weather.observed] == ["rainy", "cloudy", "sunny"]
+    assert [c for _w, c in weather.forecasts["09:41"].hourly] == ["cloudy"]
+    points = weather.points("09:41", datetime(2026, 10, 19, 9, 41, tzinfo=TZ))
+    assert [c for _w, c in points] == ["rainy", "cloudy", "cloudy"]

@@ -44,6 +44,10 @@ from custom_components.smart_rce.domain.forecast_score.moment_chart import (
     MOMENT_CHARTS_SCHEMA,
     moment_charts,
 )
+from custom_components.smart_rce.domain.forecast_score.moment_weather import (
+    MomentForecast,
+    WeatherInputs,
+)
 from custom_components.smart_rce.domain.forecast_score.production_outcome import (
     ChargeStartFact,
     production_outcome,
@@ -683,6 +687,61 @@ class TestMomentCharts:
             level in {10, 20, 40, 60, 80, 100} for _, level in at_0741["weather"]
         )
         assert len(json.dumps(charts)) < 30_000
+
+
+class TestMomentWeather:
+    def test_observed_until_the_moment_the_forecast_after_it(self):
+        """31.10.2026 at 09:41: the 09:40 forecast's quarters, then its hours."""
+        day = date(2026, 10, 31)
+
+        def at(h, m=0):
+            return datetime(2026, 10, 31, h, m, tzinfo=TZ)
+
+        forecast = MomentForecast.from_forecast(
+            [
+                {
+                    "datetime": at(9).isoformat(),
+                    "condition_custom": "rainy-light",
+                    "nowcast_15min": [
+                        {"date": at(9, 45).isoformat(), "condition_custom": "rainy"}
+                    ],
+                },
+                {
+                    "datetime": at(11).isoformat(),
+                    "condition_custom": "rainy-light",
+                    "nowcast_15min": [
+                        {"date": at(11).isoformat(), "condition_custom": "rainy-light"},
+                        {
+                            "date": at(11, 15).isoformat(),
+                            "condition_custom": "partlycloudy",
+                        },
+                    ],
+                },
+                {"datetime": at(12).isoformat(), "condition_custom": "cloudy"},
+                {"datetime": "2026-11-01T12:00:00+01:00", "condition_custom": "sunny"},
+            ],
+            day,
+        )
+        weather = WeatherInputs(
+            day=day,
+            observed=(
+                (at(9, 10), "cloudy"),
+                (at(9, 35), "rainy-light"),
+                (at(9, 50), "x"),
+            ),
+            forecasts={"09:41": forecast},
+        )
+        points = weather.points("09:41", at(9, 41))
+        assert [(w.strftime("%H:%M"), c) for w, c in points] == [
+            ("09:10", "cloudy"),
+            ("09:35", "rainy-light"),  # observed; 09:50 is after the moment
+            ("09:45", "rainy"),  # nowcast after the moment
+            ("11:00", "rainy-light"),  # the 11:00 hour covered by its quarters
+            ("11:15", "partlycloudy"),
+            ("12:00", "cloudy"),  # the hour; tomorrow left out
+        ]
+        assert WeatherInputs.from_dict(weather.to_dict()) == weather
+        assert weather.points("06:41", at(6, 41)) == []  # nothing observed yet
 
 
 class _ShiftedDay:

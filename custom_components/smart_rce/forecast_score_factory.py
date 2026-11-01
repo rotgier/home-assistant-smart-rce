@@ -25,7 +25,10 @@ from .infrastructure.energy_archive_reader import (
     EnergyArchiveReader,
 )
 from .infrastructure.forecast_score_archive import ForecastScoreArchive
-from .infrastructure.forecast_score_sources import ForecastScoreSources
+from .infrastructure.forecast_score_sources import (
+    WEATHER_ARCHIVE_DIR,
+    ForecastScoreSources,
+)
 from .infrastructure.forecast_score_statistics import ForecastScoreStatistics
 from .infrastructure.pv_forecast.consumption_profile_loader import (
     ConsumptionProfileLoader,
@@ -59,6 +62,9 @@ async def create_forecast_score(
             ),
             energy_archive=DailyJsonlArchive(
                 Path(hass.config.path(ENERGY_ARCHIVE_DIR))
+            ),
+            weather_archive=DailyJsonlArchive(
+                Path(hass.config.path(WEATHER_ARCHIVE_DIR))
             ),
             workday_loader=ConsumptionProfileLoader(
                 hass, WorkdayCalendarReader(hass), energy_reader
