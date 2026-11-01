@@ -67,14 +67,46 @@ def struck_start(changes: Sequence[tuple[int, int]]) -> int | None:
 
     `changes`: (minute set, start minute) in time order — the state of the
     start entity over the day. A start strikes when the clock reaches it while
-    it is in force; one set already in the past strikes at once.
+    it is in force; one set already in the past strikes at once. The LAST
+    strike counts: since 28.10.2026 a start that struck but has not locked yet
+    can move later again (29.10: 08:00 struck, 08:51 back to 10:00, 09:51 struck
+    for good). A later start closes the battery again; a start set in the past
+    while it is open changes nothing. Repeats of the start in force (a restart
+    writes it again) are no change.
     """
-    for i, (since, start) in enumerate(changes):
-        until = changes[i + 1][0] if i + 1 < len(changes) else 24 * 60
-        struck = max(start, since)
-        if struck < until:
-            return struck
-    return None
+    strike: int | None = None
+    open_ = False
+    deduped = _without_repeats(changes)
+    for i, (since, start) in enumerate(deduped):
+        until = deduped[i + 1][0] if i + 1 < len(deduped) else 24 * 60
+        if start <= since:
+            if not open_:
+                strike, open_ = since, True
+        elif start < until:
+            strike, open_ = start, True
+        else:
+            open_ = False
+    return strike
+
+
+def start_in_force(
+    changes: Sequence[tuple[int, int]] | None, minute: int, default: int
+) -> int:
+    """Return the start in force just before `minute` (an evaluation's own move excluded).
+
+    An evaluation at 07:51 that moved the start is recorded at 07:51 — it ran
+    on the start before. `default` (S0) when nothing was set before.
+    """
+    found = [start for since, start in changes or () if since < minute]
+    return found[-1] if found else default
+
+
+def _without_repeats(changes: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for change in changes:
+        if not out or out[-1][1] != change[1]:
+            out.append(change)
+    return out
 
 
 def start_from_soc_rise(actuals: DayActuals) -> int | None:
@@ -148,6 +180,9 @@ class ChargeStartFact:
     `source`: "shift" (the persisted forecast shift of the day), "override"
     (history of the start-hour override entity), "soc_rise" (first sustained
     SoC rise — days before either was kept), "none".
+    `changes`: that history, kept with the fact — the start in force at each
+    moment (`start_in_force`) is what production's rule held; the recorder
+    forgets it after 10 days. None = not kept (records before schema 14).
     """
 
     start: int | None  # minute of the day
@@ -155,6 +190,7 @@ class ChargeStartFact:
     s0: int | None = None
     locked: bool | None = None
     manual: bool | None = None
+    changes: tuple[tuple[int, int], ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -163,6 +199,9 @@ class ChargeStartFact:
             "s0": self.s0,
             "locked": self.locked,
             "manual": self.manual,
+            "changes": (
+                [list(c) for c in self.changes] if self.changes is not None else None
+            ),
         }
 
     @classmethod
@@ -173,6 +212,11 @@ class ChargeStartFact:
             s0=data.get("s0"),
             locked=data.get("locked"),
             manual=data.get("manual"),
+            changes=(
+                tuple((int(a), int(b)) for a, b in raw)
+                if (raw := data.get("changes")) is not None
+                else None
+            ),
         )
 
 

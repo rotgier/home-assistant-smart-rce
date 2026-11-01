@@ -98,6 +98,9 @@ class _Sources:
     def battery_soc(self) -> float | None:
         return self.soc
 
+    def export_threshold(self) -> float:
+        return 750.0
+
     async def start_changes(self, _day: date) -> list[tuple[int, int]] | None:
         return [(0, 540), (1, 660), (480, 495)]
 
@@ -397,3 +400,52 @@ async def test_catch_up_beyond_the_recorder_keeps_the_facts_of_earlier_records(
     assert score is not None
     assert score.outcome.start.start == 970
     assert score.full_charge is None
+
+
+async def test_catch_up_beyond_the_recorder_prefers_a_final_with_the_start_history(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Before schema 14 the fact was the FIRST strike (29.10.2026: 08:00, undone).
+
+    A later final that keeps the start's history has the last strike — it
+    wins over the earliest final; the lock and hand-set flags come along.
+    """
+    first, first_archive = _service(
+        hass, tmp_path / "first", datetime(2026, 10, 14, 21, 6, tzinfo=TZ), _Sources()
+    )
+    await first.async_final()
+    [record] = first_archive.records(DAY)
+    kept = record["outcome"]["start"]
+    assert kept["start"] == 495
+    assert kept["changes"] == [[0, 540], [1, 660], [480, 495]]
+    stale = {
+        **record,
+        "schema_version": SCHEMA_VERSION - 1,
+        "outcome": {
+            **record["outcome"],
+            "start": {"start": 480, "source": "override", "s0": 660, "manual": True},
+        },
+    }
+    with_history = {
+        **record,
+        "schema_version": SCHEMA_VERSION - 1,
+        "outcome": {**record["outcome"], "start": {**kept, "manual": True}},
+    }
+
+    async def rescored(*records: dict) -> int | None:
+        service, archive = _service(
+            hass,
+            tmp_path / str(len(records)),
+            datetime(2026, 10, 23, 10, 0, tzinfo=TZ),
+            _PurgedSources(),
+        )
+        for r in records:
+            archive.add(DAY, r)
+        await service.async_catch_up()
+        score = await service.async_day(DAY)
+        assert score is not None
+        assert score.outcome.start.manual is True
+        return score.outcome.start.start
+
+    assert await rescored(stale) == 480  # nothing better kept: the earliest
+    assert await rescored(stale, with_history) == 495

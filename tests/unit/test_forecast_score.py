@@ -13,11 +13,13 @@ from custom_components.smart_rce.domain.battery_schedule.morning_discharge impor
 from custom_components.smart_rce.domain.charge_curve import SocBand
 from custom_components.smart_rce.domain.charge_slots import ChargeSlots
 from custom_components.smart_rce.domain.charge_start_shift import full_charge_minute
+from custom_components.smart_rce.domain.cheap_hours import is_dear_day
 from custom_components.smart_rce.domain.consumption_percentile import percentile_by_key
 from custom_components.smart_rce.domain.consumption_profiles import ConsumptionProfile
 from custom_components.smart_rce.domain.energy_day import EnergyDay
 from custom_components.smart_rce.domain.forecast_score import (
     day_score as day_score_module,
+    start_score as start_score_module,
     variant_results as vr,
 )
 from custom_components.smart_rce.domain.forecast_score.consumption_models import (
@@ -42,12 +44,15 @@ from custom_components.smart_rce.domain.forecast_score.production_outcome import
     ChargeStartFact,
     production_outcome,
     start_from_soc_rise,
+    start_in_force,
     struck_start,
 )
 from custom_components.smart_rce.domain.forecast_score.production_setup import (
     CURRENT,
     MarginRule,
+    StartRule,
     setup_on,
+    start_setup_on,
 )
 from custom_components.smart_rce.domain.forecast_score.ranking import rank
 from custom_components.smart_rce.domain.forecast_score.reserve_score import (
@@ -340,6 +345,60 @@ class TestStart:
         assert struck_start([(0, 660), (600, 540)]) == 600
         assert struck_start([]) is None
 
+    @pytest.mark.parametrize(
+        ("changes", "struck"),
+        [
+            # 28.10: 07:51 later to 10:00, 09:41 "now", 09:50 set by hand to
+            # 10:41 then 10:00, a restart wrote 10:00 again at 09:52.
+            (
+                [
+                    *[(0, 540), (413, 600), (429, 540), (451, 540), (471, 600)],
+                    *[(495, 600), (581, 581), (590, 641), (590, 600), (592, 600)],
+                ],
+                600,
+            ),
+            # 29.10: 08:00 struck, 08:51 back to 10:00, 09:51 struck for good.
+            ([(0, 600), (431, 600), (476, 480), (531, 600), (591, 591)], 591),
+            # 30.10: 07:51 later to 12:00, 11:51 "now".
+            ([(0, 660), (471, 720), (711, 711)], 711),
+            # A restart writing the struck start again is no new strike.
+            ([(0, 600), (630, 600)], 600),
+            # A start set in the past while the battery is open changes nothing.
+            ([(0, 600), (660, 540)], 600),
+        ],
+    )
+    def test_struck_start_takes_the_last_strike(self, changes, struck):
+        assert struck_start(changes) == struck
+
+    def test_start_in_force_excludes_the_evaluations_own_move(self):
+        changes = [(0, 540), (471, 600), (581, 581)]
+        assert start_in_force(changes, 7 * 60 + 41, 540) == 540
+        assert start_in_force(changes, 7 * 60 + 51, 540) == 540  # its own move
+        assert start_in_force(changes, 7 * 60 + 56, 540) == 600
+        assert start_in_force(None, 7 * 60 + 56, 540) == 540
+
+    def test_moments_run_until_a_start_moved_past_s0(self, energy, snapshots, prices):
+        """Production evaluates until the start, not S0 (28.10.2026: 09:00 → 10:00)."""
+        day = DAYS[-1]
+        args = (
+            DayActuals(energy[day], TZ),
+            vr.from_archive(snapshots[day]),
+            prices[day.isoformat()],
+            9 * 60,
+            [],
+        )
+        up_to_s0 = score_start(*args, 9 * 60)
+        assert [m.label for m in up_to_s0] == ["07:41", "08:41", "start"]
+        past_s0 = score_start(*args, 10 * 60, changes=[(0, 540), (471, 600)])
+        assert [m.label for m in past_s0] == [
+            "07:41",
+            "08:41",
+            "09:16",
+            "09:41",
+            "start",
+        ]
+        assert next(m for m in past_s0 if m.label == "start").minute == 9 * 60 + 56
+
     def test_start_moment_scored_before_the_actual_start(
         self, energy, snapshots, prices
     ):
@@ -364,6 +423,14 @@ class TestStart:
 
 
 class TestProductionOutcome:
+    def test_the_start_fact_keeps_its_history(self):
+        fact = ChargeStartFact(
+            591, "override", 600, False, False, ((0, 600), (591, 591))
+        )
+        assert ChargeStartFact.from_dict(fact.to_dict()) == fact
+        older = {"start": 480, "source": "override", "s0": 600}
+        assert ChargeStartFact.from_dict(older).changes is None
+
     def test_facts_of_a_day(self, energy):
         actuals = DayActuals(energy[DAYS[-1]], TZ)
         outcome = production_outcome(
@@ -427,8 +494,17 @@ class TestProductionSetup:
         assert setup_on(date(2026, 10, 15), TZ).reserve_model is ConsumptionModel.P50
         assert setup_on(date(2026, 10, 16), TZ).margin is MarginRule.LIVE_CAPS_0809
         assert setup_on(date(2026, 10, 17), TZ).margin is MarginRule.CAPPED
-        assert setup_on(date(2026, 10, 18), TZ) is CURRENT
+        assert setup_on(date(2026, 10, 18), TZ).margin is MarginRule.BLEND_CAPS
+        assert setup_on(date(2026, 10, 29), TZ) is CURRENT
         assert CURRENT.margin is MarginRule.BLEND_CAPS
+
+    def test_the_charge_start_runs_on_the_setup_of_its_first_evaluation(self):
+        # 28.10 switched at 07:32: the reserve's 06:11 still the old setup, the
+        # start (first evaluated at 07:41) already the cheaper later one.
+        assert setup_on(date(2026, 10, 28), TZ).start_rule is StartRule.UP_TO_S0
+        assert not setup_on(date(2026, 10, 28), TZ).dear_day_mode
+        assert start_setup_on(date(2026, 10, 28), TZ) is CURRENT
+        assert CURRENT.start_rule is StartRule.CHEAPER_LATER
 
     def test_production_panel_uses_the_days_rule_and_buffer(
         self, energy, snapshots, prices
@@ -510,6 +586,25 @@ class TestRanking:
         assert rows["solcast_p50"]["n"] == 3
         assert rows["solcast_p50"]["ties"] == 3
         assert set(ranking["reserve"]["cloudy"]) <= {"06:11", "08:41"}
+
+    def test_dear_days_are_ranked_apart(self, energy, snapshots, prices):
+        scores = [_day_score(d, energy, snapshots, prices) for d in DAYS]
+        assert all(s.dear_day is False for s in scores)  # before the dear-day mode
+        scores[0] = dataclasses.replace(scores[0], dear_day=True)
+        ranking = rank(scores)
+        assert ranking["days"] == [d.isoformat() for d in DAYS]
+        assert ranking["dear_days"] == [DAYS[0].isoformat()]
+        rows = {r["variant"]: r for r in ranking["reserve"]["all"]["06:11"]}
+        assert rows["solcast_p50"]["n"] == 2
+        dear = {r["variant"]: r for r in ranking["dear"]["reserve"]["all"]["06:11"]}
+        assert dear["solcast_p50"]["n"] == 1
+
+    def test_a_dear_day_has_no_hour_from_7_to_t2_below_the_bar(self):
+        day = date(2026, 10, 29)
+        dear = RceDayPrices(None, day, tuple([800.0] * 24))
+        assert is_dear_day(day, dear, 750.0)
+        cheap = RceDayPrices(None, day, tuple([800.0] * 11 + [500.0] + [800.0] * 12))
+        assert not is_dear_day(day, cheap, 750.0)
 
 
 class TestScoreArchive:
@@ -856,10 +951,25 @@ class TestDuringTheDay:
         assert at_1606.reserve == whole.reserve
 
     def test_d2_settles_once_the_rest_of_the_day_cannot_move_it(
-        self, energy, snapshots, prices
+        self, energy, snapshots, prices, monkeypatch
     ):
-        """12.10 run as if started at S0: full at 11:30, D2 settled by 12:00."""
+        """12.10 run as if started at S0: full at 11:30, D2 settled by 12:00.
+
+        With the rule up to S0. Today's rule weighs a later start on the
+        surplus to its price window's end, so the ranking's calls wait for it.
+        """
         day = DAYS[0]
+        actuals = DayActuals(energy[day], TZ)
+        start = start_from_soc_rise(actuals)
+        at_noon = datetime.combine(day, time(12, 0), TZ)
+        waiting = _day_score(day, energy, snapshots, prices, cutoff=at_noon, s0=start)
+        assert waiting.start == ()
+        assert Pending.START in waiting.pending
+        monkeypatch.setattr(
+            start_score_module,
+            "CURRENT",
+            dataclasses.replace(CURRENT, start_rule=StartRule.UP_TO_S0),
+        )
         actuals = DayActuals(energy[day], TZ)
         start = start_from_soc_rise(actuals)
         at_noon = datetime.combine(day, time(12, 0), TZ)
@@ -1084,6 +1194,8 @@ class TestTables:
             "ranking_start",
             "ranking_models",
             "ranking_start_models",
+            "ranking_dear_start",
+            "ranking_dear_reserve_06:11",
         ]
         reserve = tables["ranking_reserve_06:11"]
         assert reserve["sort"] == {"column": "mae", "descending": False}

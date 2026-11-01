@@ -4,6 +4,11 @@ Aggregates only mean something over many days (a trustworthy ranking from ~30);
 a single day is read on its card, not here. Every table is split by day kind
 (all / cloudy / sunny), since a forecast that wins sunny days can lose cloudy ones.
 
+Dear days (`DayScore.dear_day`: the night charged to 100, nothing sold in the
+morning, from 28.10.2026) are ranked apart (`dear`, the key moments only): the
+reserve did not steer, and with ~0.3 kWh to full a start hours off costs
+next to nothing — mixed in, a few of them would move the D2 ranking.
+
 Per row:
 - D1 (SoC points, system − needed; − = too little reserve): n, MAE, bias,
   days < −3 / < −5 ("dangerous": the battery would run short), asymmetric loss, and against
@@ -47,12 +52,15 @@ _KEY_START: Final = ("08:41", START_MOMENT)
 
 def rank(scores: Sequence[DayScore]) -> dict[str, Any]:
     """Build the ranking tables of `scores` (final ones, any order)."""
-    days = sorted(scores, key=lambda s: s.day)
+    every = sorted(scores, key=lambda s: s.day)
+    days = [s for s in every if not s.dear_day]
+    dear = [s for s in every if s.dear_day]
     return {
-        "days": [s.day.isoformat() for s in days],
+        "days": [s.day.isoformat() for s in every],
+        "dear_days": [s.day.isoformat() for s in dear],
         "day_kinds": {
             s.day.isoformat(): (s.day_type.kind.value if s.day_type.kind else None)
-            for s in days
+            for s in every
         },
         "reserve": {
             kind: _reserve_tables(
@@ -76,6 +84,10 @@ def rank(scores: Sequence[DayScore]) -> dict[str, Any]:
             for kind in _KINDS
         },
         "production": _production(days),
+        "dear": {
+            "reserve": {"all": _reserve_tables(dear, _KEY_RESERVE)},
+            "start": {"all": _start_tables(dear, _KEY_START)},
+        },
     }
 
 

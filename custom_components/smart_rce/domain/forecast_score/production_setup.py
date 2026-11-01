@@ -10,7 +10,12 @@ Sources: home-assistant-ops `plans/live-soft.md`, smart_rce commits 2321beb,
 1db8b50, 20ada58, 1f87ed6 (margin), a5b711a (08-09 step capped by Live),
 43d266b (07-08 step capped by max(Live, Extrap Proportional, Extrap Blend)),
 0f65863 (hour credit from the grid balance), 17.10 (both steps capped by
-max(Live, Extrap Blend), Blend from two scored buckets).
+max(Live, Extrap Blend), Blend from two scored buckets), 28.10 (072b970 a
+cheaper later charge start, also past S0; f9245b3 the dear day).
+
+The charge start of a day counts by the setup in force at its first
+evaluation (07:41, `start_setup_on`): 28.10 switched at 07:32, between 06:11
+and the first start evaluation.
 """
 
 from __future__ import annotations
@@ -30,6 +35,18 @@ if TYPE_CHECKING:
 _WARSAW: Final = ZoneInfo("Europe/Warsaw")
 # The moment a day is assigned to a setup.
 ASSIGNED_AT: Final = time(6, 11)
+# The moment a day's charge start is assigned to a setup (its first evaluation).
+START_ASSIGNED_AT: Final = time(7, 41)
+
+
+class StartRule(Enum):
+    """How production picked the charge start from the PV surplus."""
+
+    # `find_candidate`: the latest start up to S0 that still fills the battery.
+    UP_TO_S0 = "up_to_s0"
+    # Then `cheaper_later_start`: a later whole hour (also past S0) where the
+    # battery takes cheaper PV, the start in force held (072b970, 78f409f).
+    CHEAPER_LATER = "cheaper_later"
 
 
 class MarginRule(Enum):
@@ -104,6 +121,10 @@ class ProductionSetup:
     margin: MarginRule = field(default_factory=lambda: MarginRule.NONE)
     # This hour's net grid export counts toward the hour's points (0f65863).
     hour_credit: bool = False
+    start_rule: StartRule = StartRule.UP_TO_S0
+    # A dear day (no hour 07-T2 below the export bar) charges to 100 at night
+    # and sells nothing in the morning (f9245b3): its reserve does not steer.
+    dear_day_mode: bool = False
 
     @property
     def has_margin(self) -> bool:
@@ -211,6 +232,22 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         margin=MarginRule.BLEND_CAPS,
         hour_credit=True,
     ),
+    ProductionSetup(
+        datetime(2026, 10, 28, 7, 32, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Blend) − Soft)"
+        " / min(5, max(Live, Blend) − Soft), Blend od 2 przedziałów + kredyt godzinowy"
+        " + tańszy późniejszy start (także po S0) + drogi dzień",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=MarginRule.BLEND_CAPS,
+        hour_credit=True,
+        start_rule=StartRule.CHEAPER_LATER,
+        dear_day_mode=True,
+    ),
 )
 # Today's setup — the one the variant ranking scores against.
 CURRENT: Final = SETUPS[-1]
@@ -218,5 +255,13 @@ CURRENT: Final = SETUPS[-1]
 
 def setup_on(day: date, tz: tzinfo) -> ProductionSetup:
     """Return the setup in force at 06:11 of `day`."""
-    moment = datetime.combine(day, ASSIGNED_AT, tz)
+    return _in_force(datetime.combine(day, ASSIGNED_AT, tz))
+
+
+def start_setup_on(day: date, tz: tzinfo) -> ProductionSetup:
+    """Return the setup the charge start of `day` ran on (in force at 07:41)."""
+    return _in_force(datetime.combine(day, START_ASSIGNED_AT, tz))
+
+
+def _in_force(moment: datetime) -> ProductionSetup:
     return [s for s in SETUPS if s.since <= moment][-1]

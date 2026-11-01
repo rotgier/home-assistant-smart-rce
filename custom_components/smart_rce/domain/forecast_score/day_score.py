@@ -32,12 +32,14 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from ..charge_start_shift import to_minutes
+from ..cheap_hours import is_dear_day
 from ..consumption_percentile import percentile_by_key
 from ..pv_surplus import DayType, minute_of_day, surplus_window_end
+from ..rce import RceDayPrices
 from .day_type import DayTypeFigures, day_type_figures
 from .full_charge_score import FullChargeScore, PlanReading, score_full_charge
 from .production_outcome import ChargeStartFact, ProductionOutcome, production_outcome
-from .production_setup import ProductionSetup, setup_on
+from .production_setup import ProductionSetup, setup_on, start_setup_on
 from .reserve_score import (
     DISCHARGE_LINE_MOMENT,
     MAIN_MOMENT,
@@ -73,8 +75,11 @@ if TYPE_CHECKING:
 #     purged history).
 # 12: the accuracy so far also to 16:00 (`so_far_day`), the dearest discharge hour.
 # 13: 99% on the BMS counts as full (the fact, the D3 trigger, the charging model).
+# 14: D2 by production's start rule of the day (`cheaper_later_start` from
+#     28.10, the start in force held), moments until the start (also past S0),
+#     the LAST strike as the fact, the start history kept; the dear day.
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 13
+SCHEMA_VERSION: Final = 14
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
@@ -129,6 +134,8 @@ class DayInputs:
     plan_readings: Sequence[PlanReading] = ()
     # How far the measured data reaches (a run during the day); None = whole day.
     cutoff: datetime | None = None
+    # Production's export bar (gross PLN/MWh) — tells a dear day; None = unknown.
+    export_threshold: float | None = None
 
 
 def score_day(
@@ -182,7 +189,9 @@ def score_day(
     so_far_day = score_so_far(*so_far_args, window_end_at=DAY_END)
     start: tuple[MomentStart, ...] = ()
     if inputs.prices is not None and inputs.s0 is not None and len(inputs.prices) == 24:
-        settled = _settled_start(inputs, setup, inputs.prices, inputs.s0)
+        settled = _settled_start(
+            inputs, start_setup_on(day, actuals.tz), inputs.prices, inputs.s0
+        )
         if settled is None:
             pending.append(Pending.START)
         else:
@@ -237,6 +246,7 @@ def score_day(
         so_far=so_far,
         so_far_day=so_far_day,
         discharge_peak_hour=_discharge_peak_hour(inputs),
+        dear_day=_dear_day(inputs, setup),
         trigger=trigger,
         cutoff=cutoff,
         pending=tuple(pending),
@@ -266,6 +276,7 @@ def _settled_start(
             list(inputs.earlier_same_type.values()),
             inputs.start.start,
             setup,
+            inputs.start.changes,
         )
 
     if (
@@ -277,7 +288,8 @@ def _settled_start(
     now = minute_of_day(cutoff)
     if struck is None or struck > now:
         return None
-    if any(now < m < s0 for m in (to_minutes(at) for _label, at in PREVIEW_MOMENTS)):
+    end = max(s0, struck)  # production evaluates until the start
+    if any(now < m < end for m in (to_minutes(at) for _label, at in PREVIEW_MOMENTS)):
         return None  # a preview moment still to come
     worst = score(
         actuals.with_future(cutoff, pv_kwh_per_slot=0.0, cons_kwh_per_slot=_LARGE_KWH)
@@ -314,6 +326,21 @@ def _discharge_peak_hour(inputs: DayInputs) -> int | None:
     if plan is None or not plan.hours or prices is None or len(prices) != 24:
         return None
     return max(plan.hours, key=lambda hour: prices[hour])
+
+
+def _dear_day(inputs: DayInputs, setup: ProductionSetup) -> bool | None:
+    """Tell whether the day ran as a dear day (night to 100, no morning sale).
+
+    None when unknown (no prices or bar). Only from the setup that has the mode
+    (28.10.2026): before it a dear day ran like any other.
+    """
+    if not setup.dear_day_mode:
+        return False
+    prices, bar = inputs.prices, inputs.export_threshold
+    if prices is None or len(prices) != 24 or bar is None:
+        return None
+    day = inputs.actuals.day
+    return is_dear_day(day, RceDayPrices(None, day, tuple(prices)), bar)
 
 
 def _full_charge_settled(score: FullChargeScore, cutoff: datetime) -> bool:
@@ -372,6 +399,9 @@ class DayScore:
     so_far_day: tuple[MomentSoFar, ...] = ()
     # The morning discharge hour at the dearest price (the card sorts by it).
     discharge_peak_hour: int | None = None
+    # A dear day: the night charged to 100, nothing sold in the morning — its
+    # reserve did not steer; ranked apart (None = unknown).
+    dear_day: bool | None = None
     # What ran it: charge_start, s0, full_charge, 13:06, 16:06, 21:06, manual...
     trigger: str = ""
     # How far the data reached (a run during the day); None = the whole day.
@@ -453,6 +483,7 @@ class DayScore:
             "so_far": [m.to_dict() for m in self.so_far],
             "so_far_day": [m.to_dict() for m in self.so_far_day],
             "discharge_peak_hour": self.discharge_peak_hour,
+            "dear_day": self.dear_day,
             "trigger": self.trigger,
             "cutoff": self.cutoff.isoformat() if self.cutoff is not None else None,
             "pending": [str(p) for p in self.pending],
@@ -492,6 +523,7 @@ class DayScore:
                 MomentSoFar.from_dict(m) for m in data.get("so_far_day", [])
             ),
             discharge_peak_hour=data.get("discharge_peak_hour"),
+            dear_day=data.get("dear_day"),
             trigger=str(data.get("trigger", "")),
             cutoff=(
                 datetime.fromisoformat(cut)

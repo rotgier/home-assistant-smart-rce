@@ -1,13 +1,21 @@
 """D2 — the charge start: when the battery starts taking PV, scored per moment.
 
-The rule is production's `find_candidate`: the latest start up to S0 whose
-forecast surplus in its price window still fills the battery from the SoC of
-the moment. The benchmark is the same rule on what really came.
+The rule is production's (`StartRule` of the setup): `find_candidate`, the
+latest start up to S0 whose forecast surplus in its price window still fills
+the battery from the SoC of the moment; since 28.10.2026 then
+`cheaper_later_start`, a later whole hour (also past S0) where the battery
+takes cheaper PV, with the house's drain until then and the start in force at
+the moment held (`start_in_force`, from the start entity's history). The
+benchmark is the same rule on what really came, with no later start held
+(S0, as production without a shift): it is an oracle, the hold only keeps a
+live start from flickering. A row is the rule's answer at that minute —
+production's three confirmations and the Extrap guard are not replayed.
 
 Moments: 07:41, 08:41, 09:16, 09:41 as a preview — a "too late" early in the
 morning is reversible, the rule re-runs every 5 minutes — and, the one that
 counts, `start`: the last evaluation before the start actually struck ("too
-early" there is not reversible; the start locks).
+early" there is not reversible; the start locks). Production evaluates until
+the start — S0, or later when the start moved past it — and so do the moments.
 
 Like the reserve, the production error splits exactly (in hours):
 - PV part = start(forecast PV, model) − start(actual PV, model) — the ranking;
@@ -29,14 +37,16 @@ from ..charge_curve import kwh_to_full
 from ..charge_start_shift import (
     FIRST_EVALUATION,
     Candidate,
+    cheaper_later_start,
     find_candidate,
     price_window_end,
     to_minutes,
 )
-from ..pv_surplus import SLOT_MINUTES, SurplusProfile, minute_of_day
+from ..pv_surplus import SLOT_MINUTES, SurplusProfile, minute_of_day, surplus_window_end
 from .consumption_models import ConsumptionModel
 from .day_actuals import CONSUMPTION, PV
-from .production_setup import CURRENT, ProductionSetup
+from .production_outcome import start_in_force
+from .production_setup import CURRENT, ProductionSetup, StartRule
 from .variant_results import SCORED_VARIANTS, consumed
 
 if TYPE_CHECKING:
@@ -68,11 +78,13 @@ def score_start(  # noqa: PLR0917 — one call site, inputs of one day
     earlier_same_type: Sequence[Mapping[int, float]],
     actual_start: int | None,
     setup: ProductionSetup = CURRENT,
+    changes: Sequence[tuple[int, int]] | None = None,
 ) -> tuple[MomentStart, ...]:
-    """Every charge-start moment of the day that came before S0.
+    """Every charge-start moment of the day production evaluated.
 
     Variants are ranked with today's setup (`CURRENT`); `setup` is the one
-    production ran on that day — its call is the facts panel's.
+    production's start ran on that day — its call is the facts panel's.
+    `changes`: the start entity's history (the start held at each moment).
     """
     pv = actuals.half_hours(PV)
     cons = actuals.half_hours(CONSUMPTION)
@@ -87,15 +99,18 @@ def score_start(  # noqa: PLR0917 — one call site, inputs of one day
         earlier=earlier_same_type,
         setup=setup,
         setup_model=setup.start_model.half_hours(earlier_same_type),
+        changes=tuple(changes or ()),
     )
     moments = [(label, to_minutes(at)) for label, at in PREVIEW_MOMENTS]
     decided = last_evaluation_before(actual_start) if actual_start is not None else None
     if decided is not None:
         moments.append((START_MOMENT, decided))
+    # Production evaluates until the start: S0, or later when it moved past it.
+    end = max(s0, actual_start) if actual_start is not None else s0
     out: list[MomentStart] = []
     for label, minute in moments:
-        if minute >= s0:
-            continue  # production evaluates only before S0
+        if minute >= end:
+            continue
         at = actuals.at(minute)
         snapshot = consumed(snapshots, at)
         soc = actuals.soc_near(at)
@@ -137,13 +152,23 @@ class _World:
     earlier: Sequence[Mapping[int, float]]
     setup: ProductionSetup
     setup_model: dict[int, float] | None
+    changes: tuple[tuple[int, int], ...] = ()
 
     def score(
         self, label: str, now: int, snapshot: ScoredSnapshot, soc: float
     ) -> MomentStart:
         need = kwh_to_full(soc)
+        # The decisions hold the start in force; the benchmarks hold none.
+        held = start_in_force(self.changes, now, self.s0)
         star_actual = self._candidate(self.pv, self.cons, now, need)
         star_model = self._candidate(self.pv, self.model, now, need)
+        # The facts panel: the day's rule on both sides.
+        rule = self.setup.start_rule
+        star_setup = (
+            star_actual
+            if rule is CURRENT.start_rule
+            else self._candidate(self.pv, self.cons, now, need, rule=rule)
+        )
         variants: list[VariantStart] = []
         for variant in SCORED_VARIANTS:
             result = snapshot.result(variant)
@@ -156,10 +181,14 @@ class _World:
                 VariantStart(
                     variant=variant,
                     call=self._call(
-                        self._candidate(fc, self.model, now, need), star_model, need
+                        self._candidate(fc, self.model, now, need, held=held),
+                        star_model,
+                        need,
                     ),
                     call_actual_cons=self._call(
-                        self._candidate(fc, self.cons, now, need), star_actual, need
+                        self._candidate(fc, self.cons, now, need, held=held),
+                        star_actual,
+                        need,
                     ),
                 )
             )
@@ -169,12 +198,14 @@ class _World:
             ProductionStart(
                 setup=self.setup.label,
                 call=self._call(
-                    self._candidate(setup_fc, self.setup_model, now, need),
-                    star_actual,
+                    self._candidate(
+                        setup_fc, self.setup_model, now, need, held=held, rule=rule
+                    ),
+                    star_setup,
                     need,
                 ),
                 benchmark_model=self._candidate(
-                    self.pv, self.setup_model, now, need
+                    self.pv, self.setup_model, now, need, rule=rule
                 ).start,
             )
             if setup_fc
@@ -186,12 +217,12 @@ class _World:
             snapshot_at=snapshot.taken_at,
             soc=soc,
             need_kwh=round(need, 3),
-            benchmark=star_actual.start,
-            benchmark_enough=star_actual.enough,
+            benchmark=star_setup.start,
+            benchmark_enough=star_setup.enough,
             benchmark_model=star_model.start,
             production=production,
             variants=tuple(variants),
-            models=self._models(now, need, star_actual, production_fc),
+            models=self._models(now, need, star_actual, production_fc, held),
         )
 
     def _forecast(self, snapshot: ScoredSnapshot, variant: str) -> dict[int, float]:
@@ -204,6 +235,7 @@ class _World:
         need: float,
         star_actual: Candidate,
         production_fc: dict[int, float],
+        held: int,
     ) -> tuple[ModelStart, ...]:
         """Consumption models with ACTUAL PV (ranking) and production PV."""
         out: list[ModelStart] = []
@@ -217,11 +249,15 @@ class _World:
                 ModelStart(
                     model=model.key,
                     call=self._call(
-                        self._candidate(self.pv, profile, now, need), star_actual, need
+                        self._candidate(self.pv, profile, now, need, held=held),
+                        star_actual,
+                        need,
                     ),
                     call_production_pv=(
                         self._call(
-                            self._candidate(production_fc, profile, now, need),
+                            self._candidate(
+                                production_fc, profile, now, need, held=held
+                            ),
                             star_actual,
                             need,
                         )
@@ -232,15 +268,34 @@ class _World:
             )
         return tuple(out)
 
-    def _candidate(
+    def _candidate(  # noqa: PLR0913 — the rule's inputs
         self,
         pv: Mapping[int, float],
         cons: Mapping[int, float] | None,
         now: int,
         need: float,
+        *,
+        held: int | None = None,
+        rule: StartRule | None = None,
     ) -> Candidate:
+        """Return production's start on this PV and consumption.
+
+        `rule`: None = today's (the ranking); `held`: None = S0.
+        """
         profile = SurplusProfile.build(self.day, pv, cons)
-        return find_candidate(profile, self.prices, now, need, self.s0)
+        base = find_candidate(profile, self.prices, now, need, self.s0)
+        if (rule or CURRENT.start_rule) is StartRule.UP_TO_S0:
+            return base
+        return cheaper_later_start(
+            profile,
+            self.prices,
+            now,
+            base,
+            # Until a later start the battery stays closed and covers the house.
+            lambda start: need + profile.deficit(now, start),
+            window_end=surplus_window_end(self.day) * 60,
+            held=self.s0 if held is None else held,
+        )
 
     def _call(self, cand: Candidate, star: Candidate, need: float) -> StartCall:
         """Classify a candidate against a benchmark; kWh from what really came."""

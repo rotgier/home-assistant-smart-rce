@@ -150,6 +150,10 @@ class ForecastScoreSources:
         start = self._ems.charge_slots.today_start
         return start.hour * 60 + start.minute if start is not None else None
 
+    def export_threshold(self) -> float:
+        """Production's export bar now (gross PLN/MWh) — tells a dear day."""
+        return self._ems.battery_schedule_service.export_threshold
+
     def battery_soc(self) -> float | None:
         """Read the battery's SoC now (None when unavailable)."""
         state = self._hass.states.get(SOC_ENTITY)

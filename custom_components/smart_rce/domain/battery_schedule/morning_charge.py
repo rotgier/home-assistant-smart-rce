@@ -42,7 +42,8 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..charge_curve import pp_below_full
-from ..pv_surplus import SurplusProfile, surplus_window_end
+from ..cheap_hours import FIRST_HOUR, cheap_hours
+from ..pv_surplus import SurplusProfile
 from ..target_soc import MIN_SOC_PERCENT
 
 if TYPE_CHECKING:
@@ -57,7 +58,7 @@ class MorningChargeFloor:
 
     CAP: ClassVar[int] = 90
     DEAR_DAY_CAP: ClassVar[int] = 100
-    FIRST_HOUR: ClassVar[int] = 7
+    FIRST_HOUR: ClassVar[int] = FIRST_HOUR
 
     day: date
     surplus_kwh: float
@@ -81,11 +82,7 @@ class MorningChargeFloor:
     ) -> MorningChargeFloor:
         """Floor for `day` from PV p90 and consumption p40 per 30-min slot (kWh)."""
         profile = SurplusProfile.build(day, pv, consumption)
-        cheap = [
-            hour
-            for hour in range(cls.FIRST_HOUR, surplus_window_end(day))
-            if prices.gross_at(hour) < export_threshold
-        ]
+        cheap = cheap_hours(day, prices, export_threshold)
         surplus = sum(profile.total(hour * 60, (hour + 1) * 60) for hour in cheap)
         fill = round(100 - pp_below_full(surplus))
         dip = max(0, reserve_without_margin - MIN_SOC_PERCENT)

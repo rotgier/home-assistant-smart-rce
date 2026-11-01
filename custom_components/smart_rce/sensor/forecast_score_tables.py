@@ -209,7 +209,8 @@ def _reserve_table(
     return _table(
         "reserve",
         "Rezerwa — część PV błędu per wariant",
-        "pp, − = za mało · z bieżącym modelem zużycia / mała liczba: przy"
+        _dear_day_prefix(score)
+        + "pp, − = za mało · z bieżącym modelem zużycia / mała liczba: przy"
         " rzeczywistym zużyciu",
         columns,
         _variant_rows(moments, system_variant, cells),
@@ -257,7 +258,8 @@ def _start_table(
     return _table(
         "start",
         "Start — warianty PV",
-        "start, mała liczba: błąd h, + = za późno · z bieżącym modelem zużycia;"
+        _dear_day_prefix(score)
+        + "start, mała liczba: błąd h, + = za późno · z bieżącym modelem zużycia;"
         " optymalnie = rzeczywiste PV + ten sam model",
         columns,
         _variant_rows(moments, system_variant, cells),
@@ -272,6 +274,16 @@ def _start_table(
     )
 
 
+def _dear_day_prefix(score: DayScore) -> str:
+    """Note a dear day up front: its reserve did not steer, the start had little to do."""
+    if not score.dear_day:
+        return ""
+    return (
+        "drogi dzień — noc do 100%, bez porannej sprzedaży: rezerwa nie sterowała,"
+        " w rankingu osobno · "
+    )
+
+
 def ranking_tables(ranking: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Tables of the 30-day ranking: reserve 06:11 and 08:41, start, models."""
     system = CURRENT.pv_variant
@@ -282,12 +294,37 @@ def ranking_tables(ranking: Mapping[str, Any]) -> list[dict[str, Any]]:
     tables.append(_ranking_start_table(ranking.get("start") or {}, system))
     tables.append(_ranking_models_table(ranking.get("reserve_models") or {}))
     tables.append(_ranking_start_models_table(ranking.get("start_models") or {}))
+    dear = ranking.get("dear") or {}
+    count = len(ranking.get("dear_days") or [])
+    tables.append(
+        _ranking_start_table(
+            dear.get("start") or {},
+            system,
+            dear_days=count,
+            table_id="ranking_dear_start",
+        )
+    )
+    tables.append(
+        _ranking_reserve_table(
+            dear.get("reserve") or {},
+            "06:11",
+            system,
+            dear_days=count,
+            table_id="ranking_dear_reserve_06:11",
+        )
+    )
     return tables
 
 
 def _ranking_reserve_table(
-    reserve: Mapping[str, Any], label: str, system: str
+    reserve: Mapping[str, Any],
+    label: str,
+    system: str,
+    *,
+    dear_days: int | None = None,
+    table_id: str | None = None,
 ) -> dict[str, Any]:
+    """D1 at one moment; `dear_days` given = the dear days' table (their count)."""
     rows_all = (reserve.get("all") or {}).get(label) or []
     by_kind = {
         kind: {r["variant"]: r for r in (reserve.get(kind) or {}).get(label) or []}
@@ -330,10 +367,11 @@ def _ranking_reserve_table(
         }
         for row in rows_all
     ]
+    title = f"Rezerwa {label}{' (linia rozładowania)' if label == '08:41' else ''}"
     return _table(
-        f"ranking_reserve_{label}",
-        f"Rezerwa {label}{' (linia rozładowania)' if label == '08:41' else ''}",
-        "część PV [pp, − = za mało] · MAE / bias",
+        table_id or f"ranking_reserve_{label}",
+        _dear_title(title, dear_days),
+        _dear_note("część PV [pp, − = za mało] · MAE / bias", dear_days),
         columns,
         rows,
         "mae",
@@ -347,7 +385,14 @@ def _kind_cell(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return _cell(_number(row["mae"]), sort=row["mae"]) if row else None
 
 
-def _ranking_start_table(start: Mapping[str, Any], system: str) -> dict[str, Any]:
+def _ranking_start_table(
+    start: Mapping[str, Any],
+    system: str,
+    *,
+    dear_days: int | None = None,
+    table_id: str | None = None,
+) -> dict[str, Any]:
+    """D2 at the start; `dear_days` given = the dear days' table (their count)."""
     rows_all = (start.get("all") or {}).get("start") or []
     columns = _columns(
         ("n", "n"),
@@ -380,15 +425,33 @@ def _ranking_start_table(start: Mapping[str, Any], system: str) -> dict[str, Any
         for row in rows_all
     ]
     return _table(
-        "ranking_start",
-        "Start — ostatnia ocena przed startem",
-        "+ = za późno · liczba werdyktów",
+        table_id or "ranking_start",
+        _dear_title("Start — ostatnia ocena przed startem", dear_days),
+        _dear_note("+ = za późno · liczba werdyktów", dear_days),
         columns,
         rows,
         "mae_h",
         None,
         empty="brak dni z oceną",
         group=None,
+    )
+
+
+def _dear_title(title: str, dear_days: int | None) -> str:
+    return (
+        f"Drogie dni — {title[0].lower()}{title[1:]}"
+        if dear_days is not None
+        else title
+    )
+
+
+def _dear_note(note: str, dear_days: int | None) -> str:
+    """Ordinary days' tables say the dear ones are apart; theirs say how many."""
+    if dear_days is None:
+        return f"{note} · bez drogich dni (osobno niżej)"
+    return (
+        f"{note} · {dear_days} dni: noc do 100%, bez porannej sprzedaży —"
+        " rezerwa nie sterowała, do pełna ~0,3 kWh"
     )
 
 

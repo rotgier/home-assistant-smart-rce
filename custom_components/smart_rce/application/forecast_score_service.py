@@ -412,24 +412,43 @@ class ForecastScoreService:
             morning_plan=decided_plan(readings, day),
             plan_readings=readings,
             cutoff=cutoff,
+            export_threshold=self._sources.export_threshold(),
         )
 
     async def _start_fact(
         self, day: date, actuals: DayActuals, s0: int | None
     ) -> ChargeStartFact:
-        """Find the start that struck: start entity history, else the SoC rise."""
+        """Find the start that struck: start entity history, else the SoC rise.
+
+        The history goes with the fact (the start held at each D2 moment).
+        Lock and hand-set are known live only today; a past day keeps them
+        from its latest final.
+        """
         shift = self._charge.forecast_shift
         today = shift is not None and shift.day == day
-        locked = shift.locked if shift is not None and today else None
-        manual = self._charge.start_charge_is_manual_today if today else None
+        if today:
+            locked = shift.locked if shift is not None else None
+            manual: bool | None = self._charge.start_charge_is_manual_today
+        else:
+            locked, manual = await self._kept_flags(day)
         changes = await self._sources.start_changes(day)
         struck = struck_start(changes) if changes else None
+        kept = tuple(changes) if changes else None
         if struck is not None:
-            return ChargeStartFact(struck, "override", s0, locked, manual)
+            return ChargeStartFact(struck, "override", s0, locked, manual, kept)
         rise = start_from_soc_rise(actuals)
         return ChargeStartFact(
-            rise, "soc_rise" if rise is not None else "none", s0, locked, manual
+            rise, "soc_rise" if rise is not None else "none", s0, locked, manual, kept
         )
+
+    async def _kept_flags(self, day: date) -> tuple[bool | None, bool | None]:
+        """Lock and hand-set of the start from the day's latest final (None: none)."""
+        records = await self._hass.async_add_executor_job(self._archive.records, day)
+        for record in reversed(_KeptFacts.finals(records)):
+            start = (record.get("outcome") or {}).get("start") or {}
+            if start.get("locked") is not None or start.get("manual") is not None:
+                return start.get("locked"), start.get("manual")
+        return None, None
 
     async def _publish_all(self, today: date) -> None:
         """Rewrite the daily statistics of every final day (startup)."""
@@ -489,9 +508,12 @@ class _KeptFacts:
     """Facts a past day's earlier records hold that the recorder may have lost.
 
     The start (with S0) and the afternoon spans from the EARLIEST final — it
-    was computed closest to the day, from complete history; the plan readings
-    rebuilt from the LATEST final with a full charge — later ones carry the
-    moments. None = read history as usual.
+    was computed closest to the day, from complete history — unless a final
+    keeps the start's history (schema 14): the latest of those, since before
+    it the fact was the first strike, not the last (29.10.2026: 08:00 struck,
+    moved back, 09:51 for good). The plan readings rebuilt from the LATEST
+    final with a full charge — later ones carry the moments. None = read
+    history as usual.
     """
 
     def __init__(
@@ -506,8 +528,16 @@ class _KeptFacts:
 
     @classmethod
     def of(cls, records: Sequence[Mapping[str, Any]], day: date) -> _KeptFacts:
-        finals = cls._finals(records)
-        first = next((r for r in finals if (r.get("outcome") or {}).get("start")), None)
+        finals = cls.finals(records)
+        with_start = [r for r in finals if (r.get("outcome") or {}).get("start")]
+        with_history = [
+            r for r in with_start if r["outcome"]["start"].get("changes") is not None
+        ]
+        first = (
+            with_history[-1]
+            if with_history
+            else (with_start[0] if with_start else None)
+        )
         start: ChargeStartFact | None = None
         spans: list[tuple[int, int]] | None = None
         if first is not None:
@@ -530,7 +560,7 @@ class _KeptFacts:
         cls, records: Sequence[Mapping[str, Any]], score: DayScore
     ) -> tuple[str, ...]:
         """Decisions some earlier final had and `score` has not."""
-        finals = cls._finals(records)
+        finals = cls.finals(records)
         had = {
             part
             for r in finals
@@ -549,7 +579,7 @@ class _KeptFacts:
         )
 
     @staticmethod
-    def _finals(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    def finals(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
         return [
             r
             for r in records
