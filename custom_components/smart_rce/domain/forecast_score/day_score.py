@@ -332,9 +332,11 @@ def _dear_day(inputs: DayInputs, setup: ProductionSetup) -> bool | None:
     """Tell whether the day ran as a dear day (night to 100, no morning sale).
 
     None when unknown (no prices or bar). Only from the setup that has the mode
-    (28.10.2026): before it a dear day ran like any other.
+    (28.10.2026): before it a dear day ran like any other. Only on a day with
+    the morning auto slots — a day off has no night charge floor
+    (`MorningChargeService`), so dear prices change nothing there.
     """
-    if not setup.dear_day_mode:
+    if not setup.dear_day_mode or not has_morning_reserve(inputs.actuals.day):
         return False
     prices, bar = inputs.prices, inputs.export_threshold
     if prices is None or len(prices) != 24 or bar is None:

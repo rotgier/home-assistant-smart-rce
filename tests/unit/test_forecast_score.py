@@ -599,12 +599,42 @@ class TestRanking:
         dear = {r["variant"]: r for r in ranking["dear"]["reserve"]["all"]["06:11"]}
         assert dear["solcast_p50"]["n"] == 1
 
+    def test_a_dear_day_is_a_workday_of_the_dear_day_setup(self, energy):
+        actuals = DayActuals(energy[DAYS[-1]], TZ)
+        inputs = DayInputs(
+            actuals=actuals,
+            snapshots=(),
+            earlier_workdays={},
+            earlier_same_type={},
+            prices=[800.0] * 24,
+            s0=None,
+            start=ChargeStartFact(None, "none"),
+            afternoon_charge=None,
+            export_threshold=750.0,
+        )
+        dear_setup = dataclasses.replace(CURRENT, dear_day_mode=True)
+        assert day_score_module._dear_day(inputs, dear_setup) is True
+        old_setup = dataclasses.replace(CURRENT, dear_day_mode=False)
+        assert day_score_module._dear_day(inputs, old_setup) is False
+        saturday = dataclasses.replace(
+            inputs, actuals=_ShiftedDay(actuals, date(2026, 10, 31))
+        )
+        assert day_score_module._dear_day(saturday, dear_setup) is False
+
     def test_a_dear_day_has_no_hour_from_7_to_t2_below_the_bar(self):
         day = date(2026, 10, 29)
         dear = RceDayPrices(None, day, tuple([800.0] * 24))
         assert is_dear_day(day, dear, 750.0)
         cheap = RceDayPrices(None, day, tuple([800.0] * 11 + [500.0] + [800.0] * 12))
         assert not is_dear_day(day, cheap, 750.0)
+
+
+class _ShiftedDay:
+    """DayActuals stand-in that reports another day (only `.day` is read)."""
+
+    def __init__(self, actuals: DayActuals, day: date) -> None:
+        self._actuals = actuals
+        self.day = day
 
 
 class TestScoreArchive:
