@@ -11,7 +11,8 @@ Sources: home-assistant-ops `plans/live-soft.md`, smart_rce commits 2321beb,
 43d266b (07-08 step capped by max(Live, Extrap Proportional, Extrap Blend)),
 0f65863 (hour credit from the grid balance), 17.10 (both steps capped by
 max(Live, Extrap Blend), Blend from two scored buckets), 28.10 (072b970 a
-cheaper later charge start, also past S0; f9245b3 the dear day).
+cheaper later charge start, also past S0; f9245b3 the dear day), 01.11 (f786d68
+the day-off rule: charge from PV or export at once).
 
 The charge start of a day counts by the setup in force at its first
 evaluation (07:41, `start_setup_on`): 28.10 switched at 07:32, between 06:11
@@ -237,6 +238,26 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Blend) − Soft)"
         " / min(5, max(Live, Blend) − Soft), Blend od 2 przedziałów + kredyt godzinowy"
         " + tańszy późniejszy start (także po S0) + drogi dzień",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=MarginRule.BLEND_CAPS,
+        hour_credit=True,
+        start_rule=StartRule.CHEAPER_LATER,
+        dear_day_mode=True,
+    ),
+    # f786d68 + c5280e8: on a day off the day-off rule may stop or delay the
+    # PV charge (06:41 / 07:41); the scoreboard reads its choice from
+    # `sensor.ems_day_off_charge` (`DayScore.day_off_choice`).
+    ProductionSetup(
+        datetime(2026, 11, 1, 12, 49, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Blend) − Soft)"
+        " / min(5, max(Live, Blend) − Soft), Blend od 2 przedziałów + kredyt godzinowy"
+        " + tańszy późniejszy start (także po S0) + drogi dzień"
+        " + dzień wolny: ładowanie z PV wg symulacji dnia",
         PvForecast.LIVE_SOFT.key,
         ConsumptionModel.P60,
         ConsumptionModel.P60,

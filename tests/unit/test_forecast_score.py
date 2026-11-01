@@ -495,7 +495,8 @@ class TestProductionSetup:
         assert setup_on(date(2026, 10, 16), TZ).margin is MarginRule.LIVE_CAPS_0809
         assert setup_on(date(2026, 10, 17), TZ).margin is MarginRule.CAPPED
         assert setup_on(date(2026, 10, 18), TZ).margin is MarginRule.BLEND_CAPS
-        assert setup_on(date(2026, 10, 29), TZ) is CURRENT
+        assert setup_on(date(2026, 10, 29), TZ).dear_day_mode
+        assert setup_on(date(2026, 11, 2), TZ) is CURRENT
         assert CURRENT.margin is MarginRule.BLEND_CAPS
 
     def test_the_charge_start_runs_on_the_setup_of_its_first_evaluation(self):
@@ -503,7 +504,9 @@ class TestProductionSetup:
         # start (first evaluated at 07:41) already the cheaper later one.
         assert setup_on(date(2026, 10, 28), TZ).start_rule is StartRule.UP_TO_S0
         assert not setup_on(date(2026, 10, 28), TZ).dear_day_mode
-        assert start_setup_on(date(2026, 10, 28), TZ) is CURRENT
+        assert (
+            start_setup_on(date(2026, 10, 28), TZ).start_rule is StartRule.CHEAPER_LATER
+        )
         assert CURRENT.start_rule is StartRule.CHEAPER_LATER
 
     def test_production_panel_uses_the_days_rule_and_buffer(
