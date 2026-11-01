@@ -210,6 +210,8 @@ class ForecastScoreService:
         """Rescore yesterday from the energy archive; replace the final if it moved."""
         today = self._clock().date()
         yesterday = today - timedelta(days=1)
+        # A final missed (HA down at 21:06): the weather is still in the recorder.
+        await self._keep_weather(yesterday)
         energy = await self._sources.archived_energy(yesterday)
         if energy is None:
             _LOGGER.warning("Forecast score: %s not in the energy archive", yesterday)
