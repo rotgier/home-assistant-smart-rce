@@ -60,3 +60,13 @@ repos:
         pass_filenames: false
         stages: [manual]
         verbose: true
+      # Every commit: a reminder of the pins to bump (PyPI once a day, cached
+      # in .git/; never blocks — exit 0 also offline). User's request 03.11.2026.
+      - id: outdated-deps-reminder
+        name: outdated pip pins (reminder)
+        entry: .venv/bin/python scripts/check_outdated_deps.py --commit
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        verbose: true

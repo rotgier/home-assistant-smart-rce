@@ -6,7 +6,14 @@ disabled (per CLAUDE.md — `pytest-homeassistant-custom-component`
 constraint blokuje większość auto-bumpów).
 
 Usage:
-    .venv/bin/python scripts/check_outdated_deps.py
+    .venv/bin/python scripts/check_outdated_deps.py            # full table, exit 1 = bump
+    .venv/bin/python scripts/check_outdated_deps.py --commit   # pre-commit reminder
+
+`--commit` (the pre-commit hook on every commit, user's request 03.11.2026):
+never blocks — exit 0 also when PyPI is unreachable. PyPI is asked at most
+once a day (`.git/check-outdated-deps.json`); other commits that day repeat
+the cached verdict in one line. The weekly `deps-check.yml` keeps the full
+table and its exit code.
 
 Output:
     Tabela direct pins z bumpem + flag czy bumpa blokuje pytest-ha
@@ -22,15 +29,23 @@ Workflow:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import contextlib
+from datetime import date
 import json
 from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.request import urlopen
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REQUIREMENTS_FILE = REPO_ROOT / "requirements-test.txt"
-PIN_PATTERN = re.compile(r"^(?P<name>[\w-]+)==(?P<version>[\d.]+(?:[a-z]\d*)?)\s*$")
+PIN_PATTERN = re.compile(
+    r"^(?P<name>[\w-]+)==(?P<version>[\d.]+(?:[a-z]\d*)?)\s*(?:#.*)?$"
+)
+CACHE_NAME = "check-outdated-deps.json"
+PYPI_TIMEOUT_SEC = 5
 
 # Pakiety pinowane jako transitive constraints przez
 # pytest-homeassistant-custom-component. Bumpy tych są blocked dopóki nie
@@ -60,33 +75,84 @@ def parse_pins(path: Path) -> dict[str, str]:
     return pins
 
 
-def get_outdated() -> dict[str, tuple[str, str]]:
-    """Query pip for outdated packages → {name: (current, latest)}."""
-    venv_pip = REPO_ROOT / ".venv" / "bin" / "pip"
-    if not venv_pip.exists():
-        sys.exit(
-            f"venv pip not found at {venv_pip} — run from repo root with .venv setup"
-        )
-    # pip JSON output includes "[notice]" lines; isolate JSON via prefix detection.
-    result = subprocess.run(
-        [str(venv_pip), "list", "--outdated", "--format=json"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # Find JSON start (skip pip notice lines).
-    json_start = result.stdout.find("[")
-    if json_start == -1:
-        return {}
-    data = json.loads(result.stdout[json_start:])
+def get_outdated(pins: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """Ask PyPI for the latest release of each pin → {name: (current, latest)}.
+
+    Only the direct pins, in parallel (~1 s) — not `pip list --outdated`,
+    which asks for every package of the venv (~40 s).
+    """
+
+    def latest(name: str) -> str:
+        url = f"https://pypi.org/pypi/{name}/json"
+        with urlopen(url, timeout=PYPI_TIMEOUT_SEC) as response:  # noqa: S310
+            return str(json.load(response)["info"]["version"])
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        found = dict(zip(pins, pool.map(latest, pins), strict=True))
     return {
-        item["name"].lower(): (item["version"], item["latest_version"]) for item in data
+        name: (pins[name], version)
+        for name, version in found.items()
+        if version != pins[name]
     }
 
 
+def commit_reminder() -> int:
+    """Pre-commit: one line on what to bump; PyPI once a day; never blocks."""
+    today = date.today().isoformat()
+    cache = _cache_file()
+    try:
+        cached = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        cached = {}
+    if cached.get("date") != today:
+        pins = parse_pins(REQUIREMENTS_FILE)
+        try:
+            outdated = get_outdated(pins)
+        except OSError as err:
+            print(f"deps: PyPI unreachable ({err}) — not checked, commit goes on")
+            return 0
+        cached = {
+            "date": today,
+            "bumps": {n: list(v) for n, v in sorted(outdated.items())},
+        }
+        # No cache: PyPI is asked again on the next commit.
+        with contextlib.suppress(OSError):
+            cache.write_text(json.dumps(cached))
+    bumps = cached.get("bumps") or {}
+
+    def rows(names: list[str]) -> str:
+        return ", ".join(f"{n} {bumps[n][0]} → {bumps[n][1]}" for n in names)
+
+    safe = [n for n in bumps if n not in PYTEST_HA_CONSTRAINED]
+    blocked = [n for n in bumps if n in PYTEST_HA_CONSTRAINED]
+    if not bumps:
+        print("deps: wszystkie piny aktualne")
+        return 0
+    if safe:
+        print(f"deps: ⚠️  do podbicia ({len(safe)}): {rows(safe)}")
+    if blocked:
+        print(f"deps: czekają na pytest-ha ({len(blocked)}): {rows(blocked)}")
+    print("      pełna tabela: .venv/bin/python scripts/check_outdated_deps.py")
+    return 0
+
+
+def _cache_file() -> Path:
+    """Return the cache path in the git dir (shared by worktrees, outside the tree)."""
+    common = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=REPO_ROOT,
+    ).stdout.strip()
+    return (REPO_ROOT / common).resolve() / CACHE_NAME if common else Path(CACHE_NAME)
+
+
 def main() -> int:
+    if "--commit" in sys.argv[1:]:
+        return commit_reminder()
     pins = parse_pins(REQUIREMENTS_FILE)
-    outdated = get_outdated()
+    outdated = get_outdated(pins)
 
     safe: list[tuple[str, str, str]] = []
     blocked: list[tuple[str, str, str]] = []
