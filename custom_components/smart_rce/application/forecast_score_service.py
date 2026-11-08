@@ -486,7 +486,12 @@ class ForecastScoreService:
             cutoff=cutoff,
             export_threshold=self._sources.export_threshold(),
             day_off_choice=(
-                await self._sources.day_off_choice(day) or await self._kept_day_off(day)
+                await self._sources.day_off_choice(day)
+                or await self._kept(day, "day_off_choice")
+            ),
+            dear_day_choice=(
+                await self._sources.dear_day_choice(day)
+                or await self._kept(day, "dear_day_choice")
             ),
         )
 
@@ -516,11 +521,11 @@ class ForecastScoreService:
             rise, "soc_rise" if rise is not None else "none", s0, locked, manual, kept
         )
 
-    async def _kept_day_off(self, day: date) -> str | None:
-        """Return the day-off rule's choice kept by the day's latest final."""
+    async def _kept(self, day: date, field: str) -> str | None:
+        """Return a rule's choice kept by the day's latest final (recorder purged)."""
         records = await self._hass.async_add_executor_job(self._archive.records, day)
         for record in reversed(_KeptFacts.finals(records)):
-            if (choice := record.get("day_off_choice")) is not None:
+            if (choice := record.get(field)) is not None:
                 return str(choice)
         return None
 

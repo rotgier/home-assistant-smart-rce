@@ -126,6 +126,9 @@ class ProductionSetup:
     # A dear day (no hour 07-T2 below the export bar) charges to 100 at night
     # and sells nothing in the morning (f9245b3): its reserve does not steer.
     dear_day_mode: bool = False
+    # From 4667859 a dear day only does so when `DearDayChoice` chose FULL;
+    # NORMAL runs it as any day (night to the reserve, the morning sale).
+    dear_day_choice: bool = False
 
     @property
     def has_margin(self) -> bool:
@@ -268,6 +271,27 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         hour_credit=True,
         start_rule=StartRule.CHEAPER_LATER,
         dear_day_mode=True,
+    ),
+    # 4667859 (08.11 restart, `forecast-improvements-6`): a dear day picks FULL
+    # or NORMAL (`DearDayChoice`, latched at 04:00); the scoreboard reads the
+    # choice from the plan sensor's `dear_day` attribute (`dear_day_choice`).
+    ProductionSetup(
+        datetime(2026, 11, 8, 23, 25, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Blend) − Soft)"
+        " / min(5, max(Live, Blend) − Soft), Blend od 2 przedziałów + kredyt godzinowy"
+        " + tańszy późniejszy start (także po S0) + drogi dzień: pełna bateria albo"
+        " zwykły dzień wg symulacji + dzień wolny: ładowanie z PV wg symulacji dnia",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=MarginRule.BLEND_CAPS,
+        hour_credit=True,
+        start_rule=StartRule.CHEAPER_LATER,
+        dear_day_mode=True,
+        dear_day_choice=True,
     ),
 )
 # Today's setup — the one the variant ranking scores against.

@@ -109,6 +109,9 @@ class _Sources:
     async def day_off_choice(self, _day: date) -> str | None:
         return None
 
+    async def dear_day_choice(self, _day: date) -> str | None:
+        return None
+
     async def archived_weather(self, day: date) -> WeatherInputs | None:
         return self.kept_weather.get(day)
 

@@ -230,6 +230,21 @@ class ForecastScoreSources:
         mine = [s.state for s in states if s.attributes.get("day") == day.isoformat()]
         return mine[-1] if mine else None
 
+    async def dear_day_choice(self, day: date) -> str | None:
+        """Return the dear-day variant chosen for `day` (`full` / `normal`; None: none).
+
+        The plan sensor's `dear_day` attribute (`DearDayChoice`, latched at the
+        night charge's start); only the one whose `day` is `day` counts.
+        """
+        states = await self._history(day, PLAN_ENTITY, attributes=True)
+        mine = [
+            str(choice["chosen"])
+            for s in states
+            if isinstance(choice := s.attributes.get("dear_day"), dict)
+            and choice.get("day") == day.isoformat()
+        ]
+        return mine[-1] if mine else None
+
     async def recorder_weather(self, day: date) -> WeatherInputs | None:
         """Read the day's observed weather and the forecast at each moment.
 

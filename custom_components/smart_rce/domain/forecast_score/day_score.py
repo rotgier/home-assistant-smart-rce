@@ -80,12 +80,16 @@ if TYPE_CHECKING:
 #     the LAST strike as the fact, the start history kept; the dear day.
 # 15: a dear day only on a day with the morning auto slots (31.10 was flagged).
 # 16: the day-off rule's choice (`day_off_choice`); a day it moved the start
-#     ranks D2 apart.
+#     ranks D2 apart. The dear day's variant (`dear_day_choice`, from 08.11)
+#     came without a bump: no earlier day has one.
 # Older records are ignored, so the startup catch-up rescores those days.
 SCHEMA_VERSION: Final = 16
 
 # The day-off rule's choice that leaves the start as it was (`day_off_charge.S0`).
 DAY_OFF_KEEPS_START: Final = "s0"
+# The dear-day variant that charges to 100 and sells nothing in the morning
+# (`dear_day_choice.DearDayVariant.FULL`).
+DEAR_DAY_FULL: Final = "full"
 
 # Beyond anything the roof makes or the house uses in 5 minutes (the bounds of
 # the D2 settlement test).
@@ -144,6 +148,8 @@ class DayInputs:
     export_threshold: float | None = None
     # The day-off rule's choice (`none`, `s0`, `from_<hh>`); None = no run.
     day_off_choice: str | None = None
+    # The dear day's variant (`full`, `normal`); None = no choice that day.
+    dear_day_choice: str | None = None
 
 
 def score_day(
@@ -256,6 +262,7 @@ def score_day(
         discharge_peak_hour=_discharge_peak_hour(inputs),
         dear_day=_dear_day(inputs, setup),
         day_off_choice=inputs.day_off_choice,
+        dear_day_choice=inputs.dear_day_choice,
         trigger=trigger,
         cutoff=cutoff,
         pending=tuple(pending),
@@ -347,6 +354,9 @@ def _dear_day(inputs: DayInputs, setup: ProductionSetup) -> bool | None:
     """
     if not setup.dear_day_mode or not has_morning_reserve(inputs.actuals.day):
         return False
+    # From 08.11.2026 a dear day may run as any other (NORMAL).
+    if setup.dear_day_choice and inputs.dear_day_choice != DEAR_DAY_FULL:
+        return False
     prices, bar = inputs.prices, inputs.export_threshold
     if prices is None or len(prices) != 24 or bar is None:
         return None
@@ -416,6 +426,9 @@ class DayScore:
     # The day-off rule's choice (from 01.11.2026): `none` = no PV charging,
     # `from_<hh>` = a later start, `s0` = the start as it was; None = no run.
     day_off_choice: str | None = None
+    # The dear day's variant (from 08.11.2026): `full` = night to 100, no
+    # morning sale (`dear_day` True); `normal` = run as any day.
+    dear_day_choice: str | None = None
     # What ran it: charge_start, s0, full_charge, 13:06, 16:06, 21:06, manual...
     trigger: str = ""
     # How far the data reached (a run during the day); None = the whole day.
@@ -504,6 +517,7 @@ class DayScore:
             "discharge_peak_hour": self.discharge_peak_hour,
             "dear_day": self.dear_day,
             "day_off_choice": self.day_off_choice,
+            "dear_day_choice": self.dear_day_choice,
             "trigger": self.trigger,
             "cutoff": self.cutoff.isoformat() if self.cutoff is not None else None,
             "pending": [str(p) for p in self.pending],
@@ -545,6 +559,7 @@ class DayScore:
             discharge_peak_hour=data.get("discharge_peak_hour"),
             dear_day=data.get("dear_day"),
             day_off_choice=data.get("day_off_choice"),
+            dear_day_choice=data.get("dear_day_choice"),
             trigger=str(data.get("trigger", "")),
             cutoff=(
                 datetime.fromisoformat(cut)

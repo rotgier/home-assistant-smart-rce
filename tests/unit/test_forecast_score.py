@@ -504,7 +504,9 @@ class TestProductionSetup:
         assert setup_on(date(2026, 10, 17), TZ).margin is MarginRule.CAPPED
         assert setup_on(date(2026, 10, 18), TZ).margin is MarginRule.BLEND_CAPS
         assert setup_on(date(2026, 10, 29), TZ).dear_day_mode
-        assert setup_on(date(2026, 11, 2), TZ) is CURRENT
+        assert not setup_on(date(2026, 11, 2), TZ).dear_day_choice
+        assert setup_on(date(2026, 11, 9), TZ) is CURRENT
+        assert CURRENT.dear_day_choice
         assert CURRENT.margin is MarginRule.BLEND_CAPS
 
     def test_the_charge_start_runs_on_the_setup_of_its_first_evaluation(self):
@@ -639,10 +641,18 @@ class TestRanking:
             afternoon_charge=None,
             export_threshold=750.0,
         )
-        dear_setup = dataclasses.replace(CURRENT, dear_day_mode=True)
+        dear_setup = dataclasses.replace(
+            CURRENT, dear_day_mode=True, dear_day_choice=False
+        )
         assert day_score_module._dear_day(inputs, dear_setup) is True
         old_setup = dataclasses.replace(CURRENT, dear_day_mode=False)
         assert day_score_module._dear_day(inputs, old_setup) is False
+        # From 08.11.2026 the dear day picks a variant: only FULL runs as a dear day.
+        choosing = dataclasses.replace(dear_setup, dear_day_choice=True)
+        assert day_score_module._dear_day(inputs, choosing) is False  # no choice
+        for chosen, dear in (("full", True), ("normal", False)):
+            picked = dataclasses.replace(inputs, dear_day_choice=chosen)
+            assert day_score_module._dear_day(picked, choosing) is dear
         saturday = dataclasses.replace(
             inputs, actuals=_ShiftedDay(actuals, date(2026, 10, 31))
         )

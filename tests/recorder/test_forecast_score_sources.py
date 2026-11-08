@@ -157,3 +157,32 @@ async def test_the_forecast_at_a_moment_is_the_last_one_up_to_it(
     assert [c for _w, c in weather.forecasts["09:41"].hourly] == ["cloudy"]
     points = weather.points("09:41", datetime(2026, 10, 19, 9, 41, tzinfo=TZ))
     assert [c for _w, c in points] == ["rainy", "cloudy", "cloudy"]
+
+
+async def test_the_dear_day_choice_is_the_last_one_for_the_day(
+    recorder_mock: Any, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The plan carries the choice in `dear_day`; yesterday's one does not count."""
+    await hass.config.async_set_time_zone("Europe/Warsaw")
+    steps = [
+        (
+            datetime(2026, 10, 19, 0, 0, 30, tzinfo=TZ),
+            {"dear_day": {"day": "2026-10-18", "chosen": "full"}},
+        ),
+        (
+            datetime(2026, 10, 19, 1, 0, tzinfo=TZ),
+            {"dear_day": {"day": "2026-10-19", "chosen": "full"}},
+        ),
+        (
+            datetime(2026, 10, 19, 4, 0, tzinfo=TZ),
+            {"dear_day": {"day": "2026-10-19", "chosen": "normal"}},
+        ),
+    ]
+    for moment, attrs in steps:
+        freezer.move_to(moment)
+        hass.states.async_set(PLAN_ENTITY, "20", attrs)
+        await hass.async_block_till_done()
+    freezer.move_to(datetime(2026, 10, 19, 9, 0, tzinfo=TZ))
+    await async_wait_recording_done(hass)
+
+    assert await _sources(hass).dear_day_choice(DAY) == "normal"
