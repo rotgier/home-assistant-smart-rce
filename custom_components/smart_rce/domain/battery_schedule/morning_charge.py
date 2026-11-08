@@ -32,7 +32,10 @@ anyway, so the battery needs no room left for it, and the house runs T1 on the
 night's T3 energy. The morning sale then stays off (`MorningDischargeService`)
 — selling at 07:00 what the night just bought is the grid-battery-grid round
 trip ADR-028 rules out. 28.10 (every hour above 950 gross) charged to 90 and
-would have sold it down to 16% at 07:00.
+would have sold it down to 16% at 07:00. Unless `DearDayChoice` finds the
+normal day (night to the reserve, the usual morning sale of what the battery
+already holds) `MIN_ADVANTAGE_ZL` better — then `BatterySchedule.night_floor_for`
+drops this lift (user's decision 08.11.2026).
 """
 
 from __future__ import annotations

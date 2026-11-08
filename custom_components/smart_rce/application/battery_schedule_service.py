@@ -75,6 +75,7 @@ class BatteryScheduleUpdateResult:
 
 
 if TYPE_CHECKING:
+    from ..domain.dear_day_choice import DearDayChoice
     from ..domain.target_soc import TargetSoc
     from ..domain.target_soc_catalog import TargetSocCatalog
     from ..infrastructure.async_task_runner import AsyncTaskRunner
@@ -362,6 +363,38 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         """Return `day`'s weak-sun floor, None when there is none."""
         return self._repo.schedule.morning_charge_floor_for(day)
 
+    def night_floor_for(self, day: date) -> MorningChargeFloor | None:
+        """Return the floor the night charge runs to (none on a dear day run as normal)."""
+        return self._repo.schedule.night_floor_for(day)
+
+    @callback
+    def set_dear_day_choice(self, day: date, choice: DearDayChoice | None) -> None:
+        """Take `day`'s dear-day choice (in memory only)."""
+        if self._repo.schedule.set_dear_day_choice(day, choice):
+            self._notify_all()
+
+    def dear_day_choice_for(self, day: date) -> DearDayChoice | None:
+        return self._repo.schedule.dear_day_choice_for(day)
+
+    @property
+    def dear_day_choice(self) -> DearDayChoice | None:
+        """Today's dear-day choice, None on another day."""
+        return self.dear_day_choice_for(self._clock().date())
+
+    @property
+    def dear_day_choice_tomorrow(self) -> DearDayChoice | None:
+        """Tomorrow's dear-day choice, None on another day (or before 14:00)."""
+        return self.dear_day_choice_for(self._clock().date() + timedelta(days=1))
+
+    def dear_day_latched(self, day: date) -> str | None:
+        return self._repo.schedule.dear_day_latched(day)
+
+    @callback
+    def latch_dear_day(self, day: date, variant: str | None) -> None:
+        """Latch `day`'s dear-day variant at the night charge's start (persisted)."""
+        if self._repo.schedule.latch_dear_day(day, variant):
+            self._repo.save_if_changed()
+
     @property
     def export_threshold(self) -> float:
         """Gross PLN/MWh above which selling stored energy beats keeping it."""
@@ -405,7 +438,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         reserve = schedule.t1_reserve_for(day)
         if reserve is None:
             return None
-        floor = schedule.morning_charge_floor_for(day)
+        floor = schedule.night_floor_for(day)
         night = schedule.today_entry_for(SlotKind.CHARGE_MORNING_AUTO)
         if floor is None or not night.enabled:
             return reserve.value

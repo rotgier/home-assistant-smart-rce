@@ -23,6 +23,10 @@ from custom_components.smart_rce.domain.charge_start_shift import (
     find_candidate,
     lowest_soc_the_sun_fills,
 )
+from custom_components.smart_rce.domain.dear_day_choice import (
+    MIN_ADVANTAGE_ZL,
+    DearDayVariant,
+)
 from custom_components.smart_rce.domain.evening_plan import EveningPlan
 from custom_components.smart_rce.domain.pv_forecast import PvForecast
 from custom_components.smart_rce.domain.pv_surplus import (
@@ -234,16 +238,29 @@ def _service(
     prices: tuple[float, ...] = PRICES,
     why: bool = False,
     floor=None,
+    soc: float | None = 50.0,
+    latch: dict | None = None,
+    choices: dict | None = None,
 ):
     """Plan for DAY at `now`; with `tomorrow` the plan for NEXT (same inputs).
 
-    With `why`, the reason there is no plan instead.
+    With `why`, the reason there is no plan instead. `latch` / `choices`
+    collect the dear-day latch and choices by day.
     """
     plans: dict = {}
     why_none: dict = {}
+    latch = {} if latch is None else latch
+    choices = {} if choices is None else choices
     entry = _auto_discharge()
     schedule = SimpleNamespace(
-        slot=lambda scope, kind: entry,
+        set_dear_day_choice=choices.__setitem__,
+        dear_day_latched=latch.get,
+        latch_dear_day=latch.__setitem__,
+        slot=lambda scope, kind: (
+            BatteryScheduleEntry.default_for(kind)
+            if kind is SlotKind.CHARGE_MORNING_AUTO
+            else entry
+        ),
         t1_reserve=_reserve(25, NEXT if tomorrow else DAY),
         set_morning_discharge=plans.__setitem__,
         set_morning_discharge_why_none=why_none.__setitem__,
@@ -252,6 +269,7 @@ def _service(
     )
     ems = SimpleNamespace(
         battery_schedule_service=schedule,
+        last_input_state=SimpleNamespace(battery_soc=soc),
         is_workday_today=workday,
         is_workday_tomorrow=workday,
         charge_slots=SimpleNamespace(today_start=s0, tomorrow_start=s0),
@@ -271,13 +289,46 @@ def _service(
 
 
 class TestService:
-    def test_a_dear_day_keeps_the_night_charge(self):
-        # 28.10.2026: every hour 07-16 above the bar, the night charged to 100
-        # for T1 — selling it at 07:00 would be grid-battery-grid.
+    def test_a_dear_day_with_an_empty_battery_keeps_the_night_charge(self):
+        # 28.10.2026: every hour 07-16 above the bar and the battery low in
+        # the evening — the night charges to 100 for T1, nothing is sold.
         dear = SimpleNamespace(dear_day=True, target=100)
-        assert _service(6.0, floor=dear) is None
-        why = _service(6.0, floor=dear, why=True)
+        choices: dict = {}
+        assert _service(6.0, floor=dear, soc=22.0, choices=choices) is None
+        assert choices[DAY].chosen is DearDayVariant.FULL
+        why = _service(6.0, floor=dear, soc=22.0, why=True)
         assert why.startswith("drogi dzień") and "do 100%" in why
+        assert "zwykły dzień" in why
+
+    def test_a_dear_day_with_a_full_battery_runs_the_normal_sale(self):
+        # 09.11.2026 shape: the battery full from the day before, the morning
+        # far dearer than the hours the sun refills it in — sell as usual.
+        dear = SimpleNamespace(dear_day=True, target=100)
+        choices: dict = {}
+        plan = _service(6.0, floor=dear, soc=99.0, now=_at(3, 0), choices=choices)
+        assert plan is not None and plan.hour == 8
+        assert choices[DAY].chosen is DearDayVariant.NORMAL
+        assert choices[DAY].advantage_zl >= MIN_ADVANTAGE_ZL
+
+    def test_the_choice_latches_at_the_night_charge_start(self):
+        # At 04:00 the evening's empty battery chose FULL; by 06:30 the night
+        # has filled it — the sale must not start on what the night bought.
+        dear = SimpleNamespace(dear_day=True, target=100)
+        latch: dict = {}
+        assert _service(6.0, floor=dear, soc=22.0, now=_at(4, 0), latch=latch) is None
+        assert latch == {DAY: "full"}
+        assert _service(6.0, floor=dear, soc=99.0, now=_at(6, 30), latch=latch) is None
+
+    def test_before_the_night_charge_the_choice_follows_the_battery(self):
+        dear = SimpleNamespace(dear_day=True, target=100)
+        latch: dict = {}
+        assert _service(6.0, floor=dear, soc=22.0, now=_at(2, 0), latch=latch) is None
+        assert latch == {}
+        assert _service(6.0, floor=dear, soc=99.0, now=_at(3, 0), latch=latch)
+
+    def test_a_dear_day_without_the_battery_reading_keeps_the_night_charge(self):
+        dear = SimpleNamespace(dear_day=True, target=100)
+        assert _service(6.0, floor=dear, soc=None) is None
 
     def test_a_floor_on_an_ordinary_day_does_not_stop_the_sale(self):
         weak = SimpleNamespace(dear_day=False, target=90)

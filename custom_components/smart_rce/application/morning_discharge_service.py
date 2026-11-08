@@ -9,6 +9,11 @@ as soon as its inputs exist (tomorrow's prices ~14:00; for a workday also
 tomorrow's T1 reserve, from 14:00): the evening preview shows it, and the hold
 rule (DodPolicy) keeps the battery for a morning sale (user, 17.10.2026). The rule itself lives in the domain (`MorningDischargePlan.decide`,
 `lowest_soc_the_sun_fills`).
+
+A dear workday runs the plan only when `DearDayChoice` finds the normal day
+worth `MIN_ADVANTAGE_ZL` more than keeping the night's full battery (user,
+08.11.2026); the choice also tells the night charge to stop at the reserve
+(`BatterySchedule.night_floor_for`).
 """
 
 from __future__ import annotations
@@ -25,10 +30,15 @@ from ..domain.charge_start_shift import (
     lowest_soc_the_sun_fills,
     to_minutes,
 )
+from ..domain.dear_day_choice import DearDayChoice, DearDayHour, DearDayVariant
 from ..domain.pv_surplus import surplus_window_end
 from ..domain.target_soc import MIN_SOC_PERCENT
+from ..tariff.rates import VAT
+from ..tariff.table import latest_rates
+from ..tariff.zones import zone_for
 
 if TYPE_CHECKING:
+    from ..domain.battery_schedule import BatteryScheduleEntry, T1SocReserve
     from ..domain.rce import RceDayPrices
     from .ems import Ems
     from .pv_surplus_service import PvSurplusService
@@ -90,15 +100,40 @@ class MorningDischargeService:
             return None, "brak startu ładowania z cen RCE"
         if not day_off and (reserve is None or reserve.day != day):
             return None, "brak rezerwy T1 na ten dzień (liczona od 14:00 dnia przed)"
+        plan, why_none = self._normal_plan(
+            now, day, entry, prices, s0, reserve, day_off=day_off, tomorrow=tomorrow
+        )
         floor = schedule.morning_charge_floor_for(day)
-        if floor is not None and floor.dear_day and floor.target is not None:
-            # The night charge filled it for T1 on purpose; selling that at
-            # 07:00 is the grid-battery-grid round trip ADR-028 rules out.
-            return None, (
-                f"drogi dzień (wszystkie godziny 07–{surplus_window_end(day)}:00 "
-                f"od {schedule.export_threshold:.0f} brutto): nocne ładowanie do "
-                f"{floor.target}% zostaje w baterii"
-            )
+        if floor is None or not floor.dear_day or floor.target is None:
+            schedule.set_dear_day_choice(day, None)
+            return plan, why_none
+        choice = self._dear_day_choice(now, day, plan, prices, s0, reserve, tomorrow)
+        schedule.set_dear_day_choice(day, choice)
+        if choice is not None and choice.chosen is DearDayVariant.NORMAL:
+            return plan, why_none
+        # A full battery pays better (or the choice lacks an input): the night
+        # charge fills it for T1 and the sun goes to the grid all day.
+        why = (
+            f"drogi dzień (wszystkie godziny 07–{surplus_window_end(day)}:00 "
+            f"od {schedule.export_threshold:.0f} brutto): nocne ładowanie do "
+            f"{floor.target}% zostaje w baterii"
+        )
+        return None, why if choice is None else f"{why}; {choice.describe()}"
+
+    def _normal_plan(  # noqa: PLR0913, PLR0917 — the plan day's inputs, one caller
+        self,
+        now: datetime,
+        day: date,
+        entry: BatteryScheduleEntry,
+        prices: RceDayPrices,
+        s0: time,
+        reserve: T1SocReserve | None,
+        *,
+        day_off: bool,
+        tomorrow: bool,
+    ) -> tuple[MorningDischargePlan | None, str | None]:
+        """`day`'s plan as on a normal day, or None and why there is none."""
+        schedule = self._ems.battery_schedule_service
         # A day off searches from 05:00 whatever the slot's start says: the
         # slot's window is tuned for workdays.
         first = (
@@ -194,6 +229,63 @@ class MorningDischargeService:
     def _first_hour(hour: int, minute: int) -> int:
         """First whole hour inside the slot's window."""
         return hour + (1 if minute else 0)
+
+    def _dear_day_choice(  # noqa: PLR0913, PLR0917 — the plan day's inputs, one caller
+        self,
+        now: datetime,
+        day: date,
+        plan: MorningDischargePlan | None,
+        prices: RceDayPrices,
+        s0: time,
+        reserve: T1SocReserve | None,
+        tomorrow: bool,
+    ) -> DearDayChoice | None:
+        """Choose a full battery or a normal day — None while an input is missing.
+
+        Valued from the battery as it is now (the evening's level, before the
+        night charge). Latched when the night charge starts: from then on the
+        level reflects the choice itself, and a full night recomputed at 06:00
+        would sell at 07:00 what the night just bought.
+        """
+        schedule = self._ems.battery_schedule_service
+        state = self._ems.last_input_state
+        soc = state.battery_soc if state is not None else None
+        profile = self._pv_surplus.live_soft_profile(day, tomorrow=tomorrow)
+        if soc is None or profile is None or reserve is None:
+            return None
+        night = schedule.slot("today", SlotKind.CHARGE_MORNING_AUTO)
+        rates = latest_rates()
+        hours = []
+        for h in range(24):
+            zone = zone_for(datetime.combine(day, time(h), tzinfo=now.tzinfo))
+            hours.append(
+                DearDayHour(
+                    surplus_kwh=profile.total(h * 60, (h + 1) * 60),
+                    deficit_kwh=profile.deficit(h * 60, (h + 1) * 60),
+                    rce_gross=prices.gross_at(h) / 1000,
+                    buy_energy=rates.energy[zone] * VAT,
+                    buy_distribution=rates.distribution[zone] * VAT,
+                )
+            )
+        choice = DearDayChoice.decide(
+            day,
+            hours,
+            soc=soc,
+            night_start_hour=night.start.hour,
+            night_end_hour=night.end.hour,
+            reserve=reserve.value,
+            s0_hour=s0.hour,
+            t2_hour=surplus_window_end(day),
+            sale_hours=plan.hours if plan is not None else (),
+            sale_target=plan.target if plan is not None else None,
+        )
+        if now < datetime.combine(day, night.start, tzinfo=now.tzinfo):
+            return choice
+        latched = schedule.dear_day_latched(day)
+        if latched is None:
+            schedule.latch_dear_day(day, choice.chosen.value)
+            return choice
+        return choice.with_chosen(DearDayVariant(latched))
 
     def _prices_for(self, day: date) -> RceDayPrices | None:
         rce = self._ems.rce_prices.rce_prices

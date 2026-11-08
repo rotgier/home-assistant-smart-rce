@@ -303,6 +303,7 @@ class TestService:
                 sessions_today=list(sessions),
                 t1_reserve_for=lambda day: reserve,
                 morning_charge_floor_for=lambda day: floor,
+                night_floor_for=lambda day: floor,
                 morning_discharge_tomorrow=plan_tomorrow,
             ),
             charge_slots=SimpleNamespace(

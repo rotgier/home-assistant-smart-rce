@@ -17,7 +17,7 @@ Eight named slots — four per day (today / tomorrow):
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from .commands import OneShotParamsCommand, SlotCommand
 from .direction import Direction
@@ -42,6 +42,9 @@ from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
 from .session import SlotSession, UpcomingRun
 from .t1_reserve import T1SocReserve
+
+if TYPE_CHECKING:
+    from ..dear_day_choice import DearDayChoice
 
 # Default of the export bar — the planners' long-standing 750 gross.
 DEFAULT_EXPORT_THRESHOLD: Final[float] = MorningDischargePlan.EXPORT_THRESHOLD
@@ -100,6 +103,7 @@ class BatterySchedule:
         sessions: list[SlotSession] | None = None,
         evening_day: date | None = None,
         export_threshold: float | None = None,
+        dear_day_latch: tuple[date, str] | None = None,
     ) -> None:
         self._today: dict[SlotKind, BatteryScheduleEntry] = (
             dict(today)
@@ -148,6 +152,14 @@ class BatterySchedule:
         # rebuilt within a minute of a restart from the forecast and prices.
         self._morning_discharge: dict[date, MorningDischargePlan] = {}
         self._morning_charge_floor: dict[date, MorningChargeFloor] = {}
+        # A dear workday's choice between a full battery and a normal day
+        # (`DearDayChoice`), by day — in memory, rebuilt every minute.
+        self._dear_day_choice: dict[date, DearDayChoice] = {}
+        # The variant latched when the day's night charge started: from then
+        # on the battery level reflects the choice itself, so recomputing
+        # from it would flip a full night into a morning sale of what the
+        # night bought. Persisted, so a restart in the morning keeps it.
+        self._dear_day_latch = dear_day_latch
         # Today's slot engagements, for the dashboard. Persisted so a restart
         # in the middle of the day — or of a session — keeps what already ran.
         self._sessions: list[SlotSession] = list(sessions or [])
@@ -396,6 +408,55 @@ class BatterySchedule:
     def morning_charge_floor_for(self, day: date) -> MorningChargeFloor | None:
         """Return `day`'s weak-sun floor, None when there is none."""
         return self._morning_charge_floor.get(day)
+
+    def night_floor_for(self, day: date) -> MorningChargeFloor | None:
+        """Return the night charge's floor: none on a dear day run as a normal one.
+
+        A dear day's floor lifts the night to 100 (`MorningChargeFloor`);
+        when `DearDayChoice` picked the normal day, the night charges to the
+        T1 reserve alone and the morning sale runs.
+        """
+        floor = self._morning_charge_floor.get(day)
+        if floor is not None and floor.dear_day and self.dear_day_runs_normal(day):
+            return None
+        return floor
+
+    def set_dear_day_choice(self, day: date, choice: DearDayChoice | None) -> bool:
+        """Remember `day`'s dear-day choice (None: not a dear day). True if changed."""
+        if self._dear_day_choice.get(day) == choice:
+            return False
+        if choice is None:
+            del self._dear_day_choice[day]
+        else:
+            self._dear_day_choice[day] = choice
+        horizon = day - timedelta(days=1)
+        for old in [d for d in self._dear_day_choice if d < horizon]:
+            del self._dear_day_choice[old]
+        return True
+
+    def dear_day_choice_for(self, day: date) -> DearDayChoice | None:
+        return self._dear_day_choice.get(day)
+
+    def dear_day_runs_normal(self, day: date) -> bool:
+        """Tell whether `day` is a dear day run as a normal one."""
+        choice = self._dear_day_choice.get(day)
+        return choice is not None and choice.chosen == "normal"
+
+    def dear_day_latched(self, day: date) -> str | None:
+        """Return the variant latched for `day` at its night charge's start, if any."""
+        if self._dear_day_latch is None or self._dear_day_latch[0] != day:
+            return None
+        return self._dear_day_latch[1]
+
+    def latch_dear_day(self, day: date, variant: str | None) -> bool:
+        """Latch `day`'s variant (None: clear). True if changed."""
+        latch = (day, variant) if variant is not None else None
+        if latch is None and self.dear_day_latched(day) is None:
+            return False
+        if latch == self._dear_day_latch:
+            return False
+        self._dear_day_latch = latch
+        return True
 
     # ─── Read models for the dashboard ───
 
@@ -723,7 +784,7 @@ class BatterySchedule:
         # it: the fallback is already the generous guess the margin stands in for.
         if reserve is None:
             return entry
-        floor = self._morning_charge_floor.get(day)
+        floor = self.night_floor_for(day)
         target = reserve.value if floor is None else floor.lifts(reserve.value)
         return entry.with_target_soc(float(target))
 
@@ -737,10 +798,13 @@ class BatterySchedule:
         reserve = self.t1_reserve_for(day)
         if reserve is None:
             return "fallback"
-        floor = self._morning_charge_floor.get(day)
-        return (
+        floor = self.night_floor_for(day)
+        source = (
             reserve.source if floor is None else f"{reserve.source}, {floor.describe()}"
         )
+        if self.dear_day_runs_normal(day):
+            source += ", dear day run as a normal one"
+        return source
 
     def roll_day(self) -> None:
         """Shift tomorrow_* → today_*, reset tomorrow_* to disabled defaults.
@@ -788,6 +852,11 @@ class BatterySchedule:
                 self._evening_day.isoformat() if self._evening_day is not None else None
             ),
             "export_threshold": self._export_threshold,
+            "dear_day_latch": (
+                [self._dear_day_latch[0].isoformat(), self._dear_day_latch[1]]
+                if self._dear_day_latch is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -856,6 +925,13 @@ class BatterySchedule:
             except (TypeError, ValueError):
                 evening_day = None
 
+        dear_day_latch: tuple[date, str] | None = None
+        if raw := data.get("dear_day_latch"):
+            try:
+                dear_day_latch = (date.fromisoformat(raw[0]), str(raw[1]))
+            except (TypeError, ValueError, IndexError):
+                dear_day_latch = None
+
         return cls(
             today={k: _entry("today", k) for k in SlotKind},
             tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
@@ -876,4 +952,5 @@ class BatterySchedule:
                 if (raw_threshold := data.get("export_threshold")) is not None
                 else None
             ),
+            dear_day_latch=dear_day_latch,
         )

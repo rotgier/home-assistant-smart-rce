@@ -243,7 +243,7 @@ class PvChargeService:
             return self._soc_at(day, start, soc, 0, today=today)[0]
         at = datetime.combine(day, to_time(start), tzinfo=self._clock().tzinfo)
         line = float(reserve.value_at(at))
-        floor = schedule.morning_charge_floor_for(day)
+        floor = schedule.night_floor_for(day)
         if (
             floor is None
             or floor.target is None
