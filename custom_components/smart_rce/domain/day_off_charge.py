@@ -24,6 +24,17 @@ the deposit — and the zone's purchase price when negative: active energy
 from the deposit, distribution in cash. A variant replaces `S0` only when
 `MIN_ADVANTAGE_ZL` better, so noise in the forecast does not flip the start.
 
+The day ends at its own evening: what the battery still holds overnight is
+worth nothing here, so a following workday's morning sale is not counted —
+and could not be, since its prices come out only ~14:00 (the decision runs at
+06:41). Weighed with the user on 09.11.2026 and left out on purpose, not
+missed: `NONE` wins only when the day's RCE is high and flat, which usually
+means little sun, so little would be stored for that morning anyway; an
+empty battery still gets the night charge to the T1 reserve, and only the
+chance of a morning sale is lost — negligible over a year. (09.11.2026, the
+case that raised it: S0 on Sunday kept the battery full for a Monday sale at
+2355 gross.)
+
 Pure: the service hands in hourly figures, the offline replay calls the same
 `decide`. Kept free of `battery_schedule` (`live_reload` order).
 """
