@@ -27,6 +27,7 @@ from .application.morning_charge_service import MorningChargeService
 from .application.morning_discharge_service import MorningDischargeService
 from .application.pv_charge_service import PvChargeService
 from .application.pv_surplus_service import PvSurplusService
+from .application.t3_peak_service import T3PeakService
 from .application.target_soc_matrix_service import TargetSocMatrixService
 from .application.weather_table_service import WeatherTableService
 from .coordinator import SmartRceDataUpdateCoordinator
@@ -214,16 +215,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
     # Weak-sun floor of the night charge (CHARGE_MORNING_AUTO), same tick.
     morning_charge = MorningChargeService(ems, pv_surplus, dt_util.now)
 
+    # Afternoon T3 sale (DISCHARGE_T3_PEAK), same tick; latched at 13:00.
+    t3_peak = T3PeakService(ems, pv_surplus, dt_util.now)
+
     @callback
     def _refresh_morning_discharge(_now: object) -> None:
         morning_charge.refresh()
         morning_discharge.refresh()
+        t3_peak.refresh()
 
     entry.async_on_unload(
         async_track_time_change(hass, _refresh_morning_discharge, second=10)
     )
     morning_charge.refresh()
     morning_discharge.refresh()
+    t3_peak.refresh()
 
     # PV charge on the price chart: today's run recorded and the plan day's
     # forecast rebuilt every minute, after the morning plan (second 10).
@@ -405,7 +411,8 @@ def live_reload() -> None:
     # already in sys.modules, so edits inside the package would silently not
     # take effect (the same trap garden hit before it was itemised here).
     # Order: direction -> operation -> entry -> oneshot -> commands -> events
-    # -> session -> t1_reserve -> morning_charge -> morning_discharge -> schedule
+    # -> session -> t1_reserve -> morning_charge -> morning_discharge -> t3_peak
+    # -> schedule
     # -> package re-exports.
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.direction")
@@ -433,6 +440,7 @@ def live_reload() -> None:
             "custom_components.smart_rce.domain.battery_schedule.morning_discharge"
         )
     )
+    reload(import_module("custom_components.smart_rce.domain.battery_schedule.t3_peak"))
     reload(
         import_module("custom_components.smart_rce.domain.battery_schedule.schedule")
     )
@@ -501,6 +509,8 @@ def live_reload() -> None:
     reload(
         import_module("custom_components.smart_rce.application.morning_charge_service")
     )
+    # t3_peak_service builds T3PeakPlan for the aggregate — after battery_schedule.
+    reload(import_module("custom_components.smart_rce.application.t3_peak_service"))
     reload(
         import_module("custom_components.smart_rce.application.battery_charge_service")
     )

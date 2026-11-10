@@ -300,6 +300,9 @@ class SlotProfile:
     # Window and target come from today's `MorningDischargePlan`; without a plan
     # the slot stands still. The slot's own window bounds the hours searched.
     planned: bool = False
+    # Window and target come from today's `T3PeakPlan` (the afternoon T3
+    # sale); without a plan the slot stands still.
+    t3_peak: bool = False
     # Stays out on a day the workday sensor reports as off.
     workdays_only: bool = False
     # Level on a day off, when it differs from `notification_level` (None:
@@ -420,6 +423,18 @@ class SlotKind(Enum):
         default_target_soc=10.0,
     )
 
+    DISCHARGE_T3_PEAK = SlotProfile(
+        direction=Direction.DISCHARGE,
+        # Text only: 13-15 nobody needs waking.
+        notification_level=NotificationLevel.NORMAL,
+        # The hours a plan may pick (`T3PeakPlan.SELL_HOURS`).
+        default_window=(time(13, 0), time(15, 0)),
+        # Never discharges by itself: without a plan the slot stands still.
+        default_target_soc=100.0,
+        t3_peak=True,
+        workdays_only=True,
+    )
+
     CHARGE_AFTERNOON = SlotProfile(
         direction=Direction.CHARGE,
         notification_level=NotificationLevel.NORMAL,
@@ -511,6 +526,7 @@ class SlotKind(Enum):
             cls.CHARGE_AFTERNOON,
             cls.DISCHARGE_MORNING_AUTO,
             cls.DISCHARGE_MORNING,
+            cls.DISCHARGE_T3_PEAK,
             cls.DISCHARGE_EVENING_XXEARLY,
             cls.DISCHARGE_EVENING_XEARLY,
             cls.DISCHARGE_EVENING_EARLY,

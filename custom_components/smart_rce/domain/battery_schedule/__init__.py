@@ -45,6 +45,7 @@ from .operation import BatteryOperation, BatteryScheduleInput
 from .schedule import BatterySchedule
 from .session import SlotSession, UpcomingRun
 from .t1_reserve import ReserveWindow, T1SocReserve
+from .t3_peak import T3PeakEvaluation, T3PeakHour, T3PeakPlan, T3PeakVariant
 
 __all__ = [
     "BatteryOperation",
@@ -88,4 +89,8 @@ __all__ = [
     "StartOneShotCommand",
     "UpcomingRun",
     "is_day_off",
+    "T3PeakEvaluation",
+    "T3PeakHour",
+    "T3PeakPlan",
+    "T3PeakVariant",
 ]

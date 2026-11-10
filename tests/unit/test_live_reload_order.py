@@ -21,7 +21,7 @@ _ROOT = Path(__file__).resolve().parents[2] / "custom_components" / "smart_rce"
 _PACKAGE = "domain.battery_schedule"
 
 _RELOADED = re.compile(
-    r'import_module\(\s*"custom_components\.smart_rce\.([a-z_.]+)"\s*\)'
+    r'import_module\(\s*"custom_components\.smart_rce\.([a-z0-9_.]+)"\s*\)'
 )
 _IMPORTS_SLOT_KIND = re.compile(r"from [\w.]*battery_schedule(?:\.\w+)* import")
 

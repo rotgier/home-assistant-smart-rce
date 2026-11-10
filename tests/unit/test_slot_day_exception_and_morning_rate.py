@@ -24,6 +24,7 @@ class TestWorkdaysOnly:
         assert {k for k in SlotKind if k.profile.workdays_only} == {
             SlotKind.CHARGE_MORNING_AUTO,
             SlotKind.CHARGE_AFTERNOON,
+            SlotKind.DISCHARGE_T3_PEAK,
         }
 
     def test_afternoon_charge_stays_still_on_a_day_off(self):

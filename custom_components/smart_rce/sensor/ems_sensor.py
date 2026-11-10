@@ -329,6 +329,9 @@ def _morning_plan_attrs(ems: Ems) -> dict[str, Any] | None:
         attrs["dear_day"] = choice.to_dict()
     if (choice := service.dear_day_choice_tomorrow) is not None:
         attrs["tomorrow_dear_day"] = choice.to_dict()
+    # The afternoon T3 sale (DISCHARGE_T3_PEAK) — another planned discharge.
+    if (t3 := service.t3_peak_report) is not None:
+        attrs["t3_peak"] = t3
     return attrs or None
 
 

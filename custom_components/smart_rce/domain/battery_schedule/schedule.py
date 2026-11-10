@@ -12,6 +12,9 @@ Eight named slots — four per day (today / tomorrow):
 - DISCHARGE_EVENING_EARLY  (primary RCE peak; voice-call notification OK)
 - DISCHARGE_EVENING_LATE   (second evening window — a later expensive hour
                             after a hold, e.g. peak at 19 then 21-22)
+- DISCHARGE_T3_PEAK  (winter workday afternoon: sell in the T3 peak at 13 or 14
+                      and buy back before T2 — `T3PeakPlan`; on a plan day it
+                      also splits the CHARGE_AFTERNOON window around the sale)
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from .oneshot import OneShotDisengageReason, OneShotOperation, OneShotParams
 from .operation import BatteryOperation
 from .session import SlotSession, UpcomingRun
 from .t1_reserve import T1SocReserve
+from .t3_peak import T3PeakPlan
 
 if TYPE_CHECKING:
     from ..dear_day_choice import DearDayChoice
@@ -104,6 +108,7 @@ class BatterySchedule:
         evening_day: date | None = None,
         export_threshold: float | None = None,
         dear_day_latch: tuple[date, str] | None = None,
+        t3_peak_latch: T3PeakPlan | None = None,
     ) -> None:
         self._today: dict[SlotKind, BatteryScheduleEntry] = (
             dict(today)
@@ -160,6 +165,11 @@ class BatterySchedule:
         # from it would flip a full night into a morning sale of what the
         # night bought. Persisted, so a restart in the morning keeps it.
         self._dear_day_latch = dear_day_latch
+        # Today's afternoon T3 sale. Recomputed every minute until its first
+        # hour (13:00), then latched — persisted, so a restart in the middle of
+        # the afternoon keeps the sale and the split charge window.
+        self._t3_peak: dict[date, T3PeakPlan] = {}
+        self._t3_peak_latch = t3_peak_latch
         # Today's slot engagements, for the dashboard. Persisted so a restart
         # in the middle of the day — or of a session — keeps what already ran.
         self._sessions: list[SlotSession] = list(sessions or [])
@@ -458,6 +468,34 @@ class BatterySchedule:
         self._dear_day_latch = latch
         return True
 
+    def set_t3_peak(self, day: date, plan: T3PeakPlan | None) -> bool:
+        """Remember `day`'s afternoon T3 sale (None: none). True if changed."""
+        if self._t3_peak.get(day) == plan:
+            return False
+        if plan is None:
+            del self._t3_peak[day]
+        else:
+            self._t3_peak[day] = plan
+        for old in [d for d in self._t3_peak if d < day - timedelta(days=1)]:
+            del self._t3_peak[old]
+        return True
+
+    def t3_peak_for(self, day: date) -> T3PeakPlan | None:
+        """Return `day`'s afternoon T3 sale: the latched one first."""
+        if self._t3_peak_latch is not None and self._t3_peak_latch.day == day:
+            return self._t3_peak_latch
+        return self._t3_peak.get(day)
+
+    def t3_peak_latched(self, day: date) -> bool:
+        return self._t3_peak_latch is not None and self._t3_peak_latch.day == day
+
+    def latch_t3_peak(self, plan: T3PeakPlan | None) -> bool:
+        """Freeze today's T3 sale at its first hour (None: clear). True if changed."""
+        if plan == self._t3_peak_latch:
+            return False
+        self._t3_peak_latch = plan
+        return True
+
     # ─── Read models for the dashboard ───
 
     def sessions_on(self, day: date) -> list[SlotSession]:
@@ -661,7 +699,7 @@ class BatterySchedule:
 
         # 3. Already engaging? Stick until target_reached / window_ended / disabled.
         if self._currently_engaging is not None:
-            entry = self._effective_entry(self._currently_engaging, now.date())
+            entry = self._effective_entry(self._currently_engaging, now.date(), now)
             disengage_reason = entry.disengage_reason(now, current_soc)
             if disengage_reason is None:
                 # Stay engaged — sticky hysteresis trumps DELAYED_TO_END flicker.
@@ -750,14 +788,16 @@ class BatterySchedule:
         self, now: datetime, current_soc: float, is_workday: bool | None
     ) -> BatteryScheduleEntry | None:
         candidates = [
-            self._effective_entry(k, now.date())
+            self._effective_entry(k, now.date(), now)
             for k in SlotKind.by_precedence()
             if k.profile.runs_on(now.date(), is_workday)
         ]
         engaging = [e for e in candidates if e.should_apply_now(now, current_soc)]
         return engaging[-1] if engaging else None
 
-    def _effective_entry(self, kind: SlotKind, day: date) -> BatteryScheduleEntry:
+    def _effective_entry(
+        self, kind: SlotKind, day: date, now: datetime | None = None
+    ) -> BatteryScheduleEntry:
         """Today's entry as the orchestrator runs it.
 
         Auto-target kinds swap in the remembered T1 reserve for `day`;
@@ -777,6 +817,21 @@ class BatterySchedule:
             if plan is None or not entry.enabled:
                 return entry.with_enabled(False)
             return entry.with_plan(plan.start, plan.end, float(plan.target))
+        if kind.profile.t3_peak:
+            t3 = self.t3_peak_for(day)
+            if t3 is None or not entry.enabled:
+                return entry.with_enabled(False)
+            # IMMEDIATE: the target is out of reach within the hour anyway, and
+            # the hour settles as a whole.
+            return (
+                entry.with_window(t3.start, t3.end)
+                .with_target_soc(float(t3.target))
+                .with_behavior(SlotBehavior.IMMEDIATE)
+            )
+        if kind is SlotKind.CHARGE_AFTERNOON and entry.enabled:
+            split = self._split_afternoon_charge(entry, day, now)
+            if split is not None:
+                return split
         if not kind.profile.auto_target:
             return entry
         reserve = self.t1_reserve_for(day)
@@ -788,8 +843,36 @@ class BatterySchedule:
         target = reserve.value if floor is None else floor.lifts(reserve.value)
         return entry.with_target_soc(float(target))
 
+    def _split_afternoon_charge(
+        self, entry: BatteryScheduleEntry, day: date, now: datetime | None
+    ) -> BatteryScheduleEntry | None:
+        """CHARGE_AFTERNOON around a T3 sale: full power before it and after it.
+
+        The windows must not overlap the sale: an engaged slot sticks until its
+        window ends, whatever outranks it. Before the 14:00 sale the charge runs
+        from the window's start until the sale; afterwards (and in read models,
+        `now` None) from the hour after the sale until the window's end.
+        """
+        t3 = self.t3_peak_for(day)
+        sale = self._today[SlotKind.DISCHARGE_T3_PEAK]
+        if t3 is None or not sale.enabled:
+            return None
+        full = entry.with_target_soc(100.0).with_behavior(SlotBehavior.IMMEDIATE)
+        if t3.pre_charge and now is not None and now.time() < t3.start:
+            return full.with_window(entry.start, t3.start)
+        if t3.charge_from >= entry.end:
+            return full.with_enabled(False)
+        return full.with_window(t3.charge_from, entry.end)
+
     def _target_source(self, kind: SlotKind, day: date) -> str | None:
         """Where an auto-target slot's target came from; None for fixed slots."""
+        if kind.profile.t3_peak or kind is SlotKind.CHARGE_AFTERNOON:
+            t3 = self.t3_peak_for(day)
+            if t3 is not None and self._today[SlotKind.DISCHARGE_T3_PEAK].enabled:
+                return t3.describe()
+            if kind.profile.t3_peak:
+                return "no plan"
+            return None
         if kind.profile.planned:
             plan = self.morning_discharge_for(day)
             return plan.describe() if plan is not None else "no plan"
@@ -855,6 +938,11 @@ class BatterySchedule:
             "dear_day_latch": (
                 [self._dear_day_latch[0].isoformat(), self._dear_day_latch[1]]
                 if self._dear_day_latch is not None
+                else None
+            ),
+            "t3_peak_latch": (
+                self._t3_peak_latch.to_dict()
+                if self._t3_peak_latch is not None
                 else None
             ),
         }
@@ -932,6 +1020,13 @@ class BatterySchedule:
             except (TypeError, ValueError, IndexError):
                 dear_day_latch = None
 
+        t3_peak_latch: T3PeakPlan | None = None
+        if raw := data.get("t3_peak_latch"):
+            try:
+                t3_peak_latch = T3PeakPlan.from_dict(raw)
+            except (TypeError, ValueError, KeyError):
+                t3_peak_latch = None
+
         return cls(
             today={k: _entry("today", k) for k in SlotKind},
             tomorrow={k: _entry("tomorrow", k) for k in SlotKind},
@@ -953,4 +1048,5 @@ class BatterySchedule:
                 else None
             ),
             dear_day_latch=dear_day_latch,
+            t3_peak_latch=t3_peak_latch,
         )

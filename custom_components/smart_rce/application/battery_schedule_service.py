@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.core import callback
 
@@ -75,6 +75,7 @@ class BatteryScheduleUpdateResult:
 
 
 if TYPE_CHECKING:
+    from ..domain.battery_schedule import T3PeakEvaluation, T3PeakPlan
     from ..domain.dear_day_choice import DearDayChoice
     from ..domain.target_soc import TargetSoc
     from ..domain.target_soc_catalog import TargetSocCatalog
@@ -134,6 +135,7 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         self._t1_reserve_extrap: T1SocReserve | None = None
         # Why a day has no automatic morning discharge plan (dashboard only).
         self._morning_discharge_why_none: dict[date, str] = {}
+        self._t3_peak_report: dict[str, Any] | None = None
 
     @callback
     def update(self, input: BatteryScheduleInput) -> BatteryScheduleUpdateResult:
@@ -385,6 +387,52 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
     def dear_day_choice_tomorrow(self) -> DearDayChoice | None:
         """Tomorrow's dear-day choice, None on another day (or before 14:00)."""
         return self.dear_day_choice_for(self._clock().date() + timedelta(days=1))
+
+    @callback
+    def set_t3_peak(self, day: date, plan: T3PeakPlan | None) -> None:
+        """Take `day`'s afternoon T3 sale (in memory only)."""
+        if self._repo.schedule.set_t3_peak(day, plan):
+            self._notify_all()
+
+    def t3_peak_for(self, day: date) -> T3PeakPlan | None:
+        return self._repo.schedule.t3_peak_for(day)
+
+    @callback
+    def set_t3_peak_report(
+        self, day: date, evaluation: T3PeakEvaluation | None, why: str | None
+    ) -> None:
+        """Take what today's T3 evaluation found, for the dashboard."""
+        report: dict[str, Any] = {"day": day.isoformat()}
+        if evaluation is not None:
+            report |= evaluation.to_dict()
+        if why is not None:
+            report["why_none"] = why
+        if report != self._t3_peak_report:
+            self._t3_peak_report = report
+            self._notify_all()
+
+    @property
+    def t3_peak_report(self) -> dict[str, Any] | None:
+        """Today's T3 evaluation and plan (the latched one once 13:00 passed)."""
+        report = self._t3_peak_report
+        if report is None or report["day"] != self._clock().date().isoformat():
+            return None
+        plan = self._repo.schedule.t3_peak_for(self._clock().date())
+        latched = self._repo.schedule.t3_peak_latched(self._clock().date())
+        return report | {
+            "plan": plan.to_dict() if plan is not None else None,
+            "latched": latched,
+        }
+
+    def t3_peak_latched(self, day: date) -> bool:
+        return self._repo.schedule.t3_peak_latched(day)
+
+    @callback
+    def latch_t3_peak(self, plan: T3PeakPlan | None) -> None:
+        """Freeze today's T3 sale at its first hour (persisted)."""
+        if self._repo.schedule.latch_t3_peak(plan):
+            self._repo.save_if_changed()
+            self._notify_all()
 
     def dear_day_latched(self, day: date) -> str | None:
         return self._repo.schedule.dear_day_latched(day)
