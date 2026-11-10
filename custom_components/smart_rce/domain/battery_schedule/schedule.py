@@ -859,6 +859,9 @@ class BatterySchedule:
             return None
         full = entry.with_target_soc(100.0).with_behavior(SlotBehavior.IMMEDIATE)
         if t3.pre_charge and now is not None and now.time() < t3.start:
+            if entry.start >= t3.start:
+                # Started by hand at or after the sale: no room before it.
+                return full.with_enabled(False)
             return full.with_window(entry.start, t3.start)
         if t3.charge_from >= entry.end:
             return full.with_enabled(False)

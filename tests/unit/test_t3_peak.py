@@ -250,3 +250,12 @@ class TestService:
         sch.set_t3_peak(DAY, None)
         _service(_at(9, 0), sch, workday=False)
         assert sch.t3_peak_for(DAY) is None
+
+
+def test_a_hand_set_late_charge_start_does_not_break_the_schedule():
+    sch = _schedule(_plan(14))
+    late = sch._today[SlotKind.CHARGE_AFTERNOON].with_start(time(14, 30))
+    sch._today[SlotKind.CHARGE_AFTERNOON] = late
+    entry = sch._effective_entry(SlotKind.CHARGE_AFTERNOON, DAY, _at(13, 0))
+    assert not entry.enabled
+    assert _engaged(sch, _at(14, 0), 99.0) is SlotKind.DISCHARGE_T3_PEAK

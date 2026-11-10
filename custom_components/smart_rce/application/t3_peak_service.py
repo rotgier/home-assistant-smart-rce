@@ -56,6 +56,7 @@ class T3PeakService:
         today = now.date()
         schedule = self._ems.battery_schedule_service
         if schedule.t3_peak_latched(today):
+            schedule.set_t3_peak_report(today, None, None)
             return
         if now.time() >= _LATEST_START:
             # No plan by 13:15 (or HA was down longer): the sale's hour is gone.
