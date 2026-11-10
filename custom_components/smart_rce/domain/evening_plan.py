@@ -59,8 +59,10 @@ class EveningPlan:
     # to late winter 08:00 still produces next to nothing.
     MORNING_LOOKAHEAD: Final[range] = range(5, 9)
 
-    # Evening hours considered on days with no expensive zone at all.
-    NON_WORKDAY_EVENING: Final[range] = range(16, 23)
+    # Hours a day off may sell in: no expensive zone, so the pair follows the
+    # price from 11:00 and ends by 21:00 at the latest (user's decision
+    # 10.11.2026: 11.11 peaked at 15-16, out of reach of the old 16-23).
+    NON_WORKDAY_SALE_HOURS: Final[range] = range(11, 21)
 
     # Workday rungs by the T2 hours left after the hour (0 = the last one):
     # (slot, SoC to stand on when the hour closes). The last hour empties to
@@ -256,7 +258,7 @@ class EveningPlan:
             return cls._workday_rungs(day, prices, max_morning_price, export_threshold)
         hours = cls._best_off_peak_pair(
             prices.hours_clearing(
-                cls.NON_WORKDAY_EVENING,
+                cls.NON_WORKDAY_SALE_HOURS,
                 at_least=export_threshold,
                 above=max_morning_price,
             ),

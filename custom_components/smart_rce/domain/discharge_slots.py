@@ -64,7 +64,7 @@ def max_upcoming_peak(rce_data: RcePrices, now: datetime) -> UpcomingPeak | None
       afternoon-static, evening discharge etc.
 
       Wieczór zaczyna się o 16:00, nie o 19:00: zimowe T2 rusza o 16:00,
-      a `EveningPlan` w dni wolne i tak przeszukuje 16-23. Okno jest tu
+      a `EveningPlan` w dni wolne przeszukuje 11-20. Okno jest tu
       szersze niż strefa taryfowa i to jest w porządku — pytamy o cenę,
       nie o strefę, a wynik i tak przechodzi przez `max()`.
 

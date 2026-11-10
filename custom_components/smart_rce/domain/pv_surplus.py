@@ -78,7 +78,8 @@ def surplus_window_end(day: date) -> int:
     """First hour of the evening the battery must be full for (start of T2).
 
     Days off have no T2, but the evening still needs the battery (the evening
-    plan sells in the dearest hours from 16:00), so the same seasonal hour holds.
+    plan sells in the dearest pair of 11-20, usually the afternoon), so the same
+    seasonal hour holds.
     """
     return evening_peak(day).start
 

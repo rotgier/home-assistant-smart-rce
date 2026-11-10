@@ -34,8 +34,9 @@ if TYPE_CHECKING:
 
 DECIDE_AT: Final = time(6, 41)
 VALIDATE_AT: Final = time(7, 41)
-# The fallback evening when no day-off plan is written: the dearest of 16-22.
-_FALLBACK_EVENING: Final = range(16, 23)
+# The fallback when no day-off plan is written: the dearest of the hours a day
+# off may sell in (`EveningPlan.NON_WORKDAY_SALE_HOURS`, 11-20).
+_FALLBACK_EVENING: Final = range(11, 21)
 
 
 @dataclass(frozen=True)
@@ -180,7 +181,7 @@ class DayOffChargeService:
         return out
 
     def _discharge_hours(self, today: date, hours: list[DayOffHour]) -> tuple[int, ...]:
-        """Hours the evening plan sells in; without one the dearest of 16-22."""
+        """Hours the evening plan sells in; without one the dearest of 11-20."""
         windows = self._ems.battery_schedule_service.evening_windows_on(today)
         planned = tuple(
             hour

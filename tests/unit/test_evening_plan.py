@@ -302,10 +302,10 @@ def test_a_weekend_considers_the_whole_evening_and_always_empties():
 
 
 def test_a_day_off_takes_the_best_adjacent_pair():
-    # 20 and 21 together beat any other neighbouring pair, so that is the
+    # 19 and 20 together beat any other neighbouring pair, so that is the
     # window — one slot, nothing held back.
     proposal = _propose(
-        _day(WEEKEND, h17=RICH, h18=RICH, h20=_HUGE, h21=_MID),
+        _day(WEEKEND, h17=RICH, h18=RICH, h19=_MID, h20=_HUGE),
         _morning(CHEAP_MORNING),
         day=WEEKEND,
         is_workday=False,
@@ -313,8 +313,62 @@ def test_a_day_off_takes_the_best_adjacent_pair():
 
     assert len(proposal.windows) == 1
     window = proposal.windows[0]
-    assert (window.start, window.end) == (time(20, 0), time(22, 0))
+    assert (window.start, window.end) == (time(19, 0), time(21, 0))
     assert window.target_soc == FULL_TARGET_SOC
+
+
+def test_a_day_off_sells_in_the_afternoon_peak_11_11_2026():
+    """The holiday peaked at 15-16 (2208/2199 gross), before the old 16-23 scan.
+
+    User's decision 10.11.2026: a day off searches 11-20, so the pair is 15-16
+    and empties at once (the first hour is the dearer one).
+    """
+    gross = {
+        11: 1243.0,
+        12: 1509.0,
+        13: 1963.0,
+        14: 2123.0,
+        15: 2208.0,
+        16: 2199.0,
+        17: 2122.0,
+        18: 1965.0,
+        19: 1865.0,
+        20: 1768.0,
+        21: 1512.0,
+        22: 1341.0,
+    }
+    proposal = _propose(
+        _gross(WEEKEND, gross), _morning(CHEAP_MORNING), day=WEEKEND, is_workday=False
+    )
+
+    window = proposal.windows[0]
+    assert (window.start, window.end) == (time(15, 0), time(17, 0))
+    assert window.behavior is IMMEDIATE
+
+
+def test_a_day_off_sells_by_21_00_at_the_latest():
+    # 21:00 and later are out of the scan however much they pay.
+    proposal = _propose(
+        _day(WEEKEND, h17=RICH, h18=RICH, h21=_HUGE, h22=_HUGE),
+        _morning(CHEAP_MORNING),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    window = proposal.windows[0]
+    assert (window.start, window.end) == (time(17, 0), time(19, 0))
+
+
+def test_a_day_off_does_not_sell_before_11_00():
+    proposal = _propose(
+        _day(WEEKEND, h9=_HUGE, h10=_HUGE, h17=RICH, h18=RICH),
+        _morning(CHEAP_MORNING),
+        day=WEEKEND,
+        is_workday=False,
+    )
+
+    window = proposal.windows[0]
+    assert (window.start, window.end) == (time(17, 0), time(19, 0))
 
 
 def test_a_day_off_uses_the_early_slot_alone():
