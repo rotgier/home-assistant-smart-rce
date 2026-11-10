@@ -294,6 +294,12 @@ def day_card(score: DayScore) -> dict[str, Any]:
                 else None
             ),
             "grid_topup_kwh": score.outcome.grid_topup_kwh,
+            # The afternoon T3 sale: the afternoon grid charge is arbitrage.
+            "t3_peak": (
+                score.outcome.t3_peak.to_dict()
+                if score.outcome.t3_peak is not None
+                else None
+            ),
         },
     }
 
@@ -349,6 +355,11 @@ def _full_charge_summary(score: DayScore) -> dict[str, Any] | None:
         ),
         "model": hm(fc.model),
         "model_error_min": fc.model_error_min,
+        # A T3 sale day not full from PV before the arbitrage began: the sale
+        # (and the grid charge around it) decided the SoC, no actual to compare.
+        "actual_t3": (
+            score.outcome.t3_peak is not None and score.outcome.pv_full_at is None
+        ),
         "hours": [f"{h:02d}" for h in fc.hours],
         "optimal_hours": [f"{h:02d}" for h in fc.optimal_hours],
         "hours_changed": fc.hours_changed,

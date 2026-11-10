@@ -33,6 +33,7 @@ from ..domain.consumption_profiles import PREV_DAYS_COUNT
 from ..domain.energy_day import EnergyDay
 from ..domain.forecast_score.full_charge_score import PlanReading
 from ..domain.forecast_score.moment_weather import MomentForecast, WeatherInputs
+from ..domain.forecast_score.production_outcome import T3PeakSale
 from ..domain.forecast_score.reserve_score import RESERVE_MOMENTS
 from ..domain.pv_forecast.forecast_snapshot import ForecastSnapshot
 from ..domain.pv_surplus import DayType
@@ -245,6 +246,33 @@ class ForecastScoreSources:
         ]
         return mine[-1] if mine else None
 
+    async def t3_peak(self, day: date) -> T3PeakSale | None:
+        """Return the afternoon T3 sale latched for `day` (None: none, or unknown).
+
+        Today live from the schedule; another day from the plan sensor's
+        `t3_peak` attribute, a latched plan whose `day` is `day`. The plan's
+        state is `unknown` from the charge start on — before the 13:00 latch —
+        so those rows count here.
+        """
+        schedule = self._ems.battery_schedule_service
+        if day == dt_util.now().date():
+            plan = schedule.t3_peak_for(day) if schedule.t3_peak_latched(day) else None
+            return (
+                T3PeakSale(plan.sell_hour, plan.target, plan.pre_charge, plan.gain_zl)
+                if plan is not None
+                else None
+            )
+        states = await self._history(day, PLAN_ENTITY, attributes=True, unknown=True)
+        latched = [
+            sale
+            for s in states
+            if isinstance(report := s.attributes.get("t3_peak"), dict)
+            and report.get("day") == day.isoformat()
+            and report.get("latched")
+            and isinstance(sale := report.get("plan"), dict)
+        ]
+        return T3PeakSale.from_dict(latched[-1]) if latched else None
+
     async def recorder_weather(self, day: date) -> WeatherInputs | None:
         """Read the day's observed weather and the forecast at each moment.
 
@@ -300,9 +328,17 @@ class ForecastScoreSources:
         return spans
 
     async def _history(
-        self, day: date, entity_id: str, *, attributes: bool = False
+        self,
+        day: date,
+        entity_id: str,
+        *,
+        attributes: bool = False,
+        unknown: bool = False,
     ) -> list[State]:
         """Return the entity's states over `day` (unknown/unavailable left out).
+
+        With `unknown`, `unknown` states stay in — for attributes a sensor
+        keeps while it has no value.
 
         With `attributes`, every change of them too: a sensor whose value
         stays put while its attributes move (the morning discharge plan's
@@ -335,11 +371,8 @@ class ForecastScoreSources:
                 entity_id,
                 True,
             )
-        return [
-            s
-            for s in result.get(entity_id, [])
-            if s.state not in {"unknown", "unavailable"}
-        ]
+        dropped = {"unavailable"} if unknown else {"unknown", "unavailable"}
+        return [s for s in result.get(entity_id, []) if s.state not in dropped]
 
     async def _history_between(
         self, start: datetime, end: datetime, entity_id: str

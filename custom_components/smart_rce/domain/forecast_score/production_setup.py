@@ -293,6 +293,30 @@ SETUPS: Final[tuple[ProductionSetup, ...]] = (
         dear_day_mode=True,
         dear_day_choice=True,
     ),
+    # 6adb47d + aca2233 (10.11 restart 09:22, slot enabled 09:24:01,
+    # `forecast-improvements-6`): a winter workday may sell in the afternoon T3
+    # peak (DISCHARGE_T3_PEAK). The scoreboard follows the day's latched sale
+    # (`ProductionOutcome.t3_peak`), not this row — 10.11 runs on the row before
+    # at 06:11; the row is the label and the history.
+    ProductionSetup(
+        datetime(2026, 11, 10, 9, 24, 1, tzinfo=_WARSAW),
+        "Live Soft 0,4 + p60, bufor 10 + margines 15 / min(10, max(Live, Blend) − Soft)"
+        " / min(5, max(Live, Blend) − Soft), Blend od 2 przedziałów + kredyt godzinowy"
+        " + tańszy późniejszy start (także po S0) + drogi dzień: pełna bateria albo"
+        " zwykły dzień wg symulacji + dzień wolny: ładowanie z PV wg symulacji dnia"
+        " + sprzedaż w szczycie T3 (13 albo 14) i odkup przed T2",
+        PvForecast.LIVE_SOFT.key,
+        ConsumptionModel.P60,
+        ConsumptionModel.P60,
+        10,
+        "Live Soft 0,4",
+        "p60",
+        margin=MarginRule.BLEND_CAPS,
+        hour_credit=True,
+        start_rule=StartRule.CHEAPER_LATER,
+        dear_day_mode=True,
+        dear_day_choice=True,
+    ),
 )
 # Today's setup — the one the variant ranking scores against.
 CURRENT: Final = SETUPS[-1]

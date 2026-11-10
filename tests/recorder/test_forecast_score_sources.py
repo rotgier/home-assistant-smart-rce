@@ -186,3 +186,74 @@ async def test_the_dear_day_choice_is_the_last_one_for_the_day(
     await async_wait_recording_done(hass)
 
     assert await _sources(hass).dear_day_choice(DAY) == "normal"
+
+
+async def test_the_t3_sale_is_the_latched_plan_even_while_the_plan_is_unknown(
+    recorder_mock: Any, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The plan sensor is `unknown` from the charge start; the 13:00 latch comes later.
+
+    10.11.2026: the plan went `unknown` at the charge start (~10:00), the sale
+    latched at 13:00 — a reader that drops `unknown` rows never sees it.
+    """
+    await hass.config.async_set_time_zone("Europe/Warsaw")
+    plan = {"day": "2026-10-19", "sell_hour": 14, "target": 40, "pre_charge": True}
+    steps = [
+        (
+            datetime(2026, 10, 19, 9, 0, tzinfo=TZ),
+            "20",
+            {"t3_peak": {"day": "2026-10-19", "plan": plan, "latched": False}},
+        ),
+        (
+            datetime(2026, 10, 19, 10, 0, tzinfo=TZ),
+            "unknown",
+            {"t3_peak": {"day": "2026-10-19", "plan": plan, "latched": False}},
+        ),
+        (
+            datetime(2026, 10, 19, 13, 0, 5, tzinfo=TZ),
+            "unknown",
+            {
+                "t3_peak": {
+                    "day": "2026-10-19",
+                    "plan": plan | {"gain_zl": 12.09},
+                    "latched": True,
+                }
+            },
+        ),
+    ]
+    for moment, state, attrs in steps:
+        freezer.move_to(moment)
+        hass.states.async_set(PLAN_ENTITY, state, attrs)
+        await hass.async_block_till_done()
+    freezer.move_to(datetime(2026, 10, 20, 9, 0, tzinfo=TZ))
+    await async_wait_recording_done(hass)
+
+    sources = _sources(hass)
+    sale = await sources.t3_peak(DAY)
+    assert sale is not None
+    assert (sale.sell_hour, sale.target, sale.pre_charge, sale.gain_zl) == (
+        14,
+        40,
+        True,
+        12.09,
+    )
+    assert await sources.t3_peak(date(2026, 10, 18)) is None
+
+
+async def test_todays_t3_sale_is_read_live_once_latched(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Today the schedule itself answers; an unlatched plan is no sale yet."""
+    await hass.config.async_set_time_zone("Europe/Warsaw")
+    freezer.move_to(datetime(2026, 10, 19, 14, 0, tzinfo=TZ))
+    sources = _sources(hass)
+    schedule = sources._ems.battery_schedule_service  # noqa: SLF001 — the mock
+    schedule.t3_peak_for.return_value = MagicMock(
+        sell_hour=13, target=10, pre_charge=False, gain_zl=11.66
+    )
+    schedule.t3_peak_latched.return_value = False
+    assert await sources.t3_peak(DAY) is None
+    schedule.t3_peak_latched.return_value = True
+    sale = await sources.t3_peak(DAY)
+    assert sale is not None
+    assert (sale.sell_hour, sale.pre_charge, sale.begins) == (13, False, 13 * 60)

@@ -38,7 +38,12 @@ from ..pv_surplus import DayType, minute_of_day, surplus_window_end
 from ..rce import RceDayPrices
 from .day_type import DayTypeFigures, day_type_figures
 from .full_charge_score import FullChargeScore, PlanReading, score_full_charge
-from .production_outcome import ChargeStartFact, ProductionOutcome, production_outcome
+from .production_outcome import (
+    ChargeStartFact,
+    ProductionOutcome,
+    T3PeakSale,
+    production_outcome,
+)
 from .production_setup import ProductionSetup, setup_on, start_setup_on
 from .reserve_score import (
     DISCHARGE_LINE_MOMENT,
@@ -150,6 +155,8 @@ class DayInputs:
     day_off_choice: str | None = None
     # The dear day's variant (`full`, `normal`); None = no choice that day.
     dear_day_choice: str | None = None
+    # The afternoon T3 sale production latched that day; None = none.
+    t3_peak: T3PeakSale | None = None
 
 
 def score_day(
@@ -213,14 +220,17 @@ def score_day(
             if not diagnostics_settled:
                 pending.append(Pending.START_DIAGNOSTICS)
     main = consumed(inputs.snapshots, datetime.combine(day, MAIN_MOMENT.at, actuals.tz))
-    outcome = production_outcome(actuals, inputs.start, inputs.afternoon_charge)
+    outcome = production_outcome(
+        actuals, inputs.start, inputs.afternoon_charge, inputs.t3_peak
+    )
     full_charge = (
         score_full_charge(
             actuals,
             inputs.morning_plan,
             inputs.prices,
             inputs.s0,
-            outcome.full_at,
+            # A full battery the T3 arbitrage's grid charge made is no PV one.
+            outcome.pv_full_at,
             inputs.start.start,
             # The surplus production charged on: p60 of the same type's days.
             percentile_by_key(inputs.earlier_same_type.values())

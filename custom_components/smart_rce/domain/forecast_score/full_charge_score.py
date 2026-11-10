@@ -13,6 +13,8 @@ the other decisions:
 - actual: the first slot the SoC really reached full — 99% on the BMS
   (`FULL_READ_SOC`, from 22.10.2026; it can sit there for hours before showing
   100) — also depends on how the morning really went (discharge depth, the start);
+  on an afternoon T3 sale day only a full charge before the arbitrage began
+  counts (`ProductionOutcome.pv_full_at`): later the grid and the sale decide;
 - model: the same `full_charge_minute` on what really came, from the ACTUAL
   charge start with the SoC the battery really had then, to the same 99% —
   against `actual` it isolates the charging model (charge curve, pace of

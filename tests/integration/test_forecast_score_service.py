@@ -25,6 +25,9 @@ from custom_components.smart_rce.domain.forecast_score.moment_weather import (
     MomentForecast,
     WeatherInputs,
 )
+from custom_components.smart_rce.domain.forecast_score.production_outcome import (
+    T3PeakSale,
+)
 from custom_components.smart_rce.domain.pv_forecast.forecast_snapshot import (
     ForecastSnapshot,
 )
@@ -54,6 +57,7 @@ class _Sources:
         self.prices_available = True
         self.soc: float | None = 50.0
         self.kept_weather: dict[date, WeatherInputs] = {}
+        self.t3_sales: dict[date, T3PeakSale] = {}
 
     async def snapshots(self, day: date) -> list[ForecastSnapshot]:
         return [ForecastSnapshot.from_dict(r) for r in self._forecast.read_day(day)]
@@ -111,6 +115,9 @@ class _Sources:
 
     async def dear_day_choice(self, _day: date) -> str | None:
         return None
+
+    async def t3_peak(self, day: date) -> T3PeakSale | None:
+        return self.t3_sales.get(day)
 
     async def archived_weather(self, day: date) -> WeatherInputs | None:
         return self.kept_weather.get(day)
@@ -219,6 +226,32 @@ async def test_check_replaces_a_final_that_moved(
     assert latest.replaced
     # The check reused the start 21:06 stored.
     assert latest.outcome.start.start == 495
+
+
+async def test_a_t3_sale_day_keeps_its_sale_once_the_recorder_forgot_it(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """The sale goes into the record; a later rescore takes it from the final."""
+    sources = _Sources()
+    sources.t3_sales[DAY] = T3PeakSale(14, 40, pre_charge=True, gain_zl=12.09)
+    service, archive = _service(
+        hass, tmp_path, datetime(2026, 10, 14, 21, 6, tzinfo=TZ), sources
+    )
+    await service.async_final()
+    score = await service.async_day(DAY)
+    assert score is not None
+    assert score.outcome.t3_peak == sources.t3_sales[DAY]
+    assert score.outcome.grid_topup_kwh is None
+    assert [score] == PUBLISHED
+
+    sources.t3_sales.clear()  # purged from the recorder
+    service._clock = lambda: datetime(2026, 10, 15, 0, 20, tzinfo=TZ)  # noqa: SLF001
+    service._cache.clear()  # noqa: SLF001
+    await service.async_check()
+    latest = await service.async_day(DAY)
+    assert latest is not None
+    assert latest.outcome.t3_peak == T3PeakSale(14, 40, True, 12.09)
+    assert len(archive.records(DAY)) == 1  # nothing moved
 
 
 async def test_catch_up_scores_missed_days_and_rankings_read_finals(

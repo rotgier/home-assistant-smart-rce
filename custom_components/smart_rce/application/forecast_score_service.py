@@ -48,6 +48,7 @@ from ..domain.forecast_score.moment_chart import moment_charts
 from ..domain.forecast_score.production_outcome import (
     FULL_READ_SOC,
     ChargeStartFact,
+    T3PeakSale,
     start_from_soc_rise,
     struck_start,
 )
@@ -493,6 +494,7 @@ class ForecastScoreService:
                 await self._sources.dear_day_choice(day)
                 or await self._kept(day, "dear_day_choice")
             ),
+            t3_peak=await self._sources.t3_peak(day) or await self._kept_t3_peak(day),
         )
 
     async def _start_fact(
@@ -527,6 +529,14 @@ class ForecastScoreService:
         for record in reversed(_KeptFacts.finals(records)):
             if (choice := record.get(field)) is not None:
                 return str(choice)
+        return None
+
+    async def _kept_t3_peak(self, day: date) -> T3PeakSale | None:
+        """Return the T3 sale kept by the day's latest final (recorder purged)."""
+        records = await self._hass.async_add_executor_job(self._archive.records, day)
+        for record in reversed(_KeptFacts.finals(records)):
+            if (sale := (record.get("outcome") or {}).get("t3_peak")) is not None:
+                return T3PeakSale.from_dict(sale)
         return None
 
     async def _kept_flags(self, day: date) -> tuple[bool | None, bool | None]:

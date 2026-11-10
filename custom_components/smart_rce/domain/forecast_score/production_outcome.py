@@ -5,6 +5,12 @@ panel says what happened: when charging really started, when (if) the battery
 got full, how much the afternoon grid charge had to top up, what went out in
 the morning and what came in during T1.
 
+A winter workday may sell in the afternoon T3 peak (DISCHARGE_T3_PEAK, from
+10.11.2026): charge from the grid at 13:00 and sell at 14:00, or sell at 13:00
+and buy back after. The afternoon grid charge is then arbitrage, not a PV
+shortfall — no top-up figure — and a full battery from 13:00 on came from the
+grid, so it is no PV full charge.
+
 Grid flows are net-billing hourly balances (sum of the hour's 5-minute net,
 then the sign): a 5-minute import inside an hour that exports overall is no
 import.
@@ -39,11 +45,13 @@ def production_outcome(
     actuals: DayActuals,
     start: ChargeStartFact,
     afternoon_charge: Sequence[tuple[int, int]] | None,
+    t3_peak: T3PeakSale | None = None,
 ) -> ProductionOutcome:
     """Facts of the day.
 
     `afternoon_charge`: CHARGE_AFTERNOON slot spans (minutes of the day), None
     when unknown (history gone) — the top-up is then unknown, not zero.
+    `t3_peak`: the afternoon T3 sale production latched that day (None: none).
     """
     full = actuals.first_soc_at_least(FULL_SOC)
     t1_soc = actuals.soc_between(time(7, 0), time(13, 0))
@@ -59,6 +67,7 @@ def production_outcome(
         t1_import_kwh=_hourly_sum(actuals, T1_HOURS, import_=True),
         morning_export_kwh=_hourly_sum(actuals, MORNING_EXPORT_HOURS, import_=False),
         topups=topups,
+        t3_peak=t3_peak,
     )
 
 
@@ -264,6 +273,41 @@ class GridTopup:
 
 
 @dataclass(frozen=True)
+class T3PeakSale:
+    """The afternoon T3 sale production latched for the day (`T3PeakPlan`).
+
+    `pre_charge`: the 14:00 variant charges from the grid 13:00-14:00 first.
+    """
+
+    sell_hour: int
+    target: int | None = None
+    pre_charge: bool = False
+    gain_zl: float | None = None
+
+    @property
+    def begins(self) -> int:
+        """Minute the grid arbitrage starts: the pre-charge hour, else the sale."""
+        return (self.sell_hour - 1 if self.pre_charge else self.sell_hour) * 60
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sell_hour": self.sell_hour,
+            "target": self.target,
+            "pre_charge": self.pre_charge,
+            "gain_zl": self.gain_zl,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> T3PeakSale:
+        return cls(
+            sell_hour=int(data["sell_hour"]),
+            target=int(t) if (t := data.get("target")) is not None else None,
+            pre_charge=bool(data.get("pre_charge", False)),
+            gain_zl=(float(g) if (g := data.get("gain_zl")) is not None else None),
+        )
+
+
+@dataclass(frozen=True)
 class ProductionOutcome:
     """Facts of the day (minutes of the day, %, kWh)."""
 
@@ -273,16 +317,33 @@ class ProductionOutcome:
     t1_import_kwh: float | None
     morning_export_kwh: float | None
     topups: tuple[GridTopup, ...] | None  # None = afternoon charge spans unknown
+    t3_peak: T3PeakSale | None = None  # the afternoon T3 sale (from 10.11.2026)
 
     @property
     def grid_topup_kwh(self) -> float | None:
-        """Grid energy of all afternoon charges; 0 when there was none."""
-        if self.topups is None:
+        """Grid energy of all afternoon charges; 0 when there was none.
+
+        None on a T3 sale day: the afternoon charge there is arbitrage (it buys
+        back what the sale gave), not what the PV surplus fell short of.
+        """
+        if self.topups is None or self.t3_peak is not None:
             return None
         if not self.topups:
             return 0.0
         values = [t.grid_kwh for t in self.topups if t.grid_kwh is not None]
         return round(sum(values), 3) if values else None
+
+    @property
+    def pv_full_at(self) -> int | None:
+        """`full_at` when the sun filled the battery; None when the grid did.
+
+        On a T3 sale day a full battery from the arbitrage's start (or the first
+        afternoon grid charge, if earlier) on came from the grid.
+        """
+        if self.full_at is None or self.t3_peak is None:
+            return self.full_at
+        grid_from = min([self.t3_peak.begins, *(t.first for t in self.topups or ())])
+        return self.full_at if self.full_at < grid_from else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -294,6 +355,7 @@ class ProductionOutcome:
             "topups": (
                 [t.to_dict() for t in self.topups] if self.topups is not None else None
             ),
+            "t3_peak": self.t3_peak.to_dict() if self.t3_peak is not None else None,
         }
 
     @classmethod
@@ -307,6 +369,11 @@ class ProductionOutcome:
             topups=(
                 tuple(GridTopup.from_dict(t) for t in raw)
                 if (raw := data.get("topups")) is not None
+                else None
+            ),
+            t3_peak=(
+                T3PeakSale.from_dict(sale)
+                if (sale := data.get("t3_peak")) is not None
                 else None
             ),
         )

@@ -50,6 +50,8 @@ from custom_components.smart_rce.domain.forecast_score.moment_weather import (
 )
 from custom_components.smart_rce.domain.forecast_score.production_outcome import (
     ChargeStartFact,
+    ProductionOutcome,
+    T3PeakSale,
     production_outcome,
     start_from_soc_rise,
     start_in_force,
@@ -57,6 +59,7 @@ from custom_components.smart_rce.domain.forecast_score.production_outcome import
 )
 from custom_components.smart_rce.domain.forecast_score.production_setup import (
     CURRENT,
+    SETUPS,
     MarginRule,
     StartRule,
     setup_on,
@@ -467,7 +470,17 @@ class TestProductionOutcome:
 
 
 def _day_score(  # noqa: PLR0913 — test helper
-    day, energy, snapshots, prices, *, cutoff=None, plan=None, s0=None, readings=()
+    day,
+    energy,
+    snapshots,
+    prices,
+    *,
+    cutoff=None,
+    plan=None,
+    s0=None,
+    readings=(),
+    t3_peak=None,
+    afternoon_charge=None,
 ) -> DayScore:
     actuals = DayActuals(energy[day], TZ)
     earlier = {
@@ -484,10 +497,11 @@ def _day_score(  # noqa: PLR0913 — test helper
             prices=prices[day.isoformat()],
             s0=_s0(day, prices) if s0 is None else s0,
             start=ChargeStartFact(start_from_soc_rise(actuals), "soc_rise"),
-            afternoon_charge=None,
+            afternoon_charge=afternoon_charge,
             morning_plan=plan,
             plan_readings=readings,
             cutoff=cutoff,
+            t3_peak=t3_peak,
         ),
         status=ScoreStatus.FINAL if cutoff is None else ScoreStatus.PRELIMINARY,
         computed_at=cutoff or datetime(2026, 10, 15, 21, 6, tzinfo=TZ),
@@ -505,7 +519,11 @@ class TestProductionSetup:
         assert setup_on(date(2026, 10, 18), TZ).margin is MarginRule.BLEND_CAPS
         assert setup_on(date(2026, 10, 29), TZ).dear_day_mode
         assert not setup_on(date(2026, 11, 2), TZ).dear_day_choice
-        assert setup_on(date(2026, 11, 9), TZ) is CURRENT
+        assert setup_on(date(2026, 11, 9), TZ).dear_day_choice
+        # The T3 sale row (10.11 09:24) is later than 10.11's 06:11.
+        assert setup_on(date(2026, 11, 10), TZ) is SETUPS[-2]
+        assert setup_on(date(2026, 11, 12), TZ) is CURRENT
+        assert "szczycie T3" in CURRENT.label
         assert CURRENT.dear_day_choice
         assert CURRENT.margin is MarginRule.BLEND_CAPS
 
@@ -1273,6 +1291,122 @@ def test_accuracy_over_the_charging_day_runs_to_four(energy, snapshots, prices):
     assert tables["so_far"]["sort"] == {"column": expected, "descending": False}
     assert len(card["so_far_day_summary"]) == len(score.so_far_day)
     assert DayScore.from_dict(json.loads(json.dumps(score.to_dict()))) == score
+
+
+class TestT3PeakSale:
+    """The afternoon T3 sale (DISCHARGE_T3_PEAK, from 10.11.2026)."""
+
+    # The 14:00 variant: charge from the grid 13-14, sell 14-15, charge from 15.
+    LATE = T3PeakSale(14, 40, pre_charge=True, gain_zl=12.09)
+    # The 13:00 variant: sell 13-14, charge from the grid 14-15:55.
+    EARLY = T3PeakSale(13, 10, pre_charge=False, gain_zl=11.66)
+
+    @staticmethod
+    def _outcome(full_at, sale, spans=()):
+        from custom_components.smart_rce.domain.forecast_score.production_outcome import (
+            GridTopup,
+        )
+
+        return ProductionOutcome(
+            start=ChargeStartFact(600, "override"),
+            full_at=full_at,
+            min_soc_t1=None,
+            t1_import_kwh=None,
+            morning_export_kwh=None,
+            topups=tuple(GridTopup(a, b, 50.0, 90.0, 4.0, 0.5, 3.5) for a, b in spans),
+            t3_peak=sale,
+        )
+
+    def test_the_arbitrage_starts_with_the_pre_charge_or_the_sale(self):
+        assert self.LATE.begins == 13 * 60
+        assert self.EARLY.begins == 13 * 60
+        assert T3PeakSale.from_dict(self.LATE.to_dict()) == self.LATE
+
+    def test_a_sale_day_has_no_grid_top_up_but_keeps_its_spans(self, energy):
+        actuals = DayActuals(energy[DAYS[-1]], TZ)
+        spans = [(13 * 60, 14 * 60), (15 * 60, 15 * 60 + 55)]
+        plain = production_outcome(actuals, ChargeStartFact(495, "override"), spans)
+        sale = production_outcome(
+            actuals, ChargeStartFact(495, "override"), spans, self.LATE
+        )
+        assert plain.grid_topup_kwh is not None
+        assert sale.grid_topup_kwh is None
+        assert sale.topups == plain.topups
+        assert ProductionOutcome.from_dict(sale.to_dict()) == sale
+        older = plain.to_dict()
+        del older["t3_peak"]
+        assert ProductionOutcome.from_dict(older).t3_peak is None
+
+    def test_a_full_battery_from_the_arbitrage_is_no_pv_full_charge(self):
+        late_spans = [(13 * 60, 14 * 60), (15 * 60, 15 * 60 + 55)]
+        # The pre-charge filled it at 13:40 — from the grid.
+        assert self._outcome(13 * 60 + 40, self.LATE, late_spans).pv_full_at is None
+        # Full from PV before 13:00 stays.
+        assert self._outcome(12 * 60 + 30, self.LATE, late_spans).pv_full_at == 750
+        # Sold at 13, full again from the grid at 15:00.
+        early = self._outcome(15 * 60, self.EARLY, [(14 * 60, 15 * 60 + 55)])
+        assert early.pv_full_at is None
+        # An afternoon grid charge before the sale counts as grid too.
+        earlier = self._outcome(12 * 60 + 40, self.EARLY, [(12 * 60 + 30, 13 * 60)])
+        assert earlier.pv_full_at is None
+        # No sale: any full battery is the fact, as before.
+        assert self._outcome(15 * 60, None, late_spans).pv_full_at == 15 * 60
+        assert self._outcome(None, self.LATE).pv_full_at is None
+
+    def test_d3_has_no_actual_when_the_sale_decided_the_soc(
+        self, energy, snapshots, prices
+    ):
+        day = DAYS[-1]
+        plan = PlanReading(
+            at=datetime.combine(day, time(6, 59), TZ),
+            full_at=14 * 60,
+            hours=(7,),
+            start_soc=30.0,
+        )
+        plain = _day_score(day, energy, snapshots, prices, plan=plan)
+        assert plain.outcome.full_at is not None
+        assert plain.full_charge is not None
+        assert plain.full_charge.actual == plain.outcome.full_at
+        # A sale that began before the fixture day got full.
+        sale = T3PeakSale(plain.outcome.full_at // 60, 40, pre_charge=True)
+        assert sale.begins <= plain.outcome.full_at
+        scored = _day_score(day, energy, snapshots, prices, plan=plan, t3_peak=sale)
+        assert scored.full_charge is not None
+        assert scored.full_charge.actual is None
+        assert scored.full_charge.model_error_min is None
+        assert scored.full_charge.error_actual_min is None
+        # The forecast's own error does not depend on the actual.
+        assert scored.full_charge.error_min == plain.full_charge.error_min
+        assert scored.outcome.full_at == plain.outcome.full_at  # the fact stays
+        assert DayScore.from_dict(json.loads(json.dumps(scored.to_dict()))) == scored
+        from custom_components.smart_rce.sensor.forecast_score_sensor import day_card
+
+        card = day_card(scored)
+        assert card["full_charge_summary"]["actual_t3"] is True
+        assert card["outcome_summary"]["t3_peak"]["sell_hour"] == sale.sell_hour
+        assert day_card(plain)["full_charge_summary"]["actual_t3"] is False
+
+    def test_d3_without_an_actual_settles_past_t2(self, energy, snapshots, prices):
+        day = DAYS[-1]
+        plan = PlanReading(
+            at=datetime.combine(day, time(6, 59), TZ),
+            full_at=14 * 60,
+            hours=(7,),
+            start_soc=30.0,
+        )
+        sale = T3PeakSale(13, 10)
+        at = lambda h, m: datetime.combine(day, time(h, m), TZ)  # noqa: E731
+        before = _day_score(
+            day, energy, snapshots, prices, plan=plan, t3_peak=sale, cutoff=at(14, 0)
+        )
+        after = _day_score(
+            day, energy, snapshots, prices, plan=plan, t3_peak=sale, cutoff=at(16, 6)
+        )
+        # No actual to wait for: D3 waits until T2, then stands.
+        assert before.full_charge is None
+        assert Pending.FULL_CHARGE in before.pending
+        assert after.full_charge is not None
+        assert Pending.FULL_CHARGE not in after.pending
 
 
 class TestTables:
