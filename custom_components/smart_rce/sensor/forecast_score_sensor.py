@@ -100,7 +100,7 @@ class ForecastScoreHeadlineSensor(SensorEntity):
     @property
     def native_value(self) -> float | int | None:
         latest = self._service.latest
-        return self._headline.value(latest) if latest is not None else None
+        return self._headline.of(latest) if latest is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -228,7 +228,10 @@ def day_card(score: DayScore) -> dict[str, Any]:
     return {
         **score.to_dict(),
         "day_kind": score.day_type.kind.value if score.day_type.kind else None,
-        "headline": {h.key: h.value(score) for h in HEADLINES},
+        "headline": {h.key: h.of(score) for h in HEADLINES},
+        # A hand intervention that day; `excluded`: out of the scoring.
+        "hand_note": score.hand_note,
+        "excluded": score.excluded,
         "short_weight": SHORT_WEIGHT,
         "system": {
             "pv": setup.pv_label,

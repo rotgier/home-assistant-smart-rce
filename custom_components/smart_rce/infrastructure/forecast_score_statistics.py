@@ -47,20 +47,18 @@ class ForecastScoreStatistics:
 
     @callback
     def publish(self, scores: Iterable[DayScore]) -> None:
-        """Write (or rewrite) the rows of `scores` — final days only."""
+        """Write (or rewrite) the rows of `scores` — final days only.
+
+        A day without the figure gets an empty row: a rewrite has to blank
+        a value published before (a day later found to be a T3 sale or a
+        hand intervention) — skipping it would leave the old value standing.
+        """
         days = list(scores)
         tz = self._tz()
         for headline in HEADLINES:
             rows = [
-                StatisticData(
-                    start=datetime.combine(score.day, time(0), tz),
-                    state=float(value),
-                    mean=float(value),
-                    min=float(value),
-                    max=float(value),
-                )
+                self._row(datetime.combine(score.day, time(0), tz), headline.of(score))
                 for score in days
-                if (value := headline.value(score)) is not None
             ]
             if not rows:
                 continue
@@ -77,3 +75,16 @@ class ForecastScoreStatistics:
                 ),
                 rows,
             )
+
+    @staticmethod
+    def _row(start: datetime, value: float | None) -> StatisticData:
+        """Return one day's row; all empty when the day has no figure.
+
+        A row of only `start` rewrites the stored values with empty ones.
+        """
+        if value is None:
+            return StatisticData(start=start)
+        number = float(value)
+        return StatisticData(
+            start=start, state=number, mean=number, min=number, max=number
+        )

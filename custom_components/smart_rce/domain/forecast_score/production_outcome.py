@@ -46,12 +46,15 @@ def production_outcome(
     start: ChargeStartFact,
     afternoon_charge: Sequence[tuple[int, int]] | None,
     t3_peak: T3PeakSale | None = None,
+    *,
+    hand_afternoon_charge: bool = False,
 ) -> ProductionOutcome:
     """Facts of the day.
 
     `afternoon_charge`: CHARGE_AFTERNOON slot spans (minutes of the day), None
     when unknown (history gone) — the top-up is then unknown, not zero.
     `t3_peak`: the afternoon T3 sale production latched that day (None: none).
+    `hand_afternoon_charge`: the afternoon grid charge was a hand one.
     """
     full = actuals.first_soc_at_least(FULL_SOC)
     t1_soc = actuals.soc_between(time(7, 0), time(13, 0))
@@ -68,6 +71,7 @@ def production_outcome(
         morning_export_kwh=_hourly_sum(actuals, MORNING_EXPORT_HOURS, import_=False),
         topups=topups,
         t3_peak=t3_peak,
+        hand_charge=hand_afternoon_charge,
     )
 
 
@@ -318,15 +322,18 @@ class ProductionOutcome:
     morning_export_kwh: float | None
     topups: tuple[GridTopup, ...] | None  # None = afternoon charge spans unknown
     t3_peak: T3PeakSale | None = None  # the afternoon T3 sale (from 10.11.2026)
+    # The afternoon grid charge was a hand one (`day_score.HAND_INTERVENTIONS`).
+    hand_charge: bool = False
 
     @property
     def grid_topup_kwh(self) -> float | None:
         """Grid energy of all afternoon charges; 0 when there was none.
 
         None on a T3 sale day: the afternoon charge there is arbitrage (it buys
-        back what the sale gave), not what the PV surplus fell short of.
+        back what the sale gave), not what the PV surplus fell short of. None
+        too when the afternoon charge was a hand one.
         """
-        if self.topups is None or self.t3_peak is not None:
+        if self.topups is None or self.t3_peak is not None or self.hand_charge:
             return None
         if not self.topups:
             return 0.0
@@ -356,6 +363,7 @@ class ProductionOutcome:
                 [t.to_dict() for t in self.topups] if self.topups is not None else None
             ),
             "t3_peak": self.t3_peak.to_dict() if self.t3_peak is not None else None,
+            "hand_charge": self.hand_charge,
         }
 
     @classmethod
@@ -376,4 +384,5 @@ class ProductionOutcome:
                 if (sale := data.get("t3_peak")) is not None
                 else None
             ),
+            hand_charge=bool(data.get("hand_charge", False)),
         )

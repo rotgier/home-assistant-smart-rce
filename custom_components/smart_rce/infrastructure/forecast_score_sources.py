@@ -235,9 +235,11 @@ class ForecastScoreSources:
         """Return the dear-day variant chosen for `day` (`full` / `normal`; None: none).
 
         The plan sensor's `dear_day` attribute (`DearDayChoice`, latched at the
-        night charge's start); only the one whose `day` is `day` counts.
+        night charge's start); only the one whose `day` is `day` counts. A FULL
+        day sells nothing in the morning, so the plan is `unknown` all day
+        (12.11.2026) — those rows count.
         """
-        states = await self._history(day, PLAN_ENTITY, attributes=True)
+        states = await self._history(day, PLAN_ENTITY, attributes=True, unknown=True)
         mine = [
             str(choice["chosen"])
             for s in states

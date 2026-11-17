@@ -11,6 +11,8 @@ next to nothing — mixed in, a few of them would move the D2 ranking.
 Days off whose start the day-off rule set (no PV charging, or later — from
 01.11.2026) rank D2 apart too (`day_off`): the start did not come from the
 start rule the ranking scores.
+Days of a hand intervention (`DayScore.excluded`, `day_score.HAND_INTERVENTIONS`)
+leave every table: the rules did not run the day.
 
 Per row:
 - D1 (SoC points, system − needed; − = too little reserve): n, MAE, bias,
@@ -55,7 +57,8 @@ _KEY_START: Final = ("08:41", START_MOMENT)
 
 def rank(scores: Sequence[DayScore]) -> dict[str, Any]:
     """Build the ranking tables of `scores` (final ones, any order)."""
-    every = sorted(scores, key=lambda s: s.day)
+    excluded = sorted((s for s in scores if s.excluded), key=lambda s: s.day)
+    every = sorted((s for s in scores if not s.excluded), key=lambda s: s.day)
     days = [s for s in every if not s.dear_day and not s.day_off_moved_start]
     dear = [s for s in every if s.dear_day]
     day_off = [s for s in every if s.day_off_moved_start]
@@ -63,6 +66,7 @@ def rank(scores: Sequence[DayScore]) -> dict[str, Any]:
         "days": [s.day.isoformat() for s in every],
         "dear_days": [s.day.isoformat() for s in dear],
         "day_off_days": [s.day.isoformat() for s in day_off],
+        "excluded_days": [s.day.isoformat() for s in excluded],
         "day_kinds": {
             s.day.isoformat(): (s.day_type.kind.value if s.day_type.kind else None)
             for s in every

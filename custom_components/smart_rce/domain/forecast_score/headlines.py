@@ -23,6 +23,10 @@ class Headline:
     unit: str
     value: Callable[[DayScore], float | int | None]
 
+    def of(self, score: DayScore) -> float | int | None:
+        """Return the day's figure; None for a day out of the scoring (`excluded`)."""
+        return None if score.excluded else self.value(score)
+
 
 HEADLINES: Final[tuple[Headline, ...]] = (
     Headline("reserve_error", "T1 reserve error", "pp", lambda s: s.reserve_error_pp),

@@ -77,3 +77,30 @@ async def test_rows_are_daily_and_rewritable(
     rows = stats[statistic_id("reserve_error")]
     assert [r["mean"] for r in rows] == [-12.0]
     assert [r["mean"] for r in stats[statistic_id("grid_topup")]] == [0.0]
+
+
+async def test_a_rewrite_blanks_a_figure_the_day_no_longer_has(
+    recorder_mock: Any, hass: HomeAssistant
+) -> None:
+    """A day later taken out of the scoring keeps no stale row (17.11.2026)."""
+    import dataclasses
+
+    publisher = ForecastScoreStatistics(hass, lambda: TZ)
+    publisher.publish([_score(-15)])
+    await async_wait_recording_done(hass)
+    publisher.publish([dataclasses.replace(_score(-15), excluded=True)])
+    await async_wait_recording_done(hass)
+
+    start = datetime(2026, 10, 14, tzinfo=TZ)
+    stats = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        start,
+        start + timedelta(days=1),
+        {statistic_id("reserve_error"), statistic_id("grid_topup")},
+        "day",
+        None,
+        {"mean"},
+    )
+    assert [r["mean"] for r in stats[statistic_id("reserve_error")]] == [None]
+    assert [r["mean"] for r in stats[statistic_id("grid_topup")]] == [None]

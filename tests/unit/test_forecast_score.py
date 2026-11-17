@@ -1409,6 +1409,61 @@ class TestT3PeakSale:
         assert Pending.FULL_CHARGE not in after.pending
 
 
+class TestHandInterventions:
+    """Days a hand change ran, not the rules (user's call 17.11.2026)."""
+
+    def test_the_table_knows_the_two_days(self):
+        assert day_score_module.HAND_INTERVENTIONS[date(2026, 11, 12)].excluded
+        sixteenth = day_score_module.HAND_INTERVENTIONS[date(2026, 11, 16)]
+        assert sixteenth.hand_afternoon_charge
+        assert not sixteenth.excluded
+
+    def test_a_hand_afternoon_charge_has_no_top_up(self, energy):
+        actuals = DayActuals(energy[DAYS[-1]], TZ)
+        spans = [(13 * 60, 15 * 60)]
+        plain = production_outcome(actuals, ChargeStartFact(495, "override"), spans)
+        hand = production_outcome(
+            actuals,
+            ChargeStartFact(495, "override"),
+            spans,
+            hand_afternoon_charge=True,
+        )
+        assert plain.grid_topup_kwh is not None
+        assert hand.grid_topup_kwh is None
+        assert hand.topups == plain.topups
+        assert ProductionOutcome.from_dict(hand.to_dict()) == hand
+        older = plain.to_dict()
+        del older["hand_charge"]
+        assert not ProductionOutcome.from_dict(older).hand_charge
+
+    def test_an_excluded_day_leaves_rankings_and_headlines(
+        self, energy, snapshots, prices
+    ):
+        from custom_components.smart_rce.domain.forecast_score.headlines import (
+            HEADLINES,
+        )
+
+        scores = [_day_score(d, energy, snapshots, prices) for d in DAYS]
+        out = dataclasses.replace(
+            scores[0], excluded=True, hand_note="ręczna sprzedaż", dear_day=True
+        )
+        ranking = rank([out, *scores[1:]])
+        assert ranking["excluded_days"] == [DAYS[0].isoformat()]
+        assert DAYS[0].isoformat() not in ranking["days"]
+        assert ranking["dear_days"] == []
+        rows = {r["variant"]: r for r in ranking["reserve"]["all"]["06:11"]}
+        assert rows["solcast_p50"]["n"] == len(DAYS) - 1
+        assert all(h.of(out) is None for h in HEADLINES)
+        assert any(h.of(scores[0]) is not None for h in HEADLINES)
+        back = DayScore.from_dict(json.loads(json.dumps(out.to_dict())))
+        assert (back.excluded, back.hand_note) == (True, "ręczna sprzedaż")
+        from custom_components.smart_rce.sensor.forecast_score_sensor import day_card
+
+        card = day_card(out)
+        assert card["excluded"] is True
+        assert card["hand_note"] == "ręczna sprzedaż"
+
+
 class TestTables:
     """The card's tables: ready rows, the card only draws (20.10.2026)."""
 

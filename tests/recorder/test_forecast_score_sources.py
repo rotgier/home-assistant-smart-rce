@@ -188,6 +188,31 @@ async def test_the_dear_day_choice_is_the_last_one_for_the_day(
     assert await _sources(hass).dear_day_choice(DAY) == "normal"
 
 
+async def test_a_full_dear_day_is_read_while_the_plan_is_unknown_all_day(
+    recorder_mock: Any, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """12.11.2026: FULL sells nothing in the morning — the plan has no value all day.
+
+    The choice was read as None, so the day did not rank as a dear day.
+    """
+    await hass.config.async_set_time_zone("Europe/Warsaw")
+    for moment in (
+        datetime(2026, 10, 19, 0, 0, 30, tzinfo=TZ),
+        datetime(2026, 10, 19, 4, 41, tzinfo=TZ),
+    ):
+        freezer.move_to(moment)
+        hass.states.async_set(
+            PLAN_ENTITY,
+            "unknown",
+            {"dear_day": {"day": "2026-10-19", "chosen": "full", "soc": 10.0}},
+        )
+        await hass.async_block_till_done()
+    freezer.move_to(datetime(2026, 10, 19, 9, 0, tzinfo=TZ))
+    await async_wait_recording_done(hass)
+
+    assert await _sources(hass).dear_day_choice(DAY) == "full"
+
+
 async def test_the_t3_sale_is_the_latched_plan_even_while_the_plan_is_unknown(
     recorder_mock: Any, hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:

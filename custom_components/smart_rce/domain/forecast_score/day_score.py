@@ -87,8 +87,11 @@ if TYPE_CHECKING:
 # 16: the day-off rule's choice (`day_off_choice`); a day it moved the start
 #     ranks D2 apart. The dear day's variant (`dear_day_choice`, from 08.11)
 #     came without a bump: no earlier day has one.
+# 17: the dear day's variant read also while the plan is `unknown` (a FULL day
+#     all day — 12.11 was no dear day); hand-intervention days
+#     (`HAND_INTERVENTIONS`): out of the rankings and statistics, or no top-up.
 # Older records are ignored, so the startup catch-up rescores those days.
-SCHEMA_VERSION: Final = 16
+SCHEMA_VERSION: Final = 17
 
 # The day-off rule's choice that leaves the start as it was (`day_off_charge.S0`).
 DAY_OFF_KEEPS_START: Final = "s0"
@@ -125,6 +128,36 @@ _RAN_AS_WORKDAY: Final[frozenset[date]] = frozenset({date(2026, 10, 17)})
 def has_morning_reserve(day: date) -> bool:
     """Workdays, and the days the morning auto slots ran by exception."""
     return DayType.of(day) is DayType.WORKDAY or day in _RAN_AS_WORKDAY
+
+
+@dataclass(frozen=True)
+class HandIntervention:
+    """A hand change of the battery's day that the rules did not make.
+
+    `excluded`: the day leaves every ranking and the daily statistics (user's
+    call 17.11.2026); `hand_afternoon_charge`: the afternoon grid charge was a
+    hand one, so there is no top-up figure. `note` is dashboard wording.
+    """
+
+    note: str
+    excluded: bool = False
+    hand_afternoon_charge: bool = False
+
+
+# History, one row per day (research notes in home-assistant-ops).
+HAND_INTERVENTIONS: Final[Mapping[date, HandIntervention]] = {
+    # A one-off automation sold the battery on a dear FULL day
+    # (research/2026-11-12-poranna-sprzedaz-rekord).
+    date(2026, 11, 12): HandIntervention(
+        "ręczna sprzedaż 09:00–10:33 (89% → 11%)", excluded=True
+    ),
+    # Charged from the grid 13-15 and sold 15:00-15:27 by hand
+    # (research/2026-11-16-sprzedaz-o-15).
+    date(2026, 11, 16): HandIntervention(
+        "ręczne ładowanie z sieci 13:00–15:00 i sprzedaż 15:00–15:27",
+        hand_afternoon_charge=True,
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -220,8 +253,13 @@ def score_day(
             if not diagnostics_settled:
                 pending.append(Pending.START_DIAGNOSTICS)
     main = consumed(inputs.snapshots, datetime.combine(day, MAIN_MOMENT.at, actuals.tz))
+    hand = HAND_INTERVENTIONS.get(day)
     outcome = production_outcome(
-        actuals, inputs.start, inputs.afternoon_charge, inputs.t3_peak
+        actuals,
+        inputs.start,
+        inputs.afternoon_charge,
+        inputs.t3_peak,
+        hand_afternoon_charge=hand is not None and hand.hand_afternoon_charge,
     )
     full_charge = (
         score_full_charge(
@@ -273,6 +311,8 @@ def score_day(
         dear_day=_dear_day(inputs, setup),
         day_off_choice=inputs.day_off_choice,
         dear_day_choice=inputs.dear_day_choice,
+        hand_note=hand.note if hand is not None else None,
+        excluded=hand is not None and hand.excluded,
         trigger=trigger,
         cutoff=cutoff,
         pending=tuple(pending),
@@ -439,6 +479,10 @@ class DayScore:
     # The dear day's variant (from 08.11.2026): `full` = night to 100, no
     # morning sale (`dear_day` True); `normal` = run as any day.
     dear_day_choice: str | None = None
+    # A hand intervention that day (`HAND_INTERVENTIONS`); `excluded`: out of
+    # every ranking and the daily statistics.
+    hand_note: str | None = None
+    excluded: bool = False
     # What ran it: charge_start, s0, full_charge, 13:06, 16:06, 21:06, manual...
     trigger: str = ""
     # How far the data reached (a run during the day); None = the whole day.
@@ -528,6 +572,8 @@ class DayScore:
             "dear_day": self.dear_day,
             "day_off_choice": self.day_off_choice,
             "dear_day_choice": self.dear_day_choice,
+            "hand_note": self.hand_note,
+            "excluded": self.excluded,
             "trigger": self.trigger,
             "cutoff": self.cutoff.isoformat() if self.cutoff is not None else None,
             "pending": [str(p) for p in self.pending],
@@ -570,6 +616,8 @@ class DayScore:
             dear_day=data.get("dear_day"),
             day_off_choice=data.get("day_off_choice"),
             dear_day_choice=data.get("dear_day_choice"),
+            hand_note=data.get("hand_note"),
+            excluded=bool(data.get("excluded", False)),
             trigger=str(data.get("trigger", "")),
             cutoff=(
                 datetime.fromisoformat(cut)
