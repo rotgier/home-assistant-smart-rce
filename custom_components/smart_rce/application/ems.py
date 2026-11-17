@@ -50,6 +50,8 @@ from custom_components.smart_rce.domain.charge_slots import (
     DEFAULT_HEATER_RCE_THRESHOLD,
     ChargeSlots,
 )
+from custom_components.smart_rce.domain.cheap_hours import is_dear_day
+from custom_components.smart_rce.domain.dear_day_choice import DearDayVariant
 from custom_components.smart_rce.domain.discharge_slots import DischargeSlots
 from custom_components.smart_rce.domain.dod_policy import DodPolicy
 from custom_components.smart_rce.domain.ems_operation import EmsOperation
@@ -57,7 +59,7 @@ from custom_components.smart_rce.domain.ems_rce_prices import EmsRcePrices
 from custom_components.smart_rce.domain.evening_plan import EveningPlan
 from custom_components.smart_rce.domain.grid_export import GridExportManager
 from custom_components.smart_rce.domain.input_state import InputState
-from custom_components.smart_rce.domain.rce import RcePrices
+from custom_components.smart_rce.domain.rce import RceDayPrices, RcePrices
 from custom_components.smart_rce.domain.water_heater import WaterHeaterManager
 from custom_components.smart_rce.domain.water_heater_reserved_policy import (
     WaterHeaterReservedInput,
@@ -309,7 +311,8 @@ class Ems:
         - the 22:05 run plans tomorrow evening, whose prices are today's
           `tomorrow`; the morning after it is unpublished, so no veto applies;
         - the afternoon run replans this evening from `today`, and now has
-          tomorrow's morning available to veto it.
+          tomorrow's morning available to veto it — when that morning sells
+          at all (`_morning_may_sell`); None until that is known.
 
         Slots carry over midnight untouched (`roll_day` is disabled), which is
         what lets the earlier run write into the same `today` slots.
@@ -324,13 +327,40 @@ class Ems:
         if is_workday is None:
             _LOGGER.warning("Evening plan skipped — workday calendar unavailable")
             return None
+        morning = None if for_tomorrow else prices.tomorrow
+        if morning is not None:
+            may_sell = self._morning_may_sell(morning)
+            if may_sell is None:
+                return None  # tomorrow's dear-day choice not made yet; retry
+            if not may_sell:
+                morning = None
         return EveningPlan.for_day(
             day_prices.day,
             day_prices,
             is_workday=is_workday,
-            tomorrow=None if for_tomorrow else prices.tomorrow,
+            tomorrow=morning,
             export_threshold=self.battery_schedule_service.export_threshold,
         )
+
+    def _morning_may_sell(self, tomorrow: RceDayPrices) -> bool | None:
+        """Tell whether tomorrow morning may sell, so it may veto tonight.
+
+        A dear workday run as FULL charges the night to 100% and sells nothing
+        in the morning (`MorningDischargeService`): energy kept for it only
+        replaces a T3 night purchase, so tonight's T2 hours stand on their own
+        (user's decision 17.11.2026; on 16.11 the 08:00 price of 1536 vetoed
+        the whole evening of a FULL day). None while the dear-day choice for
+        tomorrow is not made yet (it needs tomorrow's T1 reserve, from 14:00).
+        """
+        if not self._is_workday(for_tomorrow=True):
+            return True
+        schedule = self.battery_schedule_service
+        if not is_dear_day(tomorrow.day, tomorrow, schedule.export_threshold):
+            return True
+        choice = schedule.dear_day_choice_for(tomorrow.day)
+        if choice is None:
+            return None
+        return choice.chosen is not DearDayVariant.FULL
 
     async def replan_nearest_evening(self, now: datetime) -> EveningReplan | None:
         """Recompute and apply the plan for whichever evening comes next.
