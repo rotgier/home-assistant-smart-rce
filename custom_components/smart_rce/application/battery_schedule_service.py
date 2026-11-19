@@ -353,6 +353,10 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
             self._clock().date() + timedelta(days=1)
         )
 
+    def morning_discharge_why_none_for(self, day: date) -> str | None:
+        """Why `day` has no morning discharge plan, None when it has one."""
+        return self._morning_discharge_why_none.get(day)
+
     @callback
     def set_morning_charge_floor(
         self, day: date, floor: MorningChargeFloor | None
@@ -510,6 +514,10 @@ class BatteryScheduleService(Service[BatteryScheduleRepository]):
         return self._repo.schedule.morning_discharge_for(
             self._clock().date() + timedelta(days=1)
         )
+
+    def morning_discharge_for(self, day: date) -> MorningDischargePlan | None:
+        """`day`'s automatic morning discharge plan, None when there is none."""
+        return self._repo.schedule.morning_discharge_for(day)
 
     @property
     def sessions_today(self) -> list[SlotSession]:

@@ -218,5 +218,5 @@ class TestService:
         service, _charge, reports, _ = _service()
         service.evaluate(validation=False)
         text = render(reports[0])
-        assert "bez ładowania z PV" in text
+        assert "NIE ładujemy baterii z PV" in text
         assert not any(line.lower().startswith("start") for line in text.splitlines())

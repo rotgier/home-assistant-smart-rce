@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Final
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
-from ..application.day_off_charge_service import describe
 from ..domain.day_off_charge import NONE
 from .battery_schedule_notifier import NOTIFY_TEXT_SCRIPT
 
@@ -53,35 +52,30 @@ class DayOffChargeNotifier:
 
 
 def render(report: DayOffReport) -> str:
-    """Message text: the decision, the variants against no charging, the inputs."""
+    """Message text: the decision first, then why, the other variants, the context.
+
+    Reworked 19.11.2026 (user): the decision used to sit at the end of a long
+    first line, the variants were deltas "against no charging" whatever was
+    chosen, and S0 / Live Soft / p60 meant nothing to the reader.
+    """
     decision = report.decision
     run = "walidacja 07:41" if report.validation else "decyzja 06:41"
-    head = f"{decision.day:%d.%m} ({run}): {describe(decision.chosen)}"
+    head = f"🔋 Dzień wolny {decision.day:%d.%m} ({run}): {_decision(report)}"
     if report.validation and report.changed:
         head += " — ZMIANA"
-    base = decision.variant(NONE).value_zl
-    variants = " • ".join(
-        f"{describe(v.key)} {_zl(v.value_zl - base)} ({_kwh(v.charged_kwh)} do baterii)"
+    chosen = decision.variant(decision.chosen).value_zl
+    others = " · ".join(
+        f"{_variant(report, v.key)} {_zl(v.value_zl - chosen)}"
         for v in decision.variants
-        if v.key != NONE
+        if v.key != decision.chosen
     )
     lines = [
         head,
-        f"Wobec braku ładowania: {variants}",
+        _why(report),
+        f"Inne warianty względem wybranego: {others}",
         (
-            f"Nadwyżka PV 07-{report.t2_hour}: {_kwh(report.surplus_kwh)} (Live Soft "
-            f"minus p60 zużycia; zużycie modelu 08-16: "
-            f"{_kwh(report.model_consumption_08_15_kwh)})"
-        ),
-        (
-            f"RCE brutto w dzień {_zl_kwh(report.day_rce_min)}-"
-            f"{_zl_kwh(report.day_rce_max)}, wieczorem max "
-            f"{_zl_kwh(report.evening_rce_max)} ({report.evening_rce_hour}:00), "
-            f"zakup {_zl_kwh(report.buy_price)}"
-        ),
-        (
-            f"SOC {report.soc:.0f}%, S0 {report.s0_hour}:00, sprzedaż wieczorem: "
-            + ", ".join(f"{h}:00" for h in report.discharge_hours)
+            f"Wieczorem sprzedaż: {', '.join(f'{h}:00' for h in report.discharge_hours)}. "
+            f"SOC {report.soc:.0f}%."
         ),
     ]
     if report.manual_start is not None:
@@ -89,6 +83,36 @@ def render(report: DayOffReport) -> str:
             f"Ręczny start {report.manual_start} ma pierwszeństwo — bez zmian."
         )
     return "\n".join(lines)
+
+
+def _decision(report: DayOffReport) -> str:
+    chosen = report.decision.chosen
+    if chosen == NONE:
+        return "NIE ładujemy baterii z PV"
+    return f"ładujemy baterię z PV ({_variant(report, chosen)})"
+
+
+def _variant(report: DayOffReport, key: str) -> str:
+    if key == NONE:
+        return "bez ładowania"
+    if key.startswith("from_"):
+        return f"od {key[5:]}:00"
+    return f"od {report.s0_hour}:00 (wg cen)"
+
+
+def _why(report: DayOffReport) -> str:
+    sun = f"nadwyżka PV {_kwh(report.surplus_kwh)}"
+    day = f"{_zl_kwh(report.day_rce_min)}–{_zl_kwh(report.day_rce_max)}"
+    if report.decision.chosen == NONE:
+        return (
+            f"Dlaczego: {sun}, eksport w dzień płaci {day}, a bateria wieczorem "
+            f"pokryłaby głównie dom w T3 ({_zl_kwh(report.buy_price)})."
+        )
+    return (
+        f"Dlaczego: {sun}; przechowana do wieczora (max "
+        f"{_zl_kwh(report.evening_rce_max)} o {report.evening_rce_hour}:00) jest "
+        f"warta więcej niż eksport w dzień ({day})."
+    )
 
 
 def _zl(value: float) -> str:

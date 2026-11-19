@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from importlib import import_module, reload
 import logging
 
@@ -25,6 +26,7 @@ from .application.energy_balance_service import EnergyBalanceService
 from .application.forecast_score_service import ForecastScoreService
 from .application.morning_charge_service import MorningChargeService
 from .application.morning_discharge_service import MorningDischargeService
+from .application.night_charge_report import NightChargeReport
 from .application.pv_charge_service import PvChargeService
 from .application.pv_surplus_service import PvSurplusService
 from .application.t3_peak_service import T3PeakService
@@ -40,6 +42,7 @@ from .infrastructure.battery_day_history import BatteryDayHistory
 from .infrastructure.charge_start_shift_notifier import ChargeStartShiftNotifier
 from .infrastructure.day_off_charge_notifier import DayOffChargeNotifier
 from .infrastructure.energy_archive_reader import EnergyArchiveReader
+from .infrastructure.night_charge_notifier import NightChargeNotifier
 from .infrastructure.pv_forecast.hourly_energy_loader import HourlyEnergyLoader
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.rce_api import RceApi
@@ -208,6 +211,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
 
     # Two minutes for prices, forecast and SoC to load after a restart.
     entry.async_on_unload(async_call_later(hass, 120, _catch_up_day_off))
+
+    # Workday night charge on Telegram (user's decision 19.11.2026): a preview of
+    # tomorrow after the evening plan's 21:05 run, and today's decision once the
+    # night charge has started and the dear-day choice has latched (04:00).
+    night_notifier = NightChargeNotifier(hass, entry)
+
+    @callback
+    def _report_night_charge(now: datetime) -> None:
+        latched = now.hour < 12
+        day = now.date() if latched else now.date() + timedelta(days=1)
+        state = ems.last_input_state
+        workday = (
+            None
+            if state is None
+            else state.is_workday
+            if latched
+            else state.is_workday_tomorrow
+        )
+        if workday is not True:
+            return
+        report = NightChargeReport.build(ems, day, latched=latched)
+        if report is not None:
+            night_notifier.notify(report)
+
+    for hour, minute in ((21, 6), (4, 1)):
+        entry.async_on_unload(
+            async_track_time_change(
+                hass, _report_night_charge, hour=hour, minute=minute, second=30
+            )
+        )
 
     # Automatic morning discharge: plan rebuilt every minute, after the surplus
     # tick (second 5) has refreshed what is still to come.
@@ -511,6 +544,8 @@ def live_reload() -> None:
     )
     # t3_peak_service builds T3PeakPlan for the aggregate — after battery_schedule.
     reload(import_module("custom_components.smart_rce.application.t3_peak_service"))
+    # night_charge_report compares SlotKind / DearDayVariant — after battery_schedule.
+    reload(import_module("custom_components.smart_rce.application.night_charge_report"))
     reload(
         import_module("custom_components.smart_rce.application.battery_charge_service")
     )
