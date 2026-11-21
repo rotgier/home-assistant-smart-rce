@@ -151,6 +151,14 @@ def _why(report: DayOffReport) -> str:
             f"Dlaczego: {sun}, eksport w dzień płaci {day}, a bateria wieczorem "
             f"pokryłaby głównie dom w T3 ({_zl_kwh(report.buy_price)})."
         )
+    if not report.evening_planned:
+        # No sale planned: the valuation still gives the battery back in the
+        # dearest evening hour (`DayOffChargeService._discharge_hours`) — say so.
+        return (
+            f"Dlaczego: {sun}; wycena liczy ją jak oddaną wieczorem o "
+            f"{report.evening_rce_hour}:00 po {_zl_kwh(report.evening_rce_max)}, "
+            f"więcej niż eksport w dzień ({day})."
+        )
     return (
         f"Dlaczego: {sun}; przechowana do wieczora (max "
         f"{_zl_kwh(report.evening_rce_max)} o {report.evening_rce_hour}:00) jest "

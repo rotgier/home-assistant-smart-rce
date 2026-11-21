@@ -283,3 +283,9 @@ class TestNoEveningPlan:
         assert len(service.last.discharge_hours) == 10  # valuation fallback
         text = render(reports[0])
         assert "Wieczorem sprzedaż: brak, bateria wieczorem dla domu. SOC 10%." in text
+
+    def test_the_why_names_the_valuation_without_a_sale(self):
+        service, _charge, reports, _ = _service(rce_day=0.5, evening=())
+        service.evaluate(validation=False)
+        text = render(reports[0])
+        assert "wycena liczy ją jak oddaną wieczorem o 16:00 po 1,25 zł/kWh" in text
