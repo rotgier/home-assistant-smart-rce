@@ -70,8 +70,10 @@ def test_a_dear_day_shows_the_full_battery_choice():
     choice.normal.value_zl = 19.49
     text = render(_report(target=100, floor=floor, dear_choice=choice, cheap=()))
 
-    assert "Drogi dzień: każda godzina 07–15:00 płaci co najmniej 750 zł/MWh." in text
+    assert "Drogi dzień: każda godzina 07–16:00 płaci co najmniej 750 zł/MWh." in text
     assert "Pełna bateria +19,90 zł wobec zwykłego dnia +19,49 zł" in text
+    assert "Poranna sprzedaż: brak — pełna bateria pokrywa T1." in text
+    assert "najdroższa" not in text
 
 
 def test_a_planned_morning_sale_is_shown():

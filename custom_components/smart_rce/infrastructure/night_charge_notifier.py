@@ -79,7 +79,7 @@ def _why(report: NightChargeReport) -> list[str]:
         lines = [
             (
                 f"Drogi dzień: każda godzina {report.first_hour:02d}–"
-                f"{report.t2_hour - 1:02d}:00 płaci co najmniej {bar}."
+                f"{report.t2_hour:02d}:00 płaci co najmniej {bar}."
             )
         ]
         choice = report.dear_choice
@@ -124,8 +124,22 @@ def _morning(report: NightChargeReport) -> str:
             f"Poranna sprzedaż: {plan.hour:02d}:00 do {plan.target}% "
             f"({_zl_kwh(plan.gross_price / 1000)})."
         )
+    if _full_battery_chosen(report):
+        # The planner's why_none repeats the dear-day choice in raw form.
+        return "Poranna sprzedaż: brak — pełna bateria pokrywa T1."
     why = report.morning_why_none or "brak planu"
     return f"Poranna sprzedaż: brak — {why}."
+
+
+def _full_battery_chosen(report: NightChargeReport) -> bool:
+    floor = report.floor
+    choice = report.dear_choice
+    return (
+        floor is not None
+        and floor.dear_day
+        and choice is not None
+        and choice.chosen is DearDayVariant.FULL
+    )
 
 
 def _hours(hours: tuple[int, ...]) -> str:
