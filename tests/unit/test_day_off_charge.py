@@ -1,6 +1,6 @@
 """Day off: store the PV in the battery or export it at once (rule of 01.11.2026)."""
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -26,7 +26,11 @@ from custom_components.smart_rce.domain.pv_surplus import (
     SurplusProfile,
     slots_from_hourly,
 )
-from custom_components.smart_rce.infrastructure.day_off_charge_notifier import render
+from custom_components.smart_rce.infrastructure.day_off_charge_notifier import (
+    NIGHT,
+    render,
+    render_unavailable,
+)
 
 SATURDAY = date(2026, 10, 31)
 T3 = (0.43, 0.10)  # energy, distribution — gross zl/kWh
@@ -161,22 +165,25 @@ class _Charge:
         self.day_off_start_today = start
 
 
-def _service(*, workday=False, rce_day=1.20, now=_at(6, 41)):
+def _service(
+    *, workday=False, rce_day=1.20, now=_at(6, 41), soc=10.0, evening=((16, 18),)
+):
     charge = _Charge()
     prices = tuple((1.25 if 16 <= h < 23 else rce_day) / 1.23 * 1000 for h in range(24))
     ems = SimpleNamespace(
         is_workday_today=workday,
-        last_input_state=SimpleNamespace(battery_soc=10.0),
-        charge_slots=SimpleNamespace(today_start=time(10)),
+        last_input_state=SimpleNamespace(battery_soc=soc),
+        charge_slots=SimpleNamespace(today_start=time(10), tomorrow_start=time(10)),
         rce_prices=SimpleNamespace(
             rce_prices=SimpleNamespace(
-                today=SimpleNamespace(day=SATURDAY, hour_price=prices)
+                today=SimpleNamespace(day=SATURDAY, hour_price=prices),
+                tomorrow=SimpleNamespace(day=SATURDAY, hour_price=prices),
             )
         ),
         battery_charge_service=charge,
         battery_schedule_service=SimpleNamespace(
             evening_windows_on=lambda day: [
-                SimpleNamespace(start=time(16), end=time(18))
+                SimpleNamespace(start=time(a), end=time(b)) for a, b in evening
             ]
         ),
     )
@@ -220,3 +227,59 @@ class TestService:
         text = render(reports[0])
         assert "NIE ładujemy baterii z PV" in text
         assert not any(line.lower().startswith("start") for line in text.splitlines())
+
+
+FRIDAY_2106 = datetime(2026, 10, 30, 21, 6, tzinfo=timezone.utc)
+
+
+class TestPreview:
+    """21:06 before a day off: tomorrow's decision, nothing applied (21.11.2026)."""
+
+    def test_previews_tomorrow_without_applying_anything(self):
+        service, charge, reports, _ = _service(now=FRIDAY_2106, soc=60.0)
+        preview = service.preview(SATURDAY)
+        assert preview is not None and preview.preview
+        assert preview.decision.day == SATURDAY
+        assert preview.decision.chosen == NONE
+        assert charge.applied == [] and reports == [] and service.last is None
+        assert preview.manual_start is None
+
+    def test_projects_the_battery_through_the_night(self):
+        # 0.5 kWh/h of house from 21:06 to 06:41 — about 4.8 kWh off 60%.
+        service, *_ = _service(now=FRIDAY_2106, soc=60.0)
+        preview = service.preview(SATURDAY)
+        assert preview is not None
+        assert 10.0 <= preview.soc < 30.0
+        service, *_ = _service(now=FRIDAY_2106, soc=12.0)
+        preview = service.preview(SATURDAY)
+        assert preview is not None and preview.soc == 10.0
+
+    def test_no_tomorrow_prices_no_preview(self):
+        service, *_ = _service(now=FRIDAY_2106)
+        assert service.preview(SATURDAY + timedelta(days=1)) is None
+        text = render_unavailable(SATURDAY)
+        assert "podgląd niedostępny" in text
+        assert NIGHT in text
+
+    def test_preview_text(self):
+        service, *_ = _service(now=FRIDAY_2106, soc=60.0)
+        preview = service.preview(SATURDAY)
+        assert preview is not None
+        text = render(preview)
+        assert "Jutro 31.10 dzień wolny (zapowiedź, decyzja o 06:41)" in text
+        assert NIGHT in text
+        assert "Wieczorem sprzedaż: 16:00, 17:00." in text
+        assert "SOC o 06:41 ok." in text
+        assert not any(line.lower().startswith("start") for line in text.splitlines())
+
+
+class TestNoEveningPlan:
+    """Without an evening sale the valuation's fallback hours are no sale (21.11)."""
+
+    def test_the_0641_message_says_no_sale(self):
+        service, _charge, reports, _ = _service(evening=())
+        service.evaluate(validation=False)
+        assert service.last is not None and not service.last.evening_planned
+        assert len(service.last.discharge_hours) == 10  # valuation fallback
+        text = render(reports[0])
+        assert "Wieczorem sprzedaż: brak, bateria wieczorem dla domu. SOC 10%." in text

@@ -229,6 +229,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartRceConfigEntry) -> 
             if latched
             else state.is_workday_tomorrow
         )
+        if workday is False and not latched:
+            # Before a day off: the preview of tomorrow's 06:41 decision
+            # (user's decision 21.11.2026); the 04:01 run stays workday-only.
+            preview = day_off_charge.preview(day)
+            if preview is not None:
+                day_off_notifier.notify(preview)
+            else:
+                day_off_notifier.notify_preview_unavailable(day)
+            return
         if workday is not True:
             return
         report = NightChargeReport.build(ems, day, latched=latched)

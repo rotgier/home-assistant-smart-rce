@@ -9,26 +9,33 @@ variant; the start goes to `BatteryChargeService` (a hand-set start keeps
 precedence). The 06:41 run is always reported, the 07:41 one only when the
 decision changed. Rule and figures: home-assistant-ops `plans/morning-charge.md`
 "Iteracja 8".
+
+The evening before a day off, 21:06, `preview` runs the same decision on
+tomorrow's prices and forecast for the "noc i poranek" message — nothing is
+applied or kept (user's decision 21.11.2026).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.core import CALLBACK_TYPE, callback
 
 from ..domain.battery_charge_policy import DayOffStart
+from ..domain.charge_curve import kwh_per_pp
 from ..domain.charge_start_shift import to_time
 from ..domain.day_off_charge import NONE, DayOffChargeDecision, DayOffHour
 from ..domain.pv_surplus import surplus_window_end
+from ..domain.target_soc import MIN_SOC_PERCENT
 from ..tariff.rates import VAT
 from ..tariff.table import latest_rates
 from ..tariff.zones import zone_for
 
 if TYPE_CHECKING:
+    from ..domain.pv_surplus import SurplusProfile
     from .ems import Ems
     from .pv_surplus_service import PvSurplusService
 
@@ -59,6 +66,11 @@ class DayOffReport:
     evening_rce_max: float
     evening_rce_hour: int
     buy_price: float
+    # False when no evening sale is planned: `discharge_hours` is then the
+    # fallback the valuation assumes (the house takes the battery), not a sale.
+    evening_planned: bool = True
+    # The 21:06 preview of tomorrow's day off; `soc` is then projected to 06:41.
+    preview: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +90,8 @@ class DayOffReport:
             "evening_rce_max": self.evening_rce_max,
             "evening_rce_hour": self.evening_rce_hour,
             "buy_price": self.buy_price,
+            "evening_planned": self.evening_planned,
+            "preview": self.preview,
         }
 
 
@@ -112,7 +126,7 @@ class DayOffChargeService:
         today = now.date()
         if self._ems.is_workday_today:
             return
-        hours = self._hours(today, now)
+        hours = self._hours(today, now, tomorrow=False)
         state = self._ems.last_input_state
         soc = state.battery_soc if state is not None else None
         s0 = self._ems.charge_slots.today_start
@@ -121,7 +135,7 @@ class DayOffChargeService:
         charge = self._ems.battery_charge_service
         held = charge.day_off_start_today
         t2 = surplus_window_end(today)
-        discharge = self._discharge_hours(today, hours)
+        discharge, planned = self._discharge_hours(today, hours)
         decision = DayOffChargeDecision.decide(
             today,
             hours,
@@ -144,7 +158,15 @@ class DayOffChargeService:
         )
         changed = previous is None or previous.decision.chosen != decision.chosen
         self.last = self._report(
-            now, decision, changed, validation, s0.hour, t2, soc, discharge, hours
+            now,
+            decision,
+            changed,
+            validation,
+            s0.hour,
+            t2,
+            soc,
+            (discharge, planned),
+            hours,
         )
         if not validation or changed:
             self._notify(self.last)
@@ -154,20 +176,65 @@ class DayOffChargeService:
     def _is_today(self, report: DayOffReport) -> bool:
         return report.decision.day == self._clock().date()
 
-    def _hours(self, today: date, now: datetime) -> list[DayOffHour] | None:
-        """Today's hours: Live Soft PV, p60 consumption, RCE and zone prices (gross)."""
-        rce = self._ems.rce_prices.rce_prices
-        if rce is None or rce.today is None or rce.today.day != today:
+    @callback
+    def preview(self, day: date) -> DayOffReport | None:
+        """Tomorrow's day off as the 06:41 run would decide it now (21:06).
+
+        Nothing is applied, stored or reported here. The battery is projected
+        to 06:41: the house takes it overnight down to the floor, since no
+        charge runs from the grid before a day off. None when tomorrow's
+        prices, forecast or S0 are not there yet.
+        """
+        now = self._clock()
+        hours = self._hours(day, now, tomorrow=True)
+        state = self._ems.last_input_state
+        soc = state.battery_soc if state is not None else None
+        s0 = self._ems.charge_slots.tomorrow_start
+        if hours is None or soc is None or s0 is None:
             return None
-        prices = rce.today.hour_price
-        profile = self._pv_surplus.live_soft_profile(today, tomorrow=False)
+        t2 = surplus_window_end(day)
+        discharge, planned = self._discharge_hours(day, hours)
+        soc_at = self._soc_at_decision(now, day, soc)
+        decision = DayOffChargeDecision.decide(
+            day,
+            hours,
+            soc=soc_at,
+            s0_hour=s0.hour,
+            t2_hour=t2,
+            discharge_hours=discharge,
+            in_force=None,
+        )
+        report = self._report(
+            now,
+            decision,
+            False,
+            False,
+            s0.hour,
+            t2,
+            soc_at,
+            (discharge, planned),
+            hours,
+        )
+        # Today's hand-set start says nothing about tomorrow.
+        return replace(report, preview=True, manual_start=None)
+
+    def _hours(
+        self, day: date, now: datetime, *, tomorrow: bool
+    ) -> list[DayOffHour] | None:
+        """`day`'s hours: Live Soft PV, p60 consumption, RCE and zone prices (gross)."""
+        rce = self._ems.rce_prices.rce_prices
+        published = None if rce is None else rce.tomorrow if tomorrow else rce.today
+        if published is None or published.day != day:
+            return None
+        prices = published.hour_price
+        profile = self._pv_surplus.live_soft_profile(day, tomorrow=tomorrow)
         # Positional hour index: a 23/25-hour DST day stays out (S0 applies).
         if profile is None or len(prices) != 24:
             return None
         rates = latest_rates()
         out: list[DayOffHour] = []
         for hour in profile.hourly():
-            zone = zone_for(datetime.combine(today, time(hour.hour), tzinfo=now.tzinfo))
+            zone = zone_for(datetime.combine(day, time(hour.hour), tzinfo=now.tzinfo))
             out.append(
                 DayOffHour(
                     pv_kwh=hour.pv_kwh,
@@ -180,17 +247,37 @@ class DayOffChargeService:
             )
         return out
 
-    def _discharge_hours(self, today: date, hours: list[DayOffHour]) -> tuple[int, ...]:
-        """Hours the evening plan sells in; without one the dearest of 11-20."""
-        windows = self._ems.battery_schedule_service.evening_windows_on(today)
+    def _discharge_hours(
+        self, day: date, hours: list[DayOffHour]
+    ) -> tuple[tuple[int, ...], bool]:
+        """Hours the evening plan sells in, and whether there is such a plan.
+
+        Without one the valuation assumes the dearest of 11-20.
+        """
+        windows = self._ems.battery_schedule_service.evening_windows_on(day)
         planned = tuple(
             hour
             for entry in windows
             for hour in range(entry.start.hour, entry.end.hour + (entry.end.minute > 0))
         )
         if planned:
-            return planned
-        return tuple(sorted(_FALLBACK_EVENING, key=lambda h: -hours[h].rce_gross))
+            return planned, True
+        return tuple(
+            sorted(_FALLBACK_EVENING, key=lambda h: -hours[h].rce_gross)
+        ), False
+
+    def _soc_at_decision(self, now: datetime, day: date, soc: float) -> float:
+        """Project the battery to tomorrow's 06:41: now less the house's night drain."""
+        tonight = self._pv_surplus.live_soft_profile(now.date(), tomorrow=False)
+        morning = self._pv_surplus.live_soft_profile(day, tomorrow=True)
+        drain = self._drain(tonight, now.hour * 60 + now.minute, 24 * 60) + self._drain(
+            morning, 0, DECIDE_AT.hour * 60 + DECIDE_AT.minute
+        )
+        return max(float(MIN_SOC_PERCENT), soc - drain / kwh_per_pp(soc))
+
+    @staticmethod
+    def _drain(profile: SurplusProfile | None, start: int, end: int) -> float:
+        return profile.deficit(start, end) if profile is not None else 0.0
 
     def _report(  # noqa: PLR0913, PLR0917 — one run's figures
         self,
@@ -201,7 +288,7 @@ class DayOffChargeService:
         s0_hour: int,
         t2_hour: int,
         soc: float,
-        discharge: tuple[int, ...],
+        evening: tuple[tuple[int, ...], bool],
         hours: list[DayOffHour],
     ) -> DayOffReport:
         charge = self._ems.battery_charge_service
@@ -211,7 +298,8 @@ class DayOffChargeService:
             else None
         )
         day = range(7, t2_hour)
-        evening = max(_FALLBACK_EVENING, key=lambda h: hours[h].rce_gross)
+        discharge, planned = evening
+        dearest = max(_FALLBACK_EVENING, key=lambda h: hours[h].rce_gross)
         return DayOffReport(
             at=now,
             decision=decision,
@@ -228,11 +316,12 @@ class DayOffChargeService:
             ),
             day_rce_min=round(min(hours[h].rce_gross for h in day), 3),
             day_rce_max=round(max(hours[h].rce_gross for h in day), 3),
-            evening_rce_max=round(hours[evening].rce_gross, 3),
-            evening_rce_hour=evening,
+            evening_rce_max=round(hours[dearest].rce_gross, 3),
+            evening_rce_hour=dearest,
             buy_price=round(
-                hours[evening].buy_energy + hours[evening].buy_distribution, 3
+                hours[dearest].buy_energy + hours[dearest].buy_distribution, 3
             ),
+            evening_planned=planned,
         )
 
 
