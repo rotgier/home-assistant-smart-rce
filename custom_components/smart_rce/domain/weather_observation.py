@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 WIND_SPEED: Final = "wind_speed"
 WIND_BEARING: Final = "wind_bearing"
+WIND_GUST: Final = "wind_gust"  # WetterOnline's strongest gust (`max_gust`)
 OUTSIDE_TEMP: Final = "outside_temp"
 WO_TEMPERATURE: Final = "wo_temperature"
 WO_APPARENT: Final = "wo_apparent_temperature"
@@ -43,6 +44,7 @@ WO_VISIBILITY: Final = "wo_visibility"
 WO_PRECIPITATION_TYPE: Final = "wo_precipitation_type"  # text, raw only
 # Role -> the hourly row's key prefix (`<prefix>_mean`, `_min`, `_max`, `_cover_min`).
 MEASURES: Final[dict[str, str]] = {
+    WIND_GUST: "wind_gust_kmh",
     OUTSIDE_TEMP: "temp_c",
     WO_TEMPERATURE: "wo_temp_c",
     WO_APPARENT: "wo_apparent_c",

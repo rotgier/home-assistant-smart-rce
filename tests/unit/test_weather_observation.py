@@ -112,6 +112,14 @@ class TestMeasures:
         assert record["temp_c_mean"] == 0.0
         assert record["temp_c_cover_min"] == 60
 
+    def test_the_hour_keeps_its_strongest_gust(self):
+        day = _day(wind_gust=_series(30.0, (_at(7, 40), 45.0)))
+        record = _hour(day, 7).to_record()
+        assert (record["wind_gust_kmh_max"], record["wind_gust_kmh_min"]) == (
+            45.0,
+            30.0,
+        )
+
     def test_a_text_series_is_kept_raw_and_not_averaged(self):
         day = _day(wo_precipitation_type=_series("rain", (_at(8), "snow")))
         assert WO_PRECIPITATION_TYPE not in _hour(day, 8).measures

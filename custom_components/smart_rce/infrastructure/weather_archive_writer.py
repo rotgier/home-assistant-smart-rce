@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 from ..domain.weather_observation import (
     OUTSIDE_TEMP,
     WIND_BEARING,
+    WIND_GUST,
     WIND_SPEED,
     WO_APPARENT,
     WO_DEW_POINT,
@@ -44,6 +45,7 @@ WEATHER_OBSERVED_DIR: Final = "smart_rce/archive/weather_observed"
 ENTITIES: Final[dict[str, str]] = {
     WIND_SPEED: "sensor.wetteronline_wind_speed",
     WIND_BEARING: "sensor.wetteronline_wind_bearing",
+    WIND_GUST: "sensor.wetteronline_wind_gust",  # from 24.11.2026
     OUTSIDE_TEMP: "sensor.vitodens_outside_temp",
     WO_TEMPERATURE: "sensor.wetteronline_temperature",
     WO_APPARENT: "sensor.wetteronline_apparent_temperature",
