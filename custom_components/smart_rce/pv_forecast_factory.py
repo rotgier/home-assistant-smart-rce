@@ -56,6 +56,10 @@ from .infrastructure.pv_forecast.consumption_profile_loader import (
 from .infrastructure.pv_forecast.live_rate_reader import LiveRateReader
 from .infrastructure.pv_forecast.realized_pv_loader import RealizedPvLoader
 from .infrastructure.pv_forecast.solcast_reader import SolcastReader
+from .infrastructure.weather_archive_writer import (
+    WEATHER_OBSERVED_DIR,
+    WeatherArchiveWriter,
+)
 from .infrastructure.weather_diff_writer import WeatherDiffWriter
 from .infrastructure.weather_listener import WeatherForecastListener
 from .infrastructure.workday_calendar_reader import WorkdayCalendarReader
@@ -210,6 +214,7 @@ async def create_energy_balance_service(
 
     await _wire_forecast_archive(hass, entry, forecasts, solcast)
     _wire_energy_archive(hass, entry)
+    _wire_weather_archive(hass, entry)
 
     return service
 
@@ -278,6 +283,35 @@ def _wire_energy_archive(hass: HomeAssistant, entry: ConfigEntry) -> None:
     )
 
     # The recorder must be up before reading statistics.
+    @callback
+    def _on_started(_event: Event | None) -> None:
+        hass.async_create_task(_catch_up())
+
+    if hass.is_running:
+        _on_started(None)
+    else:
+        entry.async_on_unload(
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
+        )
+
+
+def _wire_weather_archive(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Archive finished days of observed weather (wind, outside temp): nightly + on start."""
+    writer = WeatherArchiveWriter(
+        hass, DailyJsonlArchive(Path(hass.config.path(WEATHER_OBSERVED_DIR)))
+    )
+
+    async def _catch_up(_now: datetime | None = None) -> None:
+        try:
+            await writer.async_catch_up(dt_util.now().date())
+        except Exception:  # noqa: BLE001 — an archive hiccup must not break setup
+            _LOGGER.exception("Weather archive: catch-up failed")
+
+    entry.async_on_unload(
+        async_track_time_change(hass, _catch_up, hour=0, minute=25, second=0)
+    )
+
+    # The recorder must be up before reading history.
     @callback
     def _on_started(_event: Event | None) -> None:
         hass.async_create_task(_catch_up())
