@@ -16,10 +16,13 @@ Two variants, simulated minute by minute from the battery level at 13:00
   level from which the charge 15:00 until the afternoon charge's end still
   reaches `END_SOC`, then charge again.
 
-A variant takes part only when its sale hour pays more than every T2 hour (the
-evening sells otherwise, along its ladder) and only when it beats the normal
-afternoon — CHARGE_AFTERNOON DELAYED_TO_END to full by its end — by
-`MIN_GAIN_ZL` after the battery's wear (`CYCLE_COST_PER_KWH` per kWh it gives).
+A variant takes part when it beats the normal afternoon — CHARGE_AFTERNOON
+DELAYED_TO_END to full by its end — by `MIN_GAIN_ZL` after the battery's wear
+(`CYCLE_COST_PER_KWH` per kWh it gives). Until 24.11.2026 the sale hour also
+had to pay more than every T2 hour; the user dropped that (25.11.2026: 14:00
+2637 net, 16:00 2657, the round trip +7-9 zl blocked by 0.7%) — the gain
+already charges what the variant leaves short at T2, and the energy sold is
+bought back in T3 before T2, so the evening still sells along its ladder.
 What the variant leaves the battery short at T2 against the normal afternoon
 is the evening's sale (or the house's T2 purchase) moved forward: valued at
 the dearer of the dearest T2 hour and the T2 purchase price. Per hour the grid
@@ -161,6 +164,7 @@ class T3PeakEvaluation:
             short_kwh = _kwh_between(run.end_soc, run.end_soc + short) * _ROUND_TRIP
             wear = run.given_kwh * T3PeakPlan.CYCLE_COST_PER_KWH
             gain = run.value_zl - baseline.value_zl - short_kwh * moved_value - wear
+            # Reported only; no longer a condition (user's decision 24.11.2026).
             dearer = hours[hour].rce_gross > dearest_t2
             variants.append(
                 T3PeakVariant(
@@ -172,7 +176,7 @@ class T3PeakEvaluation:
                     given_kwh=round(run.given_kwh, 2),
                     bought_kwh=round(run.bought_kwh - baseline.bought_kwh, 2),
                     dearer_than_t2=dearer,
-                    eligible=dearer and gain >= T3PeakPlan.MIN_GAIN_ZL,
+                    eligible=gain >= T3PeakPlan.MIN_GAIN_ZL,
                 )
             )
         best = max(

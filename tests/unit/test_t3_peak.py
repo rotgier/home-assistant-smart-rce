@@ -84,12 +84,18 @@ class TestEvaluate:
         plan = _evaluate(70.0).plan
         assert plan is not None and plan.sell_hour == 13 and not plan.pre_charge
 
-    def test_no_sale_when_t2_pays_more(self):
-        rce = list(RCE)
-        rce[17] = 4.60  # an evening hour dearer than 13 and 14
-        evaluation = _evaluate(88.0, rce=tuple(rce))
-        assert evaluation.plan is None
-        assert not any(v.dearer_than_t2 for v in evaluation.variants)
+    def test_a_dearer_t2_hour_no_longer_blocks_a_paying_round_trip(self):
+        # 25.11.2026 (net x 1.23): 14:00 2637, 16:00 2657 — 0.7% short of the
+        # old "dearer than every T2 hour" bar; the round trip still pays.
+        net = (
+            917, 953, 931, 923, 924, 946, 1333, 1845, 1810, 1531, 1244, 1220,
+            1443, 1900, 2637, 2720, 2657, 2074, 2098, 2225, 2392, 1580, 1089, 965,
+        )  # fmt: skip
+        evaluation = _evaluate(100.0, rce=tuple(p * 1.23 / 1000 for p in net))
+        v14 = next(v for v in evaluation.variants if v.sell_hour == 14)
+        assert not v14.dearer_than_t2
+        assert v14.eligible and v14.gain_zl >= T3PeakPlan.MIN_GAIN_ZL
+        assert evaluation.plan is not None and evaluation.plan.sell_hour == 14
 
     def test_no_sale_below_the_gain_bar(self):
         rce = list(RCE)
