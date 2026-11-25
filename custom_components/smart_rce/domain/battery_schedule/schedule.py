@@ -553,7 +553,9 @@ class BatterySchedule:
             ):
                 soc = entry.target_soc
                 continue
-            run = self._upcoming_run(entry, now, day, soc)
+            run = self._upcoming_run(
+                entry, now, day, soc, always=self._is_t3_pre_charge(entry, day)
+            )
             if run is not None:
                 runs.append(run)
                 soc = run.target_soc
@@ -590,11 +592,32 @@ class BatterySchedule:
         )
         return [before, entry]
 
+    def _is_t3_pre_charge(self, entry: BatteryScheduleEntry, day: date) -> bool:
+        """Tell whether `entry` is the charge right before a T3 sale.
+
+        The runs chain each target into the next start, blind to what the house
+        draws in between: after a night charge to 100% the charge before a
+        13:00-14:00 sale would look needless, though the house has taken the
+        battery down through T1 by then.
+        """
+        t3 = self.t3_peak_for(day)
+        return (
+            t3 is not None
+            and t3.pre_charge
+            and entry.kind is SlotKind.CHARGE_AFTERNOON
+            and entry.end == t3.start
+        )
+
     @staticmethod
     def _upcoming_run(
-        entry: BatteryScheduleEntry, now: datetime, day: date, soc: float
+        entry: BatteryScheduleEntry,
+        now: datetime,
+        day: date,
+        soc: float,
+        *,
+        always: bool = False,
     ) -> UpcomingRun | None:
-        if not entry.enabled or not entry.needs_run_from(soc):
+        if not entry.enabled or not (always or entry.needs_run_from(soc)):
             return None
         end = datetime.combine(day, entry.end, tzinfo=now.tzinfo)
         if now >= end:

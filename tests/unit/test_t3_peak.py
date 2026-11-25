@@ -280,6 +280,14 @@ class TestChart:
             (SlotKind.CHARGE_AFTERNOON, time(15), time(15, 55), 100.0),
         ]
 
+    def test_the_charge_before_the_sale_shows_after_a_full_night(self):
+        # The night charge heads for 100%; the house drains T1 unseen by the chain.
+        sch = _schedule(_plan(14))
+        runs = sch.upcoming_runs(_at(7, 5), 100.0, is_workday=True)
+        assert (SlotKind.CHARGE_AFTERNOON, time(13)) in [
+            (r.slot, r.window_start.time()) for r in runs
+        ]
+
     def test_during_the_sale_only_what_is_left_shows(self):
         sch = _schedule(_plan(14))
         runs = sch.upcoming_runs(_at(14, 20), 70.0, is_workday=True)
