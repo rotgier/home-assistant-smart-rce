@@ -432,7 +432,8 @@ class SlotKind(Enum):
         # Never discharges by itself: without a plan the slot stands still.
         default_target_soc=100.0,
         t3_peak=True,
-        workdays_only=True,
+        # Every day: a day off sells in its dearest hour (user, 25.11.2026);
+        # without a plan the slot stands still anyway.
     )
 
     CHARGE_AFTERNOON = SlotProfile(

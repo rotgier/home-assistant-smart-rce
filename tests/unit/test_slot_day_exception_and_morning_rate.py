@@ -20,11 +20,11 @@ SATURDAY = date(2026, 10, 17)
 class TestWorkdaysOnly:
     def test_the_charge_slots_for_t1_and_t2_are_workdays_only(self):
         # The morning discharge runs every day since 17.10.2026; the afternoon
-        # charge only on workdays (no T2 on a day off).
+        # charge only on workdays (no T2 on a day off) — bar the charge before
+        # a day-off T3 sale, which runs every day since 25.11.2026.
         assert {k for k in SlotKind if k.profile.workdays_only} == {
             SlotKind.CHARGE_MORNING_AUTO,
             SlotKind.CHARGE_AFTERNOON,
-            SlotKind.DISCHARGE_T3_PEAK,
         }
 
     def test_afternoon_charge_stays_still_on_a_day_off(self):

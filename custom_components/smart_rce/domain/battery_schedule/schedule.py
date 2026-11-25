@@ -531,16 +531,26 @@ class BatterySchedule:
         day = now.date() if day is None else day
         entries = sorted(
             (
-                self._effective_entry(kind, day)
+                entry
                 for kind in SlotKind
-                if (kind.profile.auto_target or kind.profile.planned)
-                and kind.profile.runs_on(day, is_workday)
+                if (
+                    kind.profile.auto_target
+                    or kind.profile.planned
+                    or kind.profile.t3_peak
+                    or kind is SlotKind.CHARGE_AFTERNOON
+                )
+                and self._takes_part(kind, day, is_workday)
+                for entry in self._upcoming_entries(kind, day, now)
             ),
             key=lambda entry: entry.start,
         )
         runs: list[UpcomingRun] = []
         for entry in entries:
-            if day == now.date() and entry.kind is self._currently_engaging:
+            if (
+                day == now.date()
+                and entry.kind is self._currently_engaging
+                and entry.start <= now.time() < entry.end
+            ):
                 soc = entry.target_soc
                 continue
             run = self._upcoming_run(entry, now, day, soc)
@@ -548,6 +558,37 @@ class BatterySchedule:
                 runs.append(run)
                 soc = run.target_soc
         return runs
+
+    def _upcoming_entries(
+        self, kind: SlotKind, day: date, now: datetime
+    ) -> list[BatteryScheduleEntry]:
+        """`kind`'s windows on `day` as the read model shows them.
+
+        The afternoon charge around a 14:00 T3 sale runs twice — before the
+        sale and after it — and both stand on the chart until the first is
+        over (user, 25.11.2026: the plan visible ahead, as the night charge is).
+        """
+        entry = self._effective_entry(kind, day)
+        if kind is not SlotKind.CHARGE_AFTERNOON:
+            return [entry]
+        t3 = self.t3_peak_for(day)
+        own = self._today[kind]
+        if (
+            t3 is None
+            or t3.day_off
+            or not t3.pre_charge
+            or not own.enabled
+            or not self._today[SlotKind.DISCHARGE_T3_PEAK].enabled
+            or own.start >= t3.start
+            or (day == now.date() and now.time() >= t3.start)
+        ):
+            return [entry]
+        before = (
+            own.with_window(own.start, t3.start)
+            .with_target_soc(100.0)
+            .with_behavior(SlotBehavior.IMMEDIATE)
+        )
+        return [before, entry]
 
     @staticmethod
     def _upcoming_run(
@@ -790,10 +831,21 @@ class BatterySchedule:
         candidates = [
             self._effective_entry(k, now.date(), now)
             for k in SlotKind.by_precedence()
-            if k.profile.runs_on(now.date(), is_workday)
+            if self._takes_part(k, now.date(), is_workday)
         ]
         engaging = [e for e in candidates if e.should_apply_now(now, current_soc)]
         return engaging[-1] if engaging else None
+
+    def _takes_part(self, kind: SlotKind, day: date, is_workday: bool | None) -> bool:
+        """Whether `kind` runs on `day`: its calendar, or a day-off T3 sale's charge.
+
+        CHARGE_AFTERNOON stays out on a day off (user, 17.10.2026) except as
+        the charge before a day-off sale (user, 25.11.2026).
+        """
+        if kind.profile.runs_on(day, is_workday):
+            return True
+        t3 = self.t3_peak_for(day)
+        return kind is SlotKind.CHARGE_AFTERNOON and t3 is not None and t3.day_off
 
     def _effective_entry(
         self, kind: SlotKind, day: date, now: datetime | None = None
@@ -811,6 +863,8 @@ class BatterySchedule:
             and self._evening_day > day
         ):
             # Tomorrow's evening, written after tonight's last slot ended.
+            return entry.with_enabled(False)
+        if kind in _EVENING_KINDS and self._yields_to_day_off_sale(entry, day):
             return entry.with_enabled(False)
         if kind.profile.planned:
             plan = self.morning_discharge_for(day)
@@ -843,6 +897,19 @@ class BatterySchedule:
         target = reserve.value if floor is None else floor.lifts(reserve.value)
         return entry.with_target_soc(float(target))
 
+    def _yields_to_day_off_sale(self, entry: BatteryScheduleEntry, day: date) -> bool:
+        """Tell whether an evening slot overlaps a day-off sale or its charge.
+
+        The pair of a day off gives way to the sale in the day's dearest hour
+        (user, 25.11.2026); one that does not overlap still sells what is left.
+        """
+        t3 = self.t3_peak_for(day)
+        if t3 is None or not t3.day_off or not entry.enabled:
+            return False
+        if not self._today[SlotKind.DISCHARGE_T3_PEAK].enabled:
+            return False
+        return entry.start < t3.end and t3.latch_at < entry.end
+
     def _split_afternoon_charge(
         self, entry: BatteryScheduleEntry, day: date, now: datetime | None
     ) -> BatteryScheduleEntry | None:
@@ -857,6 +924,15 @@ class BatterySchedule:
         sale = self._today[SlotKind.DISCHARGE_T3_PEAK]
         if t3 is None or not sale.enabled:
             return None
+        if t3.day_off:
+            # The hour before the day-off sale, up to its own level; nothing after.
+            if t3.charge_to is None:
+                return entry.with_enabled(False)
+            return (
+                entry.with_window(t3.charge_start, t3.start)
+                .with_target_soc(float(t3.charge_to))
+                .with_behavior(SlotBehavior.IMMEDIATE)
+            )
         full = entry.with_target_soc(100.0).with_behavior(SlotBehavior.IMMEDIATE)
         if t3.pre_charge and now is not None and now.time() < t3.start:
             if entry.start >= t3.start:

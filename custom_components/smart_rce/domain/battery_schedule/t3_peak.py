@@ -30,6 +30,14 @@ balance is worth RCE gross when exported and the zone's purchase price when
 bought (energy from the deposit, distribution in cash): hourly settlement, so a
 charge in an hour the sun still exports in costs that hour's RCE.
 
+A day off (the whole day T3, user's decision 25.11.2026) has no T2 to fill the
+battery for: the sale takes the day's dearest hour, the hour before it charges
+from the grid to `DAY_OFF_CHARGE_TO` (one hour of selling at full power
+reaches the floor from ~64%, the user asked for a margin), and nothing charges
+after it — the house buys at T3 either way. What the battery would have held
+without the sale is valued at the dearer of the T3 purchase and the day's
+planned sale hours (`evaluate_day_off`).
+
 Pace from the schedule's own rate model (`Direction`), energy per pp from the
 charge curve. The house draws the battery while a sale runs (DoD 90) and the
 grid otherwise (HOLD_FOR_T2, DoD 0).
@@ -76,13 +84,19 @@ class T3PeakPlan:
     END_SOC: ClassVar[int] = 80
     FLOOR: ClassVar[int] = 10
     SELL_HOURS: ClassVar[tuple[int, ...]] = (13, 14)
+    # A day off charges the hour before its sale up to this (user, 25.11.2026).
+    DAY_OFF_CHARGE_TO: ClassVar[int] = 68
 
     day: date
     sell_hour: int
     target: int
-    # The 14:00 variant charges 13:00-14:00 first.
+    # The 14:00 variant charges 13:00-14:00 first; a day off the hour before.
     pre_charge: bool
     gain_zl: float
+    # A day off's sale: the dearest hour, no charge after it.
+    day_off: bool = False
+    # What the day off's charge before the sale aims at.
+    charge_to: int | None = None
 
     @property
     def start(self) -> time:
@@ -97,8 +111,30 @@ class T3PeakPlan:
         """Where the afternoon charge starts again after the sale."""
         return time(self.sell_hour + 1, 0)
 
+    @property
+    def charge_start(self) -> time:
+        """Where the charge before the sale starts (the hour before it)."""
+        return time(self.sell_hour - 1, 0)
+
+    @property
+    def latch_at(self) -> time:
+        """When the plan freezes: its first charge, or the sale itself."""
+        return self.charge_start if self.pre_charge else self.start
+
     def describe(self) -> str:
         """One-line source for the slot telegram."""
+        if self.day_off:
+            pre = (
+                f"charge {self.sell_hour - 1:02d}-{self.sell_hour:02d} "
+                f"to {self.charge_to}%, "
+                if self.pre_charge
+                else ""
+            )
+            return (
+                f"day-off peak: {pre}sell {self.sell_hour:02d}-"
+                f"{self.sell_hour + 1:02d} to {self.target}%, "
+                f"gain {self.gain_zl:+.2f} zl"
+            )
         pre = "charge 13-14, " if self.pre_charge else ""
         return (
             f"T3 peak: {pre}sell {self.sell_hour:02d}-{self.sell_hour + 1:02d} "
@@ -112,16 +148,21 @@ class T3PeakPlan:
             "target": self.target,
             "pre_charge": self.pre_charge,
             "gain_zl": self.gain_zl,
+            "day_off": self.day_off,
+            "charge_to": self.charge_to,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> T3PeakPlan:
+        charge_to = data.get("charge_to")
         return cls(
             day=date.fromisoformat(data["day"]),
             sell_hour=int(data["sell_hour"]),
             target=int(data["target"]),
             pre_charge=bool(data["pre_charge"]),
             gain_zl=float(data["gain_zl"]),
+            day_off=bool(data.get("day_off", False)),
+            charge_to=int(charge_to) if charge_to is not None else None,
         )
 
 
@@ -147,7 +188,7 @@ class T3PeakEvaluation:
         t2_buy: float,
     ) -> T3PeakEvaluation:
         """Value both variants against the normal afternoon from `soc` at 13:00."""
-        sim = _Afternoon(hours, t2_start, charge_end_minute)
+        sim = _Afternoon(hours, _FIRST_HOUR, t2_start, charge_end_minute)
         baseline = sim.run(soc, sim.normal)
         dearest_t2 = max(hours[h].rce_gross for h in t2_hours)
         moved_value = max(dearest_t2, t2_buy)
@@ -194,6 +235,61 @@ class T3PeakEvaluation:
             else None
         )
         return cls(day=day, soc=soc, variants=tuple(variants), plan=plan)
+
+    @classmethod
+    def evaluate_day_off(
+        cls,
+        day: date,
+        hours: Sequence[T3PeakHour],
+        *,
+        soc: float,
+        sell_hour: int,
+        moved_value: float,
+    ) -> T3PeakEvaluation:
+        """Value a day off's sale in `sell_hour` from `soc` at the hour before it.
+
+        The charge before the sale runs only when the battery stands below
+        `DAY_OFF_CHARGE_TO`. What it gives up against an idle battery is
+        valued at `moved_value` (the dearer of the T3 purchase and the day's
+        planned sale hours).
+        """
+        start = sell_hour - 1
+        sim = _Afternoon(hours, start, sell_hour + 1, start * 60)
+        baseline = sim.run(soc, sim.idle)
+        charge_to = (
+            T3PeakPlan.DAY_OFF_CHARGE_TO if soc < T3PeakPlan.DAY_OFF_CHARGE_TO else None
+        )
+        run = sim.run(soc, sim.day_off(sell_hour, charge_to))
+        short = max(0.0, baseline.end_soc - run.end_soc)
+        short_kwh = _kwh_between(run.end_soc, run.end_soc + short) * _ROUND_TRIP
+        wear = run.given_kwh * T3PeakPlan.CYCLE_COST_PER_KWH
+        gain = run.value_zl - baseline.value_zl - short_kwh * moved_value - wear
+        variant = T3PeakVariant(
+            sell_hour=sell_hour,
+            target=T3PeakPlan.FLOOR,
+            pre_charge=charge_to is not None,
+            gain_zl=round(gain, 2),
+            end_soc=round(run.end_soc, 1),
+            given_kwh=round(run.given_kwh, 2),
+            bought_kwh=round(run.bought_kwh - baseline.bought_kwh, 2),
+            # No T2 on a day off.
+            dearer_than_t2=True,
+            eligible=gain >= T3PeakPlan.MIN_GAIN_ZL,
+        )
+        plan = (
+            T3PeakPlan(
+                day=day,
+                sell_hour=sell_hour,
+                target=T3PeakPlan.FLOOR,
+                pre_charge=charge_to is not None,
+                gain_zl=variant.gain_zl,
+                day_off=True,
+                charge_to=charge_to,
+            )
+            if variant.eligible
+            else None
+        )
+        return cls(day=day, soc=soc, variants=(variant,), plan=plan)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -247,13 +343,21 @@ _Mode = tuple[str, float]
 
 
 class _Afternoon:
-    """Minute-by-minute simulation of 13:00 until T2."""
+    """Minute-by-minute simulation from `start_hour` until `end_hour` (T2).
+
+    A mode's number is the sale's floor, or the charge's ceiling.
+    """
 
     def __init__(
-        self, hours: Sequence[T3PeakHour], t2_start: int, charge_end_minute: int
+        self,
+        hours: Sequence[T3PeakHour],
+        start_hour: int,
+        end_hour: int,
+        charge_end_minute: int,
     ) -> None:
         self._hours = hours
-        self._t2 = t2_start
+        self._start = start_hour
+        self._t2 = end_hour
         self._charge_end = charge_end_minute
 
     def normal(self, minute: int, soc: float) -> _Mode:
@@ -262,17 +366,35 @@ class _Afternoon:
             return "idle", 0.0
         need = Direction.CHARGE.seconds_for_soc_traversal(soc, _FULL)
         left = (self._charge_end - minute) * 60
-        return ("charge", 0.0) if left <= need + _LEAD_SEC else ("idle", 0.0)
+        return ("charge", _FULL) if left <= need + _LEAD_SEC else ("idle", 0.0)
+
+    @staticmethod
+    def idle(_minute: int, _soc: float) -> _Mode:
+        """Leave the battery alone (a day off without the sale)."""
+        return "idle", 0.0
+
+    @staticmethod
+    def day_off(hour: int, charge_to: int | None) -> Callable[[int, float], _Mode]:
+        """Charge the hour before `hour` (when `charge_to`), sell in it, then idle."""
+
+        def mode(minute: int, _soc: float) -> _Mode:
+            if minute < hour * 60:
+                return ("charge", float(charge_to)) if charge_to else ("idle", 0.0)
+            if minute < (hour + 1) * 60:
+                return "sell", float(T3PeakPlan.FLOOR)
+            return "idle", 0.0
+
+        return mode
 
     def arbitrage(
         self, hour: int, target: int, *, pre_charge: bool
     ) -> Callable[[int, float], _Mode]:
         def mode(minute: int, soc: float) -> _Mode:
             if minute < hour * 60:
-                return ("charge", 0.0) if pre_charge else ("idle", 0.0)
+                return ("charge", _FULL) if pre_charge else ("idle", 0.0)
             if minute < (hour + 1) * 60:
                 return "sell", float(target)
-            return ("charge", 0.0) if minute < self._charge_end else ("idle", 0.0)
+            return ("charge", _FULL) if minute < self._charge_end else ("idle", 0.0)
 
         return mode
 
@@ -285,9 +407,9 @@ class _Afternoon:
         return end_soc
 
     def run(self, soc: float, plan: Callable[[int, float], _Mode]) -> _Run:
-        grid = dict.fromkeys(range(_FIRST_HOUR, self._t2), 0.0)
+        grid = dict.fromkeys(range(self._start, self._t2), 0.0)
         given = bought = 0.0
-        for minute in range(_FIRST_HOUR * 60, self._t2 * 60):
+        for minute in range(self._start * 60, self._t2 * 60):
             hour = self._hours[minute // 60]
             house = (hour.surplus_kwh - hour.deficit_kwh) / 60
             mode, target = plan(minute, soc)
@@ -297,8 +419,8 @@ class _Afternoon:
                 grid[minute // 60] += out + house
                 given += out
                 soc -= step
-            elif mode == "charge" and soc < _FULL:
-                step = min(60 / _sec_per_pp(Direction.CHARGE, soc), _FULL - soc)
+            elif mode == "charge" and soc < target:
+                step = min(60 / _sec_per_pp(Direction.CHARGE, soc), target - soc)
                 taken = step * kwh_per_pp(soc)
                 grid[minute // 60] += house - taken
                 bought += taken

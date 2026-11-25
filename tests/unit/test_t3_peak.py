@@ -199,6 +199,116 @@ class TestSchedule:
         assert BatterySchedule.from_dict(data).t3_peak_for(DAY) is None
 
 
+def _day_off_plan(day: date = DAY) -> T3PeakPlan:
+    return T3PeakPlan(
+        day=day, sell_hour=16, target=10, pre_charge=True, gain_zl=5.0,
+        day_off=True, charge_to=68,
+    )  # fmt: skip
+
+
+def _engaged_off(sch: BatterySchedule, now: datetime, soc: float) -> SlotKind | None:
+    _, events = sch.compute_operation(now, soc, is_workday=False)
+    started = [e.slot for e in events if isinstance(e, SlotEngaged)]
+    return started[-1] if started else None
+
+
+class TestDayOff:
+    """A day off sells in its dearest hour after a charge the hour before (25.11)."""
+
+    def test_charges_the_hour_before_then_sells_then_nothing(self):
+        sch = _schedule(_day_off_plan())
+        assert _engaged_off(sch, _at(14, 0), 20.0) is None
+        assert _engaged_off(sch, _at(15, 0), 20.0) is SlotKind.CHARGE_AFTERNOON
+        entry = sch._effective_entry(SlotKind.CHARGE_AFTERNOON, DAY, _at(15, 0))
+        assert (entry.start, entry.end, entry.target_soc) == (time(15), time(16), 68)
+        assert _engaged_off(sch, _at(16, 0), 68.0) is SlotKind.DISCHARGE_T3_PEAK
+        assert _engaged_off(sch, _at(17, 0), 12.0) is None
+
+    def test_without_a_plan_the_afternoon_charge_stays_out(self):
+        sch = _schedule(_day_off_plan())
+        sch.set_t3_peak(DAY, None)
+        assert _engaged_off(sch, _at(13, 30), 20.0) is None
+
+    def test_an_overlapping_pair_gives_way_and_a_later_one_stays(self):
+        sch = _schedule(_day_off_plan())
+        early = SlotKind.DISCHARGE_EVENING_EARLY
+        sch._today[early] = BatteryScheduleEntry(
+            kind=early, enabled=True, start=time(15), end=time(17), target_soc=10.0
+        )
+        assert not sch._effective_entry(early, DAY).enabled
+        sch._today[early] = BatteryScheduleEntry(
+            kind=early, enabled=True, start=time(18), end=time(20), target_soc=10.0
+        )
+        assert sch._effective_entry(early, DAY).enabled
+
+    def test_the_plan_round_trips(self):
+        plan = _day_off_plan()
+        assert T3PeakPlan.from_dict(plan.to_dict()) == plan
+        assert "day-off peak: charge 15-16 to 68%" in plan.describe()
+
+    def test_the_evaluation_charges_to_68_and_sells_to_the_floor(self):
+        hours = _hours(HOLIDAY_RCE)
+        evaluation = T3PeakEvaluation.evaluate_day_off(
+            HOLIDAY, hours, soc=10.0, sell_hour=15, moved_value=sum(T3)
+        )
+        assert evaluation.plan is not None
+        assert evaluation.plan.charge_to == T3PeakPlan.DAY_OFF_CHARGE_TO
+        assert evaluation.variants[0].end_soc == pytest.approx(10.0, abs=1)
+        assert evaluation.plan.gain_zl >= T3PeakPlan.MIN_GAIN_ZL
+
+    def test_a_full_battery_sells_without_charging(self):
+        evaluation = T3PeakEvaluation.evaluate_day_off(
+            HOLIDAY, _hours(HOLIDAY_RCE), soc=90.0, sell_hour=15, moved_value=sum(T3)
+        )
+        assert not evaluation.variants[0].pre_charge
+
+
+class TestChart:
+    """The T3 runs stand on the chart ahead, as the night charge does (25.11)."""
+
+    def test_a_workday_shows_charge_sale_charge(self):
+        sch = _schedule(_plan(14))
+        runs = sch.upcoming_runs(_at(9, 0), 90.0, is_workday=True)
+        t3 = [
+            (r.slot, r.window_start.time(), r.end.time(), r.target_soc)
+            for r in runs
+            if r.slot in (SlotKind.CHARGE_AFTERNOON, SlotKind.DISCHARGE_T3_PEAK)
+        ]
+        assert t3 == [
+            (SlotKind.CHARGE_AFTERNOON, time(13), time(14), 100.0),
+            (SlotKind.DISCHARGE_T3_PEAK, time(14), time(15), 40.0),
+            (SlotKind.CHARGE_AFTERNOON, time(15), time(15, 55), 100.0),
+        ]
+
+    def test_during_the_sale_only_what_is_left_shows(self):
+        sch = _schedule(_plan(14))
+        runs = sch.upcoming_runs(_at(14, 20), 70.0, is_workday=True)
+        slots = [(r.slot, r.window_start.time()) for r in runs]
+        assert (SlotKind.CHARGE_AFTERNOON, time(13)) not in slots
+        assert (SlotKind.CHARGE_AFTERNOON, time(15)) in slots
+
+    def test_a_day_off_shows_charge_and_sale(self):
+        sch = _schedule(_day_off_plan())
+        runs = sch.upcoming_runs(_at(9, 0), 20.0, is_workday=False)
+        t3 = [
+            (r.slot, r.window_start.time(), r.target_soc)
+            for r in runs
+            if r.slot in (SlotKind.CHARGE_AFTERNOON, SlotKind.DISCHARGE_T3_PEAK)
+        ]
+        assert t3 == [
+            (SlotKind.CHARGE_AFTERNOON, time(15), 68.0),
+            (SlotKind.DISCHARGE_T3_PEAK, time(16), 10.0),
+        ]
+
+    def test_tomorrow_shows_its_preview(self):
+        tomorrow = DAY + timedelta(days=1)
+        sch = _schedule(_plan(14))
+        sch.set_t3_peak(DAY, None)
+        sch.set_t3_peak(tomorrow, _day_off_plan(tomorrow))
+        runs = sch.upcoming_runs(_at(21, 0), 30.0, is_workday=False, day=tomorrow)
+        assert any(r.slot is SlotKind.DISCHARGE_T3_PEAK for r in runs)
+
+
 class _Surplus:
     def live_soft_profile(self, day, *, tomorrow: bool):
         from custom_components.smart_rce.domain.pv_surplus import SurplusProfile
@@ -206,7 +316,16 @@ class _Surplus:
         return SurplusProfile.build(day, {}, None)  # no sun, flat 0.9 kWh/h
 
 
-def _service(now: datetime, schedule, *, workday=True, soc=88.0):
+def _service(  # noqa: PLR0913 — the test's knobs
+    now: datetime,
+    schedule,
+    *,
+    workday=True,
+    soc=88.0,
+    rce=RCE,
+    tomorrow_rce=None,
+    workday_tomorrow=True,
+):
     from types import SimpleNamespace
 
     from custom_components.smart_rce.application.t3_peak_service import T3PeakService
@@ -218,17 +337,38 @@ def _service(now: datetime, schedule, *, workday=True, soc=88.0):
         t3_peak_latched=schedule.t3_peak_latched,
         latch_t3_peak=schedule.latch_t3_peak,
         set_t3_peak_report=lambda day, evaluation, why: None,
+        export_threshold=850.0,
     )
-    net = tuple(p / 1.23 * 1000 for p in RCE)
+    day = now.date()
+    tomorrow = (
+        RceDayPrices(None, day + timedelta(days=1), _net(tomorrow_rce))
+        if tomorrow_rce is not None
+        else None
+    )
     ems = SimpleNamespace(
         battery_schedule_service=service,
         is_workday_today=workday,
+        is_workday_tomorrow=workday_tomorrow,
         last_input_state=SimpleNamespace(battery_soc=soc),
         rce_prices=SimpleNamespace(
-            rce_prices=SimpleNamespace(today=RceDayPrices(None, DAY, net))
+            rce_prices=SimpleNamespace(
+                today=RceDayPrices(None, day, _net(rce)), tomorrow=tomorrow
+            )
         ),
     )
     T3PeakService(ems, _Surplus(), lambda: now).refresh()
+
+
+def _net(gross_zl_kwh) -> tuple[float, ...]:
+    return tuple(p / 1.23 * 1000 for p in gross_zl_kwh)
+
+
+# 11.11.2026, a holiday (Wednesday): RCE gross zl/kWh, 15:00 the day's peak.
+HOLIDAY = date(2026, 11, 11)
+HOLIDAY_RCE = (
+    1.10, 1.05, 1.00, 1.00, 1.02, 1.08, 1.15, 1.25, 1.30, 1.35, 1.40, 1.50,
+    1.70, 1.85, 2.00, 2.21, 2.05, 1.90, 1.75, 1.60, 1.45, 1.30, 1.20, 1.10,
+)  # fmt: skip
 
 
 class TestService:
@@ -251,11 +391,44 @@ class TestService:
         _service(_at(13, 20), sch)
         assert sch.t3_peak_for(DAY) is None
 
-    def test_a_day_off_has_no_plan(self):
+    def test_a_day_off_sells_in_its_dearest_hour_and_latches_an_hour_before(self):
         sch = _schedule(_plan(14))
         sch.set_t3_peak(DAY, None)
-        _service(_at(9, 0), sch, workday=False)
+        _service(_at(9, 0), sch, workday=False, soc=10.0, rce=HOLIDAY_RCE)
+        plan = sch.t3_peak_for(DAY)
+        assert plan is not None and plan.day_off
+        assert (plan.sell_hour, plan.charge_to, plan.target) == (15, 68, 10)
+        assert not sch.t3_peak_latched(DAY)
+        _service(_at(14, 0), sch, workday=False, soc=12.0, rce=HOLIDAY_RCE)
+        assert sch.t3_peak_latched(DAY)
+
+    def test_a_day_off_after_its_dearest_hour_has_no_plan(self):
+        sch = _schedule(_plan(14))
+        sch.set_t3_peak(DAY, None)
+        _service(_at(15, 20), sch, workday=False, soc=10.0, rce=HOLIDAY_RCE)
         assert sch.t3_peak_for(DAY) is None
+
+    def test_a_cheap_day_off_has_no_plan(self):
+        sch = _schedule(_plan(14))
+        sch.set_t3_peak(DAY, None)
+        flat = tuple(0.6 for _ in range(24))
+        _service(_at(9, 0), sch, workday=False, soc=10.0, rce=flat)
+        assert sch.t3_peak_for(DAY) is None
+
+    def test_tomorrow_is_previewed_but_never_latched(self):
+        sch = _schedule(_plan(14))
+        sch.set_t3_peak(DAY, None)
+        tomorrow = DAY + timedelta(days=1)
+        _service(_at(21, 0), sch, tomorrow_rce=RCE)
+        assert sch.t3_peak_for(tomorrow) is not None
+        assert not sch.t3_peak_latched(tomorrow)
+
+    def test_a_day_off_tomorrow_is_previewed_from_the_floor(self):
+        sch = _schedule(_plan(14))
+        tomorrow = DAY + timedelta(days=1)
+        _service(_at(21, 0), sch, tomorrow_rce=HOLIDAY_RCE, workday_tomorrow=False)
+        plan = sch.t3_peak_for(tomorrow)
+        assert plan is not None and plan.day_off and plan.charge_to == 68
 
 
 def test_a_hand_set_late_charge_start_does_not_break_the_schedule():
