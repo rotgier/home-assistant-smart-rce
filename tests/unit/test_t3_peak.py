@@ -51,7 +51,7 @@ def _evaluate(soc: float, rce=RCE, surplus=0.0) -> T3PeakEvaluation:
         _hours(rce, surplus),
         soc=soc,
         t2_start=16,
-        charge_end_minute=15 * 60 + 55,
+        charge_end_minute=16 * 60,
         t2_hours=range(16, 21),
         t2_buy=sum(T2),
     )
@@ -67,7 +67,7 @@ class TestEvaluate:
 
     def test_peak_at_14_charges_first_and_keeps_80_for_t2(self):
         v14 = next(v for v in _evaluate(95.0).variants if v.sell_hour == 14)
-        # 15:00-15:55 at 75 s/pp (less the 4 min lead) reaches 80 from 40.
+        # 15:00-16:00 at 75 s/pp (less the 9 min lead) reaches 80 from 40.
         assert (v14.pre_charge, v14.target) == (True, 40)
         assert v14.end_soc >= T3PeakPlan.END_SOC
         assert v14.eligible

@@ -346,6 +346,10 @@ class SlotProfile:
 # at 07:59:55: the 30 <-> 31 target wobble had no room; 5 min would only add
 # ~0.8 pp and leave the battery on target longer while the target may rise).
 _DELAYED_LEAD_SEC = 240.0
+# The afternoon charge's window ends at T2 (16:00) while its DELAYED_TO_END
+# start still aims at 15:55 (user's decision 25.11.2026): 5 more minutes of
+# lead, so a charge behind the rate model keeps going until T2 begins.
+AFTERNOON_LEAD_SEC = _DELAYED_LEAD_SEC + 300.0
 
 # Morning discharge pace — after the night top-up the BMS reports SoC
 # differently than after a full day charge (evening: below ~25% twice as fast,
@@ -445,7 +449,7 @@ class SlotKind(Enum):
         # rewritten from here.
         default_window=(time(13, 0), time(19, 0)),
         default_target_soc=80.0,
-        delayed_lead_sec=_DELAYED_LEAD_SEC,
+        delayed_lead_sec=AFTERNOON_LEAD_SEC,
         # 80% leaves headroom for late-afternoon PV surplus.
         # Workdays only (user's decision 17.10.2026): it fills the battery for
         # the evening T2, and a day off has no T2 — the whole day is T3.

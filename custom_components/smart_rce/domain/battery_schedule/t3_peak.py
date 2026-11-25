@@ -57,8 +57,9 @@ if TYPE_CHECKING:
 
 # Round trip of a kWh through the battery, charged on the way out.
 _ROUND_TRIP: Final[float] = 0.9
-# A DELAYED_TO_END start leads the rate model by this much (`_DELAYED_LEAD_SEC`).
-_LEAD_SEC: Final[float] = 240.0
+# CHARGE_AFTERNOON's DELAYED_TO_END start leads the rate model by this much
+# (`entry.AFTERNOON_LEAD_SEC`: its window ends at 16:00, the start aims at 15:55).
+_LEAD_SEC: Final[float] = 540.0
 _FIRST_HOUR: Final[int] = 13
 _FULL: Final[float] = 100.0
 

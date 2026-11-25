@@ -197,8 +197,10 @@ class TestDelayedLead:
         assert all(
             k.profile.delayed_lead_sec == 240.0
             for k in SlotKind
-            if not k.direction.is_discharge
+            if not k.direction.is_discharge and k is not SlotKind.CHARGE_AFTERNOON
         )
+        # Its window ends at T2, its start still aims 5 min before (25.11.2026).
+        assert SlotKind.CHARGE_AFTERNOON.profile.delayed_lead_sec == 540.0
 
 
 class TestStartGap:
