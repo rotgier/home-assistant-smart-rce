@@ -212,6 +212,34 @@ def _engaged_off(sch: BatterySchedule, now: datetime, soc: float) -> SlotKind | 
     return started[-1] if started else None
 
 
+class TestPace:
+    """The simulation walks the rate zones minute by minute exactly (26.11)."""
+
+    def test_an_hour_of_charge_from_52_stops_on_the_bms_plateau(self):
+        from custom_components.smart_rce.domain.battery_schedule.direction import (
+            Direction,
+        )
+        from custom_components.smart_rce.domain.battery_schedule.t3_peak import _advance
+
+        soc = 52.0
+        for _ in range(60):
+            soc = _advance(Direction.CHARGE, soc, 100.0)
+        # 25.11.2026 15:00-16:00 reached 90% (89 at 15:46, 90 at 15:57);
+        # stepping each minute at its starting pace had it at ~95%.
+        assert 90.0 <= soc <= 93.0
+
+    def test_an_hour_of_sale_from_full_reaches_52(self):
+        from custom_components.smart_rce.domain.battery_schedule.direction import (
+            Direction,
+        )
+        from custom_components.smart_rce.domain.battery_schedule.t3_peak import _advance
+
+        soc = 100.0
+        for _ in range(60):
+            soc = _advance(Direction.DISCHARGE, soc, 40.0)
+        assert soc == pytest.approx(52.0, abs=0.5)  # 25.11.2026: 100 -> 52
+
+
 class TestDayOff:
     """A day off sells in its dearest hour after a charge the hour before (25.11)."""
 

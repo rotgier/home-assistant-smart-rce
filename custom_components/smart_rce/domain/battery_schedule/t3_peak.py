@@ -415,13 +415,13 @@ class _Afternoon:
             house = (hour.surplus_kwh - hour.deficit_kwh) / 60
             mode, target = plan(minute, soc)
             if mode == "sell" and soc > target:
-                step = min(60 / _sec_per_pp(Direction.DISCHARGE, soc), soc - target)
+                step = soc - _advance(Direction.DISCHARGE, soc, target)
                 out = step * kwh_per_pp(soc) * _ROUND_TRIP
                 grid[minute // 60] += out + house
                 given += out
                 soc -= step
             elif mode == "charge" and soc < target:
-                step = min(60 / _sec_per_pp(Direction.CHARGE, soc), target - soc)
+                step = _advance(Direction.CHARGE, soc, target) - soc
                 taken = step * kwh_per_pp(soc)
                 grid[minute // 60] += house - taken
                 bought += taken
@@ -439,10 +439,30 @@ class _Afternoon:
         return _Run(value_zl=value, end_soc=soc, given_kwh=given, bought_kwh=bought)
 
 
-def _sec_per_pp(direction: Direction, soc: float) -> float:
-    return next(
-        z.sec_per_pp for z in direction.rate_zones if z.soc_from <= soc < z.soc_to
-    )
+def _advance(direction: Direction, soc: float, limit: float) -> float:
+    """SoC after one minute toward `limit`, zone by zone.
+
+    A minute that crosses a zone edge runs the rest of it at the next zone's
+    pace: stepping the whole minute at the starting pace crossed the BMS
+    plateau (89-91%, 390 s/pp) in 9 minutes instead of 13 and saw 25.11.2026
+    end its 15:00-16:00 charge at ~95% instead of the 90% it reached.
+    """
+    up = limit > soc
+    left = 60.0
+    while left > 0 and (soc < limit if up else soc > limit):
+        zone = next(
+            z
+            for z in direction.rate_zones
+            if (z.soc_from <= soc < z.soc_to if up else z.soc_from < soc <= z.soc_to)
+        )
+        edge = min(zone.soc_to, limit) if up else max(zone.soc_from, limit)
+        need = abs(edge - soc) * zone.sec_per_pp
+        if need <= left:
+            soc, left = edge, left - need
+        else:
+            soc += (left / zone.sec_per_pp) * (1 if up else -1)
+            left = 0.0
+    return soc
 
 
 def _kwh_between(low: float, high: float) -> float:
